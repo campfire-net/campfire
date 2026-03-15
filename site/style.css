@@ -108,6 +108,8 @@ a:hover { color: var(--color-accent-secondary-hover); }
   color: var(--color-accent);
   letter-spacing: -0.02em;
   text-decoration: none;
+  display: inline-flex;
+  align-items: center;
 }
 
 .nav-logo span { color: var(--color-accent-secondary); }
