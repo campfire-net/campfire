@@ -306,18 +306,16 @@ func buildThresholdShareProvider(s *store.Store) cfhttp.ThresholdShareProvider {
 			return 0, nil, fmt.Errorf("querying threshold share: %w", err)
 		}
 		if share == nil {
-			return 0, nil, fmt.Errorf("no threshold share found for campfire %s", campfireID[:min(12, len(campfireID))])
+			shortID := campfireID
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+		return 0, nil, fmt.Errorf("no threshold share found for campfire %s", shortID)
 		}
 		return share.ParticipantID, share.SecretShare, nil
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 func init() {
 	createCmd.Flags().StringVar(&createProtocol, "protocol", "open", "join protocol: open, invite-only")
