@@ -111,6 +111,7 @@ a:hover { color: var(--color-accent-secondary-hover); }
 }
 
 .nav-logo span { color: var(--color-accent-secondary); }
+.nav-logo-img { height: 28px; width: 28px; border-radius: 4px; vertical-align: middle; margin-right: 8px; }
 
 .nav-links {
   display: flex;
