@@ -1,0 +1,199 @@
+// Package http implements the P2P HTTP transport for the Campfire protocol.
+// Each agent runs an HTTP server; peers communicate directly (no relay).
+package http
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/3dl-dev/campfire/pkg/store"
+	"github.com/3dl-dev/campfire/pkg/threshold"
+)
+
+// PeerInfo holds a peer's public key hex and HTTP endpoint.
+type PeerInfo struct {
+	PubKeyHex string
+	Endpoint  string // e.g. "http://host:port"
+}
+
+// signingSessionState holds ephemeral state for a co-signer during a FROST signing round.
+type signingSessionState struct {
+	session   *threshold.SigningSession
+	createdAt time.Time
+}
+
+// Transport manages an HTTP server for P2P campfire communication.
+type Transport struct {
+	listenAddr string
+	server     *http.Server
+	store      *store.Store
+
+	mu    sync.RWMutex
+	peers map[string][]PeerInfo // campfireID → []PeerInfo
+
+	// selfPubKeyHex and selfEndpoint identify this node for join responses.
+	selfPubKeyHex string
+	selfEndpoint  string
+
+	// keyProvider is called by the join handler to retrieve campfire key material.
+	keyProvider CampfireKeyProvider
+
+	// thresholdShareProvider returns the local FROST DKG share for a campfire.
+	// Called by the sign handler to initialize a signing session.
+	thresholdShareProvider ThresholdShareProvider
+
+	// signSessions holds ephemeral co-signer signing sessions, keyed by session_id.
+	signSessions map[string]*signingSessionState
+}
+
+// ThresholdShareProvider returns the local FROST DKG share for a campfire.
+// The returned bytes should be deserialized with threshold.UnmarshalResult.
+type ThresholdShareProvider func(campfireID string) (participantID uint32, shareData []byte, err error)
+
+// New creates a Transport listening on listenAddr, using the given store.
+func New(listenAddr string, s *store.Store) *Transport {
+	t := &Transport{
+		listenAddr:   listenAddr,
+		store:        s,
+		peers:        make(map[string][]PeerInfo),
+		signSessions: make(map[string]*signingSessionState),
+	}
+	mux := http.NewServeMux()
+	h := &handler{store: s, transport: t}
+	mux.HandleFunc("/campfire/", h.route)
+	t.server = &http.Server{
+		Addr:    listenAddr,
+		Handler: mux,
+	}
+	return t
+}
+
+// SetSelfInfo records this node's agent public key and HTTP endpoint for
+// inclusion in join responses.
+func (t *Transport) SetSelfInfo(pubKeyHex, endpoint string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.selfPubKeyHex = pubKeyHex
+	t.selfEndpoint = endpoint
+}
+
+// SetKeyProvider registers a CampfireKeyProvider used by the join handler.
+// Must be called before Start().
+func (t *Transport) SetKeyProvider(kp CampfireKeyProvider) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.keyProvider = kp
+}
+
+// SelfInfo returns this node's agent public key hex and HTTP endpoint.
+func (t *Transport) SelfInfo() (pubKeyHex, endpoint string) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.selfPubKeyHex, t.selfEndpoint
+}
+
+// MyEndpoint returns the endpoint for the given campfire (same as selfEndpoint for p2p-http).
+func (t *Transport) MyEndpoint(_ string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.selfEndpoint
+}
+
+// Start starts the HTTP listener. Returns immediately; listener runs in background.
+func (t *Transport) Start() error {
+	ln, err := listenTCP(t.listenAddr)
+	if err != nil {
+		return fmt.Errorf("binding %s: %w", t.listenAddr, err)
+	}
+	go t.server.Serve(ln) //nolint:errcheck
+	return nil
+}
+
+// Stop gracefully shuts down the HTTP server.
+func (t *Transport) Stop() error {
+	return t.server.Shutdown(context.Background())
+}
+
+// AddPeer registers a peer for a campfire.
+func (t *Transport) AddPeer(campfireID, pubKeyHex, endpoint string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	peers := t.peers[campfireID]
+	for _, p := range peers {
+		if p.PubKeyHex == pubKeyHex {
+			return
+		}
+	}
+	t.peers[campfireID] = append(peers, PeerInfo{PubKeyHex: pubKeyHex, Endpoint: endpoint})
+}
+
+// RemovePeer removes a peer from a campfire.
+func (t *Transport) RemovePeer(campfireID, pubKeyHex string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	peers := t.peers[campfireID]
+	filtered := peers[:0]
+	for _, p := range peers {
+		if p.PubKeyHex != pubKeyHex {
+			filtered = append(filtered, p)
+		}
+	}
+	t.peers[campfireID] = filtered
+}
+
+// SetThresholdShareProvider registers a provider used by the sign handler.
+func (t *Transport) SetThresholdShareProvider(p ThresholdShareProvider) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.thresholdShareProvider = p
+}
+
+// getOrCreateSignSession looks up an existing signing session or creates a new one.
+// Must be called with t.mu held (write lock).
+func (t *Transport) getOrCreateSignSession(sessionID string, signerIDs []uint32, msg []byte, myShare *threshold.DKGResult, myParticipantID uint32) (*threshold.SigningSession, error) {
+	if existing, ok := t.signSessions[sessionID]; ok {
+		return existing.session, nil
+	}
+	ss, err := threshold.NewSigningSession(myShare.SecretShare, myShare.Public, msg, signerIDs)
+	if err != nil {
+		return nil, err
+	}
+	t.signSessions[sessionID] = &signingSessionState{
+		session:   ss,
+		createdAt: time.Now(),
+	}
+	// Prune stale sessions older than 5 minutes.
+	t.pruneSignSessions()
+	return ss, nil
+}
+
+// pruneSignSessions removes signing sessions older than 5 minutes.
+// Must be called with t.mu held (write lock).
+func (t *Transport) pruneSignSessions() {
+	cutoff := time.Now().Add(-5 * time.Minute)
+	for id, s := range t.signSessions {
+		if s.createdAt.Before(cutoff) {
+			delete(t.signSessions, id)
+		}
+	}
+}
+
+// removeSignSession removes a signing session after it completes.
+func (t *Transport) removeSignSession(sessionID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.signSessions, sessionID)
+}
+
+// Peers returns the current peer list for a campfire.
+func (t *Transport) Peers(campfireID string) []PeerInfo {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	src := t.peers[campfireID]
+	out := make([]PeerInfo, len(src))
+	copy(out, src)
+	return out
+}

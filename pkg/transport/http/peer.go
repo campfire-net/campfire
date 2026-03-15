@@ -1,0 +1,322 @@
+package http
+
+import (
+	"bytes"
+	"crypto/ecdh"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+
+	cfencoding "github.com/3dl-dev/campfire/pkg/encoding"
+	"github.com/3dl-dev/campfire/pkg/identity"
+	"github.com/3dl-dev/campfire/pkg/message"
+	frostmessages "github.com/taurusgroup/frost-ed25519/pkg/messages"
+)
+
+
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// Deliver POSTs a CBOR-encoded message to a peer endpoint.
+// Signs the request body with senderIdentity.
+func Deliver(endpoint string, campfireID string, msg *message.Message, id *identity.Identity) error {
+	body, err := cfencoding.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("encoding message: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/deliver", endpoint, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("building request: %w", err)
+	}
+	signRequest(req, id, body)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("posting to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("peer returned %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+// Sync GETs messages from a peer since the given nanosecond timestamp.
+func Sync(endpoint string, campfireID string, since int64, id *identity.Identity) ([]message.Message, error) {
+	url := fmt.Sprintf("%s/campfire/%s/sync?since=%s", endpoint, campfireID, strconv.FormatInt(since, 10))
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	// GET has no body; sign empty bytes
+	signRequest(req, id, []byte{})
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("getting from %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("peer returned %d: %s", resp.StatusCode, string(b))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	var msgs []message.Message
+	if err := cfencoding.Unmarshal(body, &msgs); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return msgs, nil
+}
+
+// DeliverToAll delivers a message to all given endpoints in parallel.
+// Returns one error per endpoint (nil if successful).
+func DeliverToAll(endpoints []string, campfireID string, msg *message.Message, id *identity.Identity) []error {
+	errs := make([]error, len(endpoints))
+	var wg sync.WaitGroup
+	for i, ep := range endpoints {
+		wg.Add(1)
+		go func(i int, ep string) {
+			defer wg.Done()
+			errs[i] = Deliver(ep, campfireID, msg, id)
+		}(i, ep)
+	}
+	wg.Wait()
+	return errs
+}
+
+// NotifyMembership sends a membership change notification to a peer.
+func NotifyMembership(endpoint string, campfireID string, event MembershipEvent, id *identity.Identity) error {
+	body, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("encoding event: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/membership", endpoint, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	signRequest(req, id, body)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("posting to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("peer returned %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+// JoinResult holds the outcome of a successful join request.
+type JoinResult struct {
+	// CampfirePrivKey is the decrypted campfire Ed25519 private key (threshold=1).
+	// Nil if threshold>1 (use ThresholdShareData instead).
+	CampfirePrivKey []byte
+	// CampfirePubKey is the campfire Ed25519 public key bytes.
+	CampfirePubKey []byte
+	// JoinProtocol is the campfire's join protocol.
+	JoinProtocol string
+	// ReceptionRequirements lists required message tags.
+	ReceptionRequirements []string
+	// Threshold is the campfire's signing threshold.
+	Threshold uint
+	// Peers is the list of known peer endpoints returned by the admitting member.
+	Peers []PeerEntry
+	// ThresholdShareData is the decrypted FROST DKG share for this node (threshold>1).
+	// Serialized with threshold.MarshalResult.
+	ThresholdShareData []byte
+	// MyParticipantID is the FROST participant ID assigned to this joiner (threshold>1).
+	MyParticipantID uint32
+}
+
+// Join sends a join request to the given peer endpoint and returns the
+// campfire state (including the decrypted private key for threshold=1).
+func Join(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint string) (*JoinResult, error) {
+	// Generate ephemeral X25519 keypair for key exchange.
+	ephemPriv, err := generateX25519Key()
+	if err != nil {
+		return nil, fmt.Errorf("generating ephemeral X25519 key: %w", err)
+	}
+	ephemPub := ephemPriv.PublicKey()
+
+	joinReq := JoinRequest{
+		JoinerPubkey:       id.PublicKeyHex(),
+		JoinerEndpoint:     myEndpoint,
+		EphemeralX25519Pub: fmt.Sprintf("%x", ephemPub.Bytes()),
+	}
+	bodyBytes, err := json.Marshal(joinReq)
+	if err != nil {
+		return nil, fmt.Errorf("encoding join request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/join", peerEndpoint, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("building join request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	signRequest(req, id, bodyBytes)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("posting to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("peer returned %d: %s", resp.StatusCode, string(b))
+	}
+
+	var joinResp JoinResponse
+	if err := json.NewDecoder(resp.Body).Decode(&joinResp); err != nil {
+		return nil, fmt.Errorf("decoding join response: %w", err)
+	}
+
+	result := &JoinResult{
+		JoinProtocol:          joinResp.JoinProtocol,
+		ReceptionRequirements: joinResp.ReceptionRequirements,
+		Threshold:             joinResp.Threshold,
+		Peers:                 joinResp.Peers,
+		MyParticipantID:       joinResp.JoinerParticipantID,
+	}
+
+	// Decode campfire public key.
+	if joinResp.CampfirePubKey != "" {
+		pubBytes, err := hex.DecodeString(joinResp.CampfirePubKey)
+		if err != nil {
+			return nil, fmt.Errorf("decoding campfire public key: %w", err)
+		}
+		result.CampfirePubKey = pubBytes
+	}
+
+	// Derive shared secret if the responder provided their ephemeral X25519 key.
+	var sharedSecret []byte
+	if joinResp.ResponderX25519Pub != "" {
+		respPubBytes, err := hex.DecodeString(joinResp.ResponderX25519Pub)
+		if err != nil {
+			return nil, fmt.Errorf("decoding responder X25519 key: %w", err)
+		}
+		respPub, err := ecdh.X25519().NewPublicKey(respPubBytes)
+		if err != nil {
+			return nil, fmt.Errorf("parsing responder X25519 key: %w", err)
+		}
+		shared, err := ephemPriv.ECDH(respPub)
+		if err != nil {
+			return nil, fmt.Errorf("ECDH: %w", err)
+		}
+		sharedSecret = shared
+	}
+
+	// Decrypt campfire private key (threshold=1).
+	if len(joinResp.EncryptedPrivKey) > 0 && sharedSecret != nil {
+		privKey, err := aesGCMDecrypt(sharedSecret, joinResp.EncryptedPrivKey)
+		if err != nil {
+			return nil, fmt.Errorf("decrypting campfire private key: %w", err)
+		}
+		result.CampfirePrivKey = privKey
+	}
+
+	// Decrypt threshold DKG share (threshold>1).
+	if len(joinResp.ThresholdShareData) > 0 && sharedSecret != nil {
+		shareData, err := aesGCMDecrypt(sharedSecret, joinResp.ThresholdShareData)
+		if err != nil {
+			return nil, fmt.Errorf("decrypting threshold share data: %w", err)
+		}
+		result.ThresholdShareData = shareData
+	}
+
+	return result, nil
+}
+
+// SendSignRound sends FROST signing round messages to a peer co-signer and
+// returns the peer's outbound messages for that round.
+// round is 1 (commitments) or 2 (shares).
+// On round 1, signerIDs and messageToSign must be provided.
+func SendSignRound(endpoint, campfireID, sessionID string, round int, signerIDs []uint32, messageToSign []byte, msgs []*frostmessages.Message, id *identity.Identity) ([]*frostmessages.Message, error) {
+	// Serialize outbound messages.
+	rawMsgs := make([][]byte, 0, len(msgs))
+	for _, m := range msgs {
+		b, err := m.MarshalBinary()
+		if err != nil {
+			return nil, fmt.Errorf("serializing FROST message: %w", err)
+		}
+		rawMsgs = append(rawMsgs, b)
+	}
+
+	req := SignRoundRequest{
+		SessionID:     sessionID,
+		Round:         round,
+		Messages:      rawMsgs,
+		SignerIDs:     signerIDs,
+		MessageToSign: messageToSign,
+	}
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encoding sign request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/sign", endpoint, campfireID)
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("building sign request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	signRequest(httpReq, id, bodyBytes)
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("posting to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("peer returned %d: %s", resp.StatusCode, string(b))
+	}
+
+	var signResp SignRoundResponse
+	if err := json.NewDecoder(resp.Body).Decode(&signResp); err != nil {
+		return nil, fmt.Errorf("decoding sign response: %w", err)
+	}
+
+	// Deserialize response messages.
+	outMsgs := make([]*frostmessages.Message, 0, len(signResp.Messages))
+	for _, raw := range signResp.Messages {
+		var m frostmessages.Message
+		if err := m.UnmarshalBinary(raw); err != nil {
+			return nil, fmt.Errorf("deserializing peer FROST message: %w", err)
+		}
+		outMsgs = append(outMsgs, &m)
+	}
+	return outMsgs, nil
+}
+
+// signRequest adds Ed25519 signature headers to an HTTP request.
+// X-Campfire-Sender: hex public key
+// X-Campfire-Signature: base64 signature of body
+func signRequest(req *http.Request, id *identity.Identity, body []byte) {
+	sig := id.Sign(body)
+	req.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+}
