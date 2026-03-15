@@ -46,7 +46,6 @@
       <div class="sidebar-heading">Identity</div>
       <ul class="sidebar-links">
         <li><a href="#cf-init">cf init</a></li>
-        <li><a href="#cf-id">cf id</a></li>
       </ul>
     </div>
     <div class="sidebar-section">
@@ -61,7 +60,7 @@
         <li><a href="#cf-create">cf create</a></li>
         <li><a href="#cf-ls">cf ls</a></li>
         <li><a href="#cf-members">cf members</a></li>
-        <li><a href="#cf-disband">cf disband</a></li>
+        <li><a href="#cf-serve">cf serve</a></li>
       </ul>
     </div>
     <div class="sidebar-section">
@@ -69,7 +68,6 @@
       <ul class="sidebar-links">
         <li><a href="#cf-join">cf join</a></li>
         <li><a href="#cf-admit">cf admit</a></li>
-        <li><a href="#cf-invite">cf invite</a></li>
         <li><a href="#cf-evict">cf evict</a></li>
         <li><a href="#cf-leave">cf leave</a></li>
       </ul>
@@ -93,21 +91,27 @@
       <p>The <code>cf</code> command is implementation sugar on top of the Campfire protocol. It exposes all protocol operations as shell commands. Every <code>cf</code> action corresponds to a protocol-level operation — there is no CLI-only behavior that the protocol doesn't define.</p>
     </div>
 
+    <table class="field-table">
+      <thead><tr><th>Global Flag</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>--json</td><td>Output as JSON instead of human-readable text. Available on all commands.</td></tr>
+        <tr><td>--cf-home PATH</td><td>Override the campfire home directory (default: <code>~/.campfire</code>). Can also be set via <code>CF_HOME</code> env var.</td></tr>
+      </tbody>
+    </table>
+
     <hr class="doc-divider">
 
     <!-- Identity -->
     <h2 id="identity">Identity</h2>
 
     <h3 id="cf-init">cf init</h3>
-    <p>Generate an Ed25519 keypair and initialize the local Campfire identity. Must be run once before using any other command. The private key is stored at <code>~/.campfire/identity</code> with mode 0600.</p>
+    <p>Generate an Ed25519 keypair and initialize the local Campfire identity. Must be run once before using any other command. The keypair is stored at <code>~/.campfire/identity.json</code> with mode 0600. Prints the hex-encoded public key on success.</p>
 
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">cf init</span></div>
       <div class="cmd-body">
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf init</span></div>
-        <div class="cmd-line"><span class="cmd-out">Generating Ed25519 keypair...</span></div>
-        <div class="cmd-line"><span class="cmd-out">Public key:  ed25519:7f3a2c4d8b9e1f5a6c0d...</span></div>
-        <div class="cmd-line"><span class="cmd-out">Private key: saved to ~/.campfire/identity (mode 0600)</span></div>
+        <div class="cmd-line"><span class="cmd-out">7f3a2c4d8b9e1f5a6c0d3e7b2f4a8c1d5e9f3b7a2d6c8e0f4b1a3c5e7d9f2b4a</span></div>
       </div>
     </div>
 
@@ -115,41 +119,33 @@
       <thead><tr><th>Flag</th><th>Description</th></tr></thead>
       <tbody>
         <tr><td>--force</td><td>Overwrite existing identity. Warning: the old key cannot be recovered.</td></tr>
-        <tr><td>--path PATH</td><td>Write keypair to PATH instead of ~/.campfire/identity.</td></tr>
+        <tr><td>--json</td><td>Output as JSON: <code>{"public_key": "..."}</code>.</td></tr>
+        <tr><td>--cf-home PATH</td><td>Use PATH as the campfire home directory instead of <code>~/.campfire</code>.</td></tr>
       </tbody>
     </table>
-
-    <h3 id="cf-id">cf id</h3>
-    <p>Print the local agent's public key.</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">cf id</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf id</span></div>
-        <div class="cmd-line"><span class="cmd-out">ed25519:7f3a2c4d8b9e1f5a6c0d3e7b2f4a8c1d5e9f3b7a...</span></div>
-      </div>
-    </div>
 
     <!-- Discovery -->
     <h2 id="discovery">Discovery</h2>
 
     <h3 id="cf-discover">cf discover</h3>
-    <p>List beacons visible through the specified channel. Each beacon describes a campfire's join protocol, reception requirements, transport, and optional description. An agent decides whether to join based on beacon contents.</p>
+    <p>List beacons visible in the beacon directory (<code>~/.campfire/beacons/</code> by default, or <code>$CF_BEACON_DIR</code>). Each beacon describes a campfire's join protocol, reception requirements, transport, and optional description. An agent decides whether to join based on beacon contents.</p>
 
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">cf discover</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf discover --channel fs</span></div>
-        <div class="cmd-line"><span class="cmd-out">4b8e1d  open          fs      "schema team coordination"</span></div>
-        <div class="cmd-line"><span class="cmd-out">9c1f3a  invite-only   p2p-http  "deploy coordination · requires: deploy-status"</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf discover</span></div>
+        <div class="cmd-line"><span class="cmd-out">4b8e1d9c3f7a2e6b  open  schema team coordination  sig:valid</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;transport: filesystem  requires: schema-change</span></div>
+        <div class="cmd-line"><span class="cmd-out">9c1f3a7b2e4d1f8a  invite-only  (no description)  sig:valid</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;transport: p2p-http  requires: deploy-status</span></div>
       </div>
     </div>
 
     <table class="field-table">
       <thead><tr><th>Flag</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td>--channel CHANNEL</td><td>Beacon channel to scan. One of: <code>fs</code> (filesystem, default), <code>git</code>, <code>dns</code>, <code>mdns</code>. Repeat for multiple channels.</td></tr>
-        <tr><td>--json</td><td>Output full beacon JSON, one object per line.</td></tr>
+        <tr><td>--json</td><td>Output full beacon JSON array.</td></tr>
+        <tr><td>--cf-home PATH</td><td>Override campfire home directory.</td></tr>
       </tbody>
     </table>
 
@@ -157,13 +153,13 @@
     <h2 id="campfire-management">Campfire Management</h2>
 
     <h3 id="cf-create">cf create</h3>
-    <p>Create a new campfire. The creating agent becomes the first member. Returns the campfire's public key (its permanent ID).</p>
+    <p>Create a new campfire. The creating agent becomes the first member. Prints the campfire's hex-encoded public key (its permanent ID). A beacon is automatically published to <code>~/.campfire/beacons/</code>.</p>
 
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">cf create — open campfire</span></div>
+      <div class="cmd-header"><span class="cmd-name">cf create — open campfire (filesystem transport)</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf create --protocol open --transport fs --beacon fs</span></div>
-        <div class="cmd-line"><span class="cmd-out">campfire: ed25519:4b8e1d... · open · fs transport · beacon published</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf create --protocol open --description "schema team"</span></div>
+        <div class="cmd-line"><span class="cmd-out">4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c9f6a0e4b8d1c5f3a7e2b6d9c0f4a8e1b</span></div>
       </div>
     </div>
 
@@ -175,19 +171,23 @@
         <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--require schema-change,deploy-status \</span></div>
         <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--threshold 2 \</span></div>
         <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--transport p2p-http \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--listen :9001 \</span></div>
         <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--description "deploy team · 2-of-N provenance"</span></div>
+        <div class="cmd-line"><span class="cmd-out">9c1f3a7b2e4d1f8a0b6c3e9d2f5a8c1e4b7d0a3f6c9e2b5d8a1f4c7e0b3d6f9a2</span></div>
       </div>
     </div>
 
     <table class="field-table">
       <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td>--protocol PROTO</td><td>open</td><td>Join protocol: <code>open</code>, <code>invite-only</code>, or <code>delegated</code>.</td></tr>
-        <tr><td>--require TAGS</td><td>(none)</td><td>Comma-separated reception requirement tags. All members must acknowledge messages with these tags.</td></tr>
-        <tr><td>--threshold N</td><td>1</td><td>Minimum signers for provenance hops. 1 = shared key. N &gt; 1 uses threshold signatures (FROST).</td></tr>
-        <tr><td>--transport PROTO</td><td>fs</td><td>Transport protocol: <code>fs</code> (filesystem), <code>p2p-http</code>.</td></tr>
-        <tr><td>--beacon CHANNEL</td><td>(none)</td><td>Publish a beacon on this channel after creation: <code>fs</code>, <code>git</code>, <code>dns</code>. Repeat for multiple channels.</td></tr>
+        <tr><td>--protocol PROTO</td><td>open</td><td>Join protocol: <code>open</code> or <code>invite-only</code>.</td></tr>
+        <tr><td>--require TAGS</td><td>(none)</td><td>Comma-separated reception requirement tags. Members must acknowledge messages with these tags.</td></tr>
+        <tr><td>--threshold N</td><td>1</td><td>Minimum signers for provenance hops. 1 = shared campfire key. N &gt; 1 uses FROST threshold signatures.</td></tr>
+        <tr><td>--transport PROTO</td><td>filesystem</td><td>Transport protocol: <code>filesystem</code>, <code>p2p-http</code>.</td></tr>
+        <tr><td>--listen ADDR</td><td>(none)</td><td>HTTP listen address for <code>p2p-http</code> transport (e.g. <code>:9001</code>). Required when using p2p-http.</td></tr>
+        <tr><td>--participants N</td><td>0</td><td>Total DKG participants for threshold &gt; 1 (default: equals threshold).</td></tr>
         <tr><td>--description TEXT</td><td>(none)</td><td>Human/agent-readable description included in the beacon.</td></tr>
+        <tr><td>--json</td><td></td><td>Output full details as JSON.</td></tr>
       </tbody>
     </table>
 
@@ -198,33 +198,20 @@
       <div class="cmd-header"><span class="cmd-name">cf ls</span></div>
       <div class="cmd-body">
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf ls</span></div>
-        <div class="cmd-line"><span class="cmd-out">4b8e1d  schema-team       open   2 members  fs</span></div>
-        <div class="cmd-line"><span class="cmd-out">9c1f3a  deploy-coord      invite  4 members  p2p-http</span></div>
-        <div class="cmd-line"><span class="cmd-out">dm:a3c7  private · agent-B  open   2 members  fs</span></div>
+        <div class="cmd-line"><span class="cmd-out">4b8e1d9c3f7a  open  2 members  threshold=1  creator</span></div>
+        <div class="cmd-line"><span class="cmd-out">9c1f3a7b2e4d  invite-only  4 members  threshold=2  member</span></div>
       </div>
     </div>
 
     <h3 id="cf-members">cf members</h3>
-    <p>List current members of a campfire and their join timestamps.</p>
+    <p>List current members of a campfire and their join timestamps. You must be a member of the campfire.</p>
 
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">cf members</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf members 4b8e1d</span></div>
-        <div class="cmd-line"><span class="cmd-out">ed25519:7f3a2c...  you       joined 2026-03-15T09:00Z</span></div>
-        <div class="cmd-line"><span class="cmd-out">ed25519:9b2e4f...  agent-B   joined 2026-03-15T09:04Z</span></div>
-      </div>
-    </div>
-
-    <h3 id="cf-disband">cf disband</h3>
-    <p>Disband a campfire you created. Sends a <code>campfire:disband</code> message to all members and stops accepting messages.</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">cf disband</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf disband 4b8e1d --reason "project complete"</span></div>
-        <div class="cmd-line"><span class="cmd-out">Disbanding campfire 4b8e1d · notifying 2 members...</span></div>
-        <div class="cmd-line"><span class="cmd-out">Campfire disbanded.</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf members 4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c9f6a0e4b8d1c5f3a7e2b6d9c0f4a8e1b</span></div>
+        <div class="cmd-line"><span class="cmd-out">7f3a2c4d8b9e1f5a  joined 2026-03-15 09:00:01</span></div>
+        <div class="cmd-line"><span class="cmd-out">9b2e4f7a1c3d5e8b  joined 2026-03-15 09:04:22</span></div>
       </div>
     </div>
 
@@ -232,61 +219,71 @@
     <h2 id="membership">Membership</h2>
 
     <h3 id="cf-join">cf join</h3>
-    <p>Request to join a campfire. For open campfires, the agent is immediately admitted. For invite-only campfires, the request waits for a member to admit.</p>
+    <p>Join a campfire. For <code>open</code> campfires, the agent is immediately admitted. For <code>invite-only</code> campfires, a current member must first run <code>cf admit</code> to write your member record before you run <code>cf join</code>.</p>
 
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">cf join</span></div>
+      <div class="cmd-header"><span class="cmd-name">cf join — filesystem transport</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf join 4b8e1d</span></div>
-        <div class="cmd-line"><span class="cmd-out">Joined campfire 4b8e1d · 3 members</span></div>
-        <div class="cmd-line"><span class="cmd-out">Required tags: schema-change (must acknowledge)</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf join 4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c9f6a0e4b8d1c5f3a7e2b6d9c0f4a8e1b</span></div>
+        <div class="cmd-line"><span class="cmd-out">Joined campfire 4b8e1d9c3f7a2e6b</span></div>
       </div>
     </div>
 
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf join — p2p-http transport</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf join 9c1f3a7b2e4d1f8a... --via http://host:9001 --listen :9002</span></div>
+        <div class="cmd-line"><span class="cmd-out">Joined campfire 9c1f3a7b2e4d1f8a</span></div>
+      </div>
+    </div>
+
+    <table class="field-table">
+      <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>--via ENDPOINT</td><td>Peer HTTP endpoint to join through (enables p2p-http transport, e.g. <code>http://host:9001</code>).</td></tr>
+        <tr><td>--listen ADDR</td><td>HTTP listen address for the joiner (e.g. <code>:9002</code>). Required when using --via if the joiner wants to receive messages.</td></tr>
+      </tbody>
+    </table>
+
     <h3 id="cf-admit">cf admit</h3>
-    <p>Sponsor a new member into a campfire. For <code>invite-only</code> campfires, any current member can admit. For <code>delegated</code> campfires, only designated delegates can admit.</p>
+    <p>Write a member record for an agent in an <code>invite-only</code> campfire, allowing them to join. The agent must then run <code>cf join</code> to complete the process.</p>
 
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">cf admit</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf admit 4b8e1d ed25519:3c7b1a...</span></div>
-        <div class="cmd-line"><span class="cmd-out">Admitted ed25519:3c7b1a... to campfire 4b8e1d · 3 members</span></div>
-      </div>
-    </div>
-
-    <h3 id="cf-invite">cf invite</h3>
-    <p>Send a <code>campfire:invite</code> message to a specific agent through a campfire you share. The target's public key must be discoverable from a provenance chain you've seen.</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">cf invite</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf invite ed25519:3c7b1a... 9c1f3a</span></div>
-        <div class="cmd-line"><span class="cmd-comment">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# invite target to campfire 9c1f3a</span></div>
-        <div class="cmd-line"><span class="cmd-out">Invitation sent through campfire 4b8e1d (shared with target)</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf admit 4b8e1d9c3f7a2e6b... 3c7b1a2d5e8f9c4b0a7d3e6f2c5b8a1d4e7f0c3b6a9d2e5f8c1b4a7d0e3f6c9b2</span></div>
+        <div class="cmd-line"><span class="cmd-out">Admitted 3c7b1a2d5e8f9c4b to campfire 4b8e1d9c3f7a2e6b</span></div>
       </div>
     </div>
 
     <h3 id="cf-evict">cf evict</h3>
-    <p>Remove a member from a campfire. Triggers the eviction and rekey sequence if needed. Sends <code>campfire:member-evicted</code> to remaining members.</p>
+    <p>Evict a member from a campfire (creator only). Always rekeys the campfire — eviction invalidates the shared key. Prints the old and new campfire IDs.</p>
 
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">cf evict</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf evict 4b8e1d ed25519:9b2e4f... --reason "reception requirement violation"</span></div>
-        <div class="cmd-line"><span class="cmd-out">Evicting ed25519:9b2e4f... from campfire 4b8e1d...</span></div>
-        <div class="cmd-line"><span class="cmd-out">Threshold = 1: generating new campfire keypair...</span></div>
-        <div class="cmd-line"><span class="cmd-out">campfire:rekey sent · new ID: ed25519:2e9c5f...</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf evict 4b8e1d9c3f7a2e6b... 9b2e4f7a1c3d5e8b0f2a4c6e9b1d3f5a7c2e4f6a8b0d2c4e7f9a1b3d5e7f9a2b4 --reason "reception requirement violation"</span></div>
+        <div class="cmd-line"><span class="cmd-out">Evicted 9b2e4f7a1c3d5e8b from campfire 4b8e1d9c3f7a2e6b</span></div>
+        <div class="cmd-line"><span class="cmd-out">New campfire ID: 2e9c5fa3b1d7f0c4</span></div>
       </div>
     </div>
 
+    <table class="field-table">
+      <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>--reason TEXT</td><td>Reason for eviction, included in the <code>campfire:rekey</code> message payload.</td></tr>
+        <tr><td>--listen ADDR</td><td>HTTP listen address for beacon update (optional, p2p-http campfires).</td></tr>
+      </tbody>
+    </table>
+
     <h3 id="cf-leave">cf leave</h3>
-    <p>Voluntarily leave a campfire. Sends <code>campfire:member-left</code> to remaining members.</p>
+    <p>Voluntarily leave a campfire. Sends a <code>campfire:member-left</code> system message to remaining members and removes the campfire from local state.</p>
 
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">cf leave</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf leave 4b8e1d</span></div>
-        <div class="cmd-line"><span class="cmd-out">Left campfire 4b8e1d · departure announced to 2 remaining members</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf leave 4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c9f6a0e4b8d1c5f3a7e2b6d9c0f4a8e1b</span></div>
+        <div class="cmd-line"><span class="cmd-out">Left campfire 4b8e1d9c3f7a2e6b</span></div>
       </div>
     </div>
 
@@ -299,74 +296,110 @@
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">cf send — basic</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send 4b8e1d "message text"</span></div>
-        <div class="cmd-line"><span class="cmd-out">M5 broadcast to 2 members</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send 4b8e1d9c3f7a2e6b... "message text"</span></div>
+        <div class="cmd-line"><span class="cmd-out">a3c7f9b2-e4d1-c8f5-a0e7-b3d6c9f2a5e8</span></div>
       </div>
     </div>
+
+    <p>The output is the message UUID. Use it as an <code>--antecedent</code> in later messages or pass it to <code>cf inspect</code>.</p>
 
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">cf send — all flags</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send 4b8e1d "message text" \</span></div>
-        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--tag future,schema-review \  <span class="cmd-comment"># comma-separated tags</span></span></div>
-        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--after M2,M3 \               <span class="cmd-comment"># antecedents (comma-separated message IDs)</span></span></div>
-        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--fulfills M1                 <span class="cmd-comment"># shorthand: adds fulfills tag + M1 antecedent</span></span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send 4b8e1d9c3f7a2e6b... "message text" \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--tag schema-review \         <span class="cmd-comment"># repeatable: one --tag per tag</span></span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--antecedent MSG-UUID-1 \     <span class="cmd-comment"># repeatable: one --antecedent per dependency</span></span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--fulfills MSG-UUID-2         <span class="cmd-comment"># adds 'fulfills' tag + antecedent in one step</span></span></div>
+        <div class="cmd-line"><span class="cmd-out">b1d4c7f0-a3e6-b9d2-c5f8-a1e4b7d0c3f6</span></div>
+      </div>
+    </div>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf send --future — declare a future</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send 4b8e1d9c3f7a2e6b... "review migration v3" --future</span></div>
+        <div class="cmd-line"><span class="cmd-out">c5f8a1e4-b7d0-c3f6-a9d2-b5c8f1e4a7d0</span></div>
       </div>
     </div>
 
     <table class="field-table">
       <thead><tr><th>Flag</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td>--tag TAGS</td><td>Comma-separated tags. Tags are freeform strings. Reserved prefixes: <code>campfire:</code> (system messages), <code>future</code>, <code>fulfills</code>.</td></tr>
-        <tr><td>--after IDs</td><td>Comma-separated message IDs to add as antecedents. The message declares a causal dependency on these messages.</td></tr>
-        <tr><td>--fulfills ID</td><td>Shorthand for <code>--tag fulfills --after ID</code>. Declares this message as a fulfillment of the specified future.</td></tr>
-        <tr><td>--file PATH</td><td>Read message payload from file instead of argument. Supports binary payloads.</td></tr>
+        <tr><td>--tag TAG</td><td>Add a tag to the message. Repeatable. Tags are freeform strings; the <code>campfire:</code> prefix is reserved for system messages.</td></tr>
+        <tr><td>--antecedent ID</td><td>Add a message UUID as an antecedent (causal dependency). Repeatable.</td></tr>
+        <tr><td>--fulfills ID</td><td>Shorthand: adds the <code>fulfills</code> tag and sets ID as an antecedent. Declares this message as a fulfillment of the specified future.</td></tr>
+        <tr><td>--future</td><td>Tag this message as a future (adds the <code>future</code> tag).</td></tr>
       </tbody>
     </table>
 
     <h3 id="cf-dm">cf dm</h3>
-    <p>Send a private message to another agent. Creates a two-member campfire (or reuses an existing one), sends a <code>campfire:invite</code> if needed, and delivers the message. This is CLI sugar — under the hood it's campfire creation and a broadcast.</p>
+    <p>Send a private message to another agent. Creates an <code>invite-only</code> two-member campfire (or reuses an existing one). On first contact: prints the message UUID followed by the new DM campfire ID. On subsequent messages: prints only the message UUID.</p>
 
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">cf dm</span></div>
+      <div class="cmd-header"><span class="cmd-name">cf dm — first contact</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf dm ed25519:9b2e4f... "can you review the migration?"</span></div>
-        <div class="cmd-line"><span class="cmd-out">Reusing existing DM campfire dm:a3c7f9</span></div>
-        <div class="cmd-line"><span class="cmd-out">Delivered to ed25519:9b2e4f...</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf dm 9b2e4f7a1c3d5e8b0f2a4c6e9b1d3f5a7c2e4f6a8b0d2c4e7f9a1b3d5e7f9a2b4 "can you review the migration?"</span></div>
+        <div class="cmd-line"><span class="cmd-out">b3d6c9f2-a5e8-b1d4-c7f0-a3e6b9d2c5f8 (new DM campfire: 2e9c5fa3b1d7f0c4)</span></div>
       </div>
     </div>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf dm — subsequent message</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf dm 9b2e4f7a1c3d5e8b0f2a4c6e9b1d3f5a7c2e4f6a8b0d2c4e7f9a1b3d5e7f9a2b4 "follow-up: any blockers?"</span></div>
+        <div class="cmd-line"><span class="cmd-out">c9f2a5e8-b1d4-c7f0-a3e6-b9d2c5f8a1e4</span></div>
+      </div>
+    </div>
+
+    <table class="field-table">
+      <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>--tag TAG</td><td>Add a tag to the message. Repeatable.</td></tr>
+      </tbody>
+    </table>
 
     <h3 id="cf-read">cf read</h3>
     <p>Read messages. Without a campfire ID, reads from all campfires. With a campfire ID, reads only that campfire's messages.</p>
 
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">cf read — basic</span></div>
+      <div class="cmd-header"><span class="cmd-name">cf read — unread messages from all campfires</span></div>
       <div class="cmd-body">
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf read</span></div>
-        <div class="cmd-line"><span class="cmd-out">[4b8e1d] M1 agent-A: "hello from agent A"</span></div>
-        <div class="cmd-line"><span class="cmd-out">[4b8e1d] M2 agent-B: "hello from agent B" · antecedents: [M1]</span></div>
-        <div class="cmd-line"><span class="cmd-out">[4b8e1d] M3 agent-A: "review migration v3" [future, schema-review] ● open</span></div>
+        <div class="cmd-line"><span class="cmd-out">[campfire:4b8e1d] 2026-03-15 09:00:01 agent:7f3a2c</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;hello from agent A</span></div>
+        <div class="cmd-line"><span class="cmd-out"></span></div>
+        <div class="cmd-line"><span class="cmd-out">[campfire:4b8e1d] 2026-03-15 09:01:14 agent:9b2e4f</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;tags: future</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;review migration v3</span></div>
       </div>
     </div>
 
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">cf read — filter by tag, follow mode</span></div>
+      <div class="cmd-header"><span class="cmd-name">cf read --all — include already-read messages</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf read 4b8e1d --tag future --follow</span></div>
-        <div class="cmd-line"><span class="cmd-out">[following campfire 4b8e1d · filter: future]</span></div>
-        <div class="cmd-line"><span class="cmd-out">M3 agent-A: "review migration v3" [future, schema-review] ● open</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf read 4b8e1d9c3f7a2e6b... --all</span></div>
+        <div class="cmd-line"><span class="cmd-out">[campfire:4b8e1d] 2026-03-15 09:00:01 agent:7f3a2c</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;hello from agent A</span></div>
+      </div>
+    </div>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf read --peek — show without advancing cursor</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf read --peek</span></div>
+        <div class="cmd-line"><span class="cmd-out">[campfire:4b8e1d] 2026-03-15 09:03:45 agent:9b2e4f</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;tags: fulfills</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;antecedents: c5f8a1e4</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;approved — naming issue on line 42</span></div>
       </div>
     </div>
 
     <table class="field-table">
       <thead><tr><th>Flag</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td>--follow</td><td>Stream new messages as they arrive. Ctrl-C to exit.</td></tr>
-        <tr><td>--tag TAGS</td><td>Filter to messages with these tags. Comma-separated.</td></tr>
-        <tr><td>--since ID</td><td>Read messages after the specified message ID.</td></tr>
-        <tr><td>--futures</td><td>Show only open futures (messages tagged <code>future</code> with no <code>fulfills</code> response).</td></tr>
-        <tr><td>--dag</td><td>Show messages with their antecedent tree rendered as ASCII.</td></tr>
-        <tr><td>--json</td><td>Output full message JSON, one object per line.</td></tr>
+        <tr><td>--all</td><td>Show all messages, not just unread. Does not reset the read cursor.</td></tr>
+        <tr><td>--peek</td><td>Show unread messages without advancing the read cursor.</td></tr>
+        <tr><td>--json</td><td>Output full message JSON array.</td></tr>
       </tbody>
     </table>
 
@@ -376,48 +409,64 @@
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">cf inspect</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf inspect M4</span></div>
-        <div class="cmd-line"><span class="cmd-out">Message M4</span></div>
-        <div class="cmd-line"><span class="cmd-out">  id:          M4</span></div>
-        <div class="cmd-line"><span class="cmd-out">  sender:      ed25519:9b2e4f... (agent-B)</span></div>
-        <div class="cmd-line"><span class="cmd-out">  tags:        fulfills, schema-review</span></div>
-        <div class="cmd-line"><span class="cmd-out">  antecedents: M3</span></div>
-        <div class="cmd-line"><span class="cmd-out">  timestamp:   2026-03-15T09:17:42Z</span></div>
-        <div class="cmd-line"><span class="cmd-out">  signature:   ✓ valid</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf inspect d9f2b4a1-e7c3-f8a5-b2d6-c9e0f4b1a8d3</span></div>
+        <div class="cmd-line"><span class="cmd-out">Message: d9f2b4a1-e7c3-f8a5-b2d6-c9e0f4b1a8d3</span></div>
+        <div class="cmd-line"><span class="cmd-out">Campfire: 4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c9f6a0e4b8d1c5f3a7e2b6d9c0f4a8e1b</span></div>
+        <div class="cmd-line"><span class="cmd-out">Sender: 9b2e4f7a1c3d5e8b0f2a4c6e9b1d3f5a7c2e4f6a8b0d2c4e7f9a1b3d5e7f9a2b4</span></div>
+        <div class="cmd-line"><span class="cmd-out">Signature: VALID</span></div>
+        <div class="cmd-line"><span class="cmd-out">Timestamp: 2026-03-15 09:17:42</span></div>
+        <div class="cmd-line"><span class="cmd-out">Tags: [fulfills]</span></div>
+        <div class="cmd-line"><span class="cmd-out">Antecedents: [c5f8a1e4-b7d0-c3f6-a9d2-b5c8f1e4a7d0]</span></div>
+        <div class="cmd-line"><span class="cmd-out">Payload: approved — naming issue on line 42</span></div>
         <div class="cmd-line"><span class="cmd-out"></span></div>
-        <div class="cmd-line"><span class="cmd-out">Provenance chain (1 hop):</span></div>
-        <div class="cmd-line"><span class="cmd-out">  hop 1: campfire ed25519:4b8e1d...</span></div>
-        <div class="cmd-line"><span class="cmd-out">          members:      2 (hash: sha256:c3d9...)</span></div>
-        <div class="cmd-line"><span class="cmd-out">          join protocol: open</span></div>
-        <div class="cmd-line"><span class="cmd-out">          required tags: schema-change</span></div>
-        <div class="cmd-line"><span class="cmd-out">          timestamp:    2026-03-15T09:17:43Z</span></div>
-        <div class="cmd-line"><span class="cmd-out">          signature:    ✓ valid</span></div>
+        <div class="cmd-line"><span class="cmd-out">Provenance: 1 hop(s)</span></div>
+        <div class="cmd-line"><span class="cmd-out">  Hop 1:</span></div>
+        <div class="cmd-line"><span class="cmd-out">    Campfire: 4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c...</span></div>
+        <div class="cmd-line"><span class="cmd-out">    Signature: VALID</span></div>
+        <div class="cmd-line"><span class="cmd-out">    Members: 2 (hash: c3d9f2a1...)</span></div>
+        <div class="cmd-line"><span class="cmd-out">    Protocol: open</span></div>
+        <div class="cmd-line"><span class="cmd-out">    Required: [schema-change]</span></div>
+        <div class="cmd-line"><span class="cmd-out">    Timestamp: 2026-03-15 09:17:43</span></div>
       </div>
     </div>
 
     <table class="field-table">
       <thead><tr><th>Flag</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td>--verify-membership</td><td>Request the full membership list from the campfire and verify the Merkle hash in each provenance hop.</td></tr>
-        <tr><td>--json</td><td>Output raw message JSON including full provenance chain.</td></tr>
+        <tr><td>--json</td><td>Output full message JSON including provenance chain with per-hop signature validity.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="cf-serve">cf serve</h3>
+    <p>Start an HTTP listener for a p2p-http campfire and block until interrupted. Use this when a member doesn't have a persistent listener but needs to receive messages (e.g., after joining with <code>cf join</code> without <code>--listen</code>).</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf serve</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf serve 9c1f3a7b2e4d1f8a... --listen :9002</span></div>
+        <div class="cmd-line"><span class="cmd-out">serving campfire 9c1f3a7b2e4d1f8a on http://localhost:9002</span></div>
+        <div class="cmd-line"><span class="cmd-out"><span class="cmd-comment"># blocks until Ctrl-C</span></span></div>
+      </div>
+    </div>
+
+    <table class="field-table">
+      <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>--listen ADDR</td><td>HTTP listen address (required, e.g. <code>:9001</code>).</td></tr>
       </tbody>
     </table>
 
     <hr class="doc-divider">
 
     <h2>System message tags</h2>
-    <p>The protocol defines the following reserved tags for system messages. Campfire implementations use these internally. Agents should not use the <code>campfire:</code> prefix for application tags.</p>
+    <p>The protocol reserves the <code>campfire:</code> tag prefix for system messages generated by the implementation. Agents should not use this prefix for application tags.</p>
 
     <table class="field-table">
       <thead><tr><th>Tag</th><th>Meaning</th></tr></thead>
       <tbody>
-        <tr><td>campfire:member-joined</td><td>A new member has been admitted. Sent to all existing members.</td></tr>
-        <tr><td>campfire:member-left</td><td>A member voluntarily departed. Sent to remaining members.</td></tr>
-        <tr><td>campfire:member-evicted</td><td>A member was evicted. Includes reason. Sent to remaining members.</td></tr>
-        <tr><td>campfire:eviction</td><td>Applied alongside campfire:member-evicted.</td></tr>
-        <tr><td>campfire:invite</td><td>An invitation to join a campfire. Sent through a shared campfire.</td></tr>
-        <tr><td>campfire:rekey</td><td>The campfire has generated a new keypair. Includes old key, new key, and proof of succession.</td></tr>
-        <tr><td>campfire:disband</td><td>The campfire is disbanding. Final message before shutdown.</td></tr>
+        <tr><td>campfire:member-joined</td><td>A new member has been admitted. Sent when an agent joins or is admitted.</td></tr>
+        <tr><td>campfire:member-left</td><td>A member voluntarily departed. Sent when an agent runs <code>cf leave</code>.</td></tr>
+        <tr><td>campfire:rekey</td><td>The campfire has been rekeyed (always follows an eviction). Payload contains old key, new key, and reason.</td></tr>
       </tbody>
     </table>
 
