@@ -419,14 +419,13 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 		}
 	}
 
-	_ = joinerParticipantID // used in ThresholdShareData response
-
-	// Persist the joiner's endpoint.
+	// Persist the joiner's endpoint, including participant ID for threshold>1.
 	if req.JoinerEndpoint != "" {
 		h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
-			CampfireID:   campfireID,
-			MemberPubkey: req.JoinerPubkey,
-			Endpoint:     req.JoinerEndpoint,
+			CampfireID:    campfireID,
+			MemberPubkey:  req.JoinerPubkey,
+			Endpoint:      req.JoinerEndpoint,
+			ParticipantID: joinerParticipantID,
 		})
 		h.transport.AddPeer(campfireID, req.JoinerPubkey, req.JoinerEndpoint)
 	}

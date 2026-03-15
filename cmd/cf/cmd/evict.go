@@ -90,17 +90,13 @@ var evictCmd = &cobra.Command{
 		}
 
 		// Separate remaining peers from evicted peer.
+		// A member may have joined without an HTTP endpoint (no listener); that's fine —
+		// we simply won't be able to notify them, but eviction still proceeds.
 		var remainingPeers []store.PeerEndpoint
-		evictedFound := false
 		for _, p := range peers {
-			if p.MemberPubkey == evictedPubkeyHex {
-				evictedFound = true
-			} else {
+			if p.MemberPubkey != evictedPubkeyHex {
 				remainingPeers = append(remainingPeers, p)
 			}
-		}
-		if !evictedFound {
-			return fmt.Errorf("member %s not found in campfire peers", evictedPubkeyHex[:16])
 		}
 
 		reason := evictReason
@@ -364,7 +360,14 @@ func evictThresholdN(
 	}
 	os.Remove(filepath.Join(stateDir, oldCampfireID+".cbor")) //nolint:errcheck
 
+	// Update store: rename campfire_id in all tables FIRST, before inserting
+	// the new threshold share (to avoid UNIQUE constraint conflicts on threshold_shares).
+	if err := s.UpdateCampfireID(oldCampfireID, actualNewCampfireID); err != nil {
+		return "", fmt.Errorf("updating campfire ID in store: %w", err)
+	}
+
 	// Store creator's new DKG share (participant 1).
+	// Called after UpdateCampfireID so UpsertThresholdShare's ON CONFLICT UPDATE applies.
 	creatorShareData, err := threshold.MarshalResult(1, creatorResult)
 	if err != nil {
 		return "", fmt.Errorf("serializing creator DKG share: %w", err)
@@ -375,11 +378,6 @@ func evictThresholdN(
 		SecretShare:   creatorShareData,
 	}); err != nil {
 		return "", fmt.Errorf("storing creator threshold share: %w", err)
-	}
-
-	// Update store: rename campfire_id.
-	if err := s.UpdateCampfireID(oldCampfireID, actualNewCampfireID); err != nil {
-		return "", fmt.Errorf("updating campfire ID in store: %w", err)
 	}
 
 	// Remove evicted member from peer endpoints.

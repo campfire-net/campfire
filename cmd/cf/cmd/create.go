@@ -267,7 +267,7 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 	}
 
 	fmt.Printf("%s\n", cf.PublicKeyHex())
-	fmt.Printf("Listening on %s\n", endpoint)
+	fmt.Fprintf(os.Stderr, "Listening on %s\n", endpoint)
 	return nil
 }
 
