@@ -15,6 +15,7 @@ import (
 	"github.com/3dl-dev/campfire/pkg/store"
 	"github.com/3dl-dev/campfire/pkg/threshold"
 	"github.com/3dl-dev/campfire/pkg/transport/fs"
+	ghtr "github.com/3dl-dev/campfire/pkg/transport/github"
 	cfhttp "github.com/3dl-dev/campfire/pkg/transport/http"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -71,9 +72,10 @@ var sendCmd = &cobra.Command{
 		}
 
 		// Route based on transport type.
-		// p2p-http campfires store state in $CF_HOME/campfires/{campfireID}.cbor.
 		var msg *message.Message
-		if isPeerHTTPCampfire(m.TransportDir, campfireID) {
+		if isGitHubCampfire(m.TransportDir) {
+			msg, err = sendGitHub(campfireID, payload, tags, antecedents, agentID, s, m)
+		} else if isPeerHTTPCampfire(m.TransportDir, campfireID) {
 			msg, err = sendP2PHTTP(campfireID, payload, tags, antecedents, agentID, s, m)
 		} else {
 			msg, err = sendFilesystem(campfireID, payload, tags, antecedents, agentID)
@@ -154,6 +156,46 @@ func sendFilesystem(campfireID, payload string, tags, antecedents []string, agen
 	// Write to transport.
 	if err := transport.WriteMessage(campfireID, msg); err != nil {
 		return nil, fmt.Errorf("writing message: %w", err)
+	}
+
+	return msg, nil
+}
+
+// sendGitHub sends a message via the GitHub Issues transport.
+// The campfire state (repo + issue number) is read from m.TransportDir.
+// The agent signs the message and POSTs it as a campfire-msg-v1: comment.
+func sendGitHub(campfireID, payload string, tags, antecedents []string, agentID *identity.Identity, s *store.Store, m *store.Membership) (*message.Message, error) {
+	meta, ok := parseGitHubTransportDir(m.TransportDir)
+	if !ok {
+		return nil, fmt.Errorf("invalid GitHub transport dir: %s", m.TransportDir)
+	}
+
+	token, err := resolveGitHubToken("", CFHome())
+	if err != nil {
+		return nil, fmt.Errorf("resolving GitHub token: %w", err)
+	}
+
+	cfg := ghtr.Config{
+		Repo:        meta.Repo,
+		IssueNumber: meta.IssueNumber,
+		Token:       token,
+		BaseURL:     meta.BaseURL,
+	}
+	tr, err := ghtr.New(cfg, s)
+	if err != nil {
+		return nil, fmt.Errorf("creating GitHub transport: %w", err)
+	}
+	tr.RegisterCampfire(campfireID, meta.IssueNumber)
+
+	// Create and sign message with agent key.
+	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, antecedents)
+	if err != nil {
+		return nil, fmt.Errorf("creating message: %w", err)
+	}
+
+	// Send via GitHub transport (posts as Issue comment).
+	if err := tr.Send(campfireID, msg); err != nil {
+		return nil, fmt.Errorf("sending via GitHub transport: %w", err)
 	}
 
 	return msg, nil

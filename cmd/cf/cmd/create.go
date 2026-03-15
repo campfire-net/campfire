@@ -15,6 +15,7 @@ import (
 	"github.com/3dl-dev/campfire/pkg/threshold"
 	"github.com/3dl-dev/campfire/pkg/transport/fs"
 	cfhttp "github.com/3dl-dev/campfire/pkg/transport/http"
+	ghtr "github.com/3dl-dev/campfire/pkg/transport/github"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +27,11 @@ var (
 	createTransport    string
 	createListen       string
 	createParticipants uint
+
+	// GitHub transport flags.
+	createGitHubRepo         string
+	createGitHubTokenEnv     string
+	createGitHubBaseURL      string
 )
 
 var createCmd = &cobra.Command{
@@ -54,6 +60,8 @@ var createCmd = &cobra.Command{
 		defer s.Close()
 
 		switch createTransport {
+		case "github":
+			return createGitHub(cf, agentID, s, createDescription)
 		case "p2p-http":
 			return createP2PHTTP(cf, agentID, s)
 		default:
@@ -271,6 +279,105 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 	return nil
 }
 
+// createGitHub creates a campfire with the GitHub Issues transport.
+// It creates a GitHub Issue, publishes a beacon to the coordination repo,
+// and records the membership in the local store.
+func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store, description string) error {
+	if createGitHubRepo == "" {
+		return fmt.Errorf("--github-repo is required for GitHub transport (e.g. org/campfire-relay)")
+	}
+
+	token, err := resolveGitHubToken(createGitHubTokenEnv, CFHome())
+	if err != nil {
+		return fmt.Errorf("resolving GitHub token: %w", err)
+	}
+
+	cfg := ghtr.Config{
+		Repo:    createGitHubRepo,
+		Token:   token,
+		BaseURL: createGitHubBaseURL,
+	}
+	tr, err := ghtr.New(cfg, s)
+	if err != nil {
+		return fmt.Errorf("creating GitHub transport: %w", err)
+	}
+
+	// Create the GitHub Issue for this campfire.
+	issueNumber, err := tr.CreateCampfire(cf, description)
+	if err != nil {
+		return fmt.Errorf("creating campfire issue: %w", err)
+	}
+
+	// Build and publish beacon to .campfire/beacons/ in the coordination repo.
+	campfireID := cf.PublicKeyHex()
+	b := ghtr.Beacon{
+		CampfireID:            campfireID,
+		JoinProtocol:          cf.JoinProtocol,
+		ReceptionRequirements: cf.ReceptionRequirements,
+		Transport: ghtr.BeaconTransport{
+			Protocol: "github",
+			Config: ghtr.BeaconTransportConfig{
+				Repo:        createGitHubRepo,
+				IssueNumber: issueNumber,
+				IssueURL:    fmt.Sprintf("https://github.com/%s/issues/%d", createGitHubRepo, issueNumber),
+			},
+		},
+		Description: description,
+	}
+	// Sign the beacon with the campfire's private key.
+	sig, err := ghtr.SignBeacon(b, cf.Identity.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("signing beacon: %w", err)
+	}
+	b.Signature = sig
+
+	client := ghtr.NewClient(createGitHubBaseURL, token)
+	if err := ghtr.PublishBeacon(client, createGitHubRepo, b); err != nil {
+		// Non-fatal: may lack Contents write permission. Warn and continue.
+		fmt.Fprintf(os.Stderr, "warning: could not publish beacon to repo (Contents write required): %v\n", err)
+	}
+
+	// Encode transport metadata into TransportDir.
+	transportDir, err := encodeGitHubTransportDir(githubTransportMeta{
+		Repo:        createGitHubRepo,
+		IssueNumber: issueNumber,
+		BaseURL:     createGitHubBaseURL,
+	})
+	if err != nil {
+		return fmt.Errorf("encoding transport dir: %w", err)
+	}
+
+	// Record membership in local store.
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: transportDir,
+		JoinProtocol: cf.JoinProtocol,
+		Role:         "creator",
+		JoinedAt:     store.NowNano(),
+		Threshold:    cf.Threshold,
+	}); err != nil {
+		return fmt.Errorf("recording membership: %w", err)
+	}
+
+	if jsonOutput {
+		out := map[string]interface{}{
+			"campfire_id":   campfireID,
+			"join_protocol": cf.JoinProtocol,
+			"transport":     "github",
+			"repo":          createGitHubRepo,
+			"issue_number":  issueNumber,
+			"issue_url":     fmt.Sprintf("https://github.com/%s/issues/%d", createGitHubRepo, issueNumber),
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	fmt.Println(campfireID)
+	fmt.Fprintf(os.Stderr, "GitHub Issue: https://github.com/%s/issues/%d\n", createGitHubRepo, issueNumber)
+	return nil
+}
+
 // resolveEndpoint turns a listen address like ":9001" into "http://localhost:9001".
 func resolveEndpoint(listenAddr string) string {
 	if len(listenAddr) > 0 && listenAddr[0] == ':' {
@@ -322,8 +429,12 @@ func init() {
 	createCmd.Flags().StringSliceVar(&createRequire, "require", nil, "reception requirements (tags)")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "campfire description")
 	createCmd.Flags().UintVar(&createThreshold, "threshold", 1, "signature threshold (1=any member, >1=FROST multi-party, Phase 2)")
-	createCmd.Flags().StringVar(&createTransport, "transport", "filesystem", "transport type: filesystem, p2p-http")
+	createCmd.Flags().StringVar(&createTransport, "transport", "filesystem", "transport type: filesystem, p2p-http, github")
 	createCmd.Flags().StringVar(&createListen, "listen", "", "HTTP listen address for p2p-http transport (e.g. :9001)")
 	createCmd.Flags().UintVar(&createParticipants, "participants", 0, "total number of DKG participants for threshold>1 (default: equals threshold)")
+	// GitHub transport flags.
+	createCmd.Flags().StringVar(&createGitHubRepo, "github-repo", "", "coordination repository for GitHub transport (owner/repo)")
+	createCmd.Flags().StringVar(&createGitHubTokenEnv, "github-token-env", "", "name of env var containing GitHub token (default: GITHUB_TOKEN)")
+	createCmd.Flags().StringVar(&createGitHubBaseURL, "github-base-url", "", "GitHub API base URL (for GitHub Enterprise; default: https://api.github.com)")
 	rootCmd.AddCommand(createCmd)
 }
