@@ -467,6 +467,40 @@ func (s *Store) ClaimPendingThresholdShare(campfireID string) (participantID uin
 	return pid, data, nil
 }
 
+// UpdateCampfireID changes the campfire_id for all records belonging to oldID,
+// renaming the campfire to newID. This is used during rekey after eviction.
+func (s *Store) UpdateCampfireID(oldID, newID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	tables := []struct {
+		table string
+		col   string
+	}{
+		{"campfire_memberships", "campfire_id"},
+		{"read_cursors", "campfire_id"},
+		{"filters", "campfire_id"},
+		{"peer_endpoints", "campfire_id"},
+		{"threshold_shares", "campfire_id"},
+		{"pending_threshold_shares", "campfire_id"},
+	}
+	for _, t := range tables {
+		q := fmt.Sprintf("UPDATE %s SET %s = ? WHERE %s = ?", t.table, t.col, t.col)
+		if _, err := tx.Exec(q, newID, oldID); err != nil {
+			return fmt.Errorf("updating %s.%s: %w", t.table, t.col, err)
+		}
+	}
+	// messages table has campfire_id but also a FK; update it too.
+	if _, err := tx.Exec("UPDATE messages SET campfire_id = ? WHERE campfire_id = ?", newID, oldID); err != nil {
+		return fmt.Errorf("updating messages.campfire_id: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // StorePath returns the default store path for a given CF_HOME.
 func StorePath(cfHome string) string {
 	return filepath.Join(cfHome, "store.db")
