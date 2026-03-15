@@ -249,6 +249,72 @@ func Join(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint str
 	return result, nil
 }
 
+// SendRekeyPhase1 sends a phase-1 rekey request to a peer and returns the peer's
+// ephemeral X25519 public key hex. The caller uses this to derive the shared secret
+// for encrypting key material in phase 2.
+// Returns ("", nil) if the peer responds 200 with no ephemeral key (nothing to do).
+func SendRekeyPhase1(endpoint, oldCampfireID string, req RekeyRequest, id *identity.Identity) (string, error) {
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("encoding rekey phase-1 request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/rekey", endpoint, oldCampfireID)
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("building rekey phase-1 request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	signRequest(httpReq, id, bodyBytes)
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("posting to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("peer returned %d: %s", resp.StatusCode, string(b))
+	}
+
+	// Try to decode RekeyResponse.
+	var rekeyResp RekeyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&rekeyResp); err != nil {
+		// Peer responded 200 with no JSON body — phase 1 processed as complete.
+		return "", nil
+	}
+	return rekeyResp.EphemeralX25519Pub, nil
+}
+
+// SendRekey sends a phase-2 rekey request (with encrypted key material) to a peer.
+func SendRekey(endpoint, oldCampfireID string, req RekeyRequest, id *identity.Identity) error {
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("encoding rekey request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/rekey", endpoint, oldCampfireID)
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("building rekey request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	signRequest(httpReq, id, bodyBytes)
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("posting to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("peer returned %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
 // SendSignRound sends FROST signing round messages to a peer co-signer and
 // returns the peer's outbound messages for that round.
 // round is 1 (commitments) or 2 (shares).
