@@ -1,0 +1,186 @@
+package fs
+
+import (
+	"crypto/rand"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/3dl-dev/campfire/pkg/campfire"
+	cfencoding "github.com/3dl-dev/campfire/pkg/encoding"
+	"github.com/3dl-dev/campfire/pkg/message"
+)
+
+// Transport manages the filesystem transport for campfires.
+type Transport struct {
+	BaseDir string // $CF_TRANSPORT_DIR, default /tmp/campfire
+}
+
+// DefaultBaseDir returns the default transport base directory.
+func DefaultBaseDir() string {
+	if env := os.Getenv("CF_TRANSPORT_DIR"); env != "" {
+		return env
+	}
+	return "/tmp/campfire"
+}
+
+// New creates a Transport with the given base directory.
+func New(baseDir string) *Transport {
+	return &Transport{BaseDir: baseDir}
+}
+
+// CampfireDir returns the transport directory for a campfire.
+func (t *Transport) CampfireDir(campfireID string) string {
+	return filepath.Join(t.BaseDir, campfireID)
+}
+
+// Init creates the transport directory structure for a new campfire
+// and writes the campfire state and creator's member record.
+func (t *Transport) Init(c *campfire.Campfire) error {
+	dir := t.CampfireDir(c.PublicKeyHex())
+
+	// Create directory structure
+	for _, sub := range []string{"members", "messages"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0755); err != nil {
+			return fmt.Errorf("creating %s directory: %w", sub, err)
+		}
+	}
+
+	// Write campfire state
+	state := c.State()
+	if err := atomicWriteCBOR(filepath.Join(dir, "campfire.cbor"), state); err != nil {
+		return fmt.Errorf("writing campfire state: %w", err)
+	}
+
+	return nil
+}
+
+// WriteMember writes a member record to the transport directory.
+func (t *Transport) WriteMember(campfireID string, member campfire.MemberRecord) error {
+	dir := t.CampfireDir(campfireID)
+	memberID := fmt.Sprintf("%x", member.PublicKey)
+	path := filepath.Join(dir, "members", memberID+".cbor")
+	return atomicWriteCBOR(path, member)
+}
+
+// ReadState reads the campfire state from the transport directory.
+func (t *Transport) ReadState(campfireID string) (*campfire.CampfireState, error) {
+	path := filepath.Join(t.CampfireDir(campfireID), "campfire.cbor")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading campfire state: %w", err)
+	}
+	var state campfire.CampfireState
+	if err := cfencoding.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("decoding campfire state: %w", err)
+	}
+	return &state, nil
+}
+
+// ListMembers reads all member records from the transport directory.
+func (t *Transport) ListMembers(campfireID string) ([]campfire.MemberRecord, error) {
+	dir := filepath.Join(t.CampfireDir(campfireID), "members")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("listing members: %w", err)
+	}
+
+	var members []campfire.MemberRecord
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".cbor" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("reading member %s: %w", e.Name(), err)
+		}
+		var m campfire.MemberRecord
+		if err := cfencoding.Unmarshal(data, &m); err != nil {
+			return nil, fmt.Errorf("decoding member %s: %w", e.Name(), err)
+		}
+		members = append(members, m)
+	}
+	return members, nil
+}
+
+// RemoveMember removes a member record from the transport directory.
+func (t *Transport) RemoveMember(campfireID string, memberPubKey []byte) error {
+	memberID := fmt.Sprintf("%x", memberPubKey)
+	path := filepath.Join(t.CampfireDir(campfireID), "members", memberID+".cbor")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing member: %w", err)
+	}
+	return nil
+}
+
+// WriteMessage writes a message to the campfire's messages directory.
+func (t *Transport) WriteMessage(campfireID string, msg *message.Message) error {
+	dir := filepath.Join(t.CampfireDir(campfireID), "messages")
+	filename := fmt.Sprintf("%019d-%s.cbor", time.Now().UnixNano(), msg.ID)
+	path := filepath.Join(dir, filename)
+	return atomicWriteCBOR(path, msg)
+}
+
+// ListMessages reads all messages from the campfire's messages directory, sorted by filename.
+func (t *Transport) ListMessages(campfireID string) ([]message.Message, error) {
+	dir := filepath.Join(t.CampfireDir(campfireID), "messages")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing messages: %w", err)
+	}
+
+	// Sort by name (timestamp prefix gives chronological order)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	var msgs []message.Message
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".cbor") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var msg message.Message
+		if err := cfencoding.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+		msgs = append(msgs, msg)
+	}
+	return msgs, nil
+}
+
+// Remove removes the entire transport directory for a campfire.
+func (t *Transport) Remove(campfireID string) error {
+	return os.RemoveAll(t.CampfireDir(campfireID))
+}
+
+// atomicWriteCBOR writes CBOR data atomically using temp file + rename.
+func atomicWriteCBOR(path string, v interface{}) error {
+	data, err := cfencoding.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("encoding: %w", err)
+	}
+
+	// Generate random suffix for temp file
+	var randBytes [8]byte
+	rand.Read(randBytes[:])
+	tmp := fmt.Sprintf("%s.tmp.%x", path, randBytes)
+
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("renaming temp file: %w", err)
+	}
+	return nil
+}

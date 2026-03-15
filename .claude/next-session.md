@@ -34,7 +34,7 @@ Read `docs/protocol-spec.md` — that's the full protocol specification. This se
 
 ## Constraints
 
-- Go. Single binary. No external dependencies beyond stdlib + SQLite driver.
+- Go. Single binary. External Go libraries are fine (CBOR, cobra, SQLite, uuid, etc.) — no external services.
 - Containerized build (docker-compose.yml + bin/ wrapper).
 - Must be usable by Claude Code sessions — that means fast CLI, clear output, easy to parse with `--json` flag.
 - The spec is the source of truth. If the implementation can't match the spec, file a bead for the deviation.

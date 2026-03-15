@@ -1,0 +1,24 @@
+services:
+  cf:
+    build: .
+    volumes:
+      - ${CF_HOME:-~/.campfire}:/home/agent/.campfire
+      - ${CF_BEACON_DIR:-~/.campfire/beacons}:/home/agent/.campfire/beacons
+      - ${CF_TRANSPORT_DIR:-/tmp/campfire}:/tmp/campfire
+    environment:
+      - CF_HOME=/home/agent/.campfire
+      - CF_BEACON_DIR=/home/agent/.campfire/beacons
+      - CF_TRANSPORT_DIR=/tmp/campfire
+
+  go:
+    image: golang:1.24-alpine
+    working_dir: /src
+    volumes:
+      - .:/src
+      - go-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    entrypoint: ["go"]
+
+volumes:
+  go-cache:
+  go-build-cache:
