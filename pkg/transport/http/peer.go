@@ -378,6 +378,61 @@ func SendSignRound(endpoint, campfireID, sessionID string, round int, signerIDs 
 	return outMsgs, nil
 }
 
+// Poll makes a long-poll request to endpoint and returns when messages are
+// available or the server-side timeout fires. Returns (nil, cursor, nil) on
+// timeout (204 response). cursor is the ReceivedAt nanosecond timestamp to
+// resume from; pass 0 for full history.
+//
+// On success, the returned cursor is the ReceivedAt of the newest returned
+// message. Pass it as cursor on the next call.
+//
+// The caller is responsible for the reconnect loop. No reconnect is done here.
+func Poll(endpoint, campfireID string, cursor int64, timeoutSecs int, id *identity.Identity) ([]message.Message, int64, error) {
+	url := fmt.Sprintf("%s/campfire/%s/poll?since=%d&timeout=%d", endpoint, campfireID, cursor, timeoutSecs)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, cursor, fmt.Errorf("building poll request: %w", err)
+	}
+	// Sign with empty body — same convention as handleSync and handlePoll.
+	signRequest(req, id, []byte{})
+
+	// Use a per-request client with timeout = timeoutSecs + 5s so the OS does
+	// not cut the connection before the server responds. Do NOT use httpClient
+	// (which has a fixed 30s timeout, too short for long polls).
+	pollClient := &http.Client{Timeout: time.Duration(timeoutSecs+5) * time.Second}
+	resp, err := pollClient.Do(req)
+	if err != nil {
+		return nil, cursor, fmt.Errorf("poll request to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNoContent: // 204: server timed out, no messages.
+		// Return cursor unchanged so the caller can reconnect from the same position.
+		return nil, cursor, nil
+
+	case http.StatusOK: // 200: messages available.
+		cursorStr := resp.Header.Get("X-Campfire-Cursor")
+		newCursor, err := strconv.ParseInt(cursorStr, 10, 64)
+		if err != nil {
+			return nil, cursor, fmt.Errorf("parsing X-Campfire-Cursor %q: %w", cursorStr, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, cursor, fmt.Errorf("reading poll response body: %w", err)
+		}
+		var msgs []message.Message
+		if err := cfencoding.Unmarshal(body, &msgs); err != nil {
+			return nil, cursor, fmt.Errorf("decoding poll response: %w", err)
+		}
+		return msgs, newCursor, nil
+
+	default:
+		b, _ := io.ReadAll(resp.Body)
+		return nil, cursor, fmt.Errorf("poll: peer returned %d: %s", resp.StatusCode, string(b))
+	}
+}
+
 // signRequest adds Ed25519 signature headers to an HTTP request.
 // X-Campfire-Sender: hex public key
 // X-Campfire-Signature: base64 signature of body

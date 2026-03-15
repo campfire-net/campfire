@@ -59,6 +59,9 @@ type Transport struct {
 	// rekeySessions holds ephemeral X25519 keys for rekey phase-1 handshakes.
 	// Keyed by senderEphemeralPubHex. Pruned after 5 minutes.
 	rekeySessions map[string]*rekeySessionState
+
+	// pollBroker fans out new-message notifications to active long-poll goroutines.
+	pollBroker *PollBroker
 }
 
 // ThresholdShareProvider returns the local FROST DKG share for a campfire.
@@ -73,6 +76,11 @@ func New(listenAddr string, s *store.Store) *Transport {
 		peers:         make(map[string][]PeerInfo),
 		signSessions:  make(map[string]*signingSessionState),
 		rekeySessions: make(map[string]*rekeySessionState),
+		pollBroker: &PollBroker{
+			subs:           make(map[string][]chan struct{}),
+			limits:         make(map[string]int),
+			maxPerCampfire: 64,
+		},
 	}
 	mux := http.NewServeMux()
 	h := &handler{store: s, transport: t}
@@ -231,6 +239,14 @@ func (t *Transport) pruneRekeySessions() {
 			delete(t.rekeySessions, k)
 		}
 	}
+}
+
+// SetMaxPollersPerCampfire overrides the per-campfire long-poll concurrency limit.
+// Must be called before Start(). Default is 64.
+func (t *Transport) SetMaxPollersPerCampfire(max int) {
+	t.pollBroker.mu.Lock()
+	defer t.pollBroker.mu.Unlock()
+	t.pollBroker.maxPerCampfire = max
 }
 
 // Peers returns the current peer list for a campfire.
