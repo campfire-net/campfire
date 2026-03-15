@@ -2,22 +2,141 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/3dl-dev/campfire/pkg/identity"
+	"github.com/3dl-dev/campfire/pkg/message"
 	"github.com/3dl-dev/campfire/pkg/store"
+	ghtr "github.com/3dl-dev/campfire/pkg/transport/github"
 	cfhttp "github.com/3dl-dev/campfire/pkg/transport/http"
 	"github.com/3dl-dev/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
 
 var (
-	readAll  bool
-	readPeek bool
+	readAll          bool
+	readPeek         bool
+	readFollow       bool
+	readSelfEndpoint string
 )
+
+// natPollConfig holds all parameters for the NAT poll loop.
+type natPollConfig struct {
+	campfireID  string
+	peers       []store.PeerEndpoint
+	cursor      int64
+	follow      bool
+	id          *identity.Identity
+	timeoutSecs int
+	// stopCh receives a signal to terminate the loop. If nil, runNATPoll
+	// registers its own SIGINT/SIGTERM handler.
+	stopCh chan os.Signal
+}
+
+// errNoReachablePeers is returned by runNATPoll when no non-empty peer endpoints exist.
+var errNoReachablePeers = errors.New("no reachable peers to poll")
+
+// computeInitialCursor derives the starting poll cursor from the local store.
+// Returns the maximum ReceivedAt nanosecond timestamp across all messages in
+// the campfire, or 0 if the store is empty.
+func computeInitialCursor(s *store.Store, campfireID string) (int64, error) {
+	msgs, err := s.ListMessages(campfireID, 0)
+	if err != nil {
+		return 0, fmt.Errorf("listing messages for cursor: %w", err)
+	}
+	var max int64
+	for _, m := range msgs {
+		if m.ReceivedAt > max {
+			max = m.ReceivedAt
+		}
+	}
+	return max, nil
+}
+
+// runNATPoll is the NAT-mode poll loop. It polls the first reachable peer and
+// prints received messages to w. When cfg.follow is false, it exits after the
+// first successful response (even if empty). When cfg.follow is true, it loops
+// until cfg.stopCh receives a signal.
+func runNATPoll(cfg natPollConfig, w io.Writer) error {
+	// Filter to peers with non-empty endpoints.
+	var peers []store.PeerEndpoint
+	for _, p := range cfg.peers {
+		if p.Endpoint != "" {
+			peers = append(peers, p)
+		}
+	}
+	if len(peers) == 0 {
+		return errNoReachablePeers
+	}
+
+	// Set up signal handling if no external stopCh was provided.
+	stopCh := cfg.stopCh
+	if stopCh == nil {
+		stopCh = make(chan os.Signal, 1)
+		signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(stopCh)
+	}
+
+	cursor := cfg.cursor
+	peerIdx := 0
+	timeout := cfg.timeoutSecs
+	if timeout <= 0 {
+		timeout = 30
+	}
+
+	for {
+		// Check for stop signal (non-blocking).
+		select {
+		case <-stopCh:
+			return nil
+		default:
+		}
+
+		msgs, newCursor, err := cfhttp.Poll(peers[peerIdx].Endpoint, cfg.campfireID, cursor, timeout, cfg.id)
+		if err != nil {
+			// Rotate to next peer on error.
+			peerIdx = (peerIdx + 1) % len(peers)
+			time.Sleep(1 * time.Second)
+			// Re-check stop after sleep.
+			select {
+			case <-stopCh:
+				return nil
+			default:
+			}
+			if !cfg.follow {
+				// In one-shot mode, do not retry indefinitely; return after exhausting all peers once.
+				if peerIdx == 0 {
+					return fmt.Errorf("polling peers: %w", err)
+				}
+			}
+			continue
+		}
+
+		if len(msgs) > 0 {
+			cursor = newCursor
+			printNATMessages(cfg.campfireID, msgs, w)
+		}
+
+		if !cfg.follow {
+			break
+		}
+
+		// Check stop signal before blocking again.
+		select {
+		case <-stopCh:
+			return nil
+		default:
+		}
+	}
+	return nil
+}
 
 var readCmd = &cobra.Command{
 	Use:   "read [campfire-id]",
@@ -34,6 +153,45 @@ var readCmd = &cobra.Command{
 			return fmt.Errorf("opening store: %w", err)
 		}
 		defer s.Close()
+
+		// NAT mode: no inbound listener. Poll peers instead of reading local store.
+		if readSelfEndpoint == "" && len(args) > 0 {
+			campfireID := args[0]
+
+			peers, err := s.ListPeerEndpoints(campfireID)
+			if err != nil {
+				return fmt.Errorf("listing peer endpoints: %w", err)
+			}
+			// Filter to non-empty endpoints.
+			var reachable []store.PeerEndpoint
+			for _, p := range peers {
+				if p.Endpoint != "" {
+					reachable = append(reachable, p)
+				}
+			}
+			if len(reachable) == 0 {
+				fmt.Fprintln(os.Stderr, "no reachable peers to poll")
+				os.Exit(1)
+			}
+
+			cursor, err := computeInitialCursor(s, campfireID)
+			if err != nil {
+				return fmt.Errorf("computing initial cursor: %w", err)
+			}
+
+			cfg := natPollConfig{
+				campfireID:  campfireID,
+				peers:       reachable,
+				cursor:      cursor,
+				follow:      readFollow,
+				id:          agentID,
+				timeoutSecs: 30,
+			}
+			if err := runNATPoll(cfg, os.Stdout); err != nil {
+				return err
+			}
+			return nil
+		}
 
 		// Determine which campfires to read from.
 		var campfireIDs []string
@@ -56,7 +214,10 @@ var readCmd = &cobra.Command{
 				continue
 			}
 
-			if isPeerHTTPCampfire(m.TransportDir, cfID) {
+			if isGitHubCampfire(m.TransportDir) {
+				// GitHub transport: poll GitHub API for new comments.
+				syncFromGitHub(cfID, m.TransportDir, s)
+			} else if isPeerHTTPCampfire(m.TransportDir, cfID) {
 				// P2P HTTP transport: sync from all known peers.
 				syncFromHTTPPeers(cfID, agentID, s)
 			} else {
@@ -203,6 +364,36 @@ var readCmd = &cobra.Command{
 	},
 }
 
+// syncFromGitHub polls the GitHub Issue for new comments and stores verified messages
+// in the local SQLite store. Non-fatal errors are silently ignored (caller continues).
+func syncFromGitHub(cfID, transportDir string, s *store.Store) {
+	meta, ok := parseGitHubTransportDir(transportDir)
+	if !ok {
+		return
+	}
+
+	token, err := resolveGitHubToken("", CFHome())
+	if err != nil {
+		// No token available — skip silently (offline mode).
+		return
+	}
+
+	cfg := ghtr.Config{
+		Repo:        meta.Repo,
+		IssueNumber: meta.IssueNumber,
+		Token:       token,
+		BaseURL:     meta.BaseURL,
+	}
+	tr, err := ghtr.New(cfg, s)
+	if err != nil {
+		return
+	}
+	tr.RegisterCampfire(cfID, meta.IssueNumber)
+
+	// Poll returns verified messages and stores them in SQLite internally.
+	tr.Poll(cfID) //nolint:errcheck
+}
+
 // syncFromFilesystem reads messages from the filesystem transport into the local store.
 func syncFromFilesystem(cfID string, s *store.Store) {
 	transport := fs.New(fs.DefaultBaseDir())
@@ -277,8 +468,44 @@ func syncFromHTTPPeers(cfID string, agentID *identity.Identity, s *store.Store) 
 	}
 }
 
+// printNATMessages prints messages received via long-poll to w in the same
+// human-readable format as the direct-mode read path.
+// campfireID is passed separately because message.Message has no CampfireID field.
+func printNATMessages(campfireID string, msgs []message.Message, w io.Writer) {
+	cfShort := campfireID
+	if len(cfShort) > 6 {
+		cfShort = cfShort[:6]
+	}
+	for _, m := range msgs {
+		senderShort := fmt.Sprintf("%x", m.Sender)
+		if len(senderShort) > 6 {
+			senderShort = senderShort[:6]
+		}
+		ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
+
+		fmt.Fprintf(w, "[campfire:%s] %s agent:%s\n", cfShort, ts, senderShort)
+		if len(m.Tags) > 0 {
+			fmt.Fprintf(w, "  tags: %s\n", strings.Join(m.Tags, ", "))
+		}
+		if len(m.Antecedents) > 0 {
+			shortAnts := make([]string, len(m.Antecedents))
+			for i, a := range m.Antecedents {
+				if len(a) > 8 {
+					shortAnts[i] = a[:8]
+				} else {
+					shortAnts[i] = a
+				}
+			}
+			fmt.Fprintf(w, "  antecedents: %s\n", strings.Join(shortAnts, ", "))
+		}
+		fmt.Fprintf(w, "  %s\n\n", string(m.Payload))
+	}
+}
+
 func init() {
 	readCmd.Flags().BoolVar(&readAll, "all", false, "show all messages (not just unread)")
 	readCmd.Flags().BoolVar(&readPeek, "peek", false, "show unread messages without updating cursor")
+	readCmd.Flags().BoolVar(&readFollow, "follow", false, "stream messages in real time (NAT mode: keep polling)")
+	readCmd.Flags().StringVar(&readSelfEndpoint, "endpoint", "", "this agent's own HTTP endpoint (empty = NAT mode, poll peers)")
 	rootCmd.AddCommand(readCmd)
 }

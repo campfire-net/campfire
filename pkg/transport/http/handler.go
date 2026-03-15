@@ -100,6 +100,8 @@ func (h *handler) route(w http.ResponseWriter, r *http.Request) {
 		h.handleDeliver(w, r, campfireID)
 	case action == "sync" && r.Method == http.MethodGet:
 		h.handleSync(w, r, campfireID)
+	case action == "poll" && r.Method == http.MethodGet:
+		h.handlePoll(w, r, campfireID)
 	case action == "membership" && r.Method == http.MethodPost:
 		h.handleMembership(w, r, campfireID)
 	case action == "join" && r.Method == http.MethodPost:
@@ -162,6 +164,11 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		return
 	}
 
+	// Wake any long-polling goroutines waiting for new messages.
+	if h.transport != nil && h.transport.pollBroker != nil {
+		h.transport.pollBroker.Notify(campfireID)
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -216,6 +223,146 @@ func (h *handler) handleSync(w http.ResponseWriter, r *http.Request, campfireID 
 	w.Header().Set("Content-Type", "application/cbor")
 	w.WriteHeader(http.StatusOK)
 	w.Write(data) //nolint:errcheck
+}
+
+// handlePoll implements long-polling: sync-then-block semantics.
+// GET /campfire/{id}/poll?since={ns}&timeout={s}
+//
+// Behaviour:
+//  1. Auth check (401 on failure).
+//  2. Membership check (403 if sender not a member).
+//  3. Parse query params (400 on bad since; timeout default=30, cap=120).
+//  4. Subscribe to PollBroker (503 if limit exceeded).
+//  5. Initial sync: if records exist → 200 with CBOR body + X-Campfire-Cursor.
+//  6. Block on channel or timeout.
+//  7. Post-wait sync: if records exist → 200; else → 204 + X-Campfire-Cursor=since.
+func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID string) {
+	// Null-broker guard.
+	if h.transport == nil || h.transport.pollBroker == nil {
+		http.Error(w, "long poll not supported", http.StatusNotImplemented)
+		return
+	}
+
+	// Verify auth (empty body, same pattern as handleSync).
+	senderHex := r.Header.Get("X-Campfire-Sender")
+	sigB64 := r.Header.Get("X-Campfire-Signature")
+	if senderHex == "" || sigB64 == "" {
+		http.Error(w, "missing signature headers", http.StatusUnauthorized)
+		return
+	}
+	if err := verifyRequestSignature(senderHex, sigB64, []byte{}); err != nil {
+		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusUnauthorized)
+		return
+	}
+
+	// Membership check: sender must be in peer_endpoints or be this node's self key.
+	selfPubKeyHex, _ := h.transport.SelfInfo()
+	isMember := senderHex == selfPubKeyHex
+	if !isMember {
+		peers, err := h.store.ListPeerEndpoints(campfireID)
+		if err == nil {
+			for _, p := range peers {
+				if p.MemberPubkey == senderHex {
+					isMember = true
+					break
+				}
+			}
+		}
+	}
+	if !isMember {
+		http.Error(w, "not a campfire member", http.StatusForbidden)
+		return
+	}
+
+	// Parse query params.
+	sinceStr := r.URL.Query().Get("since")
+	var since int64
+	if sinceStr != "" {
+		var err error
+		since, err = strconv.ParseInt(sinceStr, 10, 64)
+		if err != nil {
+			http.Error(w, "invalid since parameter", http.StatusBadRequest)
+			return
+		}
+	}
+
+	timeoutSec := 30
+	if timeoutStr := r.URL.Query().Get("timeout"); timeoutStr != "" {
+		t, err := strconv.Atoi(timeoutStr)
+		if err != nil {
+			http.Error(w, "invalid timeout parameter", http.StatusBadRequest)
+			return
+		}
+		timeoutSec = t
+	}
+	if timeoutSec > 120 {
+		timeoutSec = 120
+	}
+	if timeoutSec < 0 {
+		timeoutSec = 0
+	}
+
+	// Subscribe to PollBroker.
+	ch, dereg, err := h.transport.pollBroker.Subscribe(campfireID)
+	if err != nil {
+		http.Error(w, "too many active pollers", http.StatusServiceUnavailable)
+		return
+	}
+	defer dereg()
+
+	// Helper: encode and send records as CBOR 200 with cursor header.
+	respondWithRecords := func(records []store.MessageRecord) {
+		msgs := make([]message.Message, 0, len(records))
+		for _, rec := range records {
+			msg, err := recordToMessage(rec)
+			if err != nil {
+				continue
+			}
+			msgs = append(msgs, msg)
+		}
+		data, err := cfencoding.Marshal(msgs)
+		if err != nil {
+			http.Error(w, "failed to encode response", http.StatusInternalServerError)
+			return
+		}
+		cursor := strconv.FormatInt(records[len(records)-1].ReceivedAt, 10)
+		w.Header().Set("Content-Type", "application/cbor")
+		w.Header().Set("X-Campfire-Cursor", cursor)
+		w.WriteHeader(http.StatusOK)
+		w.Write(data) //nolint:errcheck
+	}
+
+	// Initial sync: return immediately if messages already exist.
+	records, err := h.store.ListMessages(campfireID, since)
+	if err != nil {
+		http.Error(w, "failed to query messages", http.StatusInternalServerError)
+		return
+	}
+	if len(records) > 0 {
+		respondWithRecords(records)
+		return
+	}
+
+	// Block until notification or timeout.
+	select {
+	case <-ch:
+	case <-time.After(time.Duration(timeoutSec) * time.Second):
+	}
+
+	// Post-wait sync.
+	records, err = h.store.ListMessages(campfireID, since)
+	if err != nil {
+		http.Error(w, "failed to query messages", http.StatusInternalServerError)
+		return
+	}
+	if len(records) > 0 {
+		respondWithRecords(records)
+		return
+	}
+
+	// No messages: 204 with cursor = since.
+	w.Header().Set("X-Campfire-Cursor", strconv.FormatInt(since, 10))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleMembership receives a membership change notification.
