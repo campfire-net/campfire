@@ -17,6 +17,7 @@ type Campfire struct {
 	ReceptionRequirements []string           `cbor:"3,keyasint" json:"reception_requirements"`
 	Members               []Member           `cbor:"4,keyasint" json:"members"`
 	CreatedAt             int64              `cbor:"5,keyasint" json:"created_at"`
+	Threshold             uint               `cbor:"6,keyasint" json:"threshold"`
 }
 
 // Member represents a campfire member.
@@ -33,6 +34,7 @@ type CampfireState struct {
 	JoinProtocol          string   `cbor:"3,keyasint" json:"join_protocol"`
 	ReceptionRequirements []string `cbor:"4,keyasint" json:"reception_requirements"`
 	CreatedAt             int64    `cbor:"5,keyasint" json:"created_at"`
+	Threshold             uint     `cbor:"6,keyasint" json:"threshold"`
 }
 
 // MemberRecord is the on-disk representation of a member in the transport directory.
@@ -42,7 +44,9 @@ type MemberRecord struct {
 }
 
 // New creates a new campfire with the given parameters.
-func New(joinProtocol string, receptionReqs []string) (*Campfire, error) {
+// threshold=1 means any single member can sign provenance hops (default behavior).
+// threshold>1 requires FROST multi-party signing (Phase 2).
+func New(joinProtocol string, receptionReqs []string, threshold uint) (*Campfire, error) {
 	id, err := identity.Generate()
 	if err != nil {
 		return nil, fmt.Errorf("generating campfire identity: %w", err)
@@ -50,12 +54,16 @@ func New(joinProtocol string, receptionReqs []string) (*Campfire, error) {
 	if receptionReqs == nil {
 		receptionReqs = []string{}
 	}
+	if threshold == 0 {
+		threshold = 1
+	}
 	return &Campfire{
 		Identity:              id,
 		JoinProtocol:          joinProtocol,
 		ReceptionRequirements: receptionReqs,
 		Members:               []Member{},
 		CreatedAt:             time.Now().UnixNano(),
+		Threshold:             threshold,
 	}, nil
 }
 
@@ -124,6 +132,7 @@ func (c *Campfire) State() CampfireState {
 		JoinProtocol:          c.JoinProtocol,
 		ReceptionRequirements: c.ReceptionRequirements,
 		CreatedAt:             c.CreatedAt,
+		Threshold:             c.Threshold,
 	}
 }
 
