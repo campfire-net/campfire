@@ -526,7 +526,7 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 			outRaw = append(outRaw, b)
 		}
 	} else {
-		// Round 2: look up the existing session and deliver inbound share messages.
+		// Round 2: look up the existing session, advance state, deliver inbound share messages.
 		h.transport.mu.RLock()
 		sessionState, ok := h.transport.signSessions[req.SessionID]
 		h.transport.mu.RUnlock()
@@ -536,9 +536,9 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 		}
 		ss := sessionState.session
 
-		// Deliver round-1 completion and generate round-2 share messages.
-		// First call ProcessAll to advance from round-1 state.
-		_ = ss.ProcessAll()
+		// Advance state machine: after all round-1 messages were delivered in round 1,
+		// ProcessAll now produces this participant's round-2 share messages.
+		sharesMsgs := ss.ProcessAll()
 
 		// Deliver inbound round-2 messages from the initiator.
 		for _, raw := range req.Messages {
@@ -549,9 +549,12 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 			ss.Deliver(&msg) //nolint:errcheck
 		}
 
-		// ProcessAll generates round-2 output (share messages to initiator).
-		outMsgs := ss.ProcessAll()
-		for _, m := range outMsgs {
+		// Advance again to process any newly deliverable state.
+		additionalMsgs := ss.ProcessAll()
+
+		// Return all outbound messages: own shares + any additional output.
+		allOut := append(sharesMsgs, additionalMsgs...)
+		for _, m := range allOut {
 			b, err := m.MarshalBinary()
 			if err != nil {
 				continue
