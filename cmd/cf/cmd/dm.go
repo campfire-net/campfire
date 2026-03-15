@@ -83,7 +83,7 @@ var dmCmd = &cobra.Command{
 			campfireID = existingCF
 		} else {
 			// Create a new DM campfire
-			cf, err := campfire.New("invite-only", nil)
+			cf, err := campfire.New("invite-only", nil, 1)
 			if err != nil {
 				return fmt.Errorf("creating DM campfire: %w", err)
 			}
