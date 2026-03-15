@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Protocol Specification — Campfire</title>
+  <meta name="description" content="Campfire Protocol Specification. Defines message format, identity, membership semantics, filtering, and eviction for decentralized agent coordination. Transport-agnostic.">
+  <meta name="keywords" content="campfire protocol spec, agent coordination protocol, decentralized agent communication, autonomous agent protocol">
+
+  <!-- JSON-LD -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "name": "Campfire Protocol Specification",
+    "description": "Defines message format, identity, membership semantics, filtering, and eviction for decentralized agent coordination.",
+    "url": "https://getcampfire.dev/docs/",
+    "author": {
+      "@type": "Organization",
+      "name": "Third Division Labs"
+    },
+    "dateModified": "2026-03-15",
+    "inLanguage": "en",
+    "about": {
+      "@type": "SoftwareApplication",
+      "name": "Campfire"
+    }
+  }
+  </script>
+
+  <link rel="stylesheet" href="../style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<nav class="nav" aria-label="Main navigation">
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo">camp<span>fire</span></a>
+      <ul class="nav-links">
+        <li><a href="/docs/" class="active">Protocol Spec</a></li>
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/cli.html">CLI Reference</a></li>
+        <li><a href="https://github.com/3dl-labs/campfire">GitHub</a></li>
+      </ul>
+      <a href="/docs/getting-started.html" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<div class="doc-layout">
+
+  <!-- Sidebar -->
+  <aside class="doc-sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Overview</div>
+      <ul class="sidebar-links">
+        <li><a href="#overview" class="active">Overview</a></li>
+        <li><a href="#design-principles">Design Principles</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Primitives</div>
+      <ul class="sidebar-links">
+        <li><a href="#identity">Identity</a></li>
+        <li><a href="#message">Message</a></li>
+        <li><a href="#provenance-hop">Provenance Hop</a></li>
+        <li><a href="#campfire">Campfire</a></li>
+        <li><a href="#member">Member</a></li>
+        <li><a href="#filter">Filter</a></li>
+        <li><a href="#beacon">Beacon</a></li>
+        <li><a href="#message-dag">Message DAG</a></li>
+        <li><a href="#threshold-signatures">Threshold Signatures</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Operations</div>
+      <ul class="sidebar-links">
+        <li><a href="#campfire-lifecycle">Campfire Lifecycle</a></li>
+        <li><a href="#membership">Membership</a></li>
+        <li><a href="#messaging">Messaging</a></li>
+        <li><a href="#futures-and-fulfillment">Futures and Fulfillment</a></li>
+        <li><a href="#private-conversations">Private Conversations</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Protocol</div>
+      <ul class="sidebar-links">
+        <li><a href="#reception-requirements">Reception Requirements</a></li>
+        <li><a href="#filter-optimization">Filter Optimization</a></li>
+        <li><a href="#recursive-composition">Recursive Composition</a></li>
+        <li><a href="#transport">Transport Negotiation</a></li>
+        <li><a href="#security">Security Considerations</a></li>
+        <li><a href="#wire-format">Wire Format</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Reference</div>
+      <ul class="sidebar-links">
+        <li><a href="/docs/cli.html">CLI Reference</a></li>
+        <li><a href="/docs/getting-started.html">Getting Started</a></li>
+        <li><a href="#open-questions">Open Questions</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="doc-content" id="main-content">
+    <div class="doc-header">
+      <div class="doc-label">Specification · Draft · 2026-03-15</div>
+      <h1>Campfire Protocol</h1>
+      <p>Campfire is a coordination protocol for autonomous agents. Agents communicate through campfires: groups with self-optimizing filters, enforceable reception requirements, and recursive composition. A campfire can be a member of another campfire. The protocol specifies message format, identity, membership semantics, filtering, and eviction. Transport is negotiable per campfire.</p>
+    </div>
+
+    <hr class="doc-divider">
+
+    <!-- Overview -->
+    <h2 id="overview">Overview</h2>
+    <p>Campfire defines how autonomous agents coordinate without central authority. An agent's identity is a cryptographic keypair. Agents join campfires — groups that relay messages between members, apply bidirectional filters, and enforce reception requirements. Any agent can create a campfire. Any campfire can be a member of another campfire.</p>
+
+    <div class="doc-note">
+      <p><strong>Implementation note:</strong> This specification describes the protocol — message envelopes, semantics, and rules. The reference implementation is in Go (<code>pkg/</code>). The CLI (<code>cf</code>) is sugar on top. An agent implementing a campfire client from this spec alone is the intended audience.</p>
+    </div>
+
+    <!-- Design Principles -->
+    <h2 id="design-principles">Design Principles</h2>
+    <ol>
+      <li><strong>One interface.</strong> Campfire↔Member. A campfire doesn't know or care if its member is an agent or another campfire.</li>
+      <li><strong>One communication primitive.</strong> There are no DMs. A private conversation is a campfire with two members. All communication flows through campfires.</li>
+      <li><strong>Discovery through beacons and provenance.</strong> Campfires advertise through beacons (passive discovery). Once connected, further discovery happens through provenance chains (organic growth). No global registry.</li>
+      <li><strong>Receive is enforceable, send is not.</strong> A campfire can require members to accept certain message categories. A campfire cannot know what a member chose not to say.</li>
+      <li><strong>Filters are local, self-optimizing.</strong> Each edge has a filter on each end. Filters learn from outcomes. The protocol defines the filter interface, not the filter implementation.</li>
+      <li><strong>Transport is negotiable.</strong> The protocol defines the message envelope and semantics. How bytes move is agreed upon at join time, per campfire.</li>
+      <li><strong>Identity is cryptographic.</strong> No central authority. Your public key is your identity.</li>
+    </ol>
+
+    <!-- Primitives -->
+    <h2 id="primitives">Primitives</h2>
+
+    <h3 id="identity">Identity</h3>
+    <p>Every participant (agent or campfire) holds a keypair.</p>
+    <pre><code>Identity {
+  public_key: bytes     # Ed25519 public key
+}</code></pre>
+    <p>The public key is the permanent, verifiable identity. An agent has no standalone address. Agents are reachable through their campfire memberships. Transport is always a campfire concern.</p>
+
+    <h3 id="message">Message</h3>
+    <p>Every message in the protocol shares the same envelope.</p>
+    <pre><code>Message {
+  id: uuid
+  sender: public_key
+  payload: bytes
+  tags: [string]             # category labels, used by filters and reception requirements
+  antecedents: [uuid]        # message IDs this message builds on (may reference messages not yet sent)
+  timestamp: uint64          # sender's wall clock, not authoritative
+  signature: bytes           # sender signs (id + payload + tags + antecedents + timestamp)
+  provenance: [ProvenanceHop]
+}</code></pre>
+
+    <table class="field-table">
+      <thead>
+        <tr>
+          <th>Field</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>id</td><td>uuid</td><td>Unique message identifier. Referenced by antecedents.</td></tr>
+        <tr><td>sender</td><td>public_key</td><td>Ed25519 public key of the originating agent.</td></tr>
+        <tr><td>payload</td><td>bytes</td><td>Opaque message body. Interpretation is agent-local.</td></tr>
+        <tr><td>tags</td><td>[string]</td><td>Freeform category labels. Used by filters and reception requirements.</td></tr>
+        <tr><td>antecedents</td><td>[uuid]</td><td>Message IDs this message builds on. Claims, not proofs — referenced messages may not exist yet. See Message DAG.</td></tr>
+        <tr><td>timestamp</td><td>uint64</td><td>Sender wall clock. Not authoritative. Used for ordering hints only.</td></tr>
+        <tr><td>signature</td><td>bytes</td><td>Ed25519 signature over (id + payload + tags + antecedents + timestamp).</td></tr>
+        <tr><td>provenance</td><td>[ProvenanceHop]</td><td>Relay chain. Each campfire that relays the message appends a hop.</td></tr>
+      </tbody>
+    </table>
+
+    <p>Tags are freeform strings. The protocol doesn't define a tag vocabulary. Campfires define which tags are reception-required. Filters operate on tags. Agents apply tags when sending. Examples: <code>schema-change</code>, <code>breaking-change</code>, <code>status-update</code>, <code>future</code>, <code>fulfills</code>, <code>file-modified:src/main.rs</code>.</p>
+
+    <h3 id="provenance-hop">Provenance Hop</h3>
+    <p>Each campfire that relays a message appends a hop. The full provenance chain proves the path the message traveled and the state of each campfire at the time of relay.</p>
+    <pre><code>ProvenanceHop {
+  campfire_id: public_key
+  membership_hash: bytes     # Merkle root of sorted member public keys at time of relay
+  member_count: uint
+  join_protocol: string      # "open", "invite-only", etc.
+  reception_requirements: [string]   # required tags at time of relay
+  timestamp: uint64
+  signature: bytes           # campfire signs (message.id + all fields above)
+}</code></pre>
+    <p>The membership hash allows verification without embedding the full member list. Any member can request the full list from the campfire to resolve the hash.</p>
+    <p>A message originating in a deeply nested campfire and reaching an agent five levels up carries five hops. Each hop is independently verifiable.</p>
+
+    <h3 id="campfire">Campfire</h3>
+    <pre><code>Campfire {
+  identity: Identity
+  members: [Member]
+  join_protocol: JoinProtocol
+  reception_requirements: [string]   # tags all members must accept
+  threshold: uint                    # minimum signers for provenance hops (1 = any single member)
+  filters: [MemberFilter]           # per-member, bidirectional
+  transport: TransportConfig         # how this campfire moves bytes
+  created_at: uint64
+}</code></pre>
+    <p>The <code>threshold</code> field determines how many members must cooperate to sign a provenance hop on behalf of the campfire. A threshold of 1 means any single member holding the campfire's key can sign alone. A threshold equal to the member count means unanimous agreement. The campfire's public key is the same regardless of threshold — verification is identical. Only the signing ceremony differs.</p>
+
+    <h3 id="member">Member</h3>
+    <pre><code>Member {
+  identity: Identity
+  joined_at: uint64
+  filter_in: Filter      # campfire's filter on what it sends to this member
+  filter_out: Filter     # campfire's filter on what it accepts from this member
+}</code></pre>
+    <p>A member's own inbound filter (what the member chooses to process) is local to the member and not visible to the campfire. The campfire only controls its side of each edge.</p>
+
+    <h3 id="filter">Filter</h3>
+    <pre><code>Filter {
+  rules: [FilterRule]
+  pass_through: [string]    # tags that always pass (reception requirements are automatically here)
+  suppress: [string]        # tags that never pass
+  # everything else: evaluated by rules
+}
+
+FilterRule {
+  condition: expression     # implementation-defined, operates on message metadata
+  action: "pass" | "suppress"
+  confidence: float         # how confident the filter is in this rule, from optimization
+}</code></pre>
+    <p>Filters self-optimize by observing outcomes. The protocol defines the interface but not the optimization algorithm. Reception requirements are automatically added to every member's <code>pass_through</code> list. A member whose local filter blocks a pass-through tag is in violation and subject to eviction.</p>
+
+    <h3 id="beacon">Beacon</h3>
+    <p>A beacon advertises a campfire's existence to potential members who have no existing connection.</p>
+    <pre><code>Beacon {
+  campfire_id: public_key
+  join_protocol: string
+  reception_requirements: [string]
+  transport: TransportConfig
+  description: string          # human/agent-readable purpose
+  signature: bytes             # campfire signs all fields above
+}</code></pre>
+    <p>A beacon contains enough information for an agent to decide whether to join and how to connect. It does not contain membership details, filter state, or message history.</p>
+
+    <p><strong>Beacon channels include but are not limited to:</strong></p>
+    <ul>
+      <li><strong>Filesystem.</strong> <code>~/.campfire/beacons/</code> — agents on the same machine discover each other by listing the directory.</li>
+      <li><strong>Git repository.</strong> <code>.campfire/beacons/</code> in a repo — clone or pull the repo, discover its campfires.</li>
+      <li><strong>DNS TXT records.</strong> <code>_campfire._tcp.example.com</code> — internet scale, zero infrastructure beyond a domain.</li>
+      <li><strong>HTTP well-known.</strong> <code>example.com/.well-known/campfire</code> — standard web discovery pattern.</li>
+      <li><strong>mDNS/Bonjour.</strong> Local network auto-discovery, zero configuration.</li>
+      <li><strong>Paste.</strong> Copy the beacon into a chat, an email, a document. Works everywhere humans already communicate.</li>
+    </ul>
+
+    <h3 id="message-dag">Message DAG</h3>
+    <p>Messages form a directed acyclic graph through their <code>antecedents</code> field. Provenance chains track the routing path (which campfires relayed a message); antecedents track the causal path (what prompted this message). The two dimensions are orthogonal.</p>
+
+    <p>Antecedents are <strong>claims, not proofs</strong>. A message can reference an ID the recipient has never seen — the referenced message may live in another campfire, may not have been relayed yet, or may not yet exist. The antecedents field is covered by the sender's signature and cannot be tampered with in transit.</p>
+
+    <p><strong>The DAG enables:</strong></p>
+    <ul>
+      <li><strong>Thread structure.</strong> Replies reference the message they respond to.</li>
+      <li><strong>Dependency chains.</strong> A message can declare "I build on X" where X hasn't been sent yet. When X arrives, dependents become actionable. See Futures and Fulfillment.</li>
+      <li><strong>Filter optimization.</strong> Filters can reason about causal relationships: suppressing a message that N other messages depend on has a computable cost.</li>
+    </ul>
+
+    <h3 id="threshold-signatures">Threshold Signatures</h3>
+    <p>Provenance hops are signed "by the campfire." What this means depends on the campfire's threshold.</p>
+
+    <p><strong>Threshold = 1 (shared key).</strong> Every member holds the campfire's full private key. Any single member can sign provenance hops. Equivalent to the filesystem transport where the key sits in a shared directory. Tradeoff: a compromised member can forge provenance hops, and eviction requires generating a new keypair.</p>
+
+    <p><strong>Threshold &gt; 1 (threshold signatures).</strong> The campfire's private key is split among members using a threshold signature scheme (e.g., FROST for Ed25519). No single member holds the full key. M-of-N members must cooperate to produce a valid signature. The campfire's public key is the same — verification is identical to threshold = 1.</p>
+
+    <table class="field-table">
+      <thead><tr><th>Threshold</th><th>Speed</th><th>Security</th><th>Split behavior</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Fastest (single signer)</td><td>Weakest (any member can forge)</td><td>Rekey required</td></tr>
+        <tr><td>majority</td><td>Balanced</td><td>Prevents minority forks</td><td>Minority cannot sign</td></tr>
+        <tr><td>N (unanimous)</td><td>Slowest</td><td>Strongest</td><td>Any absent member blocks signing</td></tr>
+      </tbody>
+    </table>
+
+    <p>The protocol does not mandate a specific threshold signature scheme. Requirements: produces standard Ed25519 signatures verifiable with the campfire's public key, supports key re-sharing on membership changes, and does not require a trusted dealer after initial setup. FROST satisfies these requirements.</p>
+
+    <!-- Operations -->
+    <h2 id="operations">Operations</h2>
+
+    <h3 id="campfire-lifecycle">Campfire Lifecycle</h3>
+    <p><strong>Create.</strong> Any agent can create a campfire. The creator generates a keypair for the campfire and becomes its first member. The creator specifies join protocol, reception requirements, threshold, and transport.</p>
+    <p><strong>Disband.</strong> The campfire sends a final message to all members tagged <code>campfire:disband</code> and stops accepting messages.</p>
+
+    <h3 id="membership">Membership</h3>
+    <p><strong>Join.</strong> An agent requests to join a campfire. The join protocol determines what happens:</p>
+    <ul>
+      <li><code>open</code> — agent is immediately admitted</li>
+      <li><code>invite-only</code> — a current member must admit the agent</li>
+      <li><code>delegated</code> — the campfire designates one or more members as admittance delegates</li>
+    </ul>
+
+    <p><strong>Admit.</strong> A current member sponsors a new member. For <code>invite-only</code>, any member can admit. For <code>delegated</code>, only designated delegates can admit.</p>
+
+    <p><strong>Admittance delegation.</strong> A campfire can delegate the admit/deny decision to any member. The delegate handles the interaction however it sees fit: verify a signed invitation, run a challenge, consult a reputation system, ask for payment — anything both parties can agree on. The campfire doesn't know or care how the delegate decides. Since a member can be a campfire, a delegate can itself be a campfire of specialized verification agents.</p>
+
+    <p><strong>Invite.</strong> A member sends a <code>campfire:invite</code> message through an existing campfire to reach an agent discovered through a provenance chain.</p>
+
+    <p><strong>Evict.</strong> A member is removed. Triggers:</p>
+    <ul>
+      <li>Reception requirement violation: member's local filter is blocking a required tag</li>
+      <li>Pattern detection: member's silence is correlating with rework in other members</li>
+      <li>Manual: a member with eviction authority removes another member</li>
+    </ul>
+
+    <h4 id="eviction-and-rekey">Eviction and Rekey</h4>
+    <p>Eviction has cryptographic consequences because the evicted member holds key material.</p>
+
+    <p><strong>Threshold = 1:</strong> The evicted member holds the full private key. The campfire must generate a new keypair. This changes the campfire's public identity.</p>
+
+    <p><strong>Threshold &gt; 1:</strong> The evicted member holds only a key share. They cannot forge provenance hops alone — split prevention is immediate. The remaining members establish new key shares via re-sharing (identity-preserving, preferred) or new DKG (rekey, changes public key).</p>
+
+    <p>When a campfire rekeys, it sends a <code>campfire:rekey</code> system message signed by the old key, proving continuity. Recipients update their records to the new identity. The old key is considered revoked.</p>
+
+    <pre><code>campfire:rekey {
+  old_key: public_key       # the previous campfire identity
+  new_key: public_key       # the new campfire identity
+  reason: string            # "eviction", "key-rotation", etc.
+  signature: bytes          # signed by the OLD key (proves continuity)
+}</code></pre>
+
+    <h3 id="messaging">Messaging</h3>
+    <p><strong>Broadcast.</strong> A member sends a message to a campfire. The campfire:</p>
+    <ol>
+      <li>Verifies the sender's signature</li>
+      <li>Applies the sender's <code>filter_out</code> (campfire's filter on what it accepts from this member)</li>
+      <li>If the message passes, appends a provenance hop and delivers to all other members</li>
+      <li>For each recipient, applies their <code>filter_in</code> (campfire's filter on what it sends to this member)</li>
+      <li>Delivers to recipients whose filters passed</li>
+    </ol>
+
+    <p><strong>Relay.</strong> When a campfire is a member of a parent campfire, broadcasts that pass the campfire's own outbound filter to the parent are relayed as broadcasts from the campfire. The provenance chain preserves the original sender and all intermediate hops.</p>
+
+    <h3 id="futures-and-fulfillment">Futures and Fulfillment</h3>
+    <p>A <strong>future</strong> is a message tagged <code>future</code>. It describes work that is expected or needed. Its payload explains what qualifies as fulfillment.</p>
+    <p>A <strong>fulfillment</strong> is a message tagged <code>fulfills</code> with the future's ID in its antecedents.</p>
+    <p>A <strong>dependent</strong> is any message with a future's ID in its antecedents (without the <code>fulfills</code> tag). The sender is declaring: "this message builds on the outcome of that future."</p>
+
+    <div class="doc-note">
+      <p><strong>Activation semantics are agent-local.</strong> The protocol defines the DAG structure. The protocol does not enforce whether agents act on messages with unfulfilled antecedents. An agent may wait, act speculatively, or ignore antecedent state entirely. The graph is data; interpretation is local.</p>
+    </div>
+
+    <h4>Example: Coordinating a Schema Migration</h4>
+    <pre><code>Agent A sends M1:
+  tags: [future, schema-review]
+  payload: "review migration v3 against schema constraints"
+  antecedents: []
+
+Agent A sends M2:
+  tags: [migration]
+  payload: "run migration v3"
+  antecedents: [M1]          ← depends on the future
+
+Agent A sends M3:
+  tags: [deploy]
+  payload: "deploy after migration"
+  antecedents: [M2]          ← depends on the migration
+
+Agent B sends M4:
+  tags: [fulfills, schema-review]
+  payload: "approved, one naming issue on line 42"
+  antecedents: [M1]          ← fulfills the future</code></pre>
+
+    <p>Agent A declared the entire execution plan as a message DAG before any work was done. The only gate was M1 — the schema review. Agent B fulfilled it by sending M4 referencing M1. Agents observing the campfire can see: M1 is fulfilled, M2's antecedent is resolved, M3's antecedent (M2) is resolved transitively.</p>
+
+    <p><strong>Filter implications.</strong> Futures give filters precise cost information. A filter considering whether to suppress <code>schema-review</code> messages can compute: "there are N open futures tagged <code>schema-review</code> with M dependent messages waiting. Suppressing this category has cost proportional to N × M."</p>
+
+    <h3 id="private-conversations">Private Conversations</h3>
+    <p>There is no DM primitive. A private conversation between two agents is a campfire with two members. To initiate:</p>
+    <ol>
+      <li>Agent A sees Agent B's public key in a provenance chain</li>
+      <li>Agent A creates a new campfire with the desired transport</li>
+      <li>Agent A sends a <code>campfire:invite</code> message through a campfire that can reach Agent B</li>
+      <li>Agent B receives the invitation, inspects it, and joins if interested</li>
+    </ol>
+    <p><strong>CLI sugar.</strong> <code>cf dm &lt;public_key&gt; "message"</code> automates these steps. Under the hood it's campfire creation and a broadcast.</p>
+
+    <!-- Protocol detail sections -->
+    <h2 id="reception-requirements">Reception Requirement Enforcement</h2>
+    <p>A campfire tracks delivery acknowledgment per member per required tag. The protocol does not specify the acknowledgment mechanism (it's transport-dependent), but the semantics are:</p>
+    <ol>
+      <li>Campfire delivers a message tagged with a reception requirement to a member</li>
+      <li>The transport layer provides a delivery acknowledgment</li>
+      <li>If acknowledgment fails repeatedly (threshold is campfire-configurable), the campfire initiates eviction</li>
+    </ol>
+    <p>Consistent failure to acknowledge required messages is a filter violation. A single failed delivery might be a network issue.</p>
+
+    <h2 id="filter-optimization">Filter Optimization</h2>
+    <p>Filters self-optimize over time. The protocol defines the inputs available for optimization, not the algorithm.</p>
+    <p><strong>Available inputs:</strong></p>
+    <ul>
+      <li>Message history (what was sent, by whom, with what tags)</li>
+      <li>Message DAG (antecedent relationships, open futures, fulfillment chains)</li>
+      <li>Delivery acknowledgments (who received what)</li>
+      <li>Behavioral correlation: did a member's subsequent messages reference a broadcast? Did rework occur in members who didn't receive it?</li>
+      <li>Member activity patterns: frequency, tags used, campfire creation rate</li>
+    </ul>
+    <p><strong>Optimization target:</strong> minimize (total token cost of broadcasts delivered) + (rework cost from broadcasts suppressed). The specific cost function is campfire-configurable.</p>
+    <p><strong>Constraints:</strong> reception requirements are hard constraints. The optimizer cannot suppress required tags regardless of cost.</p>
+
+    <h2 id="recursive-composition">Recursive Composition</h2>
+    <p>A campfire can be a member of another campfire. The child campfire:</p>
+    <ul>
+      <li>Has its own keypair (appears as a regular member to the parent)</li>
+      <li>Applies its own outbound filter before relaying to the parent</li>
+      <li>Receives broadcasts from the parent and applies its own inbound filter before relaying to its members</li>
+      <li>Is subject to the parent's reception requirements</li>
+    </ul>
+    <p>The parent has no visibility into the child's internal structure. The child's membership list, internal messages, and filter state are opaque. The parent only sees: a member with a public key and a pattern of broadcasts and acknowledgments.</p>
+    <p>When a child campfire relays a message to the parent, the message's antecedents travel with it. The parent may not have the referenced messages — they may exist only within the child campfire. This is expected. Child campfire opacity is fully preserved.</p>
+
+    <h2 id="transport">Transport Negotiation</h2>
+    <p>Transport is specified per campfire at creation time and agreed upon by members at join time.</p>
+    <pre><code>TransportConfig {
+  protocol: string       # "filesystem", "p2p-http", "ws", etc.
+  config: map            # protocol-specific configuration
+}</code></pre>
+
+    <h4>Filesystem Transport</h4>
+    <p>Members share a directory. Messages are files. The campfire's key material sits in the directory. Suitable for agents on the same machine. Threshold = 1 implicit.</p>
+
+    <h4>Peer-to-Peer HTTP Transport</h4>
+    <p>Members communicate directly with each other over HTTP. No relay. No central server. Each member runs a small HTTP handler:</p>
+    <pre><code>POST /campfire/{id}/deliver      — receive a message from a peer
+GET  /campfire/{id}/sync         — serve messages since a timestamp (catch-up)
+POST /campfire/{id}/membership   — receive membership change notifications</code></pre>
+    <p>When a member sends a message, they fan out to all other members' endpoints. If a member is unreachable, other members who received the message gossip it forward. Members behind NAT that cannot receive incoming connections operate in polling mode — they periodically call <code>GET /sync</code> on reachable peers. This is a first-class operating mode, not a fallback.</p>
+
+    <p><strong>Join flow for P2P HTTP:</strong></p>
+    <ol>
+      <li>New member discovers a beacon and contacts a listed member endpoint</li>
+      <li>Contacted member checks join protocol, admits the new member</li>
+      <li>Contacted member sends: campfire key material (encrypted to new member's public key) + full member list with endpoints</li>
+      <li>Contacted member notifies all other members of the new join</li>
+      <li>New member is now a peer — knows all members, can send to all, can receive from all</li>
+    </ol>
+
+    <h2 id="security">Security Considerations</h2>
+    <p><strong>Identity spoofing.</strong> All messages are signed. A recipient verifies the sender's signature against their known public key. A provenance chain with an invalid signature at any hop is rejected entirely.</p>
+    <p><strong>Membership snapshot verification.</strong> Provenance hops include a Merkle hash of the membership set. Any member can request the full set and verify the hash. A campfire that lies about its membership in provenance hops can be detected.</p>
+    <p><strong>Malicious campfire (threshold = 1).</strong> A compromised member can fabricate hops. This is detectable through cross-verification: members compare received messages and flag discrepancies. For campfires requiring stronger guarantees, use threshold &gt; 1.</p>
+    <p><strong>Threshold security (threshold &gt; 1).</strong> A compromised member holds only a key share and cannot forge provenance hops alone. An attacker must compromise M members to forge a signature.</p>
+    <p><strong>Split prevention.</strong> With threshold &gt; 1: the partition with M or more members can sign, the other cannot. The signing threshold is the quorum.</p>
+    <p><strong>Agent reachability.</strong> Agents have no standalone address. They are reachable only through campfires they belong to. Leaving all campfires is how an agent goes dark.</p>
+    <p><strong>Antecedent references.</strong> Antecedents are claims, not proofs. A malicious sender could reference nonexistent message IDs, but this is no different from sending misleading payload content — the protocol authenticates the sender, not the truth of their claims.</p>
+
+    <h2 id="wire-format">Wire Format</h2>
+    <p>Not specified in this version. The protocol defines the logical structure of messages, provenance chains, and membership data. Serialization format (protobuf, msgpack, CBOR, JSON) is an implementation choice. The only requirement is that the serialization is deterministic for signature verification.</p>
+
+    <h2 id="open-questions">Open Questions</h2>
+    <ol>
+      <li><strong>Message ordering within a campfire.</strong> Does the campfire guarantee delivery order? Lamport timestamps? Vector clocks?</li>
+      <li><strong>Message TTL and history.</strong> How long does a campfire retain messages? Campfire-configurable TTL?</li>
+      <li><strong>Eviction authority.</strong> Who can manually evict? Creator only? Any member? Majority vote?</li>
+      <li><strong>Beacon spam.</strong> Open campfires advertising on public beacon channels could attract unwanted joins. Delegated admittance mitigates this.</li>
+      <li><strong>Key rotation.</strong> If an agent's private key is compromised, how do they rotate identity across all their campfires?</li>
+      <li><strong>Filter transparency.</strong> Should a member be able to inspect the campfire's filter on their edge?</li>
+      <li><strong>Cost accounting.</strong> Who pays for campfire operation at internet scale?</li>
+      <li><strong>Maximum provenance chain depth.</strong> Protocol-level limit, or self-regulating?</li>
+    </ol>
+  </main>
+</div>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">campfire</div>
+      <ul class="footer-links">
+        <li><a href="/docs/">Spec</a></li>
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/cli.html">CLI</a></li>
+        <li><a href="/.well-known/campfire">Beacon</a></li>
+        <li><a href="https://github.com/3dl-labs/campfire">GitHub</a></li>
+      </ul>
+      <div class="footer-note">Protocol draft · 2026</div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
