@@ -1,0 +1,4 @@
+project: campfire
+prefix: campfire
+no-db: true
+no-daemon: true
