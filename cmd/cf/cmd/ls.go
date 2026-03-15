@@ -33,16 +33,22 @@ var lsCmd = &cobra.Command{
 				CampfireID   string `json:"campfire_id"`
 				JoinProtocol string `json:"join_protocol"`
 				Role         string `json:"role"`
+				Threshold    uint   `json:"threshold"`
 				MemberCount  int    `json:"member_count"`
 				JoinedAt     string `json:"joined_at"`
 			}
 			var entries []entry
 			for _, m := range memberships {
 				members, _ := transport.ListMembers(m.CampfireID)
+				threshold := m.Threshold
+				if threshold == 0 {
+					threshold = 1
+				}
 				entries = append(entries, entry{
 					CampfireID:   m.CampfireID,
 					JoinProtocol: m.JoinProtocol,
 					Role:         m.Role,
+					Threshold:    threshold,
 					MemberCount:  len(members),
 					JoinedAt:     time.Unix(0, m.JoinedAt).Format(time.RFC3339),
 				})
@@ -66,10 +72,15 @@ var lsCmd = &cobra.Command{
 			if len(idShort) > 12 {
 				idShort = idShort[:12]
 			}
-			fmt.Printf("%s  %s  %d members  %s\n",
+			threshold := m.Threshold
+			if threshold == 0 {
+				threshold = 1
+			}
+			fmt.Printf("%s  %s  %d members  threshold=%d  %s\n",
 				idShort,
 				m.JoinProtocol,
 				len(members),
+				threshold,
 				m.Role,
 			)
 		}

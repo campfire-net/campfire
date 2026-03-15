@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS campfire_memberships (
     transport_dir  TEXT NOT NULL,
     join_protocol  TEXT NOT NULL,
     role           TEXT NOT NULL DEFAULT 'member',
-    joined_at      INTEGER NOT NULL
+    joined_at      INTEGER NOT NULL,
+    threshold      INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -49,6 +50,31 @@ CREATE TABLE IF NOT EXISTS filters (
     PRIMARY KEY (campfire_id, direction),
     FOREIGN KEY (campfire_id) REFERENCES campfire_memberships(campfire_id)
 );
+
+CREATE TABLE IF NOT EXISTS peer_endpoints (
+    campfire_id       TEXT NOT NULL,
+    member_pubkey     TEXT NOT NULL,
+    endpoint          TEXT NOT NULL,
+    participant_id    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (campfire_id, member_pubkey)
+);
+
+CREATE TABLE IF NOT EXISTS threshold_shares (
+    campfire_id      TEXT PRIMARY KEY,
+    participant_id   INTEGER NOT NULL,
+    secret_share     BLOB NOT NULL,
+    public_data      BLOB
+);
+
+-- Stores pending DKG shares that the creator distributes to joining members.
+-- Each row is a serialized DKGResult for participant_id that has not yet been claimed.
+-- The creator pre-generates all participant shares during campfire creation.
+CREATE TABLE IF NOT EXISTS pending_threshold_shares (
+    campfire_id      TEXT NOT NULL,
+    participant_id   INTEGER NOT NULL,
+    share_data       BLOB NOT NULL,
+    PRIMARY KEY (campfire_id, participant_id)
+);
 `
 
 // Store is the local SQLite database for an agent.
@@ -63,6 +89,7 @@ type Membership struct {
 	JoinProtocol string `json:"join_protocol"`
 	Role         string `json:"role"`
 	JoinedAt     int64  `json:"joined_at"`
+	Threshold    uint   `json:"threshold"`
 }
 
 // Open opens or creates the SQLite store at the given path.
@@ -88,10 +115,14 @@ func (s *Store) Close() error {
 
 // AddMembership records that this agent is a member of a campfire.
 func (s *Store) AddMembership(m Membership) error {
+	threshold := m.Threshold
+	if threshold == 0 {
+		threshold = 1
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt,
+		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold,
 	)
 	if err != nil {
 		return fmt.Errorf("adding membership: %w", err)
@@ -111,11 +142,11 @@ func (s *Store) RemoveMembership(campfireID string) error {
 // GetMembership returns a single membership by campfire ID.
 func (s *Store) GetMembership(campfireID string) (*Membership, error) {
 	row := s.db.QueryRow(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold
 		 FROM campfire_memberships WHERE campfire_id = ?`, campfireID,
 	)
 	var m Membership
-	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt)
+	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -128,7 +159,7 @@ func (s *Store) GetMembership(campfireID string) (*Membership, error) {
 // ListMemberships returns all campfire memberships.
 func (s *Store) ListMemberships() ([]Membership, error) {
 	rows, err := s.db.Query(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold
 		 FROM campfire_memberships ORDER BY joined_at`,
 	)
 	if err != nil {
@@ -139,7 +170,7 @@ func (s *Store) ListMemberships() ([]Membership, error) {
 	var memberships []Membership
 	for rows.Next() {
 		var m Membership
-		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt); err != nil {
+		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold); err != nil {
 			return nil, fmt.Errorf("scanning membership: %w", err)
 		}
 		memberships = append(memberships, m)
@@ -284,6 +315,156 @@ func (s *Store) ListReferencingMessages(messageID string) ([]MessageRecord, erro
 		msgs = append(msgs, m)
 	}
 	return msgs, rows.Err()
+}
+
+// PeerEndpoint records a known HTTP endpoint for a peer in a campfire.
+type PeerEndpoint struct {
+	CampfireID    string `json:"campfire_id"`
+	MemberPubkey  string `json:"member_pubkey"`
+	Endpoint      string `json:"endpoint"`
+	ParticipantID uint32 `json:"participant_id,omitempty"` // FROST participant ID (0 = unknown)
+}
+
+// UpsertPeerEndpoint inserts or replaces a peer endpoint record.
+func (s *Store) UpsertPeerEndpoint(e PeerEndpoint) error {
+	_, err := s.db.Exec(
+		`INSERT INTO peer_endpoints (campfire_id, member_pubkey, endpoint, participant_id)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(campfire_id, member_pubkey) DO UPDATE SET
+		     endpoint = excluded.endpoint,
+		     participant_id = CASE WHEN excluded.participant_id > 0 THEN excluded.participant_id ELSE peer_endpoints.participant_id END`,
+		e.CampfireID, e.MemberPubkey, e.Endpoint, e.ParticipantID,
+	)
+	if err != nil {
+		return fmt.Errorf("upserting peer endpoint: %w", err)
+	}
+	return nil
+}
+
+// DeletePeerEndpoint removes a peer endpoint record.
+func (s *Store) DeletePeerEndpoint(campfireID, memberPubkey string) error {
+	_, err := s.db.Exec(
+		`DELETE FROM peer_endpoints WHERE campfire_id = ? AND member_pubkey = ?`,
+		campfireID, memberPubkey,
+	)
+	if err != nil {
+		return fmt.Errorf("deleting peer endpoint: %w", err)
+	}
+	return nil
+}
+
+// ListPeerEndpoints returns all known peer endpoints for a campfire.
+func (s *Store) ListPeerEndpoints(campfireID string) ([]PeerEndpoint, error) {
+	rows, err := s.db.Query(
+		`SELECT campfire_id, member_pubkey, endpoint, participant_id FROM peer_endpoints WHERE campfire_id = ?`,
+		campfireID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing peer endpoints: %w", err)
+	}
+	defer rows.Close()
+
+	var endpoints []PeerEndpoint
+	for rows.Next() {
+		var e PeerEndpoint
+		if err := rows.Scan(&e.CampfireID, &e.MemberPubkey, &e.Endpoint, &e.ParticipantID); err != nil {
+			return nil, fmt.Errorf("scanning peer endpoint: %w", err)
+		}
+		endpoints = append(endpoints, e)
+	}
+	return endpoints, rows.Err()
+}
+
+// ThresholdShare stores FROST DKG output for a campfire.
+type ThresholdShare struct {
+	CampfireID    string `json:"campfire_id"`
+	ParticipantID uint32 `json:"participant_id"`
+	SecretShare   []byte `json:"secret_share"` // serialized eddsa.SecretShare
+	PublicData    []byte `json:"public_data"`  // serialized eddsa.Public
+}
+
+// UpsertThresholdShare stores or replaces FROST DKG share data for a campfire.
+func (s *Store) UpsertThresholdShare(share ThresholdShare) error {
+	_, err := s.db.Exec(
+		`INSERT INTO threshold_shares (campfire_id, participant_id, secret_share, public_data)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(campfire_id) DO UPDATE SET
+		     participant_id = excluded.participant_id,
+		     secret_share   = excluded.secret_share,
+		     public_data    = excluded.public_data`,
+		share.CampfireID, share.ParticipantID, share.SecretShare, share.PublicData,
+	)
+	if err != nil {
+		return fmt.Errorf("upserting threshold share: %w", err)
+	}
+	return nil
+}
+
+// GetThresholdShare retrieves FROST DKG share data for a campfire.
+// Returns nil if not found.
+func (s *Store) GetThresholdShare(campfireID string) (*ThresholdShare, error) {
+	row := s.db.QueryRow(
+		`SELECT campfire_id, participant_id, secret_share, public_data
+		 FROM threshold_shares WHERE campfire_id = ?`, campfireID,
+	)
+	var share ThresholdShare
+	err := row.Scan(&share.CampfireID, &share.ParticipantID, &share.SecretShare, &share.PublicData)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying threshold share: %w", err)
+	}
+	return &share, nil
+}
+
+// StorePendingThresholdShare stores a DKG share for a future joiner.
+func (s *Store) StorePendingThresholdShare(campfireID string, participantID uint32, shareData []byte) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO pending_threshold_shares (campfire_id, participant_id, share_data)
+		 VALUES (?, ?, ?)`,
+		campfireID, participantID, shareData,
+	)
+	if err != nil {
+		return fmt.Errorf("storing pending threshold share: %w", err)
+	}
+	return nil
+}
+
+// ClaimPendingThresholdShare retrieves and removes the next available pending
+// DKG share for a campfire. Returns nil if none available.
+func (s *Store) ClaimPendingThresholdShare(campfireID string) (participantID uint32, shareData []byte, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	row := tx.QueryRow(
+		`SELECT participant_id, share_data FROM pending_threshold_shares
+		 WHERE campfire_id = ? ORDER BY participant_id ASC LIMIT 1`,
+		campfireID,
+	)
+	var pid uint32
+	var data []byte
+	if scanErr := row.Scan(&pid, &data); scanErr != nil {
+		if scanErr == sql.ErrNoRows {
+			return 0, nil, nil
+		}
+		return 0, nil, fmt.Errorf("querying pending share: %w", scanErr)
+	}
+
+	if _, err := tx.Exec(
+		`DELETE FROM pending_threshold_shares WHERE campfire_id = ? AND participant_id = ?`,
+		campfireID, pid,
+	); err != nil {
+		return 0, nil, fmt.Errorf("deleting pending share: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, nil, fmt.Errorf("committing transaction: %w", err)
+	}
+	return pid, data, nil
 }
 
 // StorePath returns the default store path for a given CF_HOME.

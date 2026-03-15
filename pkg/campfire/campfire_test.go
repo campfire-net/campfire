@@ -7,7 +7,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	c, err := New("open", []string{"status-update"})
+	c, err := New("open", []string{"status-update"}, 1)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -26,14 +26,14 @@ func TestNew(t *testing.T) {
 }
 
 func TestNewNilReqs(t *testing.T) {
-	c, _ := New("open", nil)
+	c, _ := New("open", nil, 1)
 	if c.ReceptionRequirements == nil {
 		t.Error("reception_requirements should not be nil")
 	}
 }
 
 func TestAddRemoveMember(t *testing.T) {
-	c, _ := New("open", nil)
+	c, _ := New("open", nil, 1)
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 
 	c.AddMember(pub)
@@ -57,7 +57,7 @@ func TestAddRemoveMember(t *testing.T) {
 }
 
 func TestMembershipHash(t *testing.T) {
-	c, _ := New("open", nil)
+	c, _ := New("open", nil, 1)
 	pub1, _, _ := ed25519.GenerateKey(rand.Reader)
 	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
 
@@ -76,7 +76,7 @@ func TestMembershipHash(t *testing.T) {
 	}
 
 	// Order-independent: add in different order, same hash
-	c2, _ := New("open", nil)
+	c2, _ := New("open", nil, 1)
 	c2.AddMember(pub2)
 	c2.AddMember(pub1)
 
@@ -88,7 +88,7 @@ func TestMembershipHash(t *testing.T) {
 }
 
 func TestState(t *testing.T) {
-	c, _ := New("invite-only", []string{"breaking-change"})
+	c, _ := New("invite-only", []string{"breaking-change"}, 1)
 	state := c.State()
 	if state.JoinProtocol != "invite-only" {
 		t.Errorf("state join_protocol = %s, want invite-only", state.JoinProtocol)

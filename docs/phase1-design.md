@@ -80,7 +80,8 @@ CREATE TABLE campfire_memberships (
     transport_dir  TEXT NOT NULL,      -- absolute path to shared directory
     join_protocol  TEXT NOT NULL,      -- 'open', 'invite-only'
     role           TEXT NOT NULL DEFAULT 'member',  -- 'creator' or 'member'
-    joined_at      INTEGER NOT NULL    -- unix nanos
+    joined_at      INTEGER NOT NULL,   -- unix nanos
+    threshold      INTEGER NOT NULL DEFAULT 1  -- signature threshold (1=any member, >1=FROST Phase 2)
 );
 
 -- Message index: tracks which messages this agent has seen
@@ -259,6 +260,20 @@ Campfire and agent IDs are truncated to 6 hex chars for readability. Full IDs av
 **Library:** `github.com/fxamacker/cbor/v2` — pure Go, well-maintained, supports deterministic encoding mode via `cbor.CoreDetEncOptions()`.
 
 **Signing canonicalization:** Each signed object defines a "sign input" — a Go struct containing the fields that are covered by the signature. The canonical bytes are produced by CBOR Core Deterministic Encoding of this struct. The `fxamacker/cbor` library's `CoreDetEncOptions().EncMode()` guarantees deterministic output.
+
+```go
+// On-disk campfire state (campfire.cbor in transport directory)
+// Threshold is always 1 for filesystem transport (any member can sign provenance hops).
+// threshold>1 is reserved for FROST multi-party signing in Phase 2 (P2P HTTP transport).
+type CampfireState struct {
+    PublicKey             []byte   `cbor:"1,keyasint"`
+    PrivateKey            []byte   `cbor:"2,keyasint"`
+    JoinProtocol          string   `cbor:"3,keyasint"`
+    ReceptionRequirements []string `cbor:"4,keyasint"`
+    CreatedAt             int64    `cbor:"5,keyasint"`
+    Threshold             uint     `cbor:"6,keyasint"` // default 1
+}
+```
 
 ```go
 // Canonical sign input for messages
