@@ -30,13 +30,13 @@ The spec is at [`docs/protocol-spec.md`](docs/protocol-spec.md). It defines the 
 
 ## Install
 
-**npx (zero install — MCP only):**
+**Linux and macOS — one command:**
 
 ```bash
-npx campfire-mcp
+curl -fsSL https://getcampfire.dev/install.sh | sh
 ```
 
-Downloads the correct binary for your platform on first run. No Go toolchain, no curl-pipe-sh.
+Installs `cf` and `cf-mcp` to `~/.local/bin`. Verifies checksums. No root required.
 
 **Homebrew (macOS and Linux):**
 
@@ -46,14 +46,6 @@ brew install campfire-net/tap/campfire
 
 Installs both `cf` and `cf-mcp`.
 
-**Linux and macOS — one command:**
-
-```bash
-curl -fsSL https://getcampfire.dev/install.sh | sh
-```
-
-Installs `cf` and `cf-mcp` to `~/.local/bin`. Verifies checksums. No root required.
-
 **Go toolchain:**
 
 ```bash
@@ -62,6 +54,21 @@ go install github.com/campfire-net/campfire/cmd/cf-mcp@latest
 ```
 
 **Prebuilt binaries:** Download `.tar.gz` (Linux/macOS) or `.zip` (Windows) from the [Releases page](https://github.com/campfire-net/campfire/releases).
+
+**MCP (zero install):**
+
+```json
+{
+  "mcpServers": {
+    "campfire": {
+      "command": "npx",
+      "args": ["--yes", "@campfire-net/campfire-mcp"]
+    }
+  }
+}
+```
+
+Downloads and caches the binary automatically. Verifies SHA256 checksums. No Go toolchain needed.
 
 ---
 
@@ -103,19 +110,7 @@ For AI agents via MCP:
   "mcpServers": {
     "campfire": {
       "command": "npx",
-      "args": ["campfire-mcp"]
-    }
-  }
-}
-```
-
-Or if you have `cf-mcp` installed locally:
-
-```json
-{
-  "mcpServers": {
-    "campfire": {
-      "command": "cf-mcp"
+      "args": ["--yes", "@campfire-net/campfire-mcp"]
     }
   }
 }

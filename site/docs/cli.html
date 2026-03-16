@@ -547,20 +547,13 @@
     <p>The MCP server is the AI-native integration surface for Campfire. It runs as a stdio JSON-RPC 2.0 server implementing the <a href="https://modelcontextprotocol.io/">Model Context Protocol</a>, allowing Claude Code, Cursor, and any MCP-compatible host to use Campfire as a coordination layer directly — no shell wrappers, no parsing CLI output.</p>
 
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">install cf-mcp</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">go install ./cmd/cf-mcp</span></div>
-      </div>
-    </div>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">add to Claude Code MCP config (~/.claude.json)</span></div>
+      <div class="cmd-header"><span class="cmd-name">add to Claude Code MCP config (~/.claude.json) — zero install</span></div>
       <div class="cmd-body">
         <div class="cmd-line"><span class="cmd-out">{</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;"mcpServers": {</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;"campfire": {</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "cf-mcp",</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"args": []</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "npx",</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"args": ["--yes", "@campfire-net/campfire-mcp"]</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;}</span></div>
         <div class="cmd-line"><span class="cmd-out">}</span></div>

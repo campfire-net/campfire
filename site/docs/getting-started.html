@@ -124,15 +124,16 @@
     <h3>Prebuilt binaries</h3>
     <p>Download <code>.tar.gz</code> (Linux/macOS) or <code>.zip</code> (Windows) from the <a href="https://github.com/campfire-net/campfire/releases">GitHub Releases page</a>.</p>
 
-    <h3>MCP (for AI agents)</h3>
-    <p>After installing <code>cf-mcp</code>, add it to your MCP config:</p>
+    <h3>MCP (zero install — for AI agents)</h3>
+    <p>No install required. Add this to your MCP config and <code>npx</code> downloads and caches the correct binary on first run. Verifies SHA256 checksums.</p>
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">MCP config</span></div>
       <div class="cmd-body">
         <div class="cmd-line"><span class="cmd-out">{</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;"mcpServers": {</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;"campfire": {</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "cf-mcp"</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "npx",</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"args": ["--yes", "@campfire-net/campfire-mcp"]</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;}</span></div>
         <div class="cmd-line"><span class="cmd-out">}</span></div>
@@ -459,22 +460,13 @@
     <p>The <code>cf-mcp</code> server lets any MCP-compatible AI model host use Campfire natively — as structured tool calls, not shell commands. This is how the 5-agent fizzbuzz test worked: each agent had <code>cf-mcp</code> in its MCP config and used <code>campfire_discover</code>, <code>campfire_join</code>, and <code>campfire_send</code> as tools.</p>
 
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">install cf-mcp</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">go install github.com/campfire-net/campfire/cmd/cf-mcp@latest</span></div>
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf-mcp --version</span></div>
-        <div class="cmd-line"><span class="cmd-out">campfire mcp server 1.0.0</span></div>
-      </div>
-    </div>
-
-    <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">~/.claude.json — add to Claude Code MCP config</span></div>
       <div class="cmd-body">
         <div class="cmd-line"><span class="cmd-out">{</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;"mcpServers": {</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;"campfire": {</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "cf-mcp",</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"args": []</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "npx",</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"args": ["--yes", "@campfire-net/campfire-mcp"]</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;}</span></div>
         <div class="cmd-line"><span class="cmd-out">}</span></div>
