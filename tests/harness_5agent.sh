@@ -15,6 +15,9 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 INTEG_ROOT="/tmp/campfire-integ"
 BIN_DIR="$INTEG_ROOT/bin"
 AGENTS_DIR="$INTEG_ROOT/agents"
@@ -49,8 +52,10 @@ fail() { echo "[harness] FAIL: $*" >&2; exit 1; }
 # ─────────────────────────────────────────────────────────────────────────────
 log "Checking prerequisites..."
 
-command -v go >/dev/null 2>&1 || fail "go not found on PATH"
 command -v python3 >/dev/null 2>&1 || fail "python3 not found on PATH"
+if [ -z "${SKIP_BUILD:-}" ]; then
+    command -v go >/dev/null 2>&1 || fail "go not found on PATH (set SKIP_BUILD=1 and pre-build binaries)"
+fi
 
 # Determine launch mode
 if [ -n "${HARNESS_LAUNCH_MODE:-}" ]; then
@@ -78,15 +83,16 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1: Build binaries (build to project root first, move after dirs created)
 # ─────────────────────────────────────────────────────────────────────────────
-log "Building cf and cf-mcp binaries..."
-
-# Build to the project root using /src/<name> (the docker go wrapper mounts
-# the project root as /src; a native go install also writes to CWD).
-# We build to project-root temp names, then move into BIN_DIR once dirs exist.
-go build -o /src/cf-bin-tmp ./cmd/cf         || fail "Failed to build cf"
-go build -o /src/cf-mcp-bin-tmp ./cmd/cf-mcp || fail "Failed to build cf-mcp"
-
-log "Binaries compiled."
+if [ -n "${SKIP_BUILD:-}" ]; then
+    log "SKIP_BUILD set — expecting pre-built binaries at $PROJECT_ROOT/cf-bin-tmp and cf-mcp-bin-tmp"
+    [ -f "$PROJECT_ROOT/cf-bin-tmp" ] || fail "cf-bin-tmp not found — build with: docker compose run --rm go build -o /src/cf-bin-tmp ./cmd/cf"
+    [ -f "$PROJECT_ROOT/cf-mcp-bin-tmp" ] || fail "cf-mcp-bin-tmp not found — build with: docker compose run --rm go build -o /src/cf-mcp-bin-tmp ./cmd/cf-mcp"
+else
+    log "Building cf and cf-mcp binaries..."
+    go build -o /src/cf-bin-tmp ./cmd/cf         || fail "Failed to build cf"
+    go build -o /src/cf-mcp-bin-tmp ./cmd/cf-mcp || fail "Failed to build cf-mcp"
+fi
+log "Binaries ready."
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 2: Create directory structure
@@ -263,15 +269,14 @@ launch_agent_systemd() {
 
     systemd-run --user \
         --unit="$unit_name" \
-        --working-directory="$(pwd)" \
+        --collect \
+        --working-directory="$WORKSPACE" \
         --setenv=CF_HOME="$agent_home" \
         --setenv=CF_BEACON_DIR="$BEACON_DIR" \
         --setenv=CF_TRANSPORT_DIR="$TRANSPORT_DIR" \
         --setenv=PATH="$BIN_DIR:$PATH" \
-        --output=append:"$log_file" \
-        claude --dangerously-skip-permissions \
-            --claude-md "$agent_home/CLAUDE.md" \
-            "${extra_args[@]}" \
+        -- \
+        bash -c "cat '$agent_home/CLAUDE.md' | claude -p --dangerously-skip-permissions --output-format text ${extra_args[*]:-} > '$log_file' 2>&1" \
         >/dev/null 2>&1 \
         || fail "systemd-run failed for agent-$agent"
 
@@ -283,18 +288,16 @@ launch_agent_background() {
     local agent_home="$AGENTS_DIR/agent-$agent"
     local log_file="$LOGS_DIR/agent-$agent.log"
 
-    local extra_args=()
+    local extra_args=""
     if [ "$agent" = "b" ] || [ "$agent" = "e" ]; then
-        extra_args+=(--mcp-config "$agent_home/mcp-config.json")
+        extra_args="--mcp-config $agent_home/mcp-config.json"
     fi
 
     CF_HOME="$agent_home" \
     CF_BEACON_DIR="$BEACON_DIR" \
     CF_TRANSPORT_DIR="$TRANSPORT_DIR" \
     PATH="$BIN_DIR:$PATH" \
-    claude --dangerously-skip-permissions \
-        --claude-md "$agent_home/CLAUDE.md" \
-        "${extra_args[@]}" \
+    bash -c "cat '$agent_home/CLAUDE.md' | claude -p --dangerously-skip-permissions --output-format text $extra_args" \
         >"$log_file" 2>&1 &
 
     local pid=$!
