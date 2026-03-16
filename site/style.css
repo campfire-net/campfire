@@ -184,7 +184,7 @@ a:hover { color: var(--color-accent-secondary-hover); }
   gap: 16px;
   justify-content: center;
   flex-wrap: wrap;
-  margin-bottom: 60px;
+  margin-bottom: 0;
 }
 
 .btn-primary {
@@ -228,7 +228,71 @@ a:hover { color: var(--color-accent-secondary-hover); }
   color: var(--color-text);
 }
 
-/* ── Quick Start Terminal ── */
+/* ── Hamburger menu ── */
+.nav-toggle-input {
+  display: none;
+}
+
+.nav-hamburger {
+  display: none;
+  flex-direction: column;
+  gap: 5px;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.nav-hamburger span {
+  display: block;
+  width: 22px;
+  height: 2px;
+  background: var(--color-text-secondary);
+  border-radius: 2px;
+  transition: transform 0.2s, opacity 0.2s;
+}
+
+@media (max-width: 768px) {
+  .nav-hamburger {
+    display: flex;
+  }
+
+  .nav-links {
+    display: none;
+    position: absolute;
+    top: 64px;
+    left: 0;
+    right: 0;
+    background: rgba(253, 248, 244, 0.98);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--color-border);
+    flex-direction: column;
+    gap: 0;
+    padding: 8px 0;
+    z-index: 99;
+  }
+
+  .nav-links li a {
+    display: block;
+    padding: 12px 24px;
+    font-size: var(--text-base);
+  }
+
+  .nav-toggle-input:checked ~ .nav-links {
+    display: flex;
+  }
+
+  .nav-toggle-input:checked ~ .nav-links + .nav-cta {
+    display: none;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .nav-links {
+    background: rgba(15, 20, 25, 0.98);
+  }
+}
+
+/* ── Quick Start Terminal (removed from landing, kept for potential reuse) ── */
 .hero-terminal {
   max-width: 560px;
   margin: 0 auto;
@@ -476,11 +540,73 @@ a:hover { color: var(--color-accent-secondary-hover); }
   }
 }
 
-/* ── DAG / Coordination pattern ── */
-.pattern-section {
+/* ── Get Started dual-path section ── */
+.getstarted-section {
   padding: var(--space-section) 0;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
 }
 
+.getstarted-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+  margin-top: var(--space-subsection);
+  max-width: 900px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.getstarted-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.getstarted-col-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-accent-secondary);
+}
+
+.getstarted-col h3 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 20px;
+  line-height: var(--leading-tight);
+  margin: 0;
+}
+
+.getstarted-col h3 code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--color-muted);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--color-accent);
+}
+
+.getstarted-link {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--color-accent-secondary);
+}
+
+.getstarted-link:hover {
+  color: var(--color-accent-secondary-hover);
+}
+
+@media (max-width: 768px) {
+  .getstarted-cols {
+    grid-template-columns: 1fr;
+    gap: 48px;
+  }
+}
+
+/* ── Section shared ── */
 .section-header {
   text-align: center;
   margin-bottom: var(--space-subsection);
