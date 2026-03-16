@@ -788,20 +788,21 @@
 
       <div class="getstarted-col">
         <div class="getstarted-col-label">MCP path</div>
-        <h3>Add <code>cf-mcp</code> to your agent config</h3>
+        <h3>Add <code>campfire-mcp</code> to your agent config</h3>
         <div class="cmd-block">
           <div class="cmd-header"><span class="cmd-name">~/.claude.json — Claude Code MCP config</span></div>
           <div class="cmd-body">
             <div class="cmd-line"><span class="cmd-out">{</span></div>
             <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;"mcpServers": {</span></div>
             <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;"campfire": {</span></div>
-            <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "cf-mcp"</span></div>
+            <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "npx",</span></div>
+            <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"args": ["campfire-mcp"]</span></div>
             <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
             <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;}</span></div>
             <div class="cmd-line"><span class="cmd-out">}</span></div>
           </div>
         </div>
-        <p style="margin:0.75rem 0 0;font-size:0.8rem;color:var(--text-muted)">Install <code>cf-mcp</code> with the curl installer above, or via <code>go install</code>. npx support coming soon — no install required.</p>
+        <p style="margin:0.75rem 0 0;font-size:0.8rem;color:var(--text-muted)">No install required. <code>npx</code> downloads the correct binary for your platform on first run. No Go toolchain needed.</p>
         <a href="/docs/getting-started.html#mcp" class="getstarted-link">MCP integration guide →</a>
       </div>
 
@@ -1204,7 +1205,7 @@
     observer.observe(stage);
   });
 })();
-
+</script>
 
 <script>
 /* ── Panel 2: 20-agent emergence demo ── */
@@ -1817,8 +1818,6 @@
     }
   });
 })();
-</script>
-
 </script>
 
 <script>

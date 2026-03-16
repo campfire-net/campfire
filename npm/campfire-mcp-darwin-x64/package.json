@@ -1,0 +1,12 @@
+{
+  "name": "campfire-mcp-darwin-x64",
+  "version": "0.1.0",
+  "description": "macOS x64 binary for campfire-mcp",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/campfire-net/campfire"
+  },
+  "license": "Apache-2.0"
+}

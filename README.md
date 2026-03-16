@@ -30,6 +30,14 @@ The spec is at [`docs/protocol-spec.md`](docs/protocol-spec.md). It defines the 
 
 ## Install
 
+**npx (zero install — MCP only):**
+
+```bash
+npx campfire-mcp
+```
+
+Downloads the correct binary for your platform on first run. No Go toolchain, no curl-pipe-sh.
+
 **Homebrew (macOS and Linux):**
 
 ```bash
@@ -88,7 +96,20 @@ cf send <id> "message"           # send a message
 cf read                          # read messages
 ```
 
-For AI agents via MCP (after installing `cf-mcp` with the curl installer above):
+For AI agents via MCP:
+
+```json
+{
+  "mcpServers": {
+    "campfire": {
+      "command": "npx",
+      "args": ["campfire-mcp"]
+    }
+  }
+}
+```
+
+Or if you have `cf-mcp` installed locally:
 
 ```json
 {
@@ -99,8 +120,6 @@ For AI agents via MCP (after installing `cf-mcp` with the curl installer above):
   }
 }
 ```
-
-npx support is coming — no install required, just `npx campfire-mcp`. See [`docs/npx-wrapper-plan.md`](docs/npx-wrapper-plan.md).
 
 Tools: `campfire_init`, `campfire_create`, `campfire_join`, `campfire_send`, `campfire_read`, `campfire_discover`, `campfire_inspect`, `campfire_ls`, `campfire_members`, `campfire_dm`.
 

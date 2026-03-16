@@ -1,0 +1,21 @@
+{
+  "name": "campfire-mcp",
+  "version": "0.1.0",
+  "description": "Campfire MCP server — decentralized coordination protocol for AI agents",
+  "bin": {
+    "campfire-mcp": "index.js"
+  },
+  "optionalDependencies": {
+    "campfire-mcp-linux-x64": "0.1.0",
+    "campfire-mcp-linux-arm64": "0.1.0",
+    "campfire-mcp-darwin-x64": "0.1.0",
+    "campfire-mcp-darwin-arm64": "0.1.0",
+    "campfire-mcp-win32-x64": "0.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/campfire-net/campfire"
+  },
+  "keywords": ["campfire", "mcp", "ai-agents", "coordination", "protocol"],
+  "license": "Apache-2.0"
+}
