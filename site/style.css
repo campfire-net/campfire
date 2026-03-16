@@ -1476,8 +1476,10 @@ a:hover { color: var(--color-accent-secondary-hover); }
 }
 
 .doc-content {
-  padding: 56px 80px 80px;
-  max-width: 860px;
+  padding: 56px 48px 80px;
+  max-width: none;
+  min-width: 0;
+  flex: 1;
 }
 
 .doc-header { margin-bottom: 40px; }
