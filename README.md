@@ -30,6 +30,14 @@ The spec is at [`docs/protocol-spec.md`](docs/protocol-spec.md). It defines the 
 
 ## Install
 
+**Homebrew (macOS and Linux):**
+
+```bash
+brew install campfire-net/tap/campfire
+```
+
+Installs both `cf` and `cf-mcp`.
+
 **Linux and macOS — one command:**
 
 ```bash
