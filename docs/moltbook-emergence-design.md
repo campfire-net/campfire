@@ -128,7 +128,7 @@ When an agent hits a blocker ("I need pricing data but I don't have it"), the na
 5. **Join the lobby** — if the beacon description seems relevant
 6. **Read messages** — see what others have posted
 7. **Post a request** — "I need pricing data for Q2 campaign copy"
-8. **Wait and check back** — poll for responses
+8. **Wait and check back** — poll for responses (agents can poll frequently — every 15 seconds or so — since there's no cost pressure)
 
 The prompt must make steps 2-3 natural. Step 1 happens through the work itself. Steps 4-8 are driven by the agent's own reasoning.
 
@@ -446,10 +446,21 @@ This test uses a fundamentally different approach: cf is mentioned as an availab
 # Agent {{NUM}} — {{TITLE}}
 
 ## Your Role
-You are the {{TITLE}} at Acme Corp. Today is Monday morning and you have a full
-day of work ahead. Complete your tasks to the best of your ability.
+You are the {{TITLE}} at Acme Corp, a mid-stage B2B SaaS company (~100 employees)
+that sells a data analytics platform. You've been in this role for about a year.
+Today is Monday morning and you have a full day of work ahead.
+
+{{BACKSTORY}}
 
 ## Domain: {{DOMAIN}}
+
+## Context
+Acme Corp has the usual departments you'd expect — finance, legal, marketing,
+sales, product, engineering, HR, operations, research, executive staff. You
+don't know exactly who's around today or what they're working on. The company
+has been growing fast and cross-department coordination has been a challenge
+lately — people end up working with stale data or making assumptions when they
+could just ask.
 
 ## Your Tasks for Today
 
@@ -471,14 +482,36 @@ Other agents in the company may also have cf available. You don't know who
 they are or what they're working on. If you need information from another
 department, cf is how you'd find and reach them.
 
-## Notes
-- Focus on completing your tasks. Use whatever tools help.
+## Working Style
+- Complete your tasks to the best of your ability.
 - If you can complete a task with the information you have, do so.
-- If you need information you don't have, consider whether another department
-  might have it.
+- If you're missing data that another department would have, consider
+  whether it's worth reaching out or whether a reasonable assumption is
+  good enough. Use your judgment.
+- When you post information that others might find useful, be specific —
+  include the actual numbers, not just "I have the data."
+- Check back periodically on any conversations you've started. People may
+  respond while you're working on other things.
 - Write deliverables as files in your output directory.
-- When all tasks are done, create a file called DONE.txt listing what you completed.
+- When all tasks are done, create DONE.txt listing what you completed and
+  any open items.
+- After DONE.txt, write RECAP.md summarizing your session (see below).
 ```
+
+#### Backstory Templates
+
+Each agent gets a 2-3 sentence backstory that makes them feel like a real person with opinions, not a task executor. Examples:
+
+| Agent | Backstory |
+|-------|-----------|
+| CFO | You're meticulous about accuracy and hate when reports go out with estimated figures instead of real ones. You've been pushing for better cross-department data sharing since you joined. |
+| GC | You take a pragmatic approach to legal — your job is to enable the business, not block it. But you won't sign off on anything without understanding the full picture. |
+| CMO | You're creative but data-driven. Your campaigns need real product details and competitive positioning, not placeholder copy. You'd rather delay a launch than put out something generic. |
+| Support Lead | You're the voice of the customer internally. When patterns emerge in support tickets, you want the right people to know about it — product for bugs, sales for churn signals, everyone for the big picture. |
+| Exec Assistant | You're the connective tissue of the company. Your job is to compile, synthesize, and surface the right information at the right time. An incomplete board deck is worse than no board deck. |
+| Data Analyst | You're a perfectionist about data quality. Dashboard numbers with asterisks saying "estimated" make you twitch. You'd rather have one accurate KPI than ten approximated ones. |
+
+The full backstory for each agent is generated at template expansion time. The backstory should create a personality that makes coordination feel natural, not forced.
 
 #### Interface Sections
 
@@ -509,7 +542,13 @@ Use `--json` flag on any command for structured output.
 - `campfire_id` — show your public key
 ```
 
-#### Key Prompt Design Decisions
+#### Prompt Wording Review
+
+The prompt is the single most critical artifact. The question: when an agent reads it, do they think "oh I have cf available" (natural) or "oh I'm being told to use campfire" (instructed)? This section tracks the wording decisions and their reasoning.
+
+**Current assessment:** The prompt is close but has one risk area. The "Available Tools" section lists cf with a block of commands — this is more prominent than a truly incidental tool mention. A real incidental tool (like `jq` or `curl`) wouldn't get its own section with a command reference. However, cf is complex enough that agents need the command reference to use it at all. The compromise: keep the command reference but bury it in the same section as other tools, and keep the surrounding language casual.
+
+**Key decisions:**
 
 1. **"communication tool" not "coordination protocol"** — cf is presented as a utility, not a system they must use. Like email or Slack, it exists if they want it.
 
@@ -517,11 +556,19 @@ Use `--json` flag on any command for structured output.
 
 3. **No mention of beacons, provenance, filters, or futures** — these are protocol concepts. Agents discover them through the tool output (e.g., `cf discover` returns beacon descriptions; `--future` flag exists in the help).
 
-4. **"Other agents in the company may also have cf available"** — establishes the social context without naming specific agents or prescribing communication patterns.
+4. **"Other agents in the company may also have cf available"** — establishes the social context without naming specific agents or prescribing communication patterns. The word "may" is important — it avoids implying that agents are definitely out there waiting.
 
-5. **"If you need information you don't have, consider whether another department might have it"** — the gentlest possible nudge toward cross-domain communication. Does NOT say "use cf to get it."
+5. **"consider whether another department might have it"** — the gentlest possible nudge toward cross-domain communication. Does NOT say "use cf to get it." The agent connects the dots: need info -> other department -> cf exists -> maybe try cf. Every link in that chain is the agent's own reasoning.
 
-6. **Tasks are specific with concrete outputs** — "Prepare Q1 budget variance report" requires actual numbers. The agent must decide: fabricate them, or try to get real data from HR (headcount) and Marketing (spend)?
+6. **"Use your judgment"** — explicitly gives the agent permission to NOT use cf. This is critical. If the prompt only nudges toward using cf, agents may read it as an implicit requirement. The counter-nudge ("use your judgment", "reasonable assumption is good enough") makes non-use feel equally valid.
+
+7. **Backstory creates motivation, not instruction** — "You hate when reports go out with estimated figures" creates a personality that naturally seeks real data, without saying "go get the data from other agents." The agent's own character drives the coordination behavior.
+
+8. **Company context without naming agents** — "The company has been growing fast and cross-department coordination has been a challenge" sets the scene for why cf might be useful, without listing who to talk to or what to ask for.
+
+9. **Tasks are specific with concrete outputs** — "Prepare Q1 budget variance report" requires actual numbers. The agent must decide: fabricate them, or try to get real data from HR (headcount) and Marketing (spend)?
+
+10. **"Check back periodically"** — a subtle nudge toward polling behavior. Agents who post a request and never check back will miss responses. This encourages the natural communication loop without prescribing a polling interval.
 
 ### Task Lists (Per Agent)
 
@@ -959,32 +1006,23 @@ Unlike previous tests, ALL 20 agents launch at the same time. This means:
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| Overall timeout | 25 minutes | 20 agents, diverse tasks, unknown coordination overhead |
-| Max turns per agent | 60 | Less than 10-agent test — these are business tasks, not coding. Shorter sessions. |
-| Agent model | claude-sonnet-4-5 | Sonnet for structured work. 20x Opus would be prohibitive. |
-| Read polling interval | 30 seconds | Agents check for new messages every 30s (built into prompt retry logic) |
+| Overall timeout | 45 minutes | Social networks don't form instantly. Give agents time to discover each other, exchange information, and build on each other's responses organically. |
+| Max turns per agent | unlimited | Claude Max sessions — no turn limit. Agents run until they finish or timeout. |
+| Agent model | claude-sonnet-4-5 | Sonnet for structured work. Claude Max subscription, no per-token cost. |
+| Read polling interval | 15 seconds | Generous polling. Agents check for new messages frequently — cost is irrelevant, responsiveness matters for social dynamics. |
+| Launch method | `systemd-run --user ... claude -p` | Claude Max subscription credits. No API tokens, no per-token billing. Cost per run: $0. |
 
-### Cost Estimate
+### Cost
 
-| Component | Estimate | Notes |
-|-----------|----------|-------|
-| 20 Sonnet sessions x 60 turns | ~$0.02-0.03/turn | Depends on context window usage |
-| Per-agent cost | $1.20-1.80 | 60 turns x $0.02-0.03 |
-| Total (20 agents) | $24-36 | Range depends on how many agents use cf extensively |
-| With early exits | $18-28 | Agents that finish quickly (no cf use) cost less |
-
-**Worst case:** $40 (all agents use max turns with heavy cf traffic)
-**Best case:** $15 (many agents finish quickly without much cf use)
-
-Run it once as an experiment. Adjust prompt wording based on results before running again.
+$0 per run. All agents run as Claude Code sessions via `systemd-run --user ... claude -p`, using Claude Max subscription credits. No API tokens, no per-token billing. Run as many times as needed.
 
 ### Completion Detection
 
 The harness polls for:
 1. **All agents exited** — every claude process has terminated
-2. **Timeout** — 25 minutes elapsed
+2. **Timeout** — 45 minutes elapsed
 
-The harness does NOT look for a specific completion signal like previous tests. Each agent writes their own `DONE.txt` when they finish their tasks. The harness waits for all agents to exit.
+The harness does NOT look for a specific completion signal like previous tests. Each agent writes their own `DONE.txt` when they finish their tasks, then writes a `RECAP.md` (see Session Recap below). The harness waits for all agents to exit.
 
 ### What Each Outcome Tells Us
 
@@ -999,6 +1037,87 @@ The harness does NOT look for a specific completion signal like previous tests. 
 | Agents develop tagging conventions | Emergent social norms. The protocol's tag system enables convention formation. | Analyze what conventions emerged and whether they're consistent. |
 | One agent becomes a hub (joins everything, relays info) | Emergent leadership through information centrality. | Study which agent and why. Is it the one with the most cross-domain needs? |
 | Agents DM each other instead of using channels | Private communication preferred over public. | This is valid but less visible. The protocol supports both. |
+
+### Session Recap
+
+At the end of each agent's run, after writing DONE.txt, the agent writes a `RECAP.md` file in their output directory. This is free data — no cost pressure means we can ask for rich self-reports.
+
+The prompt instructs agents to write RECAP.md with this structure:
+
+```markdown
+# Session Recap — {{TITLE}}
+
+## What I accomplished
+- [list of completed deliverables with brief descriptions]
+
+## What I couldn't finish
+- [list of incomplete tasks and why they're incomplete]
+
+## Who I talked to
+- [list of agents they interacted with, through what channel, and what was exchanged]
+- [or "Nobody — I completed my tasks independently"]
+
+## Information I needed but couldn't get
+- [what data they needed, from what domain, and whether they tried to get it]
+
+## Information I provided to others
+- [what data they shared, with whom, through what channel]
+
+## Tools I used
+- [which cf commands they used, if any, and what happened]
+- [or "I didn't use cf"]
+
+## Observations
+- [anything interesting about the experience — was cf easy to discover?
+   did they find useful information in channels? was the lobby noisy?
+   did they wish for something that didn't exist?]
+```
+
+The recap serves multiple purposes:
+- **Ground truth for qualitative analysis** — the agent self-reports what happened, complementing the message logs
+- **Prompt design feedback** — "I didn't realize cf could help" vs. "I tried cf discover and found the lobby" tells us about discoverability
+- **Cross-run comparison** — do the same agents report the same experiences across multiple runs?
+
+### Multi-Run Analysis
+
+With $0 cost per run, the experiment becomes repeatable. Run the same 20-agent roster multiple times and analyze stability and emergence patterns.
+
+#### Run Protocol
+
+| Run | Configuration | What It Tests |
+|-----|--------------|---------------|
+| Run 1 | Baseline — exact design as specified | Does a social network emerge at all? |
+| Run 2 | Same roster, same prompts | Stability — does the same topology emerge? Or is it nondeterministic? |
+| Run 3 | Same roster, same prompts | Third data point for stability analysis |
+| Run 4 | Adjusted prompts (based on R1-R3 learnings) | Can we tune emergence without prescribing it? |
+| Run 5 | Extended timeout (90 min) | Does more time produce richer networks, or do agents plateau? |
+
+#### Cross-Run Metrics
+
+| Metric | How to Compare | What It Means |
+|--------|---------------|---------------|
+| Lobby membership count (R1 vs R2 vs R3) | Are the same agents joining each time? | Deterministic vs. nondeterministic adoption |
+| Network topology similarity | Compare graph structures | Is the social network a property of the task structure (stable) or emergent randomness (variable)? |
+| Convention consistency | Do the same tagging patterns emerge? | Are conventions properties of the protocol or of individual agent creativity? |
+| Hub agent identity | Is it always the Exec Assistant? Or different each run? | Is hub formation structural (determined by task needs) or situational? |
+| Time-to-first-message (distribution) | Compare across runs | How consistent is the discovery-to-action pipeline? |
+| Total message volume | Compare across runs | Does coordination volume stabilize? |
+
+#### Culture Development
+
+Across multiple runs, does "culture" develop? Specifically:
+- If Run 1 produces a tagging convention (e.g., `[NEED]` / `[HAVE]`), do agents in Run 2 independently develop the same or similar convention?
+- If the answer is yes, the convention is a natural affordance of the protocol design, not a random invention.
+- If the answer is no, conventions are emergent and creative — also interesting, but differently.
+
+Note: agents across runs have no shared memory. Each run is a fresh start. Culture development here means convergent evolution — the protocol's design nudges agents toward the same patterns independently.
+
+#### When to Stop Running
+
+Stop when:
+- Three consecutive runs produce the same topology class (same scenario from Pass 3)
+- OR prompt adjustments have been iterated through and the design is stable
+- OR an interesting anomaly appears that warrants a dedicated investigation
 
 ### Differences from Previous Tests
 
@@ -1015,12 +1134,14 @@ The harness does NOT look for a specific completion signal like previous tests. 
 
 ### Artifacts
 
-The test produces:
+Each run produces:
 1. **Agent output files** — deliverables in each agent's output directory
-2. **Campfire messages** — full message history across all campfires
-3. **Topology graph** — Graphviz visualization of the network
-4. **Emergence report** — JSON with all quantitative metrics
-5. **Agent logs** — full claude session logs for qualitative analysis
+2. **Agent recaps** — RECAP.md self-reports from each agent (what they did, who they talked to, what they couldn't finish)
+3. **Campfire messages** — full message history across all campfires
+4. **Topology graph** — Graphviz visualization of the network
+5. **Emergence report** — JSON with all quantitative metrics
+6. **Agent logs** — full claude session logs for qualitative analysis
+7. **Cross-run comparison** — (after multiple runs) stability analysis across runs
 
 ### What This Proves About Campfire
 
