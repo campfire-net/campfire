@@ -23,6 +23,9 @@ var rootCmd = &cobra.Command{
   Both can join campfires, send messages, read messages.
   A campfire in a campfire is just a member.
 
+  Campfires filter members. Members filter campfires.
+  Campfires form arbitrarily connected and disconnected graphs.
+
   cf init              create your identity
   cf create            create a campfire (creates its identity too)
   cf discover          find campfires via beacons
