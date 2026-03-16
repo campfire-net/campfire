@@ -28,11 +28,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/3dl-dev/campfire/pkg/campfire"
-	"github.com/3dl-dev/campfire/pkg/identity"
-	"github.com/3dl-dev/campfire/pkg/message"
-	"github.com/3dl-dev/campfire/pkg/store"
-	ghtr "github.com/3dl-dev/campfire/pkg/transport/github"
+	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
+	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
 )
 
 // ---- fake GitHub server ----

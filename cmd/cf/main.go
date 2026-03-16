@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/3dl-dev/campfire/cmd/cf/cmd"
+	"github.com/campfire-net/campfire/cmd/cf/cmd"
 )
 
 func main() {

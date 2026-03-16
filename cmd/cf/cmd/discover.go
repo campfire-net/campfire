@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/3dl-dev/campfire/pkg/beacon"
+	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/spf13/cobra"
 )
 

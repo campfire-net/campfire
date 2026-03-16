@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/3dl-dev/campfire/pkg/store"
-	"github.com/3dl-dev/campfire/pkg/threshold"
+	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/threshold"
 )
 
 // PeerInfo holds a peer's public key hex and HTTP endpoint.

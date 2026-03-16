@@ -6,9 +6,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/3dl-dev/campfire/pkg/identity"
-	"github.com/3dl-dev/campfire/pkg/store"
-	cfhttp "github.com/3dl-dev/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/store"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	"github.com/spf13/cobra"
 )
 

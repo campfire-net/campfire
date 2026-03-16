@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/3dl-dev/campfire/pkg/message"
-	cfhttp "github.com/3dl-dev/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/pkg/message"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // TestPollReceivesMessages: pre-store 2 messages, call Poll(cursor=0),

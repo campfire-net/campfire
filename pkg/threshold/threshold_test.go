@@ -4,7 +4,7 @@ import (
 	"crypto/ed25519"
 	"testing"
 
-	"github.com/3dl-dev/campfire/pkg/threshold"
+	"github.com/campfire-net/campfire/pkg/threshold"
 )
 
 // TestDKG3of3 verifies that a 3-participant DKG completes successfully and all

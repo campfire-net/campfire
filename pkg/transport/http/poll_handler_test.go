@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	cfencoding "github.com/3dl-dev/campfire/pkg/encoding"
-	"github.com/3dl-dev/campfire/pkg/identity"
-	"github.com/3dl-dev/campfire/pkg/message"
-	"github.com/3dl-dev/campfire/pkg/store"
-	cfhttp "github.com/3dl-dev/campfire/pkg/transport/http"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // doPoll performs an authenticated GET /campfire/{id}/poll request.

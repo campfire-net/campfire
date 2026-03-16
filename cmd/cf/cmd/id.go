@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/3dl-dev/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/spf13/cobra"
 )
 

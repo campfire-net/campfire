@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/3dl-dev/campfire/pkg/campfire"
-	"github.com/3dl-dev/campfire/pkg/message"
-	"github.com/3dl-dev/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
 )
 
 const defaultPollIntervalSecs = 30

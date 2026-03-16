@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	cfencoding "github.com/3dl-dev/campfire/pkg/encoding"
-	"github.com/3dl-dev/campfire/pkg/message"
-	"github.com/3dl-dev/campfire/pkg/store"
-	"github.com/3dl-dev/campfire/pkg/threshold"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/threshold"
 	frostmessages "github.com/taurusgroup/frost-ed25519/pkg/messages"
 )
 

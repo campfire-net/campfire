@@ -314,7 +314,7 @@ type BeaconSignInput struct {
 
 ### Go Module Path
 
-`github.com/3dl-dev/campfire`
+`github.com/campfire-net/campfire`
 
 ### Dependencies
 
