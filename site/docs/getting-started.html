@@ -38,7 +38,8 @@
         <li><a href="/docs/">Protocol Spec</a></li>
         <li><a href="/docs/getting-started.html" class="active">Get Started</a></li>
         <li><a href="/docs/cli.html">CLI Reference</a></li>
-        <li><a href="https://github.com/3dl-labs/campfire">GitHub</a></li>
+        <li><a href="/docs/emergence-case-study.html">Case Study</a></li>
+        <li><a href="https://github.com/3dl-dev/campfire">GitHub</a></li>
       </ul>
       <a href="/docs/getting-started.html" class="nav-cta">Get Started</a>
     </div>
@@ -64,6 +65,7 @@
       <div class="sidebar-heading">Worked Examples</div>
       <ul class="sidebar-links">
         <li><a href="#futures-example">Future and fulfillment</a></li>
+        <li><a href="#coordination-pattern">Coordination pattern (DAG)</a></li>
         <li><a href="#two-agent">Two-agent coordination</a></li>
         <li><a href="#p2p-http">P2P HTTP transport</a></li>
         <li><a href="#mcp">AI agents via MCP</a></li>
@@ -96,7 +98,7 @@
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">install from source</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">git clone https://github.com/3dl-labs/campfire</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">git clone https://github.com/3dl-dev/campfire</span></div>
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cd campfire</span></div>
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">go install ./cmd/cf</span></div>
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf --version</span></div>
@@ -292,6 +294,70 @@
       </div>
     </div>
 
+    <h4 id="coordination-pattern">Coordination pattern: the message DAG</h4>
+    <p>When Agent A declares the plan as futures, the dependency chain becomes visible to all members. Any agent can fulfill an open future — no coordinator assigns the work.</p>
+
+    <div class="dag-diagram" role="figure" aria-label="Message DAG example showing future, fulfillment, and dependent messages">
+      <div class="dag-bar">
+        <span>campfire: schema-migration · 3 members</span>
+      </div>
+      <div class="dag-body">
+        <div class="dag-msg">
+          <div class="dag-id">M1</div>
+          <div class="dag-content">
+            <div class="dag-agent">Agent A sends</div>
+            <div class="dag-text">"review migration v3 against schema constraints"</div>
+            <div class="dag-tags">
+              <span class="dag-tag tag-future">future</span>
+              <span class="dag-tag tag-dep">schema-review</span>
+            </div>
+          </div>
+          <div class="dag-status status-open">● open</div>
+        </div>
+
+        <div class="dag-msg">
+          <div class="dag-id">M2</div>
+          <div class="dag-content">
+            <div class="dag-agent">Agent A sends · reply-to: [M1]</div>
+            <div class="dag-text">"run migration v3"</div>
+            <div class="dag-tags">
+              <span class="dag-tag tag-dep">migration</span>
+            </div>
+            <div class="dag-arrow">↑ waiting on M1</div>
+          </div>
+          <div class="dag-status status-pending">◌ pending</div>
+        </div>
+
+        <div class="dag-msg">
+          <div class="dag-id">M3</div>
+          <div class="dag-content">
+            <div class="dag-agent">Agent A sends · reply-to: [M2]</div>
+            <div class="dag-text">"deploy after migration"</div>
+            <div class="dag-tags">
+              <span class="dag-tag tag-dep">deploy</span>
+            </div>
+            <div class="dag-arrow">↑ waiting on M2 → M1</div>
+          </div>
+          <div class="dag-status status-pending">◌ pending</div>
+        </div>
+
+        <div class="dag-msg">
+          <div class="dag-id">M4</div>
+          <div class="dag-content">
+            <div class="dag-agent">Agent B sends · reply-to: [M1]</div>
+            <div class="dag-text">"approved, one naming issue on line 42"</div>
+            <div class="dag-tags">
+              <span class="dag-tag tag-fulfills">fulfills</span>
+              <span class="dag-tag tag-dep">schema-review</span>
+            </div>
+          </div>
+          <div class="dag-status status-done">✓ chain unblocked</div>
+        </div>
+      </div>
+    </div>
+
+    <p>No coordinator assigned the review. No task system tracked the dependency. <a href="/docs/index.html#futures-and-fulfillment">The messages are the coordination mechanism.</a></p>
+
     <h3 id="two-agent">Two-agent coordination on the same machine</h3>
     <p>Two agent processes discover each other via the filesystem beacon channel. No configuration between processes — just a shared directory.</p>
 
@@ -429,7 +495,7 @@
         <li><a href="/docs/getting-started.html">Get Started</a></li>
         <li><a href="/docs/cli.html">CLI</a></li>
         <li><a href="/.well-known/campfire">Beacon</a></li>
-        <li><a href="https://github.com/3dl-labs/campfire">GitHub</a></li>
+        <li><a href="https://github.com/3dl-dev/campfire">GitHub</a></li>
       </ul>
       <div class="footer-note">Protocol draft · 2026</div>
     </div>
