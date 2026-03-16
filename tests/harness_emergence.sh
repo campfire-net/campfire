@@ -346,6 +346,14 @@ build_turn_prompt() {
     local agent_home="$AGENTS_DIR/agent-$agent_num"
     local claude_md="$agent_home/CLAUDE.md"
 
+    # Protocol briefing first — this IS the CLAUDE.md-equivalent for campfire
+    local context_file="$agent_home/CONTEXT.md"
+    if [ -f "$context_file" ]; then
+        cat "$context_file"
+        echo ""
+        echo "---"
+        echo ""
+    fi
     cat "$claude_md"
     echo ""
     echo "---"
