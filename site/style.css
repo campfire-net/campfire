@@ -1508,6 +1508,172 @@ a:hover { color: var(--color-accent-secondary-hover); }
   .hero { padding-top: 60px; }
 }
 
+/* ── Emergence demo (20-agent case study) ── */
+
+/* Override stage for wider campfire log on this page */
+.emergence-stage {
+  grid-template-columns: 1.1fr 0.9fr;
+}
+
+/* Taller campfire log — more messages to show */
+.emergence-stage .demo-campfire {
+  min-height: 520px;
+  max-height: 620px;
+}
+
+.emergence-stage .emergence-agents {
+  min-height: 520px;
+  max-height: 620px;
+}
+
+/* Campfire header has pills — flex wrap so they sit below meta */
+.emergence-stage .demo-campfire-header {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 18px;
+}
+
+/* Campfire pills showing which cf is active */
+.emergence-cf-pills {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+  margin-top: 2px;
+}
+
+.emergence-cf-pill {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid #3A3330;
+  color: #57534E;
+  cursor: default;
+  transition: color 0.3s, border-color 0.3s, background 0.3s;
+}
+
+.emergence-cf-pill.active {
+  color: #F59E0B;
+  border-color: #F59E0B;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.emergence-cf-pill.formed {
+  color: #0F766E;
+  border-color: #0F766E;
+  background: rgba(15, 118, 110, 0.1);
+}
+
+/* Special log entry for sub-campfire creation moment */
+.demo-log-milestone {
+  color: #F59E0B;
+  font-weight: 600;
+  border-left: 3px solid #F59E0B;
+  padding-left: 10px;
+  margin: 2px 0;
+}
+
+.demo-log-subcf {
+  color: #0F766E;
+  font-weight: 600;
+  border-left: 3px solid #0F766E;
+  padding-left: 10px;
+  margin: 2px 0;
+}
+
+/* Domain group tabs — 2-row compact layout */
+.emergence-domain-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+
+.emergence-domain-tab {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #57534E;
+  background: #222;
+  border: 1px solid #3A3330;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s, border-color 0.2s;
+  flex-shrink: 0;
+}
+
+.emergence-domain-tab:hover {
+  color: #A8A29E;
+  background: #2A2420;
+}
+
+.emergence-domain-tab.active {
+  color: #F59E0B;
+  background: #2A2014;
+  border-color: #F59E0B;
+}
+
+.emergence-domain-tab.has-message {
+  animation: emergenceDomainPulse 0.5s ease-out;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes emergenceDomainPulse {
+    0% { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0.5); }
+    100% { box-shadow: 0 0 0 6px rgba(15, 118, 110, 0); }
+  }
+}
+
+/* Agent sub-tabs for the emergence demo — more compact */
+.emergence-agent-tabs .demo-agent-tab {
+  padding: 6px 12px;
+  font-size: 11px;
+}
+
+/* Emergence summary block */
+.emergence-summary {
+  max-width: 1120px;
+  margin: 20px auto 0;
+  text-align: center;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+  pointer-events: none;
+}
+
+.emergence-summary.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+@media (max-width: 768px) {
+  .emergence-stage {
+    grid-template-columns: 1fr;
+  }
+  .emergence-stage .demo-campfire {
+    min-height: 280px;
+    max-height: 340px;
+  }
+  .emergence-stage .emergence-agents {
+    min-height: 360px;
+    max-height: 440px;
+  }
+  .emergence-domain-tabs {
+    gap: 3px;
+  }
+  .emergence-domain-tab {
+    font-size: 9px;
+    padding: 3px 6px;
+  }
+}
+
 /* ── Proof section (5-agent test) ── */
 .proof-section {
   padding: var(--space-section) 0;
