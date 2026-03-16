@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build binaries
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+          OUTDIR="dist"
+          mkdir -p "${OUTDIR}"
+
+          declare -a TARGETS=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+          )
+
+          for TARGET in "${TARGETS[@]}"; do
+            OS="${TARGET%/*}"
+            ARCH="${TARGET#*/}"
+            LABEL="${OS}_${ARCH}"
+
+            for CMD in cf cf-mcp; do
+              BIN="${CMD}"
+              if [ "${OS}" = "windows" ]; then
+                BIN="${CMD}.exe"
+              fi
+
+              GOOS="${OS}" GOARCH="${ARCH}" go build \
+                -ldflags "${LDFLAGS}" \
+                -o "${OUTDIR}/${CMD}_${LABEL}/${BIN}" \
+                "./cmd/${CMD}"
+            done
+
+            # Archive: tar.gz for linux/darwin, zip for windows
+            if [ "${OS}" = "windows" ]; then
+              (cd "${OUTDIR}" && zip -r "cf_${LABEL}.zip" "cf_${LABEL}/" "cf-mcp_${LABEL}/")
+            else
+              tar -czf "${OUTDIR}/cf_${LABEL}.tar.gz" \
+                -C "${OUTDIR}" \
+                "cf_${LABEL}/" "cf-mcp_${LABEL}/"
+            fi
+          done
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz *.zip > checksums.txt
+          cat checksums.txt
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          # Get commits since the previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "${PREV_TAG}" ]; then
+            NOTES=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges)
+          else
+            NOTES=$(git log --pretty=format:"- %s" --no-merges)
+          fi
+          # Write to file to handle multiline safely
+          {
+            echo "## Changes"
+            echo ""
+            echo "${NOTES}"
+          } > /tmp/release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/release_notes.md
+          generate_release_notes: false
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
