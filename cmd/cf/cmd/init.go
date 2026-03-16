@@ -12,37 +12,86 @@ import (
 
 var forceInit bool
 
-var initCmd = &cobra.Command{
-	Use:   "init",
-	Short: "Generate a new agent identity (Ed25519 keypair)",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		path := IdentityPath()
+var initName string
 
-		if identity.Exists(path) && !forceInit {
-			fmt.Fprintf(os.Stderr, "Identity already exists at %s\nUse --force to overwrite.\n", path)
-			return fmt.Errorf("identity already exists")
+var initCmd = &cobra.Command{
+	Use:   "init [--name agent-name]",
+	Short: "Generate a new agent identity (Ed25519 keypair)",
+	Long: `Create a campfire identity.
+
+  cf init                  session identity (disposable)
+  cf init --name worker-1  persistent identity (survives across sessions)
+
+Named identities live at ~/.campfire/agents/<name>/. Use when other agents
+need to recognize you across sessions. Session identities use CF_HOME.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfHome := CFHome()
+
+		// Named identity: persistent agent
+		if initName != "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("cannot determine home directory: %w", err)
+			}
+			cfHome = filepath.Join(home, ".campfire", "agents", initName)
+			// Override for downstream calls
+			cfHome = cfHome
 		}
 
-		id, err := identity.Generate()
+		identityPath := filepath.Join(cfHome, "identity.json")
+
+		if identity.Exists(identityPath) && !forceInit {
+			agentID, err := identity.Load(identityPath)
+			if err != nil {
+				return fmt.Errorf("loading identity: %w", err)
+			}
+			if jsonOutput {
+				out := map[string]string{"status": "exists", "public_key": agentID.PublicKeyHex(), "location": cfHome}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+			fmt.Fprintf(os.Stderr, "Identity already exists at %s\n", cfHome)
+			fmt.Println(agentID.PublicKeyHex())
+			return nil
+		}
+
+		if err := os.MkdirAll(cfHome, 0700); err != nil {
+			return fmt.Errorf("creating directory: %w", err)
+		}
+
+		agentID, err := identity.Generate()
 		if err != nil {
 			return fmt.Errorf("generating identity: %w", err)
 		}
 
-		if err := id.Save(path); err != nil {
+		if err := agentID.Save(identityPath); err != nil {
 			return fmt.Errorf("saving identity: %w", err)
 		}
 
 		// Write CONTEXT.md alongside the identity
-		writeContext(CFHome())
+		writeContext(cfHome)
 
 		if jsonOutput {
-			out := map[string]string{"public_key": id.PublicKeyHex()}
+			out := map[string]string{"status": "created", "public_key": agentID.PublicKeyHex(), "location": cfHome}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			return enc.Encode(out)
 		}
 
-		fmt.Println(id.PublicKeyHex())
+		identityType := "session (disposable)"
+		if initName != "" {
+			identityType = fmt.Sprintf("persistent agent '%s'", initName)
+		}
+
+		fmt.Printf(`Identity created: %s
+Type: %s
+Location: %s
+
+Next: cf discover    find campfires
+      cf create      start one
+      cf join <id>   join one
+`, agentID.PublicKeyHex(), identityType, cfHome)
 		return nil
 	},
 }
@@ -126,5 +175,6 @@ func writeContext(cfHome string) {
 
 func init() {
 	initCmd.Flags().BoolVar(&forceInit, "force", false, "overwrite existing identity")
+	initCmd.Flags().StringVar(&initName, "name", "", "persistent agent name (survives across sessions)")
 	rootCmd.AddCommand(initCmd)
 }

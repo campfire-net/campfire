@@ -188,10 +188,14 @@ func init() {
 	tools = []mcpToolInfo{
 		{
 			Name:        "campfire_init",
-			Description: "Generate a new agent identity (Ed25519 keypair). Only creates if one does not exist, unless force=true.",
+			Description: "Generate a campfire identity. No name = disposable session identity. With name = persistent agent identity that survives across sessions.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Persistent agent name (e.g. 'worker-1'). Omit for a disposable session identity.",
+					},
 					"force": map[string]interface{}{
 						"type":        "boolean",
 						"description": "Overwrite existing identity",
@@ -390,40 +394,64 @@ func mustJSON(v interface{}) json.RawMessage {
 // ---------------------------------------------------------------------------
 
 func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	name := getStr(params, "name")
+
+	// Named identity: persistent agent across sessions
+	// No name: session-scoped identity (disposable)
+	if name != "" {
+		home, _ := os.UserHomeDir()
+		namedHome := filepath.Join(home, ".campfire", "agents", name)
+		s.cfHome = namedHome
+	}
+
 	force := getBool(params, "force")
 	path := s.identityPath()
 
+	status := "created"
+	var agentID *identity.Identity
+
 	if identity.Exists(path) && !force {
-		// Load and return existing
-		agentID, err := identity.Load(path)
+		var err error
+		agentID, err = identity.Load(path)
 		if err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("loading identity: %v", err))
 		}
-		result, _ := toolResultJSON(map[string]string{
-			"status":     "exists",
-			"public_key": agentID.PublicKeyHex(),
-		})
-		return okResponse(id, result)
+		status = "exists"
+	} else {
+		var err error
+		agentID, err = identity.Generate()
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("generating identity: %v", err))
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("creating directory: %v", err))
+		}
+		if err := agentID.Save(path); err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("saving identity: %v", err))
+		}
 	}
 
-	agentID, err := identity.Generate()
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("generating identity: %v", err))
+	identityType := "session (disposable)"
+	if name != "" {
+		identityType = fmt.Sprintf("persistent agent '%s'", name)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("creating directory: %v", err))
-	}
+	guide := fmt.Sprintf(`Identity %s: %s
+Type: %s
+Location: %s
 
-	if err := agentID.Save(path); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("saving identity: %v", err))
-	}
+You are now a campfire identity. Next steps:
+- campfire_discover() — find campfires via beacons
+- campfire_join({campfire_id: "..."}) — join one
+- campfire_create({description: "..."}) — start one
+- campfire_send / campfire_read — communicate
 
-	result, _ := toolResultJSON(map[string]string{
-		"status":     "created",
-		"public_key": agentID.PublicKeyHex(),
-	})
-	return okResponse(id, result)
+Identity model:
+- Session identity (no name): disposable, other agents won't recognize you next time.
+- Named identity (name: "worker-1"): persistent, survives across sessions. Use when others need to recognize you.`,
+		status, agentID.PublicKeyHex(), identityType, s.cfHome)
+
+	return okResponse(id, toolResult(guide))
 }
 
 func (s *server) handleID(id interface{}, _ map[string]interface{}) jsonRPCResponse {
