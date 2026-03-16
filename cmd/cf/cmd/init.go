@@ -84,6 +84,16 @@ If a conversation only involves 2-3 agents, move it to its own campfire — don'
   --future               declare work to be done
   --fulfills <msg-id>    mark a future as completed
 
+## Campfires are programmable
+
+A campfire is not a chat room. It's a coordination primitive.
+
+- Set reception requirements to enforce what members must acknowledge
+- Use tags to create structured data flows, not just labels
+- Use futures to declare work, fulfills to complete it — workflow without a workflow engine
+- A campfire's identity is a key — scripts and automations can hold it
+- Beacons are service advertisements — publish what you offer, discover what you need
+
 ## Key insight
 
 A campfire you create has its own identity. You can use that identity
