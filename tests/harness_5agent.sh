@@ -116,8 +116,8 @@ mkdir -p \
 log "Directories created."
 
 # Move compiled binaries into BIN_DIR now that it exists
-mv ./cf-bin-tmp "$CF_BIN"       || fail "Failed to move cf binary to $CF_BIN"
-mv ./cf-mcp-bin-tmp "$CF_MCP_BIN" || fail "Failed to move cf-mcp binary to $CF_MCP_BIN"
+cp "$PROJECT_ROOT/cf-bin-tmp" "$CF_BIN"       || fail "Failed to move cf binary to $CF_BIN"
+cp "$PROJECT_ROOT/cf-mcp-bin-tmp" "$CF_MCP_BIN" || fail "Failed to move cf-mcp binary to $CF_MCP_BIN"
 log "Binaries installed: $CF_BIN, $CF_MCP_BIN"
 
 # Make cf available as 'cf' on PATH (for verify_5agent.sh and this script)
