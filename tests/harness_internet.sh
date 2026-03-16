@@ -464,7 +464,7 @@ fi
 # For each round:
 #   1. Send round marker message to coordination campfire
 #   2. Write rounds/round-N.marker timestamp file
-#   3. Run agents one at a time (sequential) so each agent sees previous agents' state
+#   3. Run all agents in parallel — discoveries happen through campfire in real-time
 #   4. Kill agent if it exceeds the remaining round time budget
 #   5. Move to next round when all agents are done or time budget exhausted
 #
@@ -692,7 +692,7 @@ Your prior work and campfire history persist — this is a phase transition, not
 }
 
 log ""
-log "Starting $ROUNDS rounds — agents run sequentially per round (each sees prior agents' actions)."
+log "Starting $ROUNDS rounds — agents run in PARALLEL per round (real-time discovery through campfire)."
 log ""
 
 START_TIME=$(date +%s)
@@ -762,49 +762,47 @@ Join this campfire. Post your architect introduction. Then build." \
     round_secs="$(round_duration_secs "$round")"
     ROUND_DEADLINE=$(( ROUND_START + round_secs ))
 
-    log "  Launching ${#ROUND_AGENTS[@]} agent(s) sequentially (timeout: ${round_secs}s total)..."
+    log "  Launching ${#ROUND_AGENTS[@]} agent(s) in PARALLEL (timeout: ${round_secs}s total)..."
+    log "  Agents work simultaneously. Discoveries happen in real-time through campfire."
 
-    # Run agents one at a time so each agent sees the previous agent's actions
-    TIMED_OUT=false
+    # Launch ALL agents in parallel — this is the point of the protocol
+    declare -A ROUND_PIDS
     for agent_num in "${ROUND_AGENTS[@]}"; do
+        run_agent_round "$agent_num" "$round" &
+        ROUND_PIDS["$agent_num"]=$!
+    done
+
+    # Wait for all to finish or timeout
+    TIMED_OUT=false
+    while true; do
         now=$(date +%s)
-        remaining=$(( ROUND_DEADLINE - now ))
-        if (( remaining <= 0 )); then
-            log "  Round $round timeout reached (${round_secs}s) — skipping remaining agents."
+        if (( now >= ROUND_DEADLINE )); then
+            log "  Round $round timeout reached (${round_secs}s) — killing remaining agents."
+            for agent_num in "${!ROUND_PIDS[@]}"; do
+                kill "${ROUND_PIDS[$agent_num]}" 2>/dev/null || true
+            done
+            sleep 2
+            for agent_num in "${!ROUND_PIDS[@]}"; do
+                kill -9 "${ROUND_PIDS[$agent_num]}" 2>/dev/null || true
+            done
             TIMED_OUT=true
             break
         fi
 
-        # Run agent synchronously. claude -p is blocking; the pre-check above
-        # ensures we don't start an agent when time is already exhausted.
-        # Individual agent timeout: background it, then wait with deadline check.
-        run_agent_round "$agent_num" "$round" &
-        agent_pid=$!
-        agent_done=false
-        while true; do
-            now=$(date +%s)
-            if ! kill -0 "$agent_pid" 2>/dev/null; then
-                agent_done=true
+        # Check if all agents are done
+        all_done=true
+        for agent_num in "${!ROUND_PIDS[@]}"; do
+            if kill -0 "${ROUND_PIDS[$agent_num]}" 2>/dev/null; then
+                all_done=false
                 break
             fi
-            if (( now >= ROUND_DEADLINE )); then
-                log "  Round $round timeout reached during agent-$agent_num — killing."
-                kill "$agent_pid" 2>/dev/null || true
-                sleep 2
-                kill -9 "$agent_pid" 2>/dev/null || true
-                wait "$agent_pid" 2>/dev/null || true
-                TIMED_OUT=true
-                break
-            fi
-            sleep 5
         done
-        if $agent_done; then
-            wait "$agent_pid" 2>/dev/null || true
-        fi
-        if $TIMED_OUT; then
+        if $all_done; then
             break
         fi
+        sleep 5
     done
+    wait 2>/dev/null || true
 
     if $TIMED_OUT; then
         log "  Round $round: timed out. Proceeding to next round."
