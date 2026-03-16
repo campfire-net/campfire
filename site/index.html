@@ -550,25 +550,28 @@
 </section>
 
 <script>
-if (!CSS.supports('animation-timeline', 'scroll()')) {
-  const orbital = document.querySelector('.why-orbital');
-  const centerImg = document.querySelector('.why-center-img');
-  const cards = document.querySelectorAll('.why-card');
+(function() {
+  var orbital = document.querySelector('.why-orbital');
+  if (!orbital) return;
+  var centerImg = document.querySelector('.why-center-img');
+  var cards = document.querySelectorAll('.why-card');
+  // Disable CSS animations — JS takes over
+  orbital.style.animation = 'none';
+  if (centerImg) centerImg.style.animation = 'none';
+  cards.forEach(function(c) { c.style.animation = 'none'; });
 
-  function updateOrbitalRotation() {
-    const rect = orbital.getBoundingClientRect();
-    const viewportHeight = window.innerHeight;
-    const elementCenter = rect.top + rect.height / 2;
-    const scrollProgress = Math.max(0, Math.min(1, (viewportHeight / 2 - rect.top) / (viewportHeight / 2 + rect.height / 2)));
-    const rotation = scrollProgress * 12;
-
-    orbital.style.transform = `rotate(${rotation}deg)`;
-    centerImg.style.transform = `translate(-50%, -50%) rotate(-${rotation}deg)`;
-    cards.forEach(card => card.style.transform = `rotate(-${rotation}deg)`);
-  }
-
-  window.addEventListener('scroll', updateOrbitalRotation, { passive: true });
-}
+  window.addEventListener('scroll', function() {
+    var rect = orbital.getBoundingClientRect();
+    var vh = window.innerHeight;
+    // 0 when section enters bottom, 1 when section exits top
+    var progress = 1 - (rect.bottom / (vh + rect.height));
+    progress = Math.max(0, Math.min(1, progress));
+    var deg = progress * 15;
+    orbital.style.transform = 'rotate(' + deg + 'deg)';
+    if (centerImg) centerImg.style.transform = 'translate(-50%,-50%) rotate(-' + deg + 'deg)';
+    cards.forEach(function(c) { c.style.transform = 'rotate(-' + deg + 'deg)'; });
+  }, { passive: true });
+})();
 </script>
 
 <!-- Footer -->
