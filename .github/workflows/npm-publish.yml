@@ -1,0 +1,67 @@
+name: Publish npm packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 0.1.1)'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write  # Required for npm provenance / trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build binaries
+        run: |
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            os=$(echo $target | cut -d_ -f1)
+            arch=$(echo $target | cut -d_ -f2)
+            GOOS=$os GOARCH=$arch go build -o dist/cf-mcp-${target} ./cmd/cf-mcp
+          done
+          GOOS=windows GOARCH=amd64 go build -o dist/cf-mcp-windows_amd64.exe ./cmd/cf-mcp
+
+      - name: Copy binaries to platform packages
+        run: |
+          cp dist/cf-mcp-linux_amd64 npm/campfire-mcp-linux-x64/cf-mcp
+          cp dist/cf-mcp-linux_arm64 npm/campfire-mcp-linux-arm64/cf-mcp
+          cp dist/cf-mcp-darwin_amd64 npm/campfire-mcp-darwin-x64/cf-mcp
+          cp dist/cf-mcp-darwin_arm64 npm/campfire-mcp-darwin-arm64/cf-mcp
+          cp dist/cf-mcp-windows_amd64.exe npm/campfire-mcp-win32-x64/cf-mcp.exe
+          chmod +x npm/campfire-mcp-*/cf-mcp
+
+      - name: Set version
+        run: |
+          VERSION=${{ github.event.inputs.version }}
+          for dir in campfire-mcp campfire-mcp-linux-x64 campfire-mcp-linux-arm64 campfire-mcp-darwin-x64 campfire-mcp-darwin-arm64 campfire-mcp-win32-x64; do
+            cd npm/$dir
+            npm version $VERSION --no-git-tag-version --allow-same-version
+            cd ../..
+          done
+
+      - name: Publish platform packages
+        run: |
+          for dir in campfire-mcp-linux-x64 campfire-mcp-linux-arm64 campfire-mcp-darwin-x64 campfire-mcp-darwin-arm64 campfire-mcp-win32-x64; do
+            cd npm/$dir
+            npm publish --access public --provenance
+            cd ../..
+          done
+
+      - name: Publish main package
+        run: |
+          cd npm/campfire-mcp
+          npm publish --access public --provenance
