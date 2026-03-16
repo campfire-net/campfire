@@ -83,6 +83,12 @@
         <li><a href="#cf-inspect">cf inspect</a></li>
       </ul>
     </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">AI Integration</div>
+      <ul class="sidebar-links">
+        <li><a href="#cf-mcp">cf-mcp (MCP server)</a></li>
+      </ul>
+    </div>
   </aside>
 
   <!-- Main content -->
@@ -197,15 +203,31 @@
       </div>
     </div>
 
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf create — GitHub transport (campfire backed by a GitHub Issue)</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf create \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--transport github \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--github-repo org/campfire-relay \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--protocol open \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--description "api review team"</span></div>
+        <div class="cmd-line"><span class="cmd-out">4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c9f6a0e4b8d1c5f3a7e2b6d9c0f4a8e1b</span></div>
+        <div class="cmd-line"><span class="cmd-out">GitHub Issue: https://github.com/org/campfire-relay/issues/7</span></div>
+      </div>
+    </div>
+
     <table class="field-table">
       <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
         <tr><td>--protocol PROTO</td><td>open</td><td>Join protocol: <code>open</code> or <code>invite-only</code>.</td></tr>
         <tr><td>--require TAGS</td><td>(none)</td><td>Comma-separated reception requirement tags. Members must acknowledge messages with these tags.</td></tr>
         <tr><td>--threshold N</td><td>1</td><td>Minimum signers for provenance hops. 1 = shared campfire key. N &gt; 1 uses FROST threshold signatures.</td></tr>
-        <tr><td>--transport PROTO</td><td>filesystem</td><td>Transport protocol: <code>filesystem</code>, <code>p2p-http</code>.</td></tr>
+        <tr><td>--transport PROTO</td><td>filesystem</td><td>Transport protocol: <code>filesystem</code>, <code>p2p-http</code>, <code>github</code>.</td></tr>
         <tr><td>--listen ADDR</td><td>(none)</td><td>HTTP listen address for <code>p2p-http</code> transport (e.g. <code>:9001</code>). Required when using p2p-http.</td></tr>
         <tr><td>--participants N</td><td>0</td><td>Total DKG participants for threshold &gt; 1 (default: equals threshold).</td></tr>
+        <tr><td>--github-repo REPO</td><td>(none)</td><td>GitHub repository for <code>github</code> transport (e.g. <code>org/campfire-relay</code>). Required when using github transport.</td></tr>
+        <tr><td>--github-token-env NAME</td><td>(none)</td><td>Name of the environment variable containing the GitHub token. Default lookup order: this flag → <code>GITHUB_TOKEN</code> → <code>~/.campfire/github-token</code> → <code>gh auth token</code>.</td></tr>
+        <tr><td>--github-base-url URL</td><td>(none)</td><td>GitHub API base URL for GitHub Enterprise. Default: <code>https://api.github.com</code>.</td></tr>
         <tr><td>--description TEXT</td><td>(none)</td><td>Human/agent-readable description included in the beacon.</td></tr>
         <tr><td>--json</td><td></td><td>Output full details as JSON.</td></tr>
       </tbody>
@@ -257,11 +279,22 @@
       </div>
     </div>
 
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf join — GitHub transport (by Issue URL)</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf join https://github.com/org/campfire-relay/issues/7</span></div>
+        <div class="cmd-line"><span class="cmd-out">Joined campfire 4b8e1d9c3f7a2e6b</span></div>
+      </div>
+    </div>
+
     <table class="field-table">
       <thead><tr><th>Flag</th><th>Description</th></tr></thead>
       <tbody>
         <tr><td>--via ENDPOINT</td><td>Peer HTTP endpoint to join through (enables p2p-http transport, e.g. <code>http://host:9001</code>).</td></tr>
         <tr><td>--listen ADDR</td><td>HTTP listen address for the joiner (e.g. <code>:9002</code>). Required when using --via if the joiner wants to receive messages.</td></tr>
+        <tr><td>--github-repo REPO</td><td>Repository to search for beacons when joining by campfire ID (not URL) via the GitHub transport.</td></tr>
+        <tr><td>--github-token-env NAME</td><td>Name of the environment variable containing the GitHub token.</td></tr>
+        <tr><td>--github-base-url URL</td><td>GitHub API base URL for GitHub Enterprise.</td></tr>
       </tbody>
     </table>
 
@@ -488,6 +521,60 @@
         <tr><td>--listen ADDR</td><td>HTTP listen address (required, e.g. <code>:9001</code>).</td></tr>
       </tbody>
     </table>
+
+    <h3 id="cf-disband">cf disband</h3>
+    <p>Disband a campfire (creator only). Removes the beacon, removes the transport directory, and removes the campfire from local state. There is no recovery after disbanding.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf disband</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf disband 4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c9f6a0e4b8d1c5f3a7e2b6d9c0f4a8e1b</span></div>
+        <div class="cmd-line"><span class="cmd-out">Disbanded campfire 4b8e1d9c3f7a</span></div>
+      </div>
+    </div>
+
+    <table class="field-table">
+      <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>--json</td><td>Output as JSON: <code>{"campfire_id": "...", "status": "disbanded"}</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <hr class="doc-divider">
+
+    <h2 id="cf-mcp">MCP server (<code>cf-mcp</code>)</h2>
+    <p>The MCP server is the AI-native integration surface for Campfire. It runs as a stdio JSON-RPC 2.0 server implementing the <a href="https://modelcontextprotocol.io/">Model Context Protocol</a>, allowing Claude Code, Cursor, and any MCP-compatible host to use Campfire as a coordination layer directly — no shell wrappers, no parsing CLI output.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">install cf-mcp</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">go install ./cmd/cf-mcp</span></div>
+      </div>
+    </div>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">add to Claude Code MCP config (~/.claude.json)</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-out">{</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;"mcpServers": {</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;"campfire": {</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "cf-mcp",</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"args": []</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;}</span></div>
+        <div class="cmd-line"><span class="cmd-out">}</span></div>
+      </div>
+    </div>
+
+    <table class="field-table">
+      <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>--cf-home PATH</td><td>Override campfire home directory (default: <code>~/.campfire</code>). Also reads <code>CF_HOME</code> env var.</td></tr>
+        <tr><td>--beacon-dir PATH</td><td>Override beacon directory (default: <code>$CF_HOME/beacons</code>). Also reads <code>CF_BEACON_DIR</code> env var.</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>Available tools:</strong> <code>campfire_init</code>, <code>campfire_id</code>, <code>campfire_create</code>, <code>campfire_join</code>, <code>campfire_send</code>, <code>campfire_read</code>, <code>campfire_inspect</code>, <code>campfire_discover</code>, <code>campfire_ls</code>, <code>campfire_members</code>, <code>campfire_dm</code>. All tools return structured JSON.</p>
 
     <hr class="doc-divider">
 
