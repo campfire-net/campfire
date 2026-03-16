@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "campfire": {
+      "command": "/tmp/campfire-integ/bin/cf-mcp",
+      "args": [
+        "--cf-home", "{{AGENT_HOME}}",
+        "--beacon-dir", "/tmp/campfire-integ/shared/beacons"
+      ]
+    }
+  }
+}
