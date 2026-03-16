@@ -154,45 +154,6 @@ var readCmd = &cobra.Command{
 		}
 		defer s.Close()
 
-		// NAT mode: no inbound listener. Poll peers instead of reading local store.
-		if readSelfEndpoint == "" && len(args) > 0 {
-			campfireID := args[0]
-
-			peers, err := s.ListPeerEndpoints(campfireID)
-			if err != nil {
-				return fmt.Errorf("listing peer endpoints: %w", err)
-			}
-			// Filter to non-empty endpoints.
-			var reachable []store.PeerEndpoint
-			for _, p := range peers {
-				if p.Endpoint != "" {
-					reachable = append(reachable, p)
-				}
-			}
-			if len(reachable) == 0 {
-				fmt.Fprintln(os.Stderr, "no reachable peers to poll")
-				os.Exit(1)
-			}
-
-			cursor, err := computeInitialCursor(s, campfireID)
-			if err != nil {
-				return fmt.Errorf("computing initial cursor: %w", err)
-			}
-
-			cfg := natPollConfig{
-				campfireID:  campfireID,
-				peers:       reachable,
-				cursor:      cursor,
-				follow:      readFollow,
-				id:          agentID,
-				timeoutSecs: 30,
-			}
-			if err := runNATPoll(cfg, os.Stdout); err != nil {
-				return err
-			}
-			return nil
-		}
-
 		// Determine which campfires to read from.
 		var campfireIDs []string
 		if len(args) > 0 {
