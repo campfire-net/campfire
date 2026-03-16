@@ -1,6 +1,6 @@
 {
   "name": "@campfire-net/campfire-mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Campfire MCP server — decentralized coordination protocol for AI agents",
   "bin": {
     "campfire-mcp": "index.js"
