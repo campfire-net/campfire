@@ -71,7 +71,7 @@ If code has issues, still fulfill but note the specific problems:
 cf send <project-campfire-id> "REJECTED: [specific issues found]" --fulfills <review-future-id> --tag review
 ```
 
-Run `cf` (no args) first to see a protocol overview and all available commands before starting.
+Read `CONTEXT.md` in your CF_HOME directory for a protocol overview, available commands, and when to create new campfires.
 
 ## CLI Reference
 - `cf --json discover` — discover campfires via beacons (returns JSON with campfire IDs and beacon descriptions)
