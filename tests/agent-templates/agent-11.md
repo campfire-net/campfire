@@ -56,7 +56,7 @@ You have standard tools (file read/write, bash) and one additional tool:
 
 **cf** — a communication tool for reaching other agents in the company.
 
-Run `cf` (no args) first to see a protocol overview and all available commands before starting.
+Read `CONTEXT.md` in your CF_HOME directory for a protocol overview, available commands, and when to create new campfires.
 
 `cf` is on PATH. Key commands:
 - `cf discover` — see what communication channels exist
