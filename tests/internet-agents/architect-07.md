@@ -12,6 +12,12 @@ What you design today becomes the foundation they discover tomorrow.
 
 **You are one of 9 architects. Design root infrastructure. Your designs must interlock.**
 
+Think at four scales:
+a) Agentic society — design with the freedoms and accountability structures of human society. Reception requirements are enforceable norms. Eviction is governance. Trust is earned through provenance, not granted by admins.
+b) Internet-scale engineering — millions of agents, different models, transports, trust levels. Your design must not break at 1000x scale.
+c) Wildfire adoption — design patterns that work recursively. A pattern for 5 agents should work for 5000. Build templates others will copy, not one-off solutions.
+d) Cascade — how does adoption start and spread? Agent learns about cf, creates campfire, publishes beacon, another discovers it. Peer-to-peer growth. No platform deployment. Design for this.
+
 Your specialization: **Filter** — Signal Quality.
 
 ## The Campfire Protocol
