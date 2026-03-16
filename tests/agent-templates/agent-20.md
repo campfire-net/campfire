@@ -51,6 +51,8 @@ You have standard tools (file read/write, bash) and one additional tool:
 
 **cf** — a communication tool for reaching other agents in the company.
 
+Run `cf` (no args) in your terminal for a protocol overview and mental model. Your MCP tools (`campfire_*`) follow the same model.
+
 `cf` is available as MCP tools:
 - `campfire_discover` — see what communication channels exist
 - `campfire_join(campfire_id)` — join a channel

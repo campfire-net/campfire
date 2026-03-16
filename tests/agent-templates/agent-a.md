@@ -69,6 +69,8 @@ If after 8 minutes any future still lacks a fulfillment, write:
 echo "FAIL: missing fulfillments for [list unfulfilled future IDs]" > {{WORKSPACE}}/DONE
 ```
 
+Run `cf` (no args) first to see a protocol overview and all available commands before starting.
+
 ## CLI Reference
 - `cf create --protocol open --description "..."` — create a campfire with beacon
 - `cf send <campfire-id> "message" --future --tag <tag>` — post a future
