@@ -249,7 +249,7 @@ func init() {
 		},
 		{
 			Name:        "campfire_send",
-			Description: "Send a message to a campfire. Supports future messages, fulfillment references, and antecedent chains.",
+			Description: "Send a message to a campfire. Supports future messages, fulfillment references, and reply-to chains.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -266,10 +266,10 @@ func init() {
 						"items":       map[string]interface{}{"type": "string"},
 						"description": "Message tags",
 					},
-					"antecedents": map[string]interface{}{
+					"reply_to": map[string]interface{}{
 						"type":        "array",
 						"items":       map[string]interface{}{"type": "string"},
-						"description": "Antecedent message IDs (DAG parents)",
+						"description": "Message IDs this message replies to (causal dependencies / DAG parents)",
 					},
 					"future": map[string]interface{}{
 						"type":        "boolean",
@@ -277,7 +277,7 @@ func init() {
 					},
 					"fulfills": map[string]interface{}{
 						"type":        "string",
-						"description": "Message ID this message fulfills (adds fulfills tag + antecedent)",
+						"description": "Message ID this message fulfills (adds fulfills tag + reply-to in one step)",
 					},
 				},
 				"required": []string{"campfire_id", "message"},
@@ -625,7 +625,11 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 	}
 
 	tags := getStringSlice(params, "tags")
-	antecedents := getStringSlice(params, "antecedents")
+	// Accept both "reply_to" (canonical) and "antecedents" (backward-compat alias).
+	antecedents := getStringSlice(params, "reply_to")
+	if legacy := getStringSlice(params, "antecedents"); len(legacy) > 0 {
+		antecedents = append(antecedents, legacy...)
+	}
 	future := getBool(params, "future")
 	fulfills := getStr(params, "fulfills")
 

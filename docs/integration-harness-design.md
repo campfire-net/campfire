@@ -265,7 +265,7 @@ echo "FAIL: missing fulfillments for [list unfulfilled future IDs]" > {{WORKSPAC
 ## CLI Reference
 - `cf create --protocol open --description "..."` — create a campfire with beacon
 - `cf send <campfire-id> "message" --future --tag <tag>` — send a future
-- `cf send <campfire-id> "message" --tag <tag> --antecedent <msg-id>` — send with dependency
+- `cf send <campfire-id> "message" --tag <tag> --reply-to <msg-id>` — send with dependency
 - `cf read <campfire-id> --json` — read new messages as JSON
 - `cf read <campfire-id> --all --json` — read ALL messages
 - `cf inspect <message-id> --json` — inspect a specific message

@@ -36,13 +36,13 @@ assert_contains "$FUTURE_OUT" '"future"'
 echo "  Future: $FUTURE_ID"
 
 echo "Step 2: Agent A sends dependent work (migration, blocked on future)"
-MIGRATION_OUT=$($CF send "$CFID" "run migration v3" --tag migration --antecedent "$FUTURE_ID" --json)
+MIGRATION_OUT=$($CF send "$CFID" "run migration v3" --tag migration --reply-to "$FUTURE_ID" --json)
 MIGRATION_ID=$(echo "$MIGRATION_OUT" | grep '"id"' | head -1 | sed 's/.*": "//;s/".*//')
 assert_contains "$MIGRATION_OUT" "$FUTURE_ID"
 echo "  Migration: $MIGRATION_ID"
 
 echo "Step 3: Agent A sends dependent work (deploy, blocked on migration)"
-DEPLOY_OUT=$($CF send "$CFID" "deploy after migration" --tag deploy --antecedent "$MIGRATION_ID" --json)
+DEPLOY_OUT=$($CF send "$CFID" "deploy after migration" --tag deploy --reply-to "$MIGRATION_ID" --json)
 DEPLOY_ID=$(echo "$DEPLOY_OUT" | grep '"id"' | head -1 | sed 's/.*": "//;s/".*//')
 assert_contains "$DEPLOY_OUT" "$MIGRATION_ID"
 echo "  Deploy: $DEPLOY_ID"

@@ -87,7 +87,7 @@ Post to the implementation campfire that fizzbuzz.go is done, so the other imple
 - `campfire_join` — Join a campfire (params: `campfire_id`)
 - `campfire_create` — Create a campfire (params: `protocol`, `description`)
 - `campfire_read` — Read messages (params: `campfire_id`, `all`, `peek`)
-- `campfire_send` — Send a message (params: `campfire_id`, `message`, `tags`, `antecedents`, `future`, `fulfills`)
+- `campfire_send` — Send a message (params: `campfire_id`, `message`, `tags`, `reply_to`, `future`, `fulfills`)
 - `campfire_inspect` — Inspect a specific message (params: `message_id`)
 - `campfire_ls` — List my campfires
 - `campfire_members` — List campfire members (params: `campfire_id`)

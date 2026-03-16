@@ -30,19 +30,19 @@ Record the message ID. This is F1.
 
 **Future 2 — main-func** (depends on F1):
 ```bash
-cf send <campfire-id> "Implement a Go main() function in {{WORKSPACE}}/fizzbuzz/main.go (package main) that calls FizzBuzz for numbers 1 through 100 and prints each result on its own line." --future --tag implementation --antecedent <F1-id>
+cf send <campfire-id> "Implement a Go main() function in {{WORKSPACE}}/fizzbuzz/main.go (package main) that calls FizzBuzz for numbers 1 through 100 and prints each result on its own line." --future --tag implementation --reply-to <F1-id>
 ```
 Record the message ID. This is F2.
 
 **Future 3 — code-review** (depends on F1 and F2):
 ```bash
-cf send <campfire-id> "Review the fizzbuzz implementation for correctness. Read {{WORKSPACE}}/fizzbuzz/fizzbuzz.go and {{WORKSPACE}}/fizzbuzz/main.go. Verify the logic handles all cases. Post approval or rejection with specific feedback." --future --tag review --antecedent <F1-id> --antecedent <F2-id>
+cf send <campfire-id> "Review the fizzbuzz implementation for correctness. Read {{WORKSPACE}}/fizzbuzz/fizzbuzz.go and {{WORKSPACE}}/fizzbuzz/main.go. Verify the logic handles all cases. Post approval or rejection with specific feedback." --future --tag review --reply-to <F1-id> --reply-to <F2-id>
 ```
 Record the message ID. This is F3.
 
 **Future 4 — qa-test** (depends on F3):
 ```bash
-cf send <campfire-id> "Run 'go run {{WORKSPACE}}/fizzbuzz/' and verify the output. First line should be '1', third line should be 'Fizz', fifth should be 'Buzz', fifteenth should be 'FizzBuzz'. Post test results." --future --tag qa --antecedent <F3-id>
+cf send <campfire-id> "Run 'go run {{WORKSPACE}}/fizzbuzz/' and verify the output. First line should be '1', third line should be 'Fizz', fifth should be 'Buzz', fifteenth should be 'FizzBuzz'. Post test results." --future --tag qa --reply-to <F3-id>
 ```
 Record the message ID. This is F4.
 
@@ -72,7 +72,7 @@ echo "FAIL: missing fulfillments for [list unfulfilled future IDs]" > {{WORKSPAC
 ## CLI Reference
 - `cf create --protocol open --description "..."` — create a campfire with beacon
 - `cf send <campfire-id> "message" --future --tag <tag>` — post a future
-- `cf send <campfire-id> "message" --future --tag <tag> --antecedent <msg-id>` — post a future with dependency
+- `cf send <campfire-id> "message" --future --tag <tag> --reply-to <msg-id>` — post a future with dependency
 - `cf read <campfire-id> --json` — read new messages as JSON
 - `cf read <campfire-id> --all --json` — read ALL messages as JSON
 - `cf inspect <message-id> --json` — inspect a specific message
