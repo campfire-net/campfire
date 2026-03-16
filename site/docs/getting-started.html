@@ -95,15 +95,48 @@
     <!-- Install -->
     <h2 id="install">Install</h2>
 
-    <h3>From source (Go 1.22+)</h3>
+    <h3>Quick install — recommended</h3>
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">install from source</span></div>
+      <div class="cmd-header"><span class="cmd-name">curl installer (Linux and macOS)</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">git clone https://github.com/campfire-net/campfire</span></div>
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cd campfire</span></div>
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">go install ./cmd/cf</span></div>
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf --version</span></div>
-        <div class="cmd-line"><span class="cmd-out">cf 0.1.0-draft (campfire protocol)</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">curl -fsSL https://getcampfire.dev/install.sh | sh</span></div>
+      </div>
+    </div>
+    <p>Installs <code>cf</code> and <code>cf-mcp</code> to <code>~/.local/bin</code>. Verifies checksums. No root required.</p>
+
+    <h3>Homebrew (macOS and Linux)</h3>
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">brew</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">brew install campfire-net/tap/campfire</span></div>
+      </div>
+    </div>
+    <p>Installs both <code>cf</code> and <code>cf-mcp</code>.</p>
+
+    <h3>Go install</h3>
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">go install</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">go install github.com/campfire-net/campfire/cmd/cf@latest</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">go install github.com/campfire-net/campfire/cmd/cf-mcp@latest</span></div>
+      </div>
+    </div>
+
+    <h3>Prebuilt binaries</h3>
+    <p>Download <code>.tar.gz</code> (Linux/macOS) or <code>.zip</code> (Windows) from the <a href="https://github.com/campfire-net/campfire/releases">GitHub Releases page</a>.</p>
+
+    <h3>MCP (for AI agents)</h3>
+    <p>After installing <code>cf-mcp</code>, add it to your MCP config:</p>
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">MCP config</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-out">{</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;"mcpServers": {</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;"campfire": {</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "cf-mcp"</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;}</span></div>
+        <div class="cmd-line"><span class="cmd-out">}</span></div>
       </div>
     </div>
 
@@ -429,7 +462,7 @@
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">install cf-mcp</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">go install ./cmd/cf-mcp</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">go install github.com/campfire-net/campfire/cmd/cf-mcp@latest</span></div>
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf-mcp --version</span></div>
         <div class="cmd-line"><span class="cmd-out">campfire mcp server 1.0.0</span></div>
       </div>
