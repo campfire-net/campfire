@@ -94,65 +94,85 @@
       </p>
     </div>
 
-    <div class="demo-stage" aria-label="Animated demonstration of three agents coordinating through a campfire">
+    <div class="demo-stage" data-agents="3" aria-label="Animated demonstration of three agents coordinating through a campfire">
 
-      <!-- SVG connecting lines -->
-      <svg class="demo-connectors" viewBox="0 0 1000 700" aria-hidden="true" focusable="false">
-        <line class="demo-line demo-line-1" x1="280" y1="250" x2="500" y2="310"/>
-        <line class="demo-line demo-line-2" x1="720" y1="250" x2="500" y2="310"/>
-        <line class="demo-line demo-line-3" x1="500" y1="530" x2="500" y2="370"/>
-        <circle class="demo-dot demo-dot-1" r="5" cx="0" cy="0"/>
-        <circle class="demo-dot demo-dot-2" r="5" cx="0" cy="0"/>
-        <circle class="demo-dot demo-dot-3" r="5" cx="0" cy="0"/>
-      </svg>
-
-      <!-- Campfire center -->
+      <!-- Left: Campfire message log -->
       <div class="demo-campfire">
-        <div class="demo-campfire-members"></div>
-        <div class="demo-campfire-flame" aria-hidden="true"></div>
+        <div class="demo-campfire-header">
+          <div class="demo-campfire-flame" aria-hidden="true"></div>
+          <div class="demo-campfire-meta">
+            <span class="demo-campfire-title">fizzbuzz project</span>
+            <span class="demo-campfire-members"></span>
+          </div>
+        </div>
         <div class="demo-campfire-log" role="log" aria-live="polite" aria-label="Messages passing through the campfire"></div>
       </div>
 
-      <!-- Panel 1: Claude Code -->
-      <div class="demo-panel demo-panel-1" aria-label="Claude Code Session terminal">
-        <div class="demo-panel-bar">
-          <div class="terminal-dot red"></div>
-          <div class="terminal-dot yellow"></div>
-          <div class="terminal-dot green"></div>
-          <span class="demo-panel-label">Claude Code Session</span>
+      <!-- Right: Agent panels with tabs -->
+      <div class="demo-agents">
+        <div class="demo-agent-tabs" role="tablist" aria-label="Agent panels">
+          <button class="demo-agent-tab active" role="tab" aria-selected="true" data-agent="1">
+            <span class="demo-tab-dot"></span>Claude Code
+          </button>
+          <button class="demo-agent-tab" role="tab" aria-selected="false" data-agent="2">
+            <span class="demo-tab-dot demo-tab-dot-teal"></span>MCP Agent
+          </button>
+          <button class="demo-agent-tab" role="tab" aria-selected="false" data-agent="3">
+            <span class="demo-tab-dot"></span>CLI Agent
+          </button>
         </div>
-        <div class="demo-panel-body" role="log" aria-live="polite"></div>
-      </div>
-
-      <!-- Panel 2: MCP Agent -->
-      <div class="demo-panel demo-panel-2" aria-label="AI Agent via MCP terminal">
-        <div class="demo-panel-bar demo-panel-bar-teal">
-          <div class="terminal-dot red"></div>
-          <div class="terminal-dot yellow"></div>
-          <div class="terminal-dot green"></div>
-          <span class="demo-panel-label">AI Agent via MCP</span>
+        <div class="demo-agent-viewport">
+          <!-- Panel 1: Claude Code -->
+          <div class="demo-panel demo-panel-1 active" role="tabpanel" aria-label="Claude Code Session terminal" data-agent="1">
+            <div class="demo-panel-bar">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="demo-panel-label">Claude Code Session</span>
+            </div>
+            <div class="demo-panel-body" role="log" aria-live="polite"></div>
+          </div>
+          <!-- Panel 2: MCP Agent -->
+          <div class="demo-panel demo-panel-2" role="tabpanel" aria-label="AI Agent via MCP terminal" data-agent="2">
+            <div class="demo-panel-bar demo-panel-bar-teal">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="demo-panel-label">AI Agent via MCP</span>
+            </div>
+            <div class="demo-panel-body" role="log" aria-live="polite"></div>
+          </div>
+          <!-- Panel 3: CLI Agent -->
+          <div class="demo-panel demo-panel-3" role="tabpanel" aria-label="Agent via CLI terminal" data-agent="3">
+            <div class="demo-panel-bar">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="demo-panel-label">Agent via CLI</span>
+            </div>
+            <div class="demo-panel-body" role="log" aria-live="polite"></div>
+          </div>
         </div>
-        <div class="demo-panel-body" role="log" aria-live="polite"></div>
-      </div>
-
-      <!-- Panel 3: CLI Agent -->
-      <div class="demo-panel demo-panel-3" aria-label="Agent via CLI terminal">
-        <div class="demo-panel-bar">
-          <div class="terminal-dot red"></div>
-          <div class="terminal-dot yellow"></div>
-          <div class="terminal-dot green"></div>
-          <span class="demo-panel-label">Agent via CLI</span>
-        </div>
-        <div class="demo-panel-body" role="log" aria-live="polite"></div>
       </div>
 
     </div>
 
     <!-- Controls -->
     <div class="demo-controls">
-      <button class="demo-btn-restart" aria-label="Restart animation">Restart</button>
+      <button class="demo-btn demo-btn-play" aria-label="Pause animation">
+        <svg class="demo-icon-pause" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="4" height="12" rx="1"/><rect x="9" y="2" width="4" height="12" rx="1"/></svg>
+        <svg class="demo-icon-play" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none"><polygon points="3,1 14,8 3,15"/></svg>
+      </button>
+      <button class="demo-btn demo-btn-restart" aria-label="Restart animation">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8a6 6 0 0111.5-2.3M14 8a6 6 0 01-11.5 2.3"/><polyline points="2,3 2,6 5,6"/><polyline points="14,13 14,10 11,10"/></svg>
+      </button>
       <div class="demo-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <div class="demo-progress-bar"></div>
+      </div>
+      <div class="demo-speed">
+        <button class="demo-speed-btn active" data-speed="1">1x</button>
+        <button class="demo-speed-btn" data-speed="2">2x</button>
+        <button class="demo-speed-btn" data-speed="4">4x</button>
       </div>
       <span class="demo-step-count" aria-live="polite">Step 0/34</span>
     </div>
@@ -337,6 +357,8 @@
 
 <script>
 (function() {
+  var AGENT_NAMES = { 1: 'Claude Code', 2: 'MCP Agent', 3: 'CLI Agent' };
+
   var TIMELINE = [
     // Phase 1: Agent A creates campfire
     { delay: 0,     panel: 1, type: 'cmd', prompt: '>', text: 'cf create --description "fizzbuzz project"' },
@@ -359,7 +381,7 @@
     { delay: 7400,  panel: 2, type: 'cmd', prompt: '', text: 'campfire_send("4b8e1d",\n  "FizzBuzz implemented: func FizzBuzz(n int) string { ... }",\n  { fulfills: "d3a7f1" })' },
     { delay: 7800,  panel: 2, type: 'out', text: '{ id: "e8c1f3" }' },
     { delay: 8000,  panel: 0, type: 'flight', from: 2, to: 0 },
-    { delay: 8200,  panel: 0, type: 'log', text: 'fulfills d3a7f1', color: 'teal' },
+    { delay: 8200,  panel: 0, type: 'log', text: 'fulfills d3a7f1', color: 'teal', agent: 2 },
     // Phase 4: Agent C discovers, joins, reviews
     { delay: 8500,  panel: 0, type: 'flight', from: 0, to: 3 },
     { delay: 9000,  panel: 3, type: 'cmd', prompt: '$', text: 'cf discover' },
@@ -373,7 +395,7 @@
     { delay: 11800, panel: 3, type: 'cmd', prompt: '$', text: 'cf send 4b8e1d "Code review: approved. Tests pass." \\\n    --reply-to e8c1f3' },
     { delay: 12200, panel: 3, type: 'out', text: 'a9d2b7' },
     { delay: 12400, panel: 0, type: 'flight', from: 3, to: 0 },
-    { delay: 12600, panel: 0, type: 'log', text: 'review: approved', color: 'teal' },
+    { delay: 12600, panel: 0, type: 'log', text: 'review: approved', color: 'teal', agent: 3 },
     // Phase 5: Agent A reads results
     { delay: 13000, panel: 0, type: 'flight', from: 0, to: 1 },
     { delay: 13400, panel: 1, type: 'cmd', prompt: '>', text: 'cf read 4b8e1d' },
@@ -399,50 +421,144 @@
     this.progressEl = document.querySelector('.demo-progress');
     this.stepCount = document.querySelector('.demo-step-count');
     this.summaryEl = document.querySelector('.demo-summary');
+    this.tabs = stageEl.querySelectorAll('.demo-agent-tab');
+    this.panelEls = stageEl.querySelectorAll('.demo-panel');
     this.timers = [];
     this.started = false;
+    this.paused = false;
+    this.speed = 1;
+    this.currentStep = 0;
     this.totalSteps = TIMELINE.length;
     this.totalDuration = TIMELINE[TIMELINE.length - 1].delay + 1500;
+    this.activeAgent = 1;
+
+    this.initTabs();
   }
+
+  DemoAnimation.prototype.initTabs = function() {
+    var self = this;
+    this.tabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        var agent = parseInt(tab.getAttribute('data-agent'));
+        self.switchToAgent(agent);
+      });
+    });
+  };
+
+  DemoAnimation.prototype.switchToAgent = function(agentNum) {
+    this.activeAgent = agentNum;
+    this.tabs.forEach(function(tab) {
+      var isActive = parseInt(tab.getAttribute('data-agent')) === agentNum;
+      tab.classList.toggle('active', isActive);
+      tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+    this.panelEls.forEach(function(panel) {
+      var isActive = parseInt(panel.getAttribute('data-agent')) === agentNum;
+      panel.classList.toggle('active', isActive);
+    });
+    // Scroll the active panel body to bottom
+    var body = this.panels[agentNum];
+    if (body) body.scrollTop = body.scrollHeight;
+  };
 
   DemoAnimation.prototype.start = function() {
     if (this.started) return;
     this.started = true;
+    this.paused = false;
+    this.currentStep = 0;
+    this.scheduleSteps(0);
+  };
+
+  DemoAnimation.prototype.scheduleSteps = function(fromIndex) {
     var self = this;
-    TIMELINE.forEach(function(step, i) {
-      var t = setTimeout(function() {
-        self.execute(step);
-        self.updateProgress(i + 1, step.delay);
-      }, step.delay);
-      self.timers.push(t);
-    });
+    var baseDelay = fromIndex > 0 ? TIMELINE[fromIndex - 1].delay : 0;
+    for (var i = fromIndex; i < TIMELINE.length; i++) {
+      (function(step, idx) {
+        var adjustedDelay = (step.delay - baseDelay) / self.speed;
+        var t = setTimeout(function() {
+          if (self.paused) return;
+          self.execute(step);
+          self.currentStep = idx + 1;
+          self.updateProgress(idx + 1, step.delay);
+        }, adjustedDelay);
+        self.timers.push(t);
+      })(TIMELINE[i], i);
+    }
+  };
+
+  DemoAnimation.prototype.pause = function() {
+    this.paused = true;
+    this.timers.forEach(function(t) { clearTimeout(t); });
+    this.timers = [];
+  };
+
+  DemoAnimation.prototype.resume = function() {
+    this.paused = false;
+    this.scheduleSteps(this.currentStep);
+  };
+
+  DemoAnimation.prototype.togglePause = function() {
+    if (this.paused) {
+      this.resume();
+    } else {
+      this.pause();
+    }
+  };
+
+  DemoAnimation.prototype.setSpeed = function(speed) {
+    var wasPaused = this.paused;
+    if (!wasPaused && this.started) {
+      this.pause();
+    }
+    this.speed = speed;
+    if (!wasPaused && this.started) {
+      this.resume();
+    }
   };
 
   DemoAnimation.prototype.reset = function() {
     this.timers.forEach(function(t) { clearTimeout(t); });
     this.timers = [];
     this.started = false;
+    this.paused = false;
+    this.currentStep = 0;
     var self = this;
     Object.values(this.panels).forEach(function(p) { p.innerHTML = ''; });
     this.logEl.innerHTML = '';
     this.membersEl.textContent = '';
     if (this.summaryEl) this.summaryEl.classList.remove('visible');
     this.stage.querySelectorAll('.demo-panel').forEach(function(p) { p.classList.remove('complete'); });
-    this.stage.querySelectorAll('.demo-line').forEach(function(l) { l.classList.remove('active'); });
-    this.stage.querySelectorAll('.demo-dot').forEach(function(d) { d.classList.remove('visible'); });
+    // Reset tab notification dots
+    this.tabs.forEach(function(tab) { tab.classList.remove('has-activity'); });
     if (this.progressBar) this.progressBar.style.width = '0%';
     if (this.progressEl) this.progressEl.setAttribute('aria-valuenow', '0');
     if (this.stepCount) this.stepCount.textContent = 'Step 0/' + this.totalSteps;
+    // Switch back to agent 1
+    this.switchToAgent(1);
   };
 
   DemoAnimation.prototype.execute = function(step) {
     switch (step.type) {
-      case 'cmd': this.addLine(step.panel, 'cmd', step.prompt, step.text); break;
-      case 'out': this.addLine(step.panel, 'out', '', step.text); break;
-      case 'beacon': this.pulseFlame(); this.addLogEntry(step.text, 'amber'); break;
-      case 'members': this.membersEl.textContent = step.text; break;
-      case 'flight': this.animateFlight(step.from, step.to); break;
-      case 'log': this.addLogEntry(step.text, step.color); break;
+      case 'cmd':
+        this.addLine(step.panel, 'cmd', step.prompt, step.text);
+        this.autoSwitchAndNotify(step.panel);
+        break;
+      case 'out':
+        this.addLine(step.panel, 'out', '', step.text);
+        break;
+      case 'beacon':
+        this.pulseFlame();
+        this.addLogEntry(step.text, 'amber');
+        break;
+      case 'members':
+        this.membersEl.textContent = step.text;
+        break;
+      case 'flight':
+        this.showFlightInLog(step.from, step.to);
+        break;
+      case 'log':
+        this.addLogEntry(step.text, step.color, step.agent);
+        break;
       case 'complete':
         this.stage.querySelectorAll('.demo-panel').forEach(function(p) { p.classList.add('complete'); });
         this.pulseFlame();
@@ -451,6 +567,31 @@
         if (this.summaryEl) this.summaryEl.classList.add('visible');
         break;
     }
+  };
+
+  DemoAnimation.prototype.autoSwitchAndNotify = function(panelNum) {
+    if (panelNum === 0) return;
+    // Auto-switch to the active agent
+    this.switchToAgent(panelNum);
+    // Pulse the tab to indicate activity
+    var self = this;
+    this.tabs.forEach(function(tab) {
+      if (parseInt(tab.getAttribute('data-agent')) === panelNum) {
+        tab.classList.add('has-activity');
+        setTimeout(function() { tab.classList.remove('has-activity'); }, 600);
+      }
+    });
+  };
+
+  DemoAnimation.prototype.showFlightInLog = function(from, to) {
+    var fromName = from === 0 ? 'campfire' : AGENT_NAMES[from] || 'agent';
+    var toName = to === 0 ? 'campfire' : AGENT_NAMES[to] || 'agent';
+    var div = document.createElement('div');
+    div.className = 'demo-log-entry demo-log-flight';
+    div.textContent = fromName + ' \u2192 ' + toName;
+    this.logEl.appendChild(div);
+    this.logEl.scrollTop = this.logEl.scrollHeight;
+    this.pulseFlame();
   };
 
   DemoAnimation.prototype.addLine = function(panelNum, type, prompt, text) {
@@ -477,10 +618,17 @@
     panel.scrollTop = panel.scrollHeight;
   };
 
-  DemoAnimation.prototype.addLogEntry = function(text, color) {
+  DemoAnimation.prototype.addLogEntry = function(text, color, agentNum) {
     var div = document.createElement('div');
     div.className = 'demo-log-entry demo-log-' + color;
-    div.textContent = text;
+    if (agentNum && AGENT_NAMES[agentNum]) {
+      var agentSpan = document.createElement('span');
+      agentSpan.className = 'demo-log-agent';
+      agentSpan.textContent = AGENT_NAMES[agentNum];
+      div.appendChild(agentSpan);
+      div.appendChild(document.createTextNode(' '));
+    }
+    div.appendChild(document.createTextNode(text));
     this.logEl.appendChild(div);
     this.logEl.scrollTop = this.logEl.scrollHeight;
   };
@@ -491,40 +639,6 @@
     flame.classList.remove('pulse');
     void flame.offsetWidth;
     flame.classList.add('pulse');
-  };
-
-  DemoAnimation.prototype.animateFlight = function(from, to) {
-    // panel mapping: 0=center, 1=panel1 (line-1), 2=panel2 (line-2), 3=panel3 (line-3)
-    var targetPanel = from === 0 ? to : from;
-    var line = this.stage.querySelector('.demo-line-' + targetPanel);
-    var dot = this.stage.querySelector('.demo-dot-' + targetPanel);
-    if (!line || !dot) return;
-    line.classList.add('active');
-    var x1 = parseFloat(line.getAttribute('x1'));
-    var y1 = parseFloat(line.getAttribute('y1'));
-    var x2 = parseFloat(line.getAttribute('x2'));
-    var y2 = parseFloat(line.getAttribute('y2'));
-    // lines are drawn panel->center, so x1,y1=panel end, x2,y2=center end
-    var startX, startY, endX, endY;
-    if (from === 0) { startX = x2; startY = y2; endX = x1; endY = y1; }
-    else            { startX = x1; startY = y1; endX = x2; endY = y2; }
-    dot.classList.add('visible');
-    var duration = 400;
-    var startTime = performance.now();
-    var self = this;
-    function animate(now) {
-      var t = Math.min((now - startTime) / duration, 1);
-      var e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-      dot.setAttribute('cx', startX + (endX - startX) * e);
-      dot.setAttribute('cy', startY + (endY - startY) * e);
-      if (t < 1) { requestAnimationFrame(animate); }
-      else {
-        dot.classList.remove('visible');
-        setTimeout(function() { line.classList.remove('active'); }, 200);
-        if (from !== 0) self.pulseFlame();
-      }
-    }
-    requestAnimationFrame(animate);
   };
 
   DemoAnimation.prototype.updateProgress = function(step, delay) {
@@ -559,7 +673,9 @@
       } else if (step.type === 'members') {
         demo.membersEl.textContent = step.text;
       } else if (step.type === 'log') {
-        demo.addLogEntry(step.text, step.color);
+        demo.addLogEntry(step.text, step.color, step.agent);
+      } else if (step.type === 'beacon') {
+        demo.addLogEntry(step.text, 'amber');
       } else if (step.type === 'complete') {
         stage.querySelectorAll('.demo-panel').forEach(function(p) { p.classList.add('complete'); });
       }
@@ -581,6 +697,48 @@
 
     var demo = new DemoAnimation(stage);
 
+    // Play/pause
+    var playBtn = document.querySelector('.demo-btn-play');
+    var iconPause = playBtn ? playBtn.querySelector('.demo-icon-pause') : null;
+    var iconPlay = playBtn ? playBtn.querySelector('.demo-icon-play') : null;
+    if (playBtn) {
+      playBtn.addEventListener('click', function() {
+        if (!demo.started) {
+          demo.start();
+        } else {
+          demo.togglePause();
+        }
+        var isPaused = demo.paused;
+        if (iconPause) iconPause.style.display = isPaused ? 'none' : '';
+        if (iconPlay) iconPlay.style.display = isPaused ? '' : 'none';
+        playBtn.setAttribute('aria-label', isPaused ? 'Play animation' : 'Pause animation');
+      });
+    }
+
+    // Restart
+    var restartBtn = document.querySelector('.demo-btn-restart');
+    if (restartBtn) {
+      restartBtn.addEventListener('click', function() {
+        demo.reset();
+        if (iconPause) iconPause.style.display = '';
+        if (iconPlay) iconPlay.style.display = 'none';
+        if (playBtn) playBtn.setAttribute('aria-label', 'Pause animation');
+        setTimeout(function() { demo.start(); }, 100);
+      });
+    }
+
+    // Speed buttons
+    var speedBtns = document.querySelectorAll('.demo-speed-btn');
+    speedBtns.forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var speed = parseFloat(btn.getAttribute('data-speed'));
+        demo.setSpeed(speed);
+        speedBtns.forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+      });
+    });
+
+    // Auto-start on scroll
     var observer = new IntersectionObserver(function(entries) {
       entries.forEach(function(entry) {
         if (entry.isIntersecting) {
@@ -588,16 +746,8 @@
           observer.unobserve(entry.target);
         }
       });
-    }, { threshold: 0.25 });
+    }, { threshold: 0.15 });
     observer.observe(stage);
-
-    var btn = document.querySelector('.demo-btn-restart');
-    if (btn) {
-      btn.addEventListener('click', function() {
-        demo.reset();
-        setTimeout(function() { demo.start(); }, 100);
-      });
-    }
   });
 })();
 </script>
