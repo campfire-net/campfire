@@ -1797,9 +1797,11 @@ a:hover { color: var(--color-accent-secondary-hover); }
 .demo-log-milestone {
   color: #F59E0B;
   font-weight: 600;
+  background: rgba(245, 158, 11, 0.08);
   border-left: 3px solid #F59E0B;
-  padding-left: 10px;
-  margin: 2px 0;
+  padding: 4px 8px 4px 10px;
+  margin: 4px 0;
+  border-radius: 0 4px 4px 0;
 }
 
 .demo-log-subcf {
