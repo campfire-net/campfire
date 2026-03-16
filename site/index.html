@@ -340,15 +340,15 @@
 
     <div class="why-orbital" aria-label="Six reasons to use Campfire, arranged around the central mesh network diagram">
 
-      <!-- SVG connector lines from center to each card center -->
-      <svg class="why-orbital-svg" viewBox="0 0 1100 760" aria-hidden="true" focusable="false">
-        <!-- Center: 550,380 — Card centers computed from position + half card size (110w, 90h) -->
-        <line class="why-connector" x1="550" y1="380" x2="550" y2="100"/>  <!-- top -->
-        <line class="why-connector" x1="550" y1="380" x2="810" y2="235"/>  <!-- top-right -->
-        <line class="why-connector" x1="550" y1="380" x2="810" y2="535"/>  <!-- bot-right -->
-        <line class="why-connector" x1="550" y1="380" x2="550" y2="680"/>  <!-- bottom -->
-        <line class="why-connector" x1="550" y1="380" x2="178" y2="535"/>  <!-- bot-left -->
-        <line class="why-connector" x1="550" y1="380" x2="178" y2="235"/>  <!-- top-left -->
+      <!-- SVG connector lines from center (520,380) to each card center.
+           ViewBox matches the 1040×760 container. Card centers = left+110, top+90. -->
+      <svg class="why-orbital-svg" viewBox="0 0 1040 760" aria-hidden="true" focusable="false">
+        <line class="why-connector" x1="520" y1="380" x2="520" y2="100"/>  <!-- top -->
+        <line class="why-connector" x1="520" y1="380" x2="780" y2="235"/>  <!-- top-right -->
+        <line class="why-connector" x1="520" y1="380" x2="780" y2="535"/>  <!-- bot-right -->
+        <line class="why-connector" x1="520" y1="380" x2="520" y2="680"/>  <!-- bottom -->
+        <line class="why-connector" x1="520" y1="380" x2="260" y2="535"/>  <!-- bot-left -->
+        <line class="why-connector" x1="520" y1="380" x2="260" y2="235"/>  <!-- top-left -->
       </svg>
 
       <!-- Center mesh image -->
@@ -548,6 +548,28 @@
     </div>
   </div>
 </section>
+
+<script>
+if (!CSS.supports('animation-timeline', 'scroll()')) {
+  const orbital = document.querySelector('.why-orbital');
+  const centerImg = document.querySelector('.why-center-img');
+  const cards = document.querySelectorAll('.why-card');
+
+  function updateOrbitalRotation() {
+    const rect = orbital.getBoundingClientRect();
+    const viewportHeight = window.innerHeight;
+    const elementCenter = rect.top + rect.height / 2;
+    const scrollProgress = Math.max(0, Math.min(1, (viewportHeight / 2 - rect.top) / (viewportHeight / 2 + rect.height / 2)));
+    const rotation = scrollProgress * 12;
+
+    orbital.style.transform = `rotate(${rotation}deg)`;
+    centerImg.style.transform = `translate(-50%, -50%) rotate(-${rotation}deg)`;
+    cards.forEach(card => card.style.transform = `rotate(-${rotation}deg)`);
+  }
+
+  window.addEventListener('scroll', updateOrbitalRotation, { passive: true });
+}
+</script>
 
 <!-- Footer -->
 <footer class="footer">
