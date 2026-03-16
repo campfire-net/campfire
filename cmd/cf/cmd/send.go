@@ -37,6 +37,11 @@ var sendCmd = &cobra.Command{
 		campfireID := args[0]
 		payload := args[1]
 
+		// Merge deprecated --antecedent alias into --reply-to.
+		if legacyAnts, err := cmd.Flags().GetStringSlice("antecedent"); err == nil && len(legacyAnts) > 0 {
+			sendAntecedents = append(sendAntecedents, legacyAnts...)
+		}
+
 		agentID, err := identity.Load(IdentityPath())
 		if err != nil {
 			return fmt.Errorf("loading identity: %w", err)
@@ -454,8 +459,11 @@ func minInt(a, b int) int {
 
 func init() {
 	sendCmd.Flags().StringSliceVar(&sendTags, "tag", nil, "message tags")
-	sendCmd.Flags().StringSliceVar(&sendAntecedents, "antecedent", nil, "antecedent message IDs")
+	sendCmd.Flags().StringSliceVar(&sendAntecedents, "reply-to", nil, "message IDs this message replies to (causal dependencies)")
+	// --antecedent is a hidden backward-compatibility alias for --reply-to.
+	sendCmd.Flags().StringSlice("antecedent", nil, "alias for --reply-to (deprecated)")
+	sendCmd.Flags().MarkHidden("antecedent") //nolint:errcheck
 	sendCmd.Flags().BoolVar(&sendFuture, "future", false, "tag this message as a future")
-	sendCmd.Flags().StringVar(&sendFulfills, "fulfills", "", "message ID this fulfills (adds 'fulfills' tag + antecedent)")
+	sendCmd.Flags().StringVar(&sendFulfills, "fulfills", "", "message ID this fulfills (adds 'fulfills' tag + reply-to in one step)")
 	rootCmd.AddCommand(sendCmd)
 }

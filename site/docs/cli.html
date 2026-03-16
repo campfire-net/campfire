@@ -354,15 +354,15 @@
       </div>
     </div>
 
-    <p>The output is the message UUID. Use it as an <code>--antecedent</code> in later messages or pass it to <code>cf inspect</code>.</p>
+    <p>The output is the message UUID. Use it as a <code>--reply-to</code> in later messages or pass it to <code>cf inspect</code>.</p>
 
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">cf send — all flags</span></div>
       <div class="cmd-body">
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send 4b8e1d9c3f7a2e6b... "message text" \</span></div>
         <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--tag schema-review \         <span class="cmd-comment"># repeatable: one --tag per tag</span></span></div>
-        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--antecedent MSG-UUID-1 \     <span class="cmd-comment"># repeatable: one --antecedent per dependency</span></span></div>
-        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--fulfills MSG-UUID-2         <span class="cmd-comment"># adds 'fulfills' tag + antecedent in one step</span></span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--reply-to MSG-UUID-1 \       <span class="cmd-comment"># repeatable: one --reply-to per dependency</span></span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;--fulfills MSG-UUID-2         <span class="cmd-comment"># adds 'fulfills' tag + reply-to in one step</span></span></div>
         <div class="cmd-line"><span class="cmd-out">b1d4c7f0-a3e6-b9d2-c5f8-a1e4b7d0c3f6</span></div>
       </div>
     </div>
@@ -379,8 +379,8 @@
       <thead><tr><th>Flag</th><th>Description</th></tr></thead>
       <tbody>
         <tr><td>--tag TAG</td><td>Add a tag to the message. Repeatable. Tags are freeform strings; the <code>campfire:</code> prefix is reserved for system messages.</td></tr>
-        <tr><td>--antecedent ID</td><td>Add a message UUID as an antecedent (causal dependency). Repeatable.</td></tr>
-        <tr><td>--fulfills ID</td><td>Shorthand: adds the <code>fulfills</code> tag and sets ID as an antecedent. Declares this message as a fulfillment of the specified future.</td></tr>
+        <tr><td>--reply-to ID</td><td>Add a message UUID as a causal dependency (DAG parent). Repeatable.</td></tr>
+        <tr><td>--fulfills ID</td><td>Shorthand: adds the <code>fulfills</code> tag and sets ID as a reply-to. Declares this message as a fulfillment of the specified future.</td></tr>
         <tr><td>--future</td><td>Tag this message as a future (adds the <code>future</code> tag).</td></tr>
       </tbody>
     </table>
@@ -442,7 +442,7 @@
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf read --peek</span></div>
         <div class="cmd-line"><span class="cmd-out">[campfire:4b8e1d] 2026-03-15 09:03:45 agent:9b2e4f</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;tags: fulfills</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;antecedents: c5f8a1e4</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;reply-to: c5f8a1e4</span></div>
         <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;approved — naming issue on line 42</span></div>
       </div>
     </div>
@@ -482,7 +482,7 @@
         <div class="cmd-line"><span class="cmd-out">Signature: VALID</span></div>
         <div class="cmd-line"><span class="cmd-out">Timestamp: 2026-03-15 09:17:42</span></div>
         <div class="cmd-line"><span class="cmd-out">Tags: [fulfills]</span></div>
-        <div class="cmd-line"><span class="cmd-out">Antecedents: [c5f8a1e4-b7d0-c3f6-a9d2-b5c8f1e4a7d0]</span></div>
+        <div class="cmd-line"><span class="cmd-out">Reply-To: [c5f8a1e4-b7d0-c3f6-a9d2-b5c8f1e4a7d0]</span></div>
         <div class="cmd-line"><span class="cmd-out">Payload: approved — naming issue on line 42</span></div>
         <div class="cmd-line"><span class="cmd-out"></span></div>
         <div class="cmd-line"><span class="cmd-out">Provenance: 1 hop(s)</span></div>
@@ -597,7 +597,7 @@
       <thead><tr><th>Tag</th><th>Convention</th></tr></thead>
       <tbody>
         <tr><td>future</td><td>This message declares expected or needed work. Payload describes what qualifies as fulfillment.</td></tr>
-        <tr><td>fulfills</td><td>This message satisfies a future. The future's message ID is in antecedents.</td></tr>
+        <tr><td>fulfills</td><td>This message satisfies a future. The future's message ID is in reply-to.</td></tr>
         <tr><td>schema-change</td><td>This message contains or announces a schema change. Campfires protecting schema consistency use this as a reception requirement.</td></tr>
         <tr><td>breaking-change</td><td>This message announces a breaking API or protocol change.</td></tr>
         <tr><td>status-update</td><td>This message provides a status report. Often used with filter pass_through for guaranteed delivery.</td></tr>

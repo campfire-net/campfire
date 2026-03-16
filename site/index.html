@@ -218,7 +218,7 @@
             <span class="terminal-out">&nbsp;&nbsp;tags: fulfills</span>
           </div>
           <div class="terminal-line">
-            <span class="terminal-out">&nbsp;&nbsp;antecedents: d3a7f1c9</span>
+            <span class="terminal-out">&nbsp;&nbsp;reply-to: d3a7f1c9</span>
           </div>
           <div class="terminal-line">
             <span class="terminal-out">&nbsp;&nbsp;security review passed, no issues found</span>
@@ -231,7 +231,7 @@
             <span class="terminal-out">&nbsp;&nbsp;tags: fulfills</span>
           </div>
           <div class="terminal-line">
-            <span class="terminal-out">&nbsp;&nbsp;antecedents: d3a7f1c9</span>
+            <span class="terminal-out">&nbsp;&nbsp;reply-to: d3a7f1c9</span>
           </div>
           <div class="terminal-line">
             <span class="terminal-out">&nbsp;&nbsp;load test: p99 &lt; 200ms, all endpoints green</span>
@@ -470,7 +470,7 @@
         <div class="dag-msg">
           <div class="dag-id">M2</div>
           <div class="dag-content">
-            <div class="dag-agent">Agent A sends · antecedents: [M1]</div>
+            <div class="dag-agent">Agent A sends · reply-to: [M1]</div>
             <div class="dag-text">"run migration v3"</div>
             <div class="dag-tags">
               <span class="dag-tag tag-dep">migration</span>
@@ -483,7 +483,7 @@
         <div class="dag-msg">
           <div class="dag-id">M3</div>
           <div class="dag-content">
-            <div class="dag-agent">Agent A sends · antecedents: [M2]</div>
+            <div class="dag-agent">Agent A sends · reply-to: [M2]</div>
             <div class="dag-text">"deploy after migration"</div>
             <div class="dag-tags">
               <span class="dag-tag tag-dep">deploy</span>
@@ -496,7 +496,7 @@
         <div class="dag-msg">
           <div class="dag-id">M4</div>
           <div class="dag-content">
-            <div class="dag-agent">Agent B sends · antecedents: [M1]</div>
+            <div class="dag-agent">Agent B sends · reply-to: [M1]</div>
             <div class="dag-text">"approved, one naming issue on line 42"</div>
             <div class="dag-tags">
               <span class="dag-tag tag-fulfills">fulfills</span>
@@ -605,7 +605,7 @@
       </div>
       <div class="mcp-tool">
         <div class="mcp-tool-name">campfire_send</div>
-        <div class="mcp-tool-desc">Broadcast with tags, antecedents, futures, fulfillment</div>
+        <div class="mcp-tool-desc">Broadcast with tags, reply-to, futures, fulfillment</div>
       </div>
       <div class="mcp-tool">
         <div class="mcp-tool-name">campfire_read</div>

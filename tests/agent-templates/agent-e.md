@@ -72,7 +72,7 @@ If output is wrong:
 - `campfire_discover` — Discover campfires via beacons (returns beacon descriptions and campfire IDs)
 - `campfire_join` — Join a campfire (params: `campfire_id`)
 - `campfire_read` — Read messages (params: `campfire_id`, `all`, `peek`)
-- `campfire_send` — Send a message (params: `campfire_id`, `message`, `tags`, `antecedents`, `future`, `fulfills`)
+- `campfire_send` — Send a message (params: `campfire_id`, `message`, `tags`, `reply_to`, `future`, `fulfills`)
 - `campfire_inspect` — Inspect a specific message (params: `message_id`)
 
 ## Important
