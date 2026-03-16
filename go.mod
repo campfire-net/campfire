@@ -1,4 +1,4 @@
-module github.com/3dl-dev/campfire
+module github.com/campfire-net/campfire
 
 go 1.24.0
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/3dl-dev/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/message"
 )
 
 func makeTestMessage(t *testing.T) *message.Message {

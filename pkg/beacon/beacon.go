@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	cfencoding "github.com/3dl-dev/campfire/pkg/encoding"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 )
 
 // TransportConfig describes how to connect to a campfire.

@@ -31,11 +31,11 @@ The spec is at [`docs/protocol-spec.md`](docs/protocol-spec.md). It defines the 
 ## Install
 
 ```bash
-go install github.com/3dl-dev/campfire/cmd/cf@latest
-go install github.com/3dl-dev/campfire/cmd/cf-mcp@latest
+go install github.com/campfire-net/campfire/cmd/cf@latest
+go install github.com/campfire-net/campfire/cmd/cf-mcp@latest
 ```
 
-Prebuilt binaries for Linux, macOS, and Windows on the [Releases page](https://github.com/3dl-dev/campfire/releases).
+Prebuilt binaries for Linux, macOS, and Windows on the [Releases page](https://github.com/campfire-net/campfire/releases).
 
 ---
 

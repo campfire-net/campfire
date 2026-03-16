@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	cfencoding "github.com/3dl-dev/campfire/pkg/encoding"
-	"github.com/3dl-dev/campfire/pkg/message"
-	"github.com/3dl-dev/campfire/pkg/store"
-	"github.com/3dl-dev/campfire/pkg/threshold"
-	cfhttp "github.com/3dl-dev/campfire/pkg/transport/http"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/threshold"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // TestSendReadP2PThreshold1 tests the basic send→deliver→sync flow:

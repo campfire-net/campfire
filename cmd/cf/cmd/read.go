@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/3dl-dev/campfire/pkg/identity"
-	"github.com/3dl-dev/campfire/pkg/message"
-	"github.com/3dl-dev/campfire/pkg/store"
-	ghtr "github.com/3dl-dev/campfire/pkg/transport/github"
-	cfhttp "github.com/3dl-dev/campfire/pkg/transport/http"
-	"github.com/3dl-dev/campfire/pkg/transport/fs"
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
+	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
 

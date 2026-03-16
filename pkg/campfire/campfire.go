@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/3dl-dev/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/identity"
 )
 
 // Campfire represents a campfire's state.

@@ -19,12 +19,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/3dl-dev/campfire/pkg/campfire"
-	cfencoding "github.com/3dl-dev/campfire/pkg/encoding"
-	"github.com/3dl-dev/campfire/pkg/message"
-	"github.com/3dl-dev/campfire/pkg/store"
-	"github.com/3dl-dev/campfire/pkg/threshold"
-	cfhttp "github.com/3dl-dev/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/pkg/campfire"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/threshold"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	"os"
 	"path/filepath"
 )

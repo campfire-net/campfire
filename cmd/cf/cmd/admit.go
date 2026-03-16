@@ -7,10 +7,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/3dl-dev/campfire/pkg/campfire"
-	"github.com/3dl-dev/campfire/pkg/message"
-	"github.com/3dl-dev/campfire/pkg/store"
-	"github.com/3dl-dev/campfire/pkg/transport/fs"
+	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
 

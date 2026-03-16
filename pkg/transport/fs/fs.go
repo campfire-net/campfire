@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/3dl-dev/campfire/pkg/campfire"
-	cfencoding "github.com/3dl-dev/campfire/pkg/encoding"
-	"github.com/3dl-dev/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/campfire"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/message"
 )
 
 // Transport manages the filesystem transport for campfires.

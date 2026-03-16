@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/3dl-dev/campfire/pkg/message"
-	"github.com/3dl-dev/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
