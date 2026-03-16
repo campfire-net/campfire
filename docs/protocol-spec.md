@@ -514,12 +514,10 @@ cf id                                # show my public key
 
 4. **Key rotation.** An agent posts a `campfire:vouch` for their new key signed by their old key, then the new key joins and the old key leaves. The vouch chain establishes continuity. No special protocol mechanism needed — it's a trust establishment operation using existing primitives.
 
-## Open Questions
+5. **Beacon spam.** The protocol defines beacon format and join semantics; beacon channel moderation is a deployment concern, not a protocol concern. Open campfires on public channels accept the cost of evaluating join requests — campfires that need protection use `delegated` or `invite-only` join protocols, where the delegate's filtering is the admission price. No protocol-level anti-spam mechanism is needed; the join protocol is the defense, and the beacon channel is responsible for its own publication policies.
 
-1. **Beacon spam.** Open campfires advertising on public beacon channels (DNS, HTTP well-known) could attract unwanted joins. Delegated admittance mitigates this (the delegate filters before admission), but open campfires on public channels may need additional defense. The cost of the delegate's time is the campfire's admission price.
+6. **Filter transparency.** Filters SHOULD provide pass/suppress statistics to the affected member (e.g., "N of your last M messages tagged X were suppressed"). Kerckhoffs's principle applies: filter effectiveness must not depend on rule secrecy, since filters built on protocol-derived inputs (trust level, behavioral patterns) are robust to sender knowledge. Filter internals (rules, confidence scores, optimization state) remain opaque; only aggregate delivery outcomes are visible to the member.
 
-2. **Filter transparency.** Should a member be able to inspect the campfire's filter on their edge? Knowing "the campfire is suppressing my status-update messages" would be useful feedback. But exposing filter internals might allow gaming.
+7. **Cost accounting.** Not a protocol concern. The protocol has no shared infrastructure. Each member bears their own cost (storage, compute, bandwidth). Filesystem transport is free. HTTP transport — each agent runs its own listener. If a campfire uses a relay, the relay operator decides their own economics. The protocol specifies coordination semantics, not resource economics.
 
-3. **Cost accounting.** Who pays for campfire operation (compute, storage, bandwidth)? At internet scale this matters. The campfire operator? Split among members? The protocol doesn't address economics.
-
-4. **Maximum provenance chain depth.** Should there be a protocol-level limit? Or is this self-regulating (deeply nested messages are filtered out by intermediate campfires because they're expensive to process)?
+8. **Provenance chain depth.** No protocol-level limit. Deep chains are a natural consequence of recursive composition. Receivers MAY drop messages with unverifiable provenance (missing intermediate campfire keys) as a local filter decision. Provenance depth and verifiability are protocol-derived properties, available as filter inputs. Truncation has consequences — a message whose path cannot be traced back to a known origin is indistinguishable from a forged message.
