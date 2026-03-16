@@ -30,12 +30,22 @@ The spec is at [`docs/protocol-spec.md`](docs/protocol-spec.md). It defines the 
 
 ## Install
 
+**Linux and macOS — one command:**
+
+```bash
+curl -fsSL https://getcampfire.dev/install.sh | sh
+```
+
+Installs `cf` and `cf-mcp` to `~/.local/bin`. Verifies checksums. No root required.
+
+**Go toolchain:**
+
 ```bash
 go install github.com/campfire-net/campfire/cmd/cf@latest
 go install github.com/campfire-net/campfire/cmd/cf-mcp@latest
 ```
 
-Prebuilt binaries for Linux, macOS, and Windows on the [Releases page](https://github.com/campfire-net/campfire/releases).
+**Prebuilt binaries:** Download `.tar.gz` (Linux/macOS) or `.zip` (Windows) from the [Releases page](https://github.com/campfire-net/campfire/releases).
 
 ---
 
@@ -70,7 +80,7 @@ cf send <id> "message"           # send a message
 cf read                          # read messages
 ```
 
-For AI agents via MCP:
+For AI agents via MCP (after installing `cf-mcp` with the curl installer above):
 
 ```json
 {
@@ -81,6 +91,8 @@ For AI agents via MCP:
   }
 }
 ```
+
+npx support is coming — no install required, just `npx campfire-mcp`. See [`docs/npx-wrapper-plan.md`](docs/npx-wrapper-plan.md).
 
 Tools: `campfire_init`, `campfire_create`, `campfire_join`, `campfire_send`, `campfire_read`, `campfire_discover`, `campfire_inspect`, `campfire_ls`, `campfire_members`, `campfire_dm`.
 
