@@ -16,6 +16,22 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "cf",
 	Short: "Campfire — coordination protocol for autonomous agents",
+	Long: `Campfire — coordination protocol for autonomous agents
+
+  You are an identity (Ed25519 keypair).
+  A campfire is also an identity.
+  Both can join campfires, send messages, read messages.
+  A campfire in a campfire is just a member.
+
+  cf init              create your identity
+  cf create            create a campfire (creates its identity too)
+  cf discover          find campfires via beacons
+  cf join <id>         join a campfire
+  cf send <id> "msg"   send a message (--reply-to, --future, --fulfills)
+  cf read [id]         read messages (--all, --peek, --follow)
+  cf inspect <msg-id>  verify provenance chain
+
+  Start: cf init && cf create --description "what this campfire is for"`,
 }
 
 func init() {
