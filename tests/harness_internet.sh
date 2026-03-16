@@ -14,13 +14,11 @@
 # Environment:
 #   SKIP_BUILD=1    — Skip build, expect pre-built binaries at cf-bin-tmp and cf-mcp-bin-tmp
 #
-# Design: 9 architects run simultaneously per round, with structured phase markers.
-#   - Rounds 1-2 (Build): Design and build root infrastructure campfires
-#   - Round 3 (Review): Review other architects' designs, provide feedback
-#   - Round 4 (Attack): Stress Test Architect attacks everything; others defend
-#   - Round 5+ (Verify): Newcomer bootstraps; architects iterate
-#   - Round transitions: harness sends a round-marker message to coordination campfire
-#   - Verification agent (agent-10) only runs in round 5+
+# Design: persistent claude sessions (--resume) run across all rounds.
+#   - Each architect gets one session started in Round 1; rounds 2+ inject state via --resume.
+#   - A poller loop runs every 30 seconds and injects state diffs if anything changed.
+#   - Round transitions are injections into existing sessions, not new sessions.
+#   - Newcomer (agent-10) starts fresh in Round 5 (no prior context).
 #
 # Exits 0 on PASS, non-zero on FAIL.
 
@@ -60,7 +58,9 @@ ROUND_3_SECS=$(( 30 * 60 ))
 ROUND_4_SECS=$(( 30 * 60 ))
 ROUND_5_SECS=$(( 20 * 60 ))
 
-OVERALL_TIMEOUT=$(( 180 * 60 ))  # 3 hours
+OVERALL_TIMEOUT=$(( 45 * 60 ))  # 45 minutes total
+
+POLL_INTERVAL=30  # seconds between state diff checks
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -143,8 +143,9 @@ round_duration_secs() {
 # ─────────────────────────────────────────────────────────────────────────────
 log "Checking prerequisites..."
 
-command -v python3 >/dev/null 2>&1 || fail "python3 not found on PATH"
-command -v claude  >/dev/null 2>&1 || fail "claude not found on PATH"
+command -v python3      >/dev/null 2>&1 || fail "python3 not found on PATH"
+command -v claude       >/dev/null 2>&1 || fail "claude not found on PATH"
+command -v systemd-run  >/dev/null 2>&1 || fail "systemd-run not found on PATH (required for session isolation)"
 
 if [ -z "${SKIP_BUILD:-}" ]; then
     command -v go >/dev/null 2>&1 || fail "go not found on PATH (set SKIP_BUILD=1 and pre-build binaries)"
@@ -153,6 +154,7 @@ fi
 log "Prerequisites OK."
 log "Rounds: $ROUNDS"
 log "Round durations: R1=${ROUND_1_SECS}s R2=${ROUND_2_SECS}s R3=${ROUND_3_SECS}s R4=${ROUND_4_SECS}s R5+=${ROUND_5_SECS}s"
+log "Overall timeout: ${OVERALL_TIMEOUT}s"
 
 if $DRY_RUN; then
     log "Dry-run mode: setup only, no agents will be launched."
@@ -459,19 +461,42 @@ if $DRY_RUN; then
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 8: Launch rounds
+# Step 8: Persistent session execution
 #
-# For each round:
-#   1. Send round marker message to coordination campfire
-#   2. Write rounds/round-N.marker timestamp file
-#   3. Run all agents in parallel — discoveries happen through campfire in real-time
-#   4. Kill agent if it exceeds the remaining round time budget
-#   5. Move to next round when all agents are done or time budget exhausted
-#
-# Round 5+: additionally initialize and launch verification agent (agent-10)
+# Model:
+#   - Phase 1: Start all 9 architect sessions in parallel via systemd-run.
+#              Each session gets the full initial prompt (CLAUDE.md + round 1 state).
+#              Session IDs are captured for --resume injection.
+#   - Phase 2: Poller loop runs every POLL_INTERVAL seconds.
+#              For each live agent, compute a state diff (beacon count, message count).
+#              If state changed since last injection, inject a diff update via --resume.
+#   - Phase 3: Round transitions inject a round marker + full state snapshot into
+#              each live session via --resume.
+#   - Phase 4: In round 5, newcomer starts as a fresh session (no --resume).
+#   - Total timeout: OVERALL_TIMEOUT seconds. Poller kills all sessions at end.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Build a state snapshot for an agent: current memberships, available beacons, new messages
+# Session state tracking
+declare -A SESSION_IDS        # claude session IDs per agent number
+declare -A SESSION_ALIVE      # "true" or "false"
+declare -A LAST_BEACON_COUNT  # beacon count as of last injection
+declare -A LAST_MSG_COUNT     # total message count across all campfires as of last injection
+declare -A MCP_ARGS_MAP       # pre-built mcp-args string per agent
+
+# Initialize tracking arrays for agents 01-09
+for i in 01 02 03 04 05 06 07 08 09; do
+    SESSION_IDS["$i"]=""
+    SESSION_ALIVE["$i"]="false"
+    LAST_BEACON_COUNT["$i"]="0"
+    LAST_MSG_COUNT["$i"]="0"
+    if [ -f "$AGENTS_DIR/agent-$i/mcp-config.json" ]; then
+        MCP_ARGS_MAP["$i"]="--mcp-config $AGENTS_DIR/agent-$i/mcp-config.json"
+    else
+        MCP_ARGS_MAP["$i"]=""
+    fi
+done
+
+# Build a full state snapshot for an agent
 build_state_snapshot() {
     local agent_num="$1"
     local agent_home="$AGENTS_DIR/agent-$agent_num"
@@ -479,7 +504,7 @@ build_state_snapshot() {
     echo "## Current state (auto-generated by harness)"
     echo ""
 
-    # --- Campfire memberships ---
+    # Campfire memberships
     echo "### Your campfires"
     echo ""
     local ls_out
@@ -495,7 +520,7 @@ build_state_snapshot() {
     fi
     echo ""
 
-    # --- Available beacons ---
+    # Available beacons
     echo "### Available beacons (cf discover)"
     echo ""
     local discover_out
@@ -511,8 +536,8 @@ build_state_snapshot() {
     fi
     echo ""
 
-    # --- New messages since last turn (per campfire) ---
-    echo "### New messages since your last turn"
+    # New messages (read --all per campfire)
+    echo "### Messages in your campfires"
     echo ""
     local memberships_json
     memberships_json=$(CF_HOME="$agent_home" \
@@ -552,7 +577,7 @@ build_state_snapshot() {
     fi
     echo ""
 
-    # --- Coordination campfire (always show latest, even if already a member) ---
+    # Coordination campfire (always show)
     local coord_id
     coord_id="$(cat "$SHARED_DIR/coordination-id.txt" 2>/dev/null || true)"
     if [ -n "$coord_id" ]; then
@@ -574,7 +599,7 @@ build_state_snapshot() {
     fi
 }
 
-# Build the turn prompt for an architect
+# Build the initial prompt for an architect (Round 1 launch)
 build_architect_prompt() {
     local agent_num="$1"
     local round="$2"
@@ -603,9 +628,9 @@ build_architect_prompt() {
     build_state_snapshot "$agent_num"
 }
 
-# Build the turn prompt for the verification agent (agent-10)
+# Build newcomer prompt (Round 5 fresh start)
 build_newcomer_prompt() {
-    local round="$2"
+    local round="$1"
     local agent_home="$AGENTS_DIR/agent-10"
 
     cat "$agent_home/CLAUDE.md"
@@ -623,49 +648,187 @@ build_newcomer_prompt() {
     build_state_snapshot "10"
 }
 
-# Run one agent's round, writing output to log
-run_agent_round() {
+# Get current beacon count for an agent
+get_beacon_count() {
+    local agent_num="$1"
+    local agent_home="$AGENTS_DIR/agent-$agent_num"
+    CF_HOME="$agent_home" \
+        CF_BEACON_DIR="$BEACON_DIR" \
+        CF_TRANSPORT_DIR="$TRANSPORT_DIR" \
+        PATH="$BIN_DIR:$PATH" \
+        "$CF_BIN" discover --json 2>/dev/null \
+        | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d) if isinstance(d, list) else 0)" \
+        2>/dev/null || echo "0"
+}
+
+# Get total message count across all campfires for an agent
+get_msg_count() {
+    local agent_num="$1"
+    local agent_home="$AGENTS_DIR/agent-$agent_num"
+
+    local memberships_json
+    memberships_json=$(CF_HOME="$agent_home" \
+        CF_BEACON_DIR="$BEACON_DIR" \
+        CF_TRANSPORT_DIR="$TRANSPORT_DIR" \
+        PATH="$BIN_DIR:$PATH" \
+        "$CF_BIN" ls --json 2>/dev/null || echo "[]")
+
+    local campfire_ids
+    campfire_ids=$(echo "$memberships_json" \
+        | python3 -c "import json,sys; ids=json.load(sys.stdin); print('\n'.join(x['campfire_id'] for x in ids))" \
+        2>/dev/null || true)
+
+    local total=0
+    if [ -n "$campfire_ids" ]; then
+        while IFS= read -r cf_id; do
+            [ -z "$cf_id" ] && continue
+            local count
+            count=$(CF_HOME="$agent_home" \
+                CF_BEACON_DIR="$BEACON_DIR" \
+                CF_TRANSPORT_DIR="$TRANSPORT_DIR" \
+                PATH="$BIN_DIR:$PATH" \
+                "$CF_BIN" read "$cf_id" --all --json 2>/dev/null \
+                | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d) if isinstance(d, list) else 0)" \
+                2>/dev/null || echo "0")
+            total=$(( total + count ))
+        done <<< "$campfire_ids"
+    fi
+    echo "$total"
+}
+
+# Start a persistent claude session for an agent.
+# Writes session_id to $LOGS_DIR/agent-$agent_num.session_id
+# Writes initial output to $LOGS_DIR/agent-$agent_num-init.log
+start_agent_session() {
     local agent_num="$1"
     local round="$2"
     local agent_home="$AGENTS_DIR/agent-$agent_num"
-    local log_file="$LOGS_DIR/agent-${agent_num}-round-$(printf '%02d' "$round").log"
+    local log_file="$LOGS_DIR/agent-${agent_num}-init.log"
+    local session_file="$LOGS_DIR/agent-${agent_num}.session_id"
+    local prompt_file="$LOGS_DIR/agent-${agent_num}-init-prompt.txt"
 
-    local mcp_args=()
+    log "    [session start] agent-$agent_num: building initial prompt..."
+
+    build_architect_prompt "$agent_num" "$round" > "$prompt_file"
+
+    # Build mcp args array
+    local mcp_flags=""
     if [ -f "$agent_home/mcp-config.json" ]; then
-        mcp_args+=(--mcp-config "$agent_home/mcp-config.json")
+        mcp_flags="--mcp-config $agent_home/mcp-config.json"
     fi
 
-    local prompt_fn
-    if [ "$agent_num" = "10" ]; then
-        prompt_fn="build_newcomer_prompt"
-    else
-        prompt_fn="build_architect_prompt"
-    fi
+    log "    [session start] agent-$agent_num: launching via systemd-run..."
 
-    log "    [round $round] agent-$agent_num: starting (log: $log_file)"
+    # Launch via systemd-run to escape Claude Code's process tree.
+    # Output goes to log_file. We parse session_id after it arrives.
+    systemd-run \
+        --user \
+        --scope \
+        --collect \
+        -- \
+        bash -c "
+            CF_HOME='$agent_home' \
+            CF_BEACON_DIR='$BEACON_DIR' \
+            CF_TRANSPORT_DIR='$TRANSPORT_DIR' \
+            PATH='$BIN_DIR:$PATH' \
+            claude -p \
+                --dangerously-skip-permissions \
+                --output-format json \
+                --model claude-sonnet-4-5 \
+                $mcp_flags \
+                < '$prompt_file' \
+                > '$log_file' 2>&1
+        " &
 
-    "$prompt_fn" "$agent_num" "$round" \
-        | CF_HOME="$agent_home" \
-          CF_BEACON_DIR="$BEACON_DIR" \
-          CF_TRANSPORT_DIR="$TRANSPORT_DIR" \
-          PATH="$BIN_DIR:$PATH" \
-          claude -p \
-            --dangerously-skip-permissions \
-            --output-format text \
-            --model claude-sonnet-4-5 \
-            "${mcp_args[@]}" \
-        > "$log_file" 2>&1
+    # Wait for log file to appear and contain session_id (up to 60s)
+    local waited=0
+    while [ $waited -lt 60 ]; do
+        if [ -s "$log_file" ]; then
+            local sid
+            sid=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('$log_file'))
+    print(data.get('session_id', ''))
+except Exception:
+    print('')
+" 2>/dev/null || true)
+            if [ -n "$sid" ]; then
+                echo "$sid" > "$session_file"
+                SESSION_IDS["$agent_num"]="$sid"
+                SESSION_ALIVE["$agent_num"]="true"
+                log "    [session start] agent-$agent_num: session_id=${sid}"
+                return 0
+            fi
+        fi
+        sleep 2
+        waited=$(( waited + 2 ))
+    done
 
-    local exit_code=$?
-    if [ $exit_code -ne 0 ]; then
-        log "    [round $round] agent-$agent_num: exited with code $exit_code (see $log_file)"
-    else
-        log "    [round $round] agent-$agent_num: done"
-    fi
-    return $exit_code
+    log "    [session start] agent-$agent_num: WARNING — timed out waiting for session_id (see $log_file)"
+    SESSION_ALIVE["$agent_num"]="false"
+    return 1
 }
 
-# Send a round marker to the coordination campfire from the harness identity
+# Inject a message into a live session via --resume.
+# Returns 0 on success, non-zero if session appears dead.
+inject_into_session() {
+    local agent_num="$1"
+    local message="$2"
+    local label="${3:-update}"
+    local agent_home="$AGENTS_DIR/agent-$agent_num"
+    local session_id="${SESSION_IDS[$agent_num]}"
+    local log_file="$LOGS_DIR/agent-${agent_num}-${label}-$(date +%s).log"
+
+    if [ -z "$session_id" ]; then
+        log "    [inject] agent-$agent_num: no session_id, skipping"
+        return 1
+    fi
+
+    local mcp_flags=""
+    if [ -f "$agent_home/mcp-config.json" ]; then
+        mcp_flags="--mcp-config $agent_home/mcp-config.json"
+    fi
+
+    local result
+    result=$(CF_HOME="$agent_home" \
+        CF_BEACON_DIR="$BEACON_DIR" \
+        CF_TRANSPORT_DIR="$TRANSPORT_DIR" \
+        PATH="$BIN_DIR:$PATH" \
+        claude --resume "$session_id" \
+            -p "$message" \
+            --dangerously-skip-permissions \
+            --output-format json \
+            --model claude-sonnet-4-5 \
+            $mcp_flags \
+        2>"$log_file.err" | tee "$log_file")
+
+    local exit_code=$?
+
+    if [ $exit_code -ne 0 ]; then
+        log "    [inject] agent-$agent_num: session may be dead (exit $exit_code) — marking inactive"
+        SESSION_ALIVE["$agent_num"]="false"
+        return 1
+    fi
+
+    # Update session_id in case it changed on resume
+    local new_sid
+    new_sid=$(echo "$result" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(data.get('session_id', ''))
+except Exception:
+    print('')
+" 2>/dev/null || true)
+    if [ -n "$new_sid" ]; then
+        SESSION_IDS["$agent_num"]="$new_sid"
+    fi
+
+    return 0
+}
+
+# Send a round marker to the coordination campfire
 send_round_marker() {
     local round="$1"
     local name
@@ -692,135 +855,277 @@ Your prior work and campfire history persist — this is a phase transition, not
 }
 
 log ""
-log "Starting $ROUNDS rounds — agents run in PARALLEL per round (real-time discovery through campfire)."
+log "Starting persistent-session execution — agents run continuously across all rounds."
+log "State diffs injected every ${POLL_INTERVAL}s when changes are detected."
 log ""
 
 START_TIME=$(date +%s)
+TEST_DEADLINE=$(( START_TIME + OVERALL_TIMEOUT ))
 
-for round in $(seq 1 "$ROUNDS"); do
-    RNAME="$(round_name "$round")"
-    log "━━━ Round $round / $ROUNDS — ${RNAME} ━━━"
-
-    ROUND_START=$(date +%s)
-
-    # Check overall elapsed time
-    elapsed=$(( ROUND_START - START_TIME ))
-    if (( elapsed > OVERALL_TIMEOUT - 600 )); then
-        log "Elapsed time ${elapsed}s approaching ${OVERALL_TIMEOUT}s overall timeout — stopping after round $((round - 1))."
-        break
-    fi
-
-    # Send round marker (skip round 1 — no prior round to transition from,
-    # but still write the marker file and post an intro message)
-    if [ "$round" -eq 1 ]; then
-        CF_HOME="$HARNESS_HOME" \
-        CF_BEACON_DIR="$BEACON_DIR" \
-        CF_TRANSPORT_DIR="$TRANSPORT_DIR" \
-        "$CF_BIN" send "$COORDINATION_ID" \
-            "=== ROUND 1: BUILD ===
+# ── Phase 1: Send round 1 opening marker ──────────────────────────────────────
+CF_HOME="$HARNESS_HOME" \
+CF_BEACON_DIR="$BEACON_DIR" \
+CF_TRANSPORT_DIR="$TRANSPORT_DIR" \
+"$CF_BIN" send "$COORDINATION_ID" \
+    "=== ROUND 1: BUILD ===
 Welcome, founding architects. This coordination campfire is your shared space.
 Round 1 focus: Design and build your root infrastructure campfires.
 Join this campfire. Post your architect introduction. Then build." \
-            --tag round-marker 2>/dev/null \
-            && log "  Round 1 opening message sent." \
-            || log "  WARNING: Failed to send round 1 opening message."
-        echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') Round 1 (BUILD) started." \
-            > "$ROUNDS_DIR/round-1.marker"
+    --tag round-marker 2>/dev/null \
+    && log "Round 1 opening message sent." \
+    || log "WARNING: Failed to send round 1 opening message."
+
+echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') Round 1 (BUILD) started." \
+    > "$ROUNDS_DIR/round-1.marker"
+
+# ── Phase 1: Start all 9 architect sessions in parallel ───────────────────────
+log "Launching all 9 architect sessions in parallel..."
+
+declare -A START_PIDS
+for i in 01 02 03 04 05 06 07 08 09; do
+    start_agent_session "$i" "1" &
+    START_PIDS["$i"]=$!
+done
+
+log "  Waiting for all session starts to complete..."
+for i in 01 02 03 04 05 06 07 08 09; do
+    wait "${START_PIDS[$i]}" 2>/dev/null || true
+done
+
+alive_count=0
+for i in 01 02 03 04 05 06 07 08 09; do
+    if [ "${SESSION_ALIVE[$i]}" = "true" ]; then
+        alive_count=$(( alive_count + 1 ))
+        log "  agent-$i: live (session=${SESSION_IDS[$i]})"
     else
-        send_round_marker "$round"
+        log "  agent-$i: FAILED to start session"
+    fi
+done
+log "  $alive_count / 9 architect sessions live."
+
+# ── Phase 2 & 3: Poller loop + round transitions ──────────────────────────────
+#
+# The poller loop tracks elapsed time to determine round boundaries.
+# Round boundaries are computed from the start time + cumulative durations.
+
+# Build cumulative round deadline array
+declare -a ROUND_DEADLINES
+cumulative=0
+for round in $(seq 1 "$ROUNDS"); do
+    rds="$(round_duration_secs "$round")"
+    cumulative=$(( cumulative + rds ))
+    ROUND_DEADLINES[$round]=$(( START_TIME + cumulative ))
+done
+
+# Track which round we're currently in
+CURRENT_ROUND=1
+NEWCOMER_STARTED=false
+
+log ""
+log "Entering poller loop. Overall deadline: $(date -d @"$TEST_DEADLINE" '+%H:%M:%S') (${OVERALL_TIMEOUT}s from now)."
+log ""
+
+while true; do
+    now=$(date +%s)
+
+    # Check overall timeout
+    if (( now >= TEST_DEADLINE )); then
+        log "Overall timeout reached (${OVERALL_TIMEOUT}s). Ending test."
+        break
     fi
 
-    # Determine which agents run this round
-    declare -a ROUND_AGENTS
-    if [ "$round" -ge 5 ]; then
-        # Round 5+: verification agent only (agent-10)
-        # Initialize agent-10 if this is the first time it runs
-        if [ ! -f "$AGENTS_DIR/agent-10/identity.json" ]; then
-            log "  Initializing verification agent (agent-10)..."
-            CF_HOME="$AGENTS_DIR/agent-10" "$CF_BIN" init > /dev/null
-
-            # Read its public key and inject its template
-            key10=$(CF_HOME="$AGENTS_DIR/agent-10" "$CF_BIN" id --json \
-                | python3 -c "import json,sys; print(json.load(sys.stdin)['public_key'])")
-            AGENT_KEYS["10"]="$key10"
-            log "  agent-10: initialized (${key10:0:16}...)"
-
-            inject_template "10"
-
-            if grep -q '{{' "$AGENTS_DIR/agent-10/CLAUDE.md"; then
-                fail "Unreplaced placeholders in agent-10/CLAUDE.md"
-            fi
-            log "  agent-10/CLAUDE.md written."
-        fi
-        ROUND_AGENTS=(10)
-    else
-        # Rounds 1-4: all 9 architects
-        ROUND_AGENTS=(01 02 03 04 05 06 07 08 09)
+    # Check if we've completed all rounds
+    if [ "$CURRENT_ROUND" -gt "$ROUNDS" ]; then
+        log "All $ROUNDS rounds complete."
+        break
     fi
 
-    # Calculate round timeout
-    round_secs="$(round_duration_secs "$round")"
-    ROUND_DEADLINE=$(( ROUND_START + round_secs ))
+    # Check for round transition
+    round_deadline="${ROUND_DEADLINES[$CURRENT_ROUND]}"
+    if (( now >= round_deadline )); then
+        next_round=$(( CURRENT_ROUND + 1 ))
+        if [ "$next_round" -le "$ROUNDS" ]; then
+            log "━━━ Round transition: Round $CURRENT_ROUND → Round $next_round ━━━"
+            send_round_marker "$next_round"
 
-    log "  Launching ${#ROUND_AGENTS[@]} agent(s) in PARALLEL (timeout: ${round_secs}s total)..."
-    log "  Agents work simultaneously. Discoveries happen in real-time through campfire."
+            # If entering round 5, initialize and start newcomer
+            if [ "$next_round" -ge 5 ] && ! $NEWCOMER_STARTED; then
+                log "  Initializing newcomer (agent-10)..."
+                CF_HOME="$AGENTS_DIR/agent-10" "$CF_BIN" init > /dev/null
 
-    # Launch ALL agents in parallel — this is the point of the protocol
-    declare -A ROUND_PIDS
-    for agent_num in "${ROUND_AGENTS[@]}"; do
-        run_agent_round "$agent_num" "$round" &
-        ROUND_PIDS["$agent_num"]=$!
-    done
+                key10=$(CF_HOME="$AGENTS_DIR/agent-10" "$CF_BIN" id --json \
+                    | python3 -c "import json,sys; print(json.load(sys.stdin)['public_key'])")
+                AGENT_KEYS["10"]="$key10"
+                log "  agent-10: initialized (${key10:0:16}...)"
 
-    # Wait for all to finish or timeout
-    TIMED_OUT=false
-    while true; do
-        now=$(date +%s)
-        if (( now >= ROUND_DEADLINE )); then
-            log "  Round $round timeout reached (${round_secs}s) — killing remaining agents."
-            for agent_num in "${!ROUND_PIDS[@]}"; do
-                kill "${ROUND_PIDS[$agent_num]}" 2>/dev/null || true
-            done
-            sleep 2
-            for agent_num in "${!ROUND_PIDS[@]}"; do
-                kill -9 "${ROUND_PIDS[$agent_num]}" 2>/dev/null || true
-            done
-            TIMED_OUT=true
-            break
-        fi
+                inject_template "10"
 
-        # Check if all agents are done
-        all_done=true
-        for agent_num in "${!ROUND_PIDS[@]}"; do
-            if kill -0 "${ROUND_PIDS[$agent_num]}" 2>/dev/null; then
-                all_done=false
-                break
+                if grep -q '{{' "$AGENTS_DIR/agent-10/CLAUDE.md"; then
+                    fail "Unreplaced placeholders in agent-10/CLAUDE.md"
+                fi
+
+                # Start newcomer as fresh session (not resumed)
+                newcomer_prompt_file="$LOGS_DIR/agent-10-init-prompt.txt"
+                build_newcomer_prompt "$next_round" > "$newcomer_prompt_file"
+
+                newcomer_log="$LOGS_DIR/agent-10-init.log"
+                newcomer_session_file="$LOGS_DIR/agent-10.session_id"
+
+                systemd-run \
+                    --user \
+                    --scope \
+                    --collect \
+                    -- \
+                    bash -c "
+                        CF_HOME='$AGENTS_DIR/agent-10' \
+                        CF_BEACON_DIR='$BEACON_DIR' \
+                        CF_TRANSPORT_DIR='$TRANSPORT_DIR' \
+                        PATH='$BIN_DIR:$PATH' \
+                        claude -p \
+                            --dangerously-skip-permissions \
+                            --output-format json \
+                            --model claude-sonnet-4-5 \
+                            < '$newcomer_prompt_file' \
+                            > '$newcomer_log' 2>&1
+                    " &
+
+                # Wait briefly for session_id
+                waited=0
+                while [ $waited -lt 60 ]; do
+                    if [ -s "$newcomer_log" ]; then
+                        sid10=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('$newcomer_log'))
+    print(data.get('session_id', ''))
+except Exception:
+    print('')
+" 2>/dev/null || true)
+                        if [ -n "$sid10" ]; then
+                            echo "$sid10" > "$newcomer_session_file"
+                            SESSION_IDS["10"]="$sid10"
+                            SESSION_ALIVE["10"]="true"
+                            log "  agent-10 (newcomer): session started (${sid10})"
+                            break
+                        fi
+                    fi
+                    sleep 2
+                    waited=$(( waited + 2 ))
+                done
+                if [ "${SESSION_ALIVE[10]:-false}" != "true" ]; then
+                    log "  agent-10: WARNING — failed to start newcomer session"
+                fi
+
+                NEWCOMER_STARTED=true
             fi
-        done
-        if $all_done; then
-            break
+
+            # Inject round transition into all live architect sessions
+            log "  Injecting round transition into live architect sessions..."
+            for i in 01 02 03 04 05 06 07 08 09; do
+                if [ "${SESSION_ALIVE[$i]}" = "true" ]; then
+                    name="$(round_name "$next_round")"
+                    focus="$(round_focus "$next_round")"
+                    transition_msg="ROUND TRANSITION: Round $CURRENT_ROUND is now complete. Round $next_round (${name}) begins.
+Focus: $focus
+
+$(build_state_snapshot "$i")"
+                    inject_into_session "$i" "$transition_msg" "round${next_round}-transition" &
+                fi
+            done
+            wait 2>/dev/null || true
+
+            CURRENT_ROUND="$next_round"
+            log "  Round $CURRENT_ROUND now active."
+        else
+            CURRENT_ROUND="$next_round"  # Past last round
         fi
+
         sleep 5
-    done
-    wait 2>/dev/null || true
-
-    if $TIMED_OUT; then
-        log "  Round $round: timed out. Proceeding to next round."
+        continue
     fi
 
-    ROUND_END=$(date +%s)
-    round_duration=$(( ROUND_END - ROUND_START ))
-    log "  Round $round complete in ${round_duration}s."
-    log ""
+    # Poll each live agent for state changes
+    log "  [poll] Checking state diffs for live agents (round $CURRENT_ROUND)..."
+
+    declare -a INJECT_PIDS
+    INJECT_PIDS=()
+
+    check_and_inject() {
+        local agent_num="$1"
+        if [ "${SESSION_ALIVE[$agent_num]}" != "true" ]; then
+            return
+        fi
+
+        local new_beacons
+        new_beacons="$(get_beacon_count "$agent_num")"
+        local new_msgs
+        new_msgs="$(get_msg_count "$agent_num")"
+
+        local last_beacons="${LAST_BEACON_COUNT[$agent_num]:-0}"
+        local last_msgs="${LAST_MSG_COUNT[$agent_num]:-0}"
+
+        if [ "$new_beacons" != "$last_beacons" ] || [ "$new_msgs" != "$last_msgs" ]; then
+            log "    [diff] agent-$agent_num: beacons $last_beacons→$new_beacons, msgs $last_msgs→$new_msgs — injecting update"
+
+            local diff_msg="New campfire activity since your last update:
+Beacons visible: $new_beacons (was $last_beacons)
+Messages in your campfires: $new_msgs (was $last_msgs)
+
+$(build_state_snapshot "$agent_num")"
+
+            inject_into_session "$agent_num" "$diff_msg" "diff"
+
+            LAST_BEACON_COUNT["$agent_num"]="$new_beacons"
+            LAST_MSG_COUNT["$agent_num"]="$new_msgs"
+        else
+            log "    [diff] agent-$agent_num: no change (beacons=$new_beacons, msgs=$new_msgs) — not interrupting"
+        fi
+    }
+
+    # Check all active agents
+    all_inactive=true
+    for i in 01 02 03 04 05 06 07 08 09; do
+        if [ "${SESSION_ALIVE[$i]}" = "true" ]; then
+            all_inactive=false
+            check_and_inject "$i" &
+            INJECT_PIDS+=($!)
+        fi
+    done
+    # Check newcomer if started
+    if $NEWCOMER_STARTED && [ "${SESSION_ALIVE[10]:-false}" = "true" ]; then
+        all_inactive=false
+        check_and_inject "10" &
+        INJECT_PIDS+=($!)
+    fi
+
+    # Wait for all diff checks to finish
+    for pid in "${INJECT_PIDS[@]:-}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+
+    if $all_inactive; then
+        log "  All sessions inactive. Ending test early."
+        break
+    fi
+
+    # Sleep until next poll
+    remaining=$(( TEST_DEADLINE - $(date +%s) ))
+    sleep_for=$POLL_INTERVAL
+    if (( sleep_for > remaining )); then
+        sleep_for=$remaining
+    fi
+    if (( sleep_for > 0 )); then
+        sleep "$sleep_for"
+    fi
 done
 
 TOTAL_TIME=$(( $(date +%s) - START_TIME ))
-log "All rounds complete in ${TOTAL_TIME}s."
+log "Execution complete in ${TOTAL_TIME}s."
+log ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 9: Verify
 # ─────────────────────────────────────────────────────────────────────────────
-log ""
 log "Running verification..."
 
 VERIFY_SCRIPT="$SCRIPT_DIR/verify_internet.sh"
@@ -832,14 +1137,18 @@ else
     log "verify_internet.sh not found — running basic checks"
     VERIFY_EXIT=0
 
-    # Basic sanity: at least some agent logs exist
-    log_count=$(ls "$LOGS_DIR"/agent-*-round-*.log 2>/dev/null | wc -l || echo 0)
+    # Basic sanity: at least some agent session init logs exist
+    log_count=$(ls "$LOGS_DIR"/agent-*-init.log 2>/dev/null | wc -l || echo 0)
     if [ "$log_count" -eq 0 ]; then
-        log "  FAIL: no agent round logs found in $LOGS_DIR"
+        log "  FAIL: no agent session logs found in $LOGS_DIR"
         VERIFY_EXIT=1
     else
-        log "  Found $log_count agent round log(s)."
+        log "  Found $log_count agent session log(s)."
     fi
+
+    # Check session IDs captured
+    session_count=$(ls "$LOGS_DIR"/*.session_id 2>/dev/null | wc -l || echo 0)
+    log "  Session IDs captured: $session_count"
 
     # Check coordination ID
     if [ -f "$SHARED_DIR/coordination-id.txt" ] && [ -n "$(cat "$SHARED_DIR/coordination-id.txt")" ]; then
@@ -852,7 +1161,6 @@ fi
 echo ""
 if [ "$VERIFY_EXIT" -eq 0 ]; then
     log "PASS: agent internet test complete."
-    log "  Rounds run:        $ROUNDS"
     log "  Total time:        ${TOTAL_TIME}s"
     log "  Agent logs:        $LOGS_DIR/"
     log "  Coordination ID:   $(cat "$SHARED_DIR/coordination-id.txt" 2>/dev/null || echo 'unknown')"
@@ -861,14 +1169,14 @@ if [ "$VERIFY_EXIT" -eq 0 ]; then
 else
     log "FAIL: verification failed (exit code $VERIFY_EXIT)."
     echo ""
-    echo "=== Last 20 lines of each agent's final round log ==="
+    echo "=== Last 20 lines of each agent's session init log ==="
     for i in 01 02 03 04 05 06 07 08 09 10; do
-        last_log=$(ls "$LOGS_DIR/agent-${i}-round-"*.log 2>/dev/null | sort | tail -1 || true)
-        if [ -n "$last_log" ]; then
-            echo "--- $last_log ---"
-            tail -20 "$last_log" || true
+        init_log="$LOGS_DIR/agent-${i}-init.log"
+        if [ -f "$init_log" ]; then
+            echo "--- $init_log ---"
+            tail -20 "$init_log" || true
         else
-            echo "--- agent-$i: (no round logs found) ---"
+            echo "--- agent-$i: (no init log found) ---"
         fi
     done
 fi
