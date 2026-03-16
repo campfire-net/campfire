@@ -43,9 +43,10 @@ WORKSPACE="$SHARED_DIR/workspace"
 TEMPLATE_DIR="$SCRIPT_DIR/agent-templates"
 
 POLL_INTERVAL=30
-TIMEOUT=2700   # 45 minutes
+TIMEOUT=5400   # 90 minutes
 
 DRY_RUN=false
+CONTINUE=false
 ROUNDS=10
 
 # Parse arguments
@@ -58,6 +59,10 @@ while [[ $# -gt 0 ]]; do
         --rounds)
             ROUNDS="${2:?--rounds requires a value}"
             shift 2
+            ;;
+        --continue)
+            CONTINUE=true
+            shift
             ;;
         *)
             echo "[harness] Unknown argument: $1" >&2
@@ -104,6 +109,12 @@ fi
 log "Launch mode: $LAUNCH_MODE"
 log "Rounds: $ROUNDS"
 
+if $CONTINUE; then
+    log "CONTINUE mode — skipping setup, resuming rounds with existing state in $INTEG_ROOT"
+    [ -d "$INTEG_ROOT" ] || fail "Cannot continue: $INTEG_ROOT does not exist"
+    [ -f "$SHARED_DIR/lobby-id.txt" ] || fail "Cannot continue: no lobby-id.txt"
+fi
+
 if $DRY_RUN; then
     log "Dry-run: launch method is '$LAUNCH_MODE' — no agents will be launched"
 fi
@@ -124,8 +135,9 @@ else
 fi
 log "Binaries ready."
 
+if ! $CONTINUE; then
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 2: Create directory structure
+# Step 2: Create directory structure (skipped in --continue mode)
 # ─────────────────────────────────────────────────────────────────────────────
 log "Creating directory structure under $INTEG_ROOT..."
 
@@ -318,6 +330,8 @@ if $DRY_RUN; then
     log "PASS: dry-run setup successful (launch mode: $LAUNCH_MODE)"
     exit 0
 fi
+
+fi  # end of !CONTINUE block
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 8: Launch rounds — Time-division multiplexing
