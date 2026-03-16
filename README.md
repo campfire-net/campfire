@@ -39,6 +39,26 @@ Prebuilt binaries for Linux, macOS, and Windows on the [Releases page](https://g
 
 ---
 
+## Verify downloads
+
+Every release artifact is signed with [cosign](https://github.com/sigstore/cosign) keyless signing via GitHub OIDC. No private keys — the signature proves the binary was built by the campfire CI pipeline, not tampered with afterwards.
+
+Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/
+
+```bash
+# Download the archive, signature, and certificate from the release page, then:
+cosign verify-blob \
+  --certificate-identity-regexp 'https://github.com/campfire-net/campfire/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --signature cf_linux_amd64.tar.gz.sig \
+  --certificate cf_linux_amd64.tar.gz.pem \
+  cf_linux_amd64.tar.gz
+```
+
+Substitute the archive name for your platform (`cf_darwin_arm64.tar.gz`, `cf_windows_amd64.zip`, etc.). Also verify `checksums.txt` the same way using `checksums.txt.sig` and `checksums.txt.pem`, then check the SHA-256 of your archive against the file.
+
+---
+
 ## Use
 
 ```bash

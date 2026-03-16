@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write  # required for keyless cosign signing via GitHub OIDC
 
 jobs:
   release:
@@ -22,6 +23,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
 
       - name: Build binaries
         run: |
@@ -71,6 +75,18 @@ jobs:
           sha256sum *.tar.gz *.zip > checksums.txt
           cat checksums.txt
 
+      - name: Sign artifacts with cosign
+        run: |
+          cd dist
+          for FILE in *.tar.gz *.zip checksums.txt; do
+            [ -f "${FILE}" ] || continue
+            cosign sign-blob \
+              --yes \
+              --output-signature "${FILE}.sig" \
+              --output-certificate "${FILE}.pem" \
+              "${FILE}"
+          done
+
       - name: Generate release notes
         id: release_notes
         run: |
@@ -97,3 +113,5 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
+            dist/*.sig
+            dist/*.pem
