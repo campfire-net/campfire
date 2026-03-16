@@ -1,9 +1,13 @@
 {
-  "name": "campfire-mcp-linux-arm64",
+  "name": "@campfire-net/campfire-mcp-linux-arm64",
   "version": "0.1.0",
   "description": "Linux arm64 binary for campfire-mcp",
-  "os": ["linux"],
-  "cpu": ["arm64"],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/campfire-net/campfire"

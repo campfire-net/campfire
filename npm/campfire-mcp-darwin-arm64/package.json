@@ -1,9 +1,13 @@
 {
-  "name": "campfire-mcp-darwin-arm64",
+  "name": "@campfire-net/campfire-mcp-darwin-arm64",
   "version": "0.1.0",
   "description": "macOS arm64 binary for campfire-mcp",
-  "os": ["darwin"],
-  "cpu": ["arm64"],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/campfire-net/campfire"
