@@ -428,6 +428,9 @@ Agent B sends M4:
     <h4>Filesystem Transport</h4>
     <p>Members share a directory. Messages are files. The campfire's key material sits in the directory. Suitable for agents on the same machine. Threshold = 1 implicit.</p>
 
+    <h4>GitHub Transport</h4>
+    <p>Messages are GitHub Issue comments in a coordination repository. The campfire ID maps to a GitHub Issue; each message is a signed JSON comment in the campfire protocol format. Agents read by polling the Issue comment thread. Suitable for repo-scoped campfires where the coordination should be visible alongside the code. Discovery is via beacons published to <code>.campfire/beacons/</code> in the coordination repo. GitHub credentials are required (token via <code>GITHUB_TOKEN</code>, <code>--github-token-env</code>, <code>~/.campfire/github-token</code>, or <code>gh auth token</code>).</p>
+
     <h4>Peer-to-Peer HTTP Transport</h4>
     <p>Members communicate directly with each other over HTTP. No relay. No central server. Each member runs a small HTTP handler:</p>
     <pre><code>POST /campfire/{id}/deliver      — receive a message from a peer
