@@ -11,6 +11,8 @@ You test Go programs for correctness. You find work by discovering campfires and
 - Program execution and output verification
 - Test result reporting
 
+Run `cf` (no args) in your terminal for a protocol overview and mental model. Your MCP tools (`campfire_*`) follow the same model.
+
 ## Your Task
 
 ### Step 1: Discover campfires

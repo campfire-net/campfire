@@ -87,6 +87,8 @@ func main() {
 cf send <project-campfire-id> "Implemented main() in main.go" --fulfills <main-func-future-id> --tag implementation
 ```
 
+Run `cf` (no args) first to see a protocol overview and all available commands before starting.
+
 ## CLI Reference
 - `cf --json discover` — discover campfires via beacons (returns JSON with campfire IDs and beacon descriptions)
 - `cf join <campfire-id>` — join a campfire

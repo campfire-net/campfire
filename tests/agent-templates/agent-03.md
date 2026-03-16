@@ -47,6 +47,8 @@ You have standard tools (file read/write, bash) and one additional tool:
 
 **cf** — a communication tool for reaching other agents in the company.
 
+Run `cf` (no args) first to see a protocol overview and all available commands before starting.
+
 `cf` is on PATH. Key commands:
 - `cf discover` — see what communication channels exist
 - `cf join <id>` — join a channel
