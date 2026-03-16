@@ -35,6 +35,8 @@ type natPollConfig struct {
 	follow      bool
 	id          *identity.Identity
 	timeoutSecs int
+	// st is used to resolve key display names. May be nil (falls back to unknown://).
+	st *store.Store
 	// stopCh receives a signal to terminate the loop. If nil, runNATPoll
 	// registers its own SIGINT/SIGTERM handler.
 	stopCh chan os.Signal
@@ -121,7 +123,7 @@ func runNATPoll(cfg natPollConfig, w io.Writer) error {
 
 		if len(msgs) > 0 {
 			cursor = newCursor
-			printNATMessages(cfg.campfireID, msgs, w)
+			printNATMessages(cfg.campfireID, msgs, w, cfg.st)
 		}
 
 		if !cfg.follow {
@@ -258,6 +260,7 @@ var readCmd = &cobra.Command{
 				if len(senderShort) > 6 {
 					senderShort = senderShort[:6]
 				}
+				senderDisplay := "agent:" + senderShort
 				ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
 
 				// Status markers
@@ -289,7 +292,7 @@ var readCmd = &cobra.Command{
 					statusStr = " [" + strings.Join(markers, ", ") + "]"
 				}
 
-				fmt.Printf("[campfire:%s] %s agent:%s%s\n", cfShort, ts, senderShort, statusStr)
+				fmt.Printf("[campfire:%s] %s %s%s\n", cfShort, ts, senderDisplay, statusStr)
 				if len(tags) > 0 {
 					fmt.Printf("  tags: %s\n", strings.Join(tags, ", "))
 				}
@@ -352,7 +355,7 @@ func syncFromGitHub(cfID, transportDir string, s *store.Store) {
 	tr.RegisterCampfire(cfID, meta.IssueNumber)
 
 	// Poll returns verified messages and stores them in SQLite internally.
-	tr.Poll(cfID) //nolint:errcheck
+	tr.Poll(cfID)
 }
 
 // syncFromFilesystem reads messages from the filesystem transport into the local store.
@@ -375,10 +378,11 @@ func syncFromFilesystem(cfID string, s *store.Store) {
 		if err != nil {
 			continue
 		}
+		senderHex := fmt.Sprintf("%x", fsMsg.Sender)
 		s.AddMessage(store.MessageRecord{ //nolint:errcheck
 			ID:          fsMsg.ID,
 			CampfireID:  cfID,
-			Sender:      fmt.Sprintf("%x", fsMsg.Sender),
+			Sender:      senderHex,
 			Payload:     fsMsg.Payload,
 			Tags:        string(tagsJSON),
 			Antecedents: string(antJSON),
@@ -413,10 +417,11 @@ func syncFromHTTPPeers(cfID string, agentID *identity.Identity, s *store.Store) 
 			tagsJSON, _ := json.Marshal(msg.Tags)
 			anteJSON, _ := json.Marshal(msg.Antecedents)
 			provJSON, _ := json.Marshal(msg.Provenance)
+			senderHex := fmt.Sprintf("%x", msg.Sender)
 			s.AddMessage(store.MessageRecord{ //nolint:errcheck
 				ID:          msg.ID,
 				CampfireID:  cfID,
-				Sender:      fmt.Sprintf("%x", msg.Sender),
+				Sender:      senderHex,
 				Payload:     msg.Payload,
 				Tags:        string(tagsJSON),
 				Antecedents: string(anteJSON),
@@ -432,19 +437,21 @@ func syncFromHTTPPeers(cfID string, agentID *identity.Identity, s *store.Store) 
 // printNATMessages prints messages received via long-poll to w in the same
 // human-readable format as the direct-mode read path.
 // campfireID is passed separately because message.Message has no CampfireID field.
-func printNATMessages(campfireID string, msgs []message.Message, w io.Writer) {
+func printNATMessages(campfireID string, msgs []message.Message, w io.Writer, s *store.Store) {
 	cfShort := campfireID
 	if len(cfShort) > 6 {
 		cfShort = cfShort[:6]
 	}
 	for _, m := range msgs {
-		senderShort := fmt.Sprintf("%x", m.Sender)
+		senderHex := fmt.Sprintf("%x", m.Sender)
+		senderShort := senderHex
 		if len(senderShort) > 6 {
 			senderShort = senderShort[:6]
 		}
+		senderDisplay := "agent:" + senderShort
 		ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
 
-		fmt.Fprintf(w, "[campfire:%s] %s agent:%s\n", cfShort, ts, senderShort)
+		fmt.Fprintf(w, "[campfire:%s] %s %s\n", cfShort, ts, senderDisplay)
 		if len(m.Tags) > 0 {
 			fmt.Fprintf(w, "  tags: %s\n", strings.Join(m.Tags, ", "))
 		}

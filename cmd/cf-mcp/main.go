@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
@@ -74,8 +75,10 @@ type mcpCapabilities struct {
 // ---------------------------------------------------------------------------
 
 type server struct {
-	cfHome    string
-	beaconDir string
+	cfHome          string
+	beaconDir       string
+	cfHomeExplicit  bool
+	lockFile        *os.File
 }
 
 func (s *server) identityPath() string {
@@ -378,6 +381,24 @@ func init() {
 				"required": []string{"target_key", "message"},
 			}),
 		},
+		{
+			Name:        "campfire_trust",
+			Description: "Set a human-readable pet name for an agent public key, or look up the resolved display name.",
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"public_key": map[string]interface{}{
+						"type":        "string",
+						"description": "Agent public key hex to name",
+					},
+					"label": map[string]interface{}{
+						"type":        "string",
+						"description": "Pet name to assign (omit to just resolve the current display name)",
+					},
+				},
+				"required": []string{"public_key"},
+			}),
+		},
 	}
 }
 
@@ -401,7 +422,29 @@ func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonR
 	if name != "" {
 		home, _ := os.UserHomeDir()
 		namedHome := filepath.Join(home, ".campfire", "agents", name)
+		if err := os.MkdirAll(namedHome, 0700); err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("creating named identity dir: %v", err))
+		}
+		lockPath := filepath.Join(namedHome, "lock")
+		lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening lock file: %v", err))
+		}
+		if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			lf.Close()
+			return errResponse(id, -32000, fmt.Sprintf("identity '%s' is already in use by another session", name))
+		}
+		lf.Truncate(0)
+		lf.Seek(0, 0)
+		fmt.Fprintf(lf, "%d\n", os.Getpid())
+		s.lockFile = lf
 		s.cfHome = namedHome
+	} else if !s.cfHomeExplicit {
+		tmpDir, err := os.MkdirTemp("", "campfire-session-*")
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("creating session temp dir: %v", err))
+		}
+		s.cfHome = tmpDir
 	}
 
 	force := getBool(params, "force")
@@ -1303,12 +1346,15 @@ func main() {
 	// Parse minimal flags.
 	cfHome := ""
 	beaconDir := ""
+	cfHomeExplicit := false
 	for i, arg := range os.Args[1:] {
 		switch {
 		case arg == "--cf-home" && i+1 < len(os.Args[1:]):
 			cfHome = os.Args[i+2]
+			cfHomeExplicit = true
 		case strings.HasPrefix(arg, "--cf-home="):
 			cfHome = strings.TrimPrefix(arg, "--cf-home=")
+			cfHomeExplicit = true
 		case arg == "--beacon-dir" && i+1 < len(os.Args[1:]):
 			beaconDir = os.Args[i+2]
 		case strings.HasPrefix(arg, "--beacon-dir="):
@@ -1320,6 +1366,7 @@ func main() {
 	if cfHome == "" {
 		if env := os.Getenv("CF_HOME"); env != "" {
 			cfHome = env
+			cfHomeExplicit = true
 		} else {
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -1338,8 +1385,9 @@ func main() {
 	}
 
 	srv := &server{
-		cfHome:    cfHome,
-		beaconDir: beaconDir,
+		cfHome:         cfHome,
+		beaconDir:      beaconDir,
+		cfHomeExplicit: cfHomeExplicit,
 	}
 
 	// JSON-RPC 2.0 over stdio.
