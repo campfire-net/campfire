@@ -57,6 +57,12 @@ Tags in the `campfire:` namespace are reserved for protocol operations. By defau
 
 **Exceptions.** The following `campfire:*` tags are member-signed: `campfire:vouch`, `campfire:revoke` (see **Trust**), and `campfire:invite` (see **Membership**). Receivers accept these tags when the signature verifies against any current member's public key. All other `campfire:*` tags require the campfire's signature.
 
+#### Ordering
+
+The protocol does not guarantee delivery order. Antecedents provide causal ordering where it matters. Wall clock timestamps are informational, not authoritative. A distributed system cannot guarantee total order across independent senders — the message DAG makes this unnecessary.
+
+#### Antecedents
+
 Antecedents are message IDs that this message builds on, replies to, or depends on. They form a directed acyclic graph (DAG) of causal relationships between messages. See **Message DAG** below.
 
 ### Provenance Hop
@@ -152,6 +158,10 @@ A member MAY explicitly request withheld content through a pull operation. This 
 
 Content access graduation is local to each member's filter. The campfire does not enforce it — the campfire delivers full messages. The member's local filter performs the reduction. This preserves the principle that filters are local.
 
+#### Filter Transparency
+
+Filters SHOULD provide aggregate pass/suppress statistics to the affected member (e.g., "N of your last M messages tagged X were suppressed"). Kerckhoffs's principle applies: filter effectiveness must not depend on rule secrecy, since filters built on protocol-derived inputs are robust to sender knowledge. Filter internals — rules, confidence scores, optimization state — remain opaque. Only aggregate delivery outcomes are visible to the member.
+
 Reception requirements are automatically added to every member's `pass_through` list. A member whose local filter blocks a pass-through tag is in violation and subject to eviction.
 
 ### Beacon
@@ -184,6 +194,8 @@ The protocol defines the beacon data structure. Where and how beacons are publis
 - **Bluetooth.** Physical proximity discovery.
 
 Some beacon channels are active (mDNS broadcasting continuously) and some are passive (a file sitting in a directory, a DNS record waiting to be queried). The campfire doesn't know how it was discovered. The agent doesn't need to know how the beacon was published. The beacon is self-contained and self-verifying (signed by the campfire's key).
+
+Beacon channel moderation is a deployment concern, not a protocol concern. Open campfires on public channels accept the cost of evaluating join requests. Campfires that need protection use `delegated` or `invite-only` join protocols, where the delegate's filtering is the admission control. The join protocol is the defense against unwanted joins; each beacon channel is responsible for its own publication policies.
 
 ### Message DAG
 
@@ -233,11 +245,15 @@ Both are ordinary messages: they have IDs, travel through the campfire, appear i
 
 Trust level is scoped to a campfire. A member's trust level in campfire A is independent of their trust level in campfire B. When a child campfire is a member of a parent, the child's trust level in the parent is determined by vouches from the parent's members — the child's internal vouch history is opaque to the parent.
 
+**Key rotation.** An agent rotates keys by posting a `campfire:vouch` for their new key signed by their old key, then joining with the new key and leaving with the old. The vouch chain establishes continuity. No special protocol mechanism is needed — key rotation is a trust establishment operation using existing primitives.
+
 ## Operations
 
 ### Campfire Lifecycle
 
 **Create.** Any agent can create a campfire. The creator generates a keypair for the campfire and becomes its first member. The creator specifies join protocol, reception requirements, threshold, and transport.
+
+**Retention.** Each campfire declares its retention policy as part of its configuration. Members agree to the policy at join time. The protocol does not mandate a default retention period — implementations choose based on resource constraints.
 
 **Disband.** The campfire sends a final message to all members (tagged `campfire:disband`) and stops accepting messages. Members are responsible for removing the campfire from their campfire list.
 
@@ -266,6 +282,8 @@ Invitations are ordinary messages. They travel through existing campfire infrast
 - Reception requirement violation: member's local filter is blocking a required tag (detected by failed delivery acknowledgment)
 - Pattern detection: member's silence is correlating with rework in other members (campfire's optimization loop detects this)
 - Manual: a member with eviction authority removes another member
+
+Eviction authority is campfire-configurable via the threshold. For threshold = 1 campfires, the creator holds eviction authority. For threshold > 1, eviction requires a threshold signature — M-of-N members must cooperate to execute the eviction. Members can signal support for eviction through `campfire:vouch`/`campfire:revoke` trust primitives, but the eviction operation itself requires the campfire key.
 
 The campfire sends a `campfire:member-evicted` message (tagged `campfire:eviction`) with the reason to all remaining members.
 
@@ -473,6 +491,8 @@ Beacons for P2P HTTP campfires include one or more member endpoints (not a relay
 
 **Reserved tag enforcement.** Tags in the `campfire:` namespace (except `campfire:vouch`, `campfire:revoke`, and `campfire:invite`) must be signed by the campfire key. A member cannot forge system messages (`campfire:member-joined`, `campfire:rekey`, `campfire:eviction`, etc.). The three exceptions are verified against member keys and cannot be used to impersonate the campfire.
 
+**Provenance chain depth.** There is no protocol-level limit on provenance chain depth. Deep chains are a natural consequence of recursive composition. Receivers MAY drop messages with unverifiable provenance (missing intermediate campfire keys) as a local filter decision — provenance depth and verifiability are protocol-derived properties available as filter inputs. Truncation has consequences: a message whose path cannot be traced back to a known origin is indistinguishable from a forged message.
+
 **Antecedent references.** Antecedents are claims, not proofs. A message can reference a message ID the recipient has never seen — the referenced message may live in another campfire, may not have been relayed yet, or may not yet exist (futures). The antecedents field is covered by the sender's signature and cannot be tampered with in transit. A malicious sender could reference nonexistent message IDs, but this is no different from sending misleading payload content — the protocol authenticates the sender, not the truth of their claims.
 
 ## Wire Format
@@ -504,20 +524,3 @@ cf members <campfire-id>
 cf id                                # show my public key
 ```
 
-## Resolved Questions
-
-1. **Message ordering.** No ordering guarantee. Antecedents provide causal ordering where it matters. Wall clock timestamps are informational, not authoritative. A distributed system cannot guarantee total order across independent senders, and the message DAG makes this unnecessary.
-
-2. **Message TTL and history.** Campfire-configurable. Each campfire declares its retention policy as a reception requirement. Members agree to the policy at join time. The protocol does not mandate a default — implementations choose based on resource constraints.
-
-3. **Eviction authority.** Campfire-configurable via threshold. Threshold = 1: creator only. Threshold > 1: requires M-of-N threshold signature for eviction. Members can propose eviction via `campfire:vouch`/`campfire:revoke` trust primitives, but the eviction operation itself requires the campfire key (threshold-signed).
-
-4. **Key rotation.** An agent posts a `campfire:vouch` for their new key signed by their old key, then the new key joins and the old key leaves. The vouch chain establishes continuity. No special protocol mechanism needed — it's a trust establishment operation using existing primitives.
-
-5. **Beacon spam.** The protocol defines beacon format and join semantics; beacon channel moderation is a deployment concern, not a protocol concern. Open campfires on public channels accept the cost of evaluating join requests — campfires that need protection use `delegated` or `invite-only` join protocols, where the delegate's filtering is the admission price. No protocol-level anti-spam mechanism is needed; the join protocol is the defense, and the beacon channel is responsible for its own publication policies.
-
-6. **Filter transparency.** Filters SHOULD provide pass/suppress statistics to the affected member (e.g., "N of your last M messages tagged X were suppressed"). Kerckhoffs's principle applies: filter effectiveness must not depend on rule secrecy, since filters built on protocol-derived inputs (trust level, behavioral patterns) are robust to sender knowledge. Filter internals (rules, confidence scores, optimization state) remain opaque; only aggregate delivery outcomes are visible to the member.
-
-7. **Cost accounting.** Not a protocol concern. The protocol has no shared infrastructure. Each member bears their own cost (storage, compute, bandwidth). Filesystem transport is free. HTTP transport — each agent runs its own listener. If a campfire uses a relay, the relay operator decides their own economics. The protocol specifies coordination semantics, not resource economics.
-
-8. **Provenance chain depth.** No protocol-level limit. Deep chains are a natural consequence of recursive composition. Receivers MAY drop messages with unverifiable provenance (missing intermediate campfire keys) as a local filter decision. Provenance depth and verifiability are protocol-derived properties, available as filter inputs. Truncation has consequences — a message whose path cannot be traced back to a known origin is indistinguishable from a forged message.
