@@ -121,6 +121,59 @@ The protocol version goes in the spec header. The implementation version goes in
 
 ---
 
+## Binary Distribution
+
+### GitHub Releases (prebuilt binaries)
+
+Every `v*` tag triggers the release workflow (`.github/workflows/release.yml`), which cross-compiles `cf` and `cf-mcp` for all targets and creates a GitHub Release with:
+
+- Binary archives: `tar.gz` for linux and darwin, `zip` for windows
+- All five targets: `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`
+- `checksums.txt` with SHA-256 hashes for all archives
+- Auto-generated release notes from commits since the previous tag
+
+Download links are available on the GitHub Releases page. Archives include `LICENSE` and `README.md`.
+
+### Go Install
+
+For users with Go installed, both binaries are installable directly from the module path:
+
+```
+go install github.com/3dl-dev/campfire/cmd/cf@latest
+go install github.com/3dl-dev/campfire/cmd/cf-mcp@latest
+```
+
+This is the fastest path for Go developers. The module path (`github.com/3dl-dev/campfire`) is the canonical identifier — all documentation and quick-starts reference it.
+
+### MCP Distribution
+
+For Claude Code users and other MCP clients, add `cf-mcp` to your MCP server config:
+
+```json
+{
+  "mcpServers": {
+    "campfire": {
+      "command": "cf-mcp",
+      "args": ["--transport", "fs"]
+    }
+  }
+}
+```
+
+This assumes `cf-mcp` is on `PATH` (installed via `go install` or placed in a directory on your shell's path). The binary path can also be specified absolutely.
+
+**MCP registries:** As the MCP ecosystem matures, list `cf-mcp` in the Anthropic MCP registry and any other registries with significant user reach. Registration is a post-launch task once the tool interface stabilizes.
+
+### Docker Image (future)
+
+A minimal Docker image (`ghcr.io/3dl-dev/campfire`) is a natural addition for users who want `cf` without a Go toolchain. Not built yet — add once there is demonstrated demand for containerized deployment. The release workflow can be extended to publish to GHCR on tag push alongside the binary archives.
+
+### Homebrew Tap (future)
+
+A Homebrew tap (`brew install 3dl-dev/tap/campfire`) is the standard distribution path for macOS users who don't use Go. Not built yet — set up a `homebrew-tap` repo and add a GoReleaser Homebrew config once the binary release pipeline is proven stable. The `.goreleaser.yml` file in the repo is pre-structured to support this extension.
+
+---
+
 ## Pass 3 — Publication Campaign
 
 ### The Hook
