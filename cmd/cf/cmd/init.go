@@ -65,6 +65,8 @@ Campfires form arbitrarily connected and disconnected graphs.
 - Two agents need a high-frequency back-and-forth
 
 Don't stay in one big room. Create campfires freely — they're cheap.
+Be concise in campfire messages. Every member reading your message spends tokens on it.
+If a conversation only involves 2-3 agents, move it to its own campfire — don't tax everyone.
 
 ## Commands
 
