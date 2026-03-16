@@ -346,30 +346,18 @@ a:hover { color: var(--color-accent-secondary-hover); }
 .why-orbital {
   position: relative;
   width: 100%;
-  max-width: 1100px;
+  max-width: 1040px;
   height: 760px;
   margin: var(--space-subsection) auto 0;
-  /* Scroll-driven rotation — rotates the whole system, cards counter-rotate */
-  animation: why-orbit-rotate linear both;
-  animation-timeline: scroll(root);
-  animation-range: entry 0% exit 100%;
 }
 
-@keyframes why-orbit-rotate {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(12deg); }
-}
-
-/* Center image — stays at center, counter-rotates to stay upright */
+/* Center image */
 .why-center-img {
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 2;
-  animation: why-orbit-counter linear both;
-  animation-timeline: scroll(root);
-  animation-range: entry 0% exit 100%;
 }
 .why-center-img img {
   width: 220px;
@@ -378,12 +366,7 @@ a:hover { color: var(--color-accent-secondary-hover); }
   filter: drop-shadow(0 0 24px rgba(217, 119, 6, 0.18));
 }
 
-@keyframes why-orbit-counter {
-  from { transform: translate(-50%, -50%) rotate(0deg); }
-  to   { transform: translate(-50%, -50%) rotate(-12deg); }
-}
-
-/* SVG connector lines */
+/* SVG connector lines — JS updates endpoints */
 .why-orbital-svg {
   position: absolute;
   inset: 0;
@@ -399,15 +382,13 @@ a:hover { color: var(--color-accent-secondary-hover); }
   stroke-width: 1.5;
   stroke-dasharray: 4 6;
   opacity: 0.35;
-  /* Lines rotate with the parent container — no counter-animation needed.
-     They always point toward the card positions in the orbital frame. */
 }
 
 @media (prefers-color-scheme: dark) {
   .why-connector { stroke: #F59E0B; opacity: 0.25; }
 }
 
-/* Cards — absolutely positioned in orbital ring, counter-rotate to stay upright */
+/* Cards — JS positions these via transform */
 .why-card {
   position: absolute;
   width: 220px;
@@ -420,46 +401,11 @@ a:hover { color: var(--color-accent-secondary-hover); }
   border-bottom: 1px solid var(--color-border);
   z-index: 3;
   box-shadow: var(--shadow-card);
-  transition: box-shadow 0.2s, transform 0.2s;
-  /* Counter-rotation so card text stays upright as parent rotates */
-  animation: why-card-counter linear both;
-  animation-timeline: scroll(root);
-  animation-range: entry 0% exit 100%;
+  transition: box-shadow 0.2s;
+  /* Initial positions — JS overrides these */
+  left: 50%;
+  top: 50%;
 }
-
-/* Cards counter-rotate using a wrapper transform.
-   We animate a CSS property that the card reads. Since position is absolute
-   and the parent rotates, we track via a separate transform on the card itself.
-   Note: cards need to counter-rotate around their own center, not the orbital center,
-   so we just apply rotation inline — the parent rotation + card counter-rotation = 0. */
-@keyframes why-card-counter {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(-12deg); }
-}
-
-/* Each card positioned via translate offset from center (550px, 380px).
-   Orbit radius ≈ 300px. Six cards at 60° increments starting from top (270°).
-   Card anchor point: top-left. Cards are 220px wide × ~180px tall.
-   Half-card offsets: 110w × 90h.
-   Container: 1100×760. Center: (550, 380). */
-
-/* Card 1: 270° (top)        → orbit cx=550, cy=80   → left=440, top=10  */
-.why-card-pos-1 { left: 440px; top: 10px; }
-
-/* Card 2: 330° (top-right)  → orbit cx=810, cy=230  → left=700, top=145 */
-.why-card-pos-2 { left: 700px; top: 145px; }
-
-/* Card 3:  30° (bot-right)  → orbit cx=810, cy=530  → left=700, top=445 */
-.why-card-pos-3 { left: 700px; top: 445px; }
-
-/* Card 4:  90° (bottom)     → orbit cx=550, cy=680  → left=440, top=590 */
-.why-card-pos-4 { left: 440px; top: 590px; }
-
-/* Card 5: 150° (bot-left)   → orbit cx=290, cy=530  → left=68,  top=445 */
-.why-card-pos-5 { left: 68px;  top: 445px; }
-
-/* Card 6: 210° (top-left)   → orbit cx=290, cy=230  → left=68,  top=145 */
-.why-card-pos-6 { left: 68px;  top: 145px; }
 
 .why-card:hover {
   box-shadow: var(--shadow-card-hover);
@@ -525,33 +471,8 @@ a:hover { color: var(--color-accent-secondary-hover); }
     order: 0;
   }
 
-  /* Reset positional overrides on mobile */
-  .why-card-pos-1,
-  .why-card-pos-2,
-  .why-card-pos-3,
-  .why-card-pos-4,
-  .why-card-pos-5,
-  .why-card-pos-6 {
-    left: auto;
-    top: auto;
-  }
-}
-
-/* Graceful fallback for browsers that don't support scroll-driven animations.
-   Static orbital layout still works — no rotation applied. */
-@supports not (animation-timeline: scroll()) {
-  .why-orbital { animation: none; }
-  .why-card    { animation: none; }
-
-  /* Center image: preserve its desktop absolute-centering transform */
-  .why-center-img {
-    animation: none;
-    transform: translate(-50%, -50%);
-  }
-
-  /* On mobile the center-img is static, reset the transform override */
-  @media (max-width: 768px) {
-    .why-center-img { transform: none; }
+  .why-card {
+    transform: none !important;
   }
 }
 

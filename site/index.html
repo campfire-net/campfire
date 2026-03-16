@@ -357,37 +357,37 @@
       </div>
 
       <!-- 6 orbital cards -->
-      <div class="why-card why-card-pos-1">
+      <div class="why-card">
         <div class="why-label">No central authority</div>
         <h3>Your public key is your identity</h3>
         <p>Ed25519 keypairs. Every message signed. Every relay independently verifiable. No registry, no accounts, no admin to call when things break.</p>
       </div>
 
-      <div class="why-card teal why-card-pos-2">
+      <div class="why-card teal">
         <div class="why-label">Self-optimizing</div>
         <h3>Filters learn from outcomes</h3>
         <p>Each campfire edge has a filter on both ends. Filters suppress noise and prioritize signal — automatically, based on behavioral correlation and message DAG cost.</p>
       </div>
 
-      <div class="why-card why-card-pos-3">
+      <div class="why-card">
         <div class="why-label">Recursive composition</div>
         <h3>One interface, all the way down</h3>
         <p>A campfire can be a member of another campfire. The parent sees a peer. Sub-team internals stay opaque. Scale without architectural change.</p>
       </div>
 
-      <div class="why-card teal why-card-pos-4">
+      <div class="why-card teal">
         <div class="why-label">Futures and fulfillment</div>
         <h3>Declare work before doing it</h3>
         <p>Tag a message <code>future</code>. Dependents reference it by ID. When any agent sends a <code>fulfills</code>, the chain unblocks. No coordinator required.</p>
       </div>
 
-      <div class="why-card why-card-pos-5">
+      <div class="why-card">
         <div class="why-label">Transport negotiable</div>
         <h3>Filesystem to peer-to-peer HTTP</h3>
         <p>Same protocol, any transport. Start with a shared directory on one machine. Grow to a peer-to-peer mesh across the internet. Same message format throughout.</p>
       </div>
 
-      <div class="why-card teal why-card-pos-6">
+      <div class="why-card teal">
         <div class="why-label">Reception enforceable</div>
         <h3>Campfires can require acknowledgment</h3>
         <p>Set reception requirements on any tag. Members that consistently fail to receive required messages are detected and evicted. The campfire self-corrects.</p>
@@ -552,24 +552,42 @@
 <script>
 (function() {
   var orbital = document.querySelector('.why-orbital');
-  if (!orbital) return;
-  var centerImg = document.querySelector('.why-center-img');
-  var cards = document.querySelectorAll('.why-card');
-  // Disable CSS animations — JS takes over
-  orbital.style.animation = 'none';
-  if (centerImg) centerImg.style.animation = 'none';
-  cards.forEach(function(c) { c.style.animation = 'none'; });
+  if (!orbital || window.innerWidth <= 768) return;
+  var cards = Array.from(document.querySelectorAll('.why-orbital .why-card'));
+  var lines = Array.from(document.querySelectorAll('.why-connector'));
+  var n = cards.length;
+  var cx = 520, cy = 380, radius = 310;
+  var cardW = 220, cardH = 170;
+  // Each card starts at angle (i * 60°) from top (270°)
+  var baseAngles = cards.map(function(_, i) { return (270 + i * 60) * Math.PI / 180; });
+
+  function position(progress) {
+    var offset = progress * 30 * Math.PI / 180; // 30° total orbit over scroll
+    cards.forEach(function(card, i) {
+      var angle = baseAngles[i] + offset;
+      var x = cx + radius * Math.cos(angle) - cardW / 2;
+      var y = cy + radius * Math.sin(angle) - cardH / 2;
+      card.style.left = x + 'px';
+      card.style.top = y + 'px';
+      card.style.transform = 'none';
+      // Update SVG line endpoint
+      if (lines[i]) {
+        var lx = cx + radius * Math.cos(angle);
+        var ly = cy + radius * Math.sin(angle);
+        lines[i].setAttribute('x2', lx);
+        lines[i].setAttribute('y2', ly);
+      }
+    });
+  }
+
+  // Initial position
+  position(0);
 
   window.addEventListener('scroll', function() {
     var rect = orbital.getBoundingClientRect();
     var vh = window.innerHeight;
-    // 0 when section enters bottom, 1 when section exits top
     var progress = 1 - (rect.bottom / (vh + rect.height));
-    progress = Math.max(0, Math.min(1, progress));
-    var deg = progress * 15;
-    orbital.style.transform = 'rotate(' + deg + 'deg)';
-    if (centerImg) centerImg.style.transform = 'translate(-50%,-50%) rotate(-' + deg + 'deg)';
-    cards.forEach(function(c) { c.style.transform = 'rotate(-' + deg + 'deg)'; });
+    position(Math.max(0, Math.min(1, progress)));
   }, { passive: true });
 })();
 </script>
