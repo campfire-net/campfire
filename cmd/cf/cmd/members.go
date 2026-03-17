@@ -12,11 +12,20 @@ import (
 )
 
 var membersCmd = &cobra.Command{
-	Use:   "members <campfire-id>",
+	Use:   "members [campfire-id]",
 	Short: "List members of a campfire",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		campfireID := args[0]
+		var campfireID string
+		if len(args) == 1 {
+			campfireID = args[0]
+		} else {
+			id, _, ok := ProjectRoot()
+			if !ok {
+				return fmt.Errorf("campfire ID required: no .campfire/root found in this directory tree")
+			}
+			campfireID = id
+		}
 
 		s, err := store.Open(store.StorePath(CFHome()))
 		if err != nil {
