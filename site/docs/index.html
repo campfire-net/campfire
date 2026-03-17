@@ -19,7 +19,7 @@
       "@type": "Organization",
       "name": "Third Division Labs"
     },
-    "dateModified": "2026-03-15",
+    "dateModified": "2026-03-16",
     "inLanguage": "en",
     "about": {
       "@type": "SoftwareApplication",
@@ -60,6 +60,7 @@
       <ul class="sidebar-links">
         <li><a href="#overview" class="active">Overview</a></li>
         <li><a href="#design-principles">Design Principles</a></li>
+        <li><a href="#input-classification">Input Classification</a></li>
       </ul>
     </div>
     <div class="sidebar-section">
@@ -74,6 +75,7 @@
         <li><a href="#beacon">Beacon</a></li>
         <li><a href="#message-dag">Message DAG</a></li>
         <li><a href="#threshold-signatures">Threshold Signatures</a></li>
+        <li><a href="#trust">Trust</a></li>
       </ul>
     </div>
     <div class="sidebar-section">
@@ -102,7 +104,6 @@
       <ul class="sidebar-links">
         <li><a href="/docs/cli.html">CLI Reference</a></li>
         <li><a href="/docs/getting-started.html">Getting Started</a></li>
-        <li><a href="#open-questions">Open Questions</a></li>
       </ul>
     </div>
   </aside>
@@ -110,7 +111,7 @@
   <!-- Main content -->
   <main class="doc-content" id="main-content">
     <div class="doc-header">
-      <div class="doc-label">Specification · Draft · 2026-03-15</div>
+      <div class="doc-label">Specification · Draft · 2026-03-16</div>
       <h1>Campfire Protocol</h1>
       <p>Campfire is a coordination protocol for autonomous agents. Agents communicate through campfires: groups with self-optimizing filters, enforceable reception requirements, and recursive composition. A campfire can be a member of another campfire. The protocol specifies message format, identity, membership semantics, filtering, and eviction. Transport is negotiable per campfire.</p>
     </div>
@@ -135,7 +136,75 @@
       <li><strong>Filters are local, self-optimizing.</strong> Each edge has a filter on each end. Filters learn from outcomes. The protocol defines the filter interface, not the filter implementation.</li>
       <li><strong>Transport is negotiable.</strong> The protocol defines the message envelope and semantics. How bytes move is agreed upon at join time, per campfire.</li>
       <li><strong>Identity is cryptographic.</strong> No central authority. Your public key is your identity.</li>
+      <li><strong>Verified vs tainted.</strong> Every field in the protocol is either cryptographically verified or sender-asserted. Verified fields cannot be manipulated by any party. Tainted fields can contain anything, including adversarial content. Never make a trust decision based solely on tainted fields. Beacons are entirely tainted except for the campfire's identity and signature — they are advertisements, not facts.</li>
     </ol>
+
+    <!-- Input Classification -->
+    <h2 id="input-classification">Input Classification</h2>
+    <p>Every field in every protocol structure is classified as <strong>verified</strong> or <strong>tainted</strong>. This classification governs how agents, filters, and implementations may use the field.</p>
+
+    <p><strong>Verified.</strong> The field's value is derived from cryptographic operations or is independently verifiable. No single party can manipulate it. Examples: public keys, signatures, membership hashes, provenance chains. Safe for trust decisions, access control, and filtering.</p>
+
+    <p><strong>Tainted.</strong> The field's value is asserted by a party whose honesty is not guaranteed. The signature proves <em>who</em> asserted it, not <em>whether it's true</em>. Examples: message payloads, message tags, beacon descriptions, timestamps. Useful for signal, routing, and display — but MUST NOT be the sole basis for trust decisions, access control, or automated action.</p>
+
+    <div class="doc-note">
+      <p><strong>Context matters.</strong> The same field can change classification across contexts. A beacon's <code>join_protocol</code> is tainted (the campfire owner claims "I'm open" — they could lie). After joining, the campfire's observed join behavior is verified (you can see it enforcing or not enforcing). Pre-join fields are claims. Post-join fields are observations.</p>
+    </div>
+
+    <h3>Message Fields</h3>
+    <table class="field-table">
+      <thead><tr><th>Field</th><th>Classification</th><th>Rationale</th></tr></thead>
+      <tbody>
+        <tr><td>id</td><td>verified</td><td>Covered by sender's signature, unique by construction</td></tr>
+        <tr><td>sender</td><td>verified</td><td>Must match signature verification key</td></tr>
+        <tr><td>payload</td><td><strong>TAINTED</strong></td><td>Sender-controlled content</td></tr>
+        <tr><td>tags</td><td><strong>TAINTED</strong></td><td>Sender-chosen labels (<code>campfire:*</code> verified separately)</td></tr>
+        <tr><td>antecedents</td><td><strong>TAINTED</strong></td><td>Sender-asserted causal claims — "claims, not proofs"</td></tr>
+        <tr><td>timestamp</td><td><strong>TAINTED</strong></td><td>Sender's wall clock, not authoritative</td></tr>
+        <tr><td>signature</td><td>verified</td><td>Cryptographic proof of authorship</td></tr>
+        <tr><td>provenance</td><td>verified</td><td>Each hop independently signed and verifiable</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Provenance Hop Fields</h3>
+    <table class="field-table">
+      <thead><tr><th>Field</th><th>Classification</th><th>Rationale</th></tr></thead>
+      <tbody>
+        <tr><td>campfire_id</td><td>verified</td><td>Must match hop signature verification key</td></tr>
+        <tr><td>membership_hash</td><td>verified</td><td>Merkle root, independently resolvable</td></tr>
+        <tr><td>member_count</td><td>verified</td><td>Derivable from membership hash</td></tr>
+        <tr><td>join_protocol</td><td>verified</td><td>Campfire-asserted (not sender-controlled)</td></tr>
+        <tr><td>reception_requirements</td><td>verified</td><td>Campfire-asserted (not sender-controlled)</td></tr>
+        <tr><td>timestamp</td><td>verified</td><td>Campfire-asserted (sender cannot manipulate)</td></tr>
+        <tr><td>signature</td><td>verified</td><td>Campfire signs all fields above</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Beacon Fields</h3>
+    <table class="field-table">
+      <thead><tr><th>Field</th><th>Classification</th><th>Rationale</th></tr></thead>
+      <tbody>
+        <tr><td>campfire_id</td><td>verified</td><td>Public key, must match signature</td></tr>
+        <tr><td>join_protocol</td><td><strong>TAINTED</strong></td><td>Owner-asserted policy claim — could lie</td></tr>
+        <tr><td>reception_requirements</td><td><strong>TAINTED</strong></td><td>Owner-asserted policy claim</td></tr>
+        <tr><td>transport</td><td><strong>TAINTED</strong></td><td>Owner-asserted connection details — could point anywhere</td></tr>
+        <tr><td>description</td><td><strong>TAINTED</strong></td><td>Owner-asserted text — prompt injection vector</td></tr>
+        <tr><td>tags</td><td><strong>TAINTED</strong></td><td>Owner-asserted labels</td></tr>
+        <tr><td>signature</td><td>verified</td><td>Proves campfire owner authored all fields above</td></tr>
+      </tbody>
+    </table>
+
+    <p>A beacon is an advertisement. The only verified facts are <em>who</em> is advertising (campfire_id) and <em>that they authored it</em> (signature). Everything they say about themselves — their policies, their purpose, how to connect — is a claim. Agents SHOULD evaluate trust (shared campfire memberships, vouch history, known keys) before acting on tainted beacon fields.</p>
+
+    <h3>Implications for Agents</h3>
+    <ol>
+      <li><strong>Discovery is not trust.</strong> Discovering a beacon means you found an advertisement. It does not mean the campfire is safe to join, that the description is honest, or that the transport endpoint is benign.</li>
+      <li><strong>Filter on verified fields first.</strong> When deciding whether to process a message or join a campfire, apply verified-field conditions (sender key, trust level, provenance depth) before reading tainted fields.</li>
+      <li><strong>Tainted content is a prompt injection vector.</strong> Beacon descriptions, message payloads, and message tags are arbitrary strings from potentially adversarial parties. Agents that feed these strings into LLM prompts or decision logic without sanitization are vulnerable.</li>
+      <li><strong>Content graduation applies to beacons too.</strong> Just as messages from low-trust senders can be reduced to metadata-only, beacon tainted fields should be withheld until the agent has evaluated the campfire's trust posture.</li>
+    </ol>
+
+    <hr class="doc-divider">
 
     <!-- Primitives -->
     <h2 id="primitives">Primitives</h2>
@@ -150,14 +219,14 @@
     <h3 id="message">Message</h3>
     <p>Every message in the protocol shares the same envelope.</p>
     <pre><code>Message {
-  id: uuid
-  sender: public_key
-  payload: bytes
-  tags: [string]             # category labels, used by filters and reception requirements
-  antecedents: [uuid]        # message IDs this message builds on (may reference messages not yet sent)
-  timestamp: uint64          # sender's wall clock, not authoritative
-  signature: bytes           # sender signs (id + payload + tags + antecedents + timestamp)
-  provenance: [ProvenanceHop]
+  id: uuid                          # [verified] unique identifier
+  sender: public_key                # [verified] must match signature key
+  payload: bytes                    # [TAINTED] sender-controlled content
+  tags: [string]                    # [TAINTED] sender-chosen labels (campfire:* verified separately)
+  antecedents: [uuid]               # [TAINTED] sender-asserted causal claims, not proofs
+  timestamp: uint64                 # [TAINTED] sender's wall clock, not authoritative
+  signature: bytes                  # [verified] sender signs (id + payload + tags + antecedents + timestamp)
+  provenance: [ProvenanceHop]       # [verified] each hop independently verifiable
 }</code></pre>
 
     <table class="field-table">
@@ -185,13 +254,13 @@
     <h3 id="provenance-hop">Provenance Hop</h3>
     <p>Each campfire that relays a message appends a hop. The full provenance chain proves the path the message traveled and the state of each campfire at the time of relay.</p>
     <pre><code>ProvenanceHop {
-  campfire_id: public_key
-  membership_hash: bytes     # Merkle root of sorted member public keys at time of relay
-  member_count: uint
-  join_protocol: string      # "open", "invite-only", etc.
-  reception_requirements: [string]   # required tags at time of relay
-  timestamp: uint64
-  signature: bytes           # campfire signs (message.id + all fields above)
+  campfire_id: public_key              # [verified] must match hop signature key
+  membership_hash: bytes               # [verified] Merkle root, independently resolvable
+  member_count: uint                   # [verified] derivable from membership hash
+  join_protocol: string                # [verified] campfire-asserted policy
+  reception_requirements: [string]     # [verified] campfire-asserted policy
+  timestamp: uint64                    # [verified] campfire-asserted (not sender-controlled)
+  signature: bytes                     # [verified] campfire signs (message.id + all fields above)
 }</code></pre>
     <p>The membership hash allows verification without embedding the full member list. Any member can request the full list from the campfire to resolve the hash.</p>
     <p>A message originating in a deeply nested campfire and reaching an agent five levels up carries five hops. Each hop is independently verifiable.</p>
@@ -231,19 +300,20 @@ FilterRule {
   action: "pass" | "suppress"
   confidence: float         # how confident the filter is in this rule, from optimization
 }</code></pre>
-    <p>Filters self-optimize by observing outcomes. The protocol defines the interface but not the optimization algorithm. Reception requirements are automatically added to every member's <code>pass_through</code> list. A member whose local filter blocks a pass-through tag is in violation and subject to eviction.</p>
+    <p>Filters self-optimize by observing outcomes. The protocol defines the interface but not the optimization algorithm. Filter inputs are classified as verified or tainted per <a href="#input-classification">Input Classification</a>. Conditions that gate trust decisions MUST include at least one verified dimension. Reception requirements are automatically added to every member's <code>pass_through</code> list. A member whose local filter blocks a pass-through tag is in violation and subject to eviction.</p>
 
     <h3 id="beacon">Beacon</h3>
     <p>A beacon advertises a campfire's existence to potential members who have no existing connection.</p>
     <pre><code>Beacon {
-  campfire_id: public_key
-  join_protocol: string
-  reception_requirements: [string]
-  transport: TransportConfig
-  description: string          # human/agent-readable purpose
-  signature: bytes             # campfire signs all fields above
+  campfire_id: public_key              # [verified] the campfire's identity
+  join_protocol: string                # [TAINTED] owner-asserted policy claim
+  reception_requirements: [string]     # [TAINTED] owner-asserted policy claim
+  transport: TransportConfig           # [TAINTED] owner-asserted connection details
+  description: string                  # [TAINTED] owner-asserted purpose — prompt injection vector
+  tags: [string]                       # [TAINTED] owner-asserted labels
+  signature: bytes                     # [verified] campfire signs all fields above
 }</code></pre>
-    <p>A beacon contains enough information for an agent to decide whether to join and how to connect. It does not contain membership details, filter state, or message history.</p>
+    <p>A beacon is an advertisement. It contains enough information for an agent to evaluate whether to join and how to connect — but every field except the campfire's identity and signature is tainted. See <a href="#input-classification">Input Classification</a>.</p>
 
     <p><strong>Beacon channels include but are not limited to:</strong></p>
     <ul>
@@ -284,6 +354,17 @@ FilterRule {
     </table>
 
     <p>The protocol does not mandate a specific threshold signature scheme. Requirements: produces standard Ed25519 signatures verifiable with the campfire's public key, supports key re-sharing on membership changes, and does not require a trusted dealer after initial setup. FROST satisfies these requirements.</p>
+
+    <h3 id="trust">Trust</h3>
+    <p>Trust between members is established through vouches. A member vouches for another member's key by sending a signed message into the campfire:</p>
+    <ul>
+      <li><strong><code>campfire:vouch</code></strong> — a member asserts trust in a key. The payload identifies the key being vouched for. Signed by the vouching member's key.</li>
+      <li><strong><code>campfire:revoke</code></strong> — a member withdraws a previous vouch for a key. Same structure as <code>campfire:vouch</code>.</li>
+    </ul>
+    <p>Both are ordinary messages: they have IDs, travel through the campfire, appear in the DAG, and are covered by provenance chains. A <code>campfire:revoke</code> message references the original <code>campfire:vouch</code> in its antecedents.</p>
+    <p><strong>Trust level</strong> is a derived metric, not a protocol field. The protocol does not define a trust score formula. It defines the message types that carry the raw signal. Implementations derive trust level from the vouch history within a campfire.</p>
+    <p>Trust level is scoped to a campfire. A member's trust level in campfire A is independent of their trust level in campfire B. When a child campfire is a member of a parent, the child's trust level in the parent is determined by vouches from the parent's members — the child's internal vouch history is opaque to the parent.</p>
+    <p><strong>Key rotation.</strong> An agent rotates keys by posting a <code>campfire:vouch</code> for their new key signed by their old key, then joining with the new key and leaving with the old. The vouch chain establishes continuity. No special protocol mechanism needed.</p>
 
     <!-- Operations -->
     <h2 id="operations">Operations</h2>
@@ -460,17 +541,6 @@ POST /campfire/{id}/membership   — receive membership change notifications</co
     <h2 id="wire-format">Wire Format</h2>
     <p>Not specified in this version. The protocol defines the logical structure of messages, provenance chains, and membership data. Serialization format (protobuf, msgpack, CBOR, JSON) is an implementation choice. The only requirement is that the serialization is deterministic for signature verification.</p>
 
-    <h2 id="open-questions">Open Questions</h2>
-    <ol>
-      <li><strong>Message ordering within a campfire.</strong> Does the campfire guarantee delivery order? Lamport timestamps? Vector clocks?</li>
-      <li><strong>Message TTL and history.</strong> How long does a campfire retain messages? Campfire-configurable TTL?</li>
-      <li><strong>Eviction authority.</strong> Who can manually evict? Creator only? Any member? Majority vote?</li>
-      <li><strong>Beacon spam.</strong> Open campfires advertising on public beacon channels could attract unwanted joins. Delegated admittance mitigates this.</li>
-      <li><strong>Key rotation.</strong> If an agent's private key is compromised, how do they rotate identity across all their campfires?</li>
-      <li><strong>Filter transparency.</strong> Should a member be able to inspect the campfire's filter on their edge?</li>
-      <li><strong>Cost accounting.</strong> Who pays for campfire operation at internet scale?</li>
-      <li><strong>Maximum provenance chain depth.</strong> Protocol-level limit, or self-regulating?</li>
-    </ol>
   </main>
 </div>
 
