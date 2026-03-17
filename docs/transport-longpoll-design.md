@@ -3,7 +3,7 @@
 **Status:** Draft
 **Date:** 2026-03-15
 **Author:** Baron + Claude
-**Bead:** workspace-7
+**Organization:** Third Division Labs
 
 ## Overview
 

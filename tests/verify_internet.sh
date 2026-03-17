@@ -226,7 +226,7 @@ RESULT="$(check_domain "Trust" "trust campfire" "trust.*reputation" "vouching pr
 [ "$RESULT" = "PRESENT" ] && DOMAINS_PRESENT+=("trust") || DOMAINS_MISSING+=("trust")
 
 # 3. Tool Registry
-RESULT="$(check_domain "Tool Registry" "tool registry" "tool campfire" "capability.*discover" "tool listing" "tool registry architect" "toolrank" "register.*tool" | tail -1)"
+RESULT="$(check_domain "Tool Registry" "tool registry" "tool campfire" "capability.*discover" "tool listing" "tool registry architect" "tool.*rank" "register.*tool" | tail -1)"
 [ "$RESULT" = "PRESENT" ] && DOMAINS_PRESENT+=("tool-registry") || DOMAINS_MISSING+=("tool-registry")
 
 # 4. Security

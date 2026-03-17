@@ -7,7 +7,7 @@ package cmd
 // joins it, sends a message, syncs via syncFromFilesystem, and asserts the
 // message appears in the store — without setting CF_TRANSPORT_DIR.
 //
-// workspace-52: fix sendFilesystem/syncFromFilesystem to use membership TransportDir.
+// Verifies sendFilesystem/syncFromFilesystem use membership TransportDir.
 
 import (
 	"fmt"
@@ -77,7 +77,7 @@ func TestFSTransportDirFromMembership(t *testing.T) {
 
 	// Send a message using sendFilesystem with the membership TransportDir.
 	// This must NOT fall back to DefaultBaseDir() — it must use customBaseDir.
-	msg, err := sendFilesystem(campfireID, "hello from workspace-52", nil, nil, agentID, transportDir)
+	msg, err := sendFilesystem(campfireID, "hello from transport-dir-test", nil, nil, agentID, transportDir)
 	if err != nil {
 		t.Fatalf("sendFilesystem: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestFSTransportDirFromMembership(t *testing.T) {
 		if m.ID == msg.ID {
 			found = true
 			payload := string(m.Payload)
-			if payload != "hello from workspace-52" {
+			if payload != "hello from transport-dir-test" {
 				t.Errorf("unexpected payload: %q", payload)
 			}
 		}

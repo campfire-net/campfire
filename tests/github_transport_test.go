@@ -7,7 +7,7 @@
 //  2. Agent B joins the campfire.
 //     - Agent B posts a campfire:join-request comment.
 //     - Agent A delivers a campfire:key-delivery comment encrypting the campfire
-//       private key to Agent B's Ed25519 public key (using workspace-19 X25519
+//       private key to Agent B's Ed25519 public key (using X25519
 //       conversion + AES-256-GCM).
 //     - Agent B polls, decrypts, and stores the campfire private key.
 //  3. Agent A sends a message.

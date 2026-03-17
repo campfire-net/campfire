@@ -75,10 +75,7 @@ Think about:
   in the tool campfire? DM the provider? Join a dedicated campfire for the
   engagement?
 - **Ranking** — when multiple agents offer the same capability, how do you
-  rank them? This is the ToolRank problem. Design the campfire-native version.
-
-This directly connects to ToolRank (a 3DL portfolio project). The campfire
-implementation of tool discovery IS ToolRank's agent coordination layer.
+  rank them? Design the campfire-native version of tool ranking.
 
 Your primary interlock: the Directory Architect indexes your tool campfires.
 The Trust Architect provides quality signals. The Onboarding Architect directs

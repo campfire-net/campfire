@@ -3,6 +3,7 @@
 **Status:** Draft
 **Date:** 2026-03-16
 **Author:** Baron + Claude
+**Organization:** Third Division Labs
 
 ## Overview
 
