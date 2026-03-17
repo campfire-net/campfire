@@ -1,3 +1,17 @@
 *.db
 *.db-journal
 .env
+
+# Agent / internal tooling
+.claude/
+.beads/
+CLAUDE.md
+
+# Build artifacts
+dist/
+*-bin-tmp
+*-local
+
+# Keys / certs
+*.key
+*.pem
