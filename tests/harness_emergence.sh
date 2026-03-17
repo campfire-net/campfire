@@ -437,10 +437,10 @@ for round in $(seq 1 "$ROUNDS"); do
 
     ROUND_START=$(date +%s)
 
-    # Check elapsed time — abort if we're past 40 minutes (leave 5 min buffer)
+    # Check elapsed time — abort if past timeout (leave 5 min buffer)
     elapsed=$(( ROUND_START - START_TIME ))
-    if (( elapsed > 2400 )); then
-        log "Elapsed time ${elapsed}s exceeds 40-minute limit — stopping rounds early (completed $((round - 1)) of $ROUNDS)."
+    if (( elapsed > (TIMEOUT - 300) )); then
+        log "Elapsed time ${elapsed}s exceeds $((TIMEOUT/60))-minute limit — stopping rounds early (completed $((round - 1)) of $ROUNDS)."
         break
     fi
 
