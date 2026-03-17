@@ -71,8 +71,17 @@ var createCmd = &cobra.Command{
 }
 
 func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store) error {
+	return createFilesystemWithDesc(cf, agentID, s, fs.DefaultBaseDir(), createDescription)
+}
+
+// createFilesystemWithDesc is the testable core of createFilesystem.
+// It accepts an explicit baseDir (for tests) and description.
+// In project mode (.campfire/root exists) it also:
+//   - publishes a beacon to .campfire/beacons/ in the project dir
+//   - sends a campfire:sub-created announcement to the root campfire
+func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store, baseDir string, description string) error {
 	// Set up filesystem transport
-	transport := fs.New(fs.DefaultBaseDir())
+	transport := fs.New(baseDir)
 	if err := transport.Init(cf); err != nil {
 		return fmt.Errorf("initializing transport: %w", err)
 	}
@@ -85,8 +94,7 @@ func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s *stor
 		return fmt.Errorf("writing member record: %w", err)
 	}
 
-	// Publish beacon
-	beaconDir := BeaconDir()
+	// Build beacon
 	b, err := beacon.New(
 		cf.Identity.PublicKey,
 		cf.Identity.PrivateKey,
@@ -96,13 +104,39 @@ func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s *stor
 			Protocol: "filesystem",
 			Config:   map[string]string{"dir": transport.CampfireDir(cf.PublicKeyHex())},
 		},
-		createDescription,
+		description,
 	)
 	if err != nil {
 		return fmt.Errorf("creating beacon: %w", err)
 	}
+
+	// Publish beacon to standard beacon dir
+	beaconDir := BeaconDir()
 	if err := beacon.Publish(beaconDir, b); err != nil {
 		return fmt.Errorf("publishing beacon: %w", err)
+	}
+
+	// Project mode: also publish beacon to .campfire/beacons/ and announce to root campfire
+	if rootCampfireID, projectDir, ok := ProjectRoot(); ok {
+		// Publish beacon to .campfire/beacons/ in project dir
+		projectBeaconsDir := filepath.Join(projectDir, ".campfire", "beacons")
+		if err := beacon.Publish(projectBeaconsDir, b); err != nil {
+			// Non-fatal: warn and continue
+			fmt.Fprintf(os.Stderr, "warning: could not publish beacon to project beacons dir: %v\n", err)
+		}
+
+		// Send announcement to root campfire (best-effort, non-fatal)
+		subShortID := cf.PublicKeyHex()
+		if len(subShortID) > 12 {
+			subShortID = subShortID[:12]
+		}
+		announcePayload := fmt.Sprintf("sub-campfire created: %s (%s)", description, subShortID)
+		rootMembership, merr := s.GetMembership(rootCampfireID)
+		if merr == nil && rootMembership != nil {
+			if _, serr := sendFilesystem(rootCampfireID, announcePayload, []string{"campfire:sub-created"}, nil, agentID, rootMembership.TransportDir); serr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not announce sub-campfire to root campfire: %v\n", serr)
+			}
+		}
 	}
 
 	// Record membership in local store
