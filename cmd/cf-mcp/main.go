@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
@@ -430,7 +429,7 @@ func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonR
 		if err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("opening lock file: %v", err))
 		}
-		if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if err := tryFlock(lf.Fd()); err != nil {
 			lf.Close()
 			return errResponse(id, -32000, fmt.Sprintf("identity '%s' is already in use by another session", name))
 		}
