@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/spf13/cobra"
@@ -14,17 +15,66 @@ var forceInit bool
 
 var initName string
 
+var initSession bool
+
+// isOwnedByRoot returns true if the given syscall.Stat_t indicates UID 0.
+func isOwnedByRoot(st *syscall.Stat_t) bool {
+	return st.Uid == 0
+}
+
+// checkCampfireDirOwnership checks if ~/.campfire/ exists and is root-owned.
+// Returns an error with an actionable message if so.
+func checkCampfireDirOwnership() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil // can't check, let the normal error surface
+	}
+	dir := filepath.Join(home, ".campfire")
+	var st syscall.Stat_t
+	if err := syscall.Stat(dir, &st); err != nil {
+		return nil // doesn't exist yet, no problem
+	}
+	if isOwnedByRoot(&st) {
+		return fmt.Errorf("error: ~/.campfire/ is owned by root (likely from a prior Docker run)\nfix:   sudo chown -R $(whoami) ~/.campfire/")
+	}
+	return nil
+}
+
 var initCmd = &cobra.Command{
-	Use:   "init [--name agent-name]",
+	Use:   "init [--name agent-name] [--session]",
 	Short: "Generate a new agent identity (Ed25519 keypair)",
 	Long: `Create a campfire identity.
 
-  cf init                  session identity (disposable)
-  cf init --name worker-1  persistent identity (survives across sessions)
+  cf init                  persistent identity at ~/.campfire/
+  cf init --session        temporary identity in a unique temp dir
+  cf init --name worker-1  persistent named identity (survives across sessions)
 
-Named identities live at ~/.campfire/agents/<name>/. Use when other agents
-need to recognize you across sessions. Session identities use CF_HOME.`,
+Named identities live at ~/.campfire/agents/<name>/. Session identities print
+the CF_HOME path on line 1 and the display name on line 2. The caller sets
+CF_HOME to the printed path for subsequent commands.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Session identity: temp dir, print path + display name, done.
+		if initSession {
+			tmpDir, err := os.MkdirTemp("", "cf-session-")
+			if err != nil {
+				return fmt.Errorf("creating temp dir: %w", err)
+			}
+			agentID, err := identity.Generate()
+			if err != nil {
+				return fmt.Errorf("generating identity: %w", err)
+			}
+			identityPath := filepath.Join(tmpDir, "identity.json")
+			if err := agentID.Save(identityPath); err != nil {
+				return fmt.Errorf("saving identity: %w", err)
+			}
+			writeContext(tmpDir)
+			hexKey := agentID.PublicKeyHex()
+			displayName := "agent:" + hexKey[:6]
+			fmt.Println(tmpDir)
+			fmt.Println(displayName)
+			return nil
+		}
+
 		cfHome := CFHome()
 
 		// Named identity: persistent agent
@@ -34,8 +84,11 @@ need to recognize you across sessions. Session identities use CF_HOME.`,
 				return fmt.Errorf("cannot determine home directory: %w", err)
 			}
 			cfHome = filepath.Join(home, ".campfire", "agents", initName)
-			// Override for downstream calls
-			cfHome = cfHome
+		}
+
+		// Check for root-owned ~/.campfire/ before attempting write
+		if err := checkCampfireDirOwnership(); err != nil {
+			return err
 		}
 
 		identityPath := filepath.Join(cfHome, "identity.json")
@@ -176,5 +229,6 @@ func writeContext(cfHome string) {
 func init() {
 	initCmd.Flags().BoolVar(&forceInit, "force", false, "overwrite existing identity")
 	initCmd.Flags().StringVar(&initName, "name", "", "persistent agent name (survives across sessions)")
+	initCmd.Flags().BoolVar(&initSession, "session", false, "create a temporary identity in a unique temp dir")
 	rootCmd.AddCommand(initCmd)
 }
