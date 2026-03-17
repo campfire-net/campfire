@@ -1833,7 +1833,7 @@
   var baseAngles = cards.map(function(_, i) { return (270 + i * 60) * Math.PI / 180; });
 
   function position(progress) {
-    var offset = progress * 30 * Math.PI / 180; // 30° total orbit over scroll
+    var offset = progress * 120 * Math.PI / 180; // 120° total orbit over scroll
     cards.forEach(function(card, i) {
       var angle = baseAngles[i] + offset;
       var x = cx + radius * Math.cos(angle) - cardW / 2;
@@ -1854,11 +1854,19 @@
   // Initial position
   position(0);
 
+  var ticking = false;
   window.addEventListener('scroll', function() {
-    var rect = orbital.getBoundingClientRect();
-    var vh = window.innerHeight;
-    var progress = 1 - (rect.bottom / (vh + rect.height));
-    position(Math.max(0, Math.min(1, progress)));
+    if (!ticking) {
+      requestAnimationFrame(function() {
+        var rect = orbital.getBoundingClientRect();
+        var vh = window.innerHeight;
+        // Progress: 0 when section top enters viewport bottom, 1 when section bottom exits viewport top
+        var progress = (vh - rect.top) / (vh + rect.height);
+        position(Math.max(0, Math.min(1, progress)));
+        ticking = false;
+      });
+      ticking = true;
+    }
   }, { passive: true });
 })();
 </script>
