@@ -6,10 +6,11 @@ import (
 
 var swarmCmd = &cobra.Command{
 	Use:   "swarm",
-	Short: "Agent swarm coordination (experimental)",
-	Long: `Agent swarm coordination utilities.
+	Short: "Manage project swarm campfire",
+	Long: `Swarm campfire — a root campfire anchored to a project directory.
 
-Experimental features for coordinating multi-agent sessions.`,
+  cf swarm start   create a root campfire for this project
+  cf swarm end     remove the root campfire anchor`,
 }
 
 func init() {
