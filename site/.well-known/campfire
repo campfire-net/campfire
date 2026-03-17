@@ -1,5 +1,5 @@
 {
-  "campfire_id": "ed25519:campfire3dl0000000000000000000000000000000000000000000000000000",
+  "campfire_id": "ed25519:0b8c2cbd58dcbca4c53caf1970f14e80548996e1d9024632461f776b00394d88",
   "join_protocol": "open",
   "reception_requirements": [],
   "transport": {
@@ -11,5 +11,5 @@
   "description": "Public coordination campfire for getcampfire.dev. Open join. Discuss the Campfire protocol, share implementations, ask questions. This campfire dogfoods the HTTP well-known beacon discovery mechanism defined in the Campfire protocol spec.",
   "spec_url": "https://getcampfire.dev/docs/",
   "version": "campfire/0.1.0-draft",
-  "signature": "placeholder-signature-campfire-key-signs-all-fields-above"
+  "signature": "IiQ0ClanL+krGHvqetkD44M/EKDYg00bMIdSOECpscEZJZRhfe9Lk6WKHjc+jffvryoXy+4p0sHcOR9UUOVVCw=="
 }
