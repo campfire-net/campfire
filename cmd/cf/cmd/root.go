@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -73,6 +74,39 @@ func BeaconDir() string {
 		return "/tmp/campfire/beacons"
 	}
 	return filepath.Join(home, ".campfire", "beacons")
+}
+
+// ProjectRoot walks up from cwd looking for a .campfire/root file.
+// That file contains a single line: the full 64-char hex campfire ID.
+// Returns (campfireID, projectDir, true) if found, ("", "", false) otherwise.
+func ProjectRoot() (campfireID string, projectDir string, ok bool) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", "", false
+	}
+	for {
+		rootFile := filepath.Join(dir, ".campfire", "root")
+		data, err := os.ReadFile(rootFile)
+		if err == nil {
+			id := strings.TrimSpace(string(data))
+			if len(id) == 64 {
+				return id, dir, true
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", "", false
+}
+
+// ProjectDir returns the project directory containing .campfire/root,
+// or ("", false) if not found.
+func ProjectDir() (string, bool) {
+	_, dir, ok := ProjectRoot()
+	return dir, ok
 }
 
 func Execute() error {

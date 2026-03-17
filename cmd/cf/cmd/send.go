@@ -30,12 +30,23 @@ var (
 )
 
 var sendCmd = &cobra.Command{
-	Use:   "send <campfire-id> <message>",
+	Use:   "send [campfire-id] <message>",
 	Short: "Send a message to a campfire",
-	Args:  cobra.ExactArgs(2),
+	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		campfireID := args[0]
-		payload := args[1]
+		var campfireID, payload string
+		if len(args) == 2 {
+			campfireID = args[0]
+			payload = args[1]
+		} else {
+			// No campfire ID provided — fall back to project root.
+			id, _, ok := ProjectRoot()
+			if !ok {
+				return fmt.Errorf("campfire ID required: no .campfire/root found in this directory tree")
+			}
+			campfireID = id
+			payload = args[0]
+		}
 
 		// Merge deprecated --antecedent alias into --reply-to.
 		if legacyAnts, err := cmd.Flags().GetStringSlice("antecedent"); err == nil && len(legacyAnts) > 0 {
