@@ -166,6 +166,19 @@ var readCmd = &cobra.Command{
 			}
 			campfireIDs = []string{resolved}
 		} else {
+			// No explicit campfire — auto-join the project root if not yet a member.
+			if rootID, _, ok := ProjectRoot(); ok {
+				m, err := s.GetMembership(rootID)
+				if err != nil {
+					return fmt.Errorf("querying membership: %w", err)
+				}
+				if m == nil {
+					if err := autoJoinRootCampfire(rootID, agentID, s); err != nil {
+						return fmt.Errorf("auto-joining root campfire: %w", err)
+					}
+				}
+			}
+
 			memberships, err := s.ListMemberships()
 			if err != nil {
 				return fmt.Errorf("listing memberships: %w", err)

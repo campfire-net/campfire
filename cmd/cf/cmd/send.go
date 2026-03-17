@@ -51,6 +51,7 @@ var sendCmd = &cobra.Command{
 		defer s.Close()
 
 		var campfireID, payload string
+		fromProjectRoot := false
 		if len(args) == 2 {
 			campfireID, err = resolveCampfireID(args[0], s)
 			if err != nil {
@@ -65,11 +66,22 @@ var sendCmd = &cobra.Command{
 			}
 			campfireID = id
 			payload = args[0]
+			fromProjectRoot = true
 		}
 
 		m, err := s.GetMembership(campfireID)
 		if err != nil {
 			return fmt.Errorf("querying membership: %w", err)
+		}
+		if m == nil && fromProjectRoot {
+			// Auto-join open-protocol root campfires.
+			if err := autoJoinRootCampfire(campfireID, agentID, s); err != nil {
+				return fmt.Errorf("auto-joining root campfire: %w", err)
+			}
+			m, err = s.GetMembership(campfireID)
+			if err != nil {
+				return fmt.Errorf("querying membership after auto-join: %w", err)
+			}
 		}
 		if m == nil {
 			return fmt.Errorf("not a member of campfire %s", campfireID[:12])
