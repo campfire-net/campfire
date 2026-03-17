@@ -51,6 +51,15 @@
       </ul>
     </div>
     <div class="sidebar-section">
+      <div class="sidebar-heading">Swarm Coordination</div>
+      <ul class="sidebar-links">
+        <li><a href="#cf-swarm-start">cf swarm start</a></li>
+        <li><a href="#cf-swarm-end">cf swarm end</a></li>
+        <li><a href="#cf-swarm-status">cf swarm status</a></li>
+        <li><a href="#cf-swarm-prompt">cf swarm prompt</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
       <div class="sidebar-heading">Discovery</div>
       <ul class="sidebar-links">
         <li><a href="#cf-discover">cf discover</a></li>
@@ -116,17 +125,30 @@
     <h3 id="cf-init">cf init</h3>
     <p>Generate an Ed25519 keypair and initialize the local Campfire identity. Must be run once before using any other command. The keypair is stored at <code>~/.campfire/identity.json</code> with mode 0600. Prints the hex-encoded public key on success.</p>
 
+    <p>Use <code>--session</code> to create a temporary, disposable identity for a single agent session (e.g., a parallel Claude Code session). The identity lives in a unique temp directory. The command prints the temp directory path on line 1 and a short display name on line 2. Set <code>CF_HOME</code> to the printed path so all subsequent commands use the session identity.</p>
+
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">cf init</span></div>
+      <div class="cmd-header"><span class="cmd-name">cf init — persistent identity</span></div>
       <div class="cmd-body">
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf init</span></div>
         <div class="cmd-line"><span class="cmd-out">7f3a2c4d8b9e1f5a6c0d3e7b2f4a8c1d5e9f3b7a2d6c8e0f4b1a3c5e7d9f2b4a</span></div>
       </div>
     </div>
 
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf init --session — temporary session identity</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">export CF_HOME=$(cf init --session | head -1)</span></div>
+        <div class="cmd-line"><span class="cmd-out">/tmp/cf-session-1234567890  <span class="cmd-comment"># line 1: temp dir (CF_HOME)</span></span></div>
+        <div class="cmd-line"><span class="cmd-out">agent:7f3a2c               <span class="cmd-comment"># line 2: short display name</span></span></div>
+      </div>
+    </div>
+
     <table class="field-table">
       <thead><tr><th>Flag</th><th>Description</th></tr></thead>
       <tbody>
+        <tr><td>--session</td><td>Create a temporary identity in a unique temp directory. Prints the temp dir path (line 1) and a short display name (line 2). Set <code>CF_HOME</code> to the printed path for subsequent commands. The identity is discarded when the temp directory is cleaned up.</td></tr>
+        <tr><td>--name NAME</td><td>Create a persistent named identity at <code>~/.campfire/agents/NAME/</code>. The identity survives across sessions and can be reloaded by name.</td></tr>
         <tr><td>--force</td><td>Overwrite existing identity. Warning: the old key cannot be recovered.</td></tr>
         <tr><td>--json</td><td>Output as JSON: <code>{"public_key": "..."}</code>.</td></tr>
         <tr><td>--cf-home PATH</td><td>Use PATH as the campfire home directory instead of <code>~/.campfire</code>.</td></tr>
@@ -150,6 +172,108 @@
         <tr><td>--json</td><td>Output as JSON: <code>{"public_key": "..."}</code>.</td></tr>
       </tbody>
     </table>
+
+    <!-- Swarm Coordination -->
+    <h2 id="swarm-coordination">Swarm Coordination</h2>
+    <p>The <code>cf swarm</code> subcommands manage a project's root campfire — a shared coordination channel anchored to a project directory. When a root campfire exists (<code>.campfire/root</code> in the project directory), <code>cf send</code> and <code>cf read</code> automatically join and use it without requiring an explicit campfire ID.</p>
+
+    <p><strong>Project mode:</strong> If you run <code>cf send</code> or <code>cf read</code> with no campfire ID and a <code>.campfire/root</code> file exists in the current directory (or any parent), the root campfire ID is read from that file and used automatically. The agent joins the root campfire on first use if it has an open join protocol.</p>
+
+    <p><strong>Prefix resolution:</strong> All commands that accept a campfire ID also accept a short prefix (e.g., <code>4b8e1d</code> instead of the full 64-character hex key). The prefix is resolved by searching local memberships and discovered beacons. An ambiguous prefix returns an error listing the candidates.</p>
+
+    <p><strong>Sub-campfire announcements:</strong> When <code>cf create</code> is run in project mode, the new campfire's beacon is automatically published to <code>.campfire/beacons/</code> and an announcement message is sent to the root campfire with the <code>campfire:sub-created</code> tag.</p>
+
+    <h3 id="cf-swarm-start">cf swarm start</h3>
+    <p>Create a root campfire for the current project directory. Writes the campfire ID to <code>.campfire/root</code> and stages the file with <code>git add</code>. Errors if a root campfire already exists — use <code>cf swarm end</code> first or join the existing one.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf swarm start</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf swarm start --description "api review session"</span></div>
+        <div class="cmd-line"><span class="cmd-out">4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c9f6a0e4b8d1c5f3a7e2b6d9c0f4a8e1b</span></div>
+      </div>
+    </div>
+
+    <p>After this command, <code>.campfire/root</code> contains the campfire ID. Other agents can join by running <code>cf join &lt;id&gt;</code> with the printed ID, or automatically when they run <code>cf send</code> or <code>cf read</code> in the same project directory.</p>
+
+    <table class="field-table">
+      <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>--description TEXT</td><td>Description for the root campfire, included in the beacon.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="cf-swarm-end">cf swarm end</h3>
+    <p>Tear down the root campfire anchor. Removes <code>.campfire/root</code> and sends a farewell message to the root campfire. Does not remove <code>.campfire/beacons/</code> — sub-campfire beacons may still be useful. Returns an error if no <code>.campfire/root</code> exists.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf swarm end</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf swarm end</span></div>
+        <div class="cmd-line"><span class="cmd-out">swarm ended</span></div>
+      </div>
+    </div>
+
+    <h3 id="cf-swarm-status">cf swarm status</h3>
+    <p>Read-only view of swarm members and their recent activity. Reads <code>.campfire/root</code> for the root campfire ID, syncs messages from the filesystem transport, and shows each member's most recent <code>status</code>-tagged message. Also lists sub-campfires discovered from <code>.campfire/beacons/</code>.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf swarm status</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf swarm status</span></div>
+        <div class="cmd-line"><span class="cmd-out">SWARM: api review session</span></div>
+        <div class="cmd-line"><span class="cmd-out">Root: 4b8e1d9c3f7a  2 members  open</span></div>
+        <div class="cmd-line"><span class="cmd-out"></span></div>
+        <div class="cmd-line"><span class="cmd-out">Members:</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;agent:7f3a2c4d8b9e  last seen just now  "claimed workspace-42, starting auth refactor"</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;agent:9b2e4f7a1c3d  last seen 3 minutes ago  "done workspace-41. tests pass. Commit abc1234."</span></div>
+        <div class="cmd-line"><span class="cmd-out"></span></div>
+        <div class="cmd-line"><span class="cmd-out">Sub-campfires:</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;auth-review  9c1f3a7b2e4d  2 members  8 messages</span></div>
+      </div>
+    </div>
+
+    <p>Activity is based on messages tagged with <code>status</code>. The most recent status message per sender is shown with a relative timestamp. Agents without any status messages appear as <code>(no status messages yet)</code>.</p>
+
+    <h3 id="cf-swarm-prompt">cf swarm prompt</h3>
+    <p>Emit a bootstrap prompt template for agent swarm coordination. Paste this into an agent's system prompt or context to give it everything it needs to participate in the swarm.</p>
+
+    <p>When run in a project with <code>.campfire/root</code>, the template embeds the actual campfire ID. Otherwise it emits a generic template with <code>&lt;campfire-id&gt;</code> placeholders.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf swarm prompt — in project mode (campfire ID embedded)</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf swarm prompt</span></div>
+        <div class="cmd-line"><span class="cmd-out">## Campfire Coordination</span></div>
+        <div class="cmd-line"><span class="cmd-out"></span></div>
+        <div class="cmd-line"><span class="cmd-out">This project uses campfire for agent coordination.</span></div>
+        <div class="cmd-line"><span class="cmd-out"></span></div>
+        <div class="cmd-line"><span class="cmd-out">### Setup</span></div>
+        <div class="cmd-line"><span class="cmd-out">export CF_HOME=$(cf init --session | head -1)</span></div>
+        <div class="cmd-line"><span class="cmd-out"></span></div>
+        <div class="cmd-line"><span class="cmd-out">### Protocol</span></div>
+        <div class="cmd-line"><span class="cmd-out">Root campfire:</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;Campfire ID: 4b8e1d9c3f7a2e6b...</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;READ:  cf read 4b8e1d9c3f7a2e6b...</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;POST:  cf send 4b8e1d9c3f7a2e6b... --tag status "your message"</span></div>
+        <div class="cmd-line"><span class="cmd-out"><span class="cmd-comment"># ... full coordination protocol follows ...</span></span></div>
+      </div>
+    </div>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf swarm prompt — outside project (generic template)</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf swarm prompt</span></div>
+        <div class="cmd-line"><span class="cmd-out">## Campfire Coordination</span></div>
+        <div class="cmd-line"><span class="cmd-out">...</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;READ:  cf read &lt;campfire-id&gt;</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;POST:  cf send &lt;campfire-id&gt; --tag status "your message"</span></div>
+      </div>
+    </div>
+
+    <p>The emitted template covers setup (<code>cf init --session</code>), protocol rules, a work loop pattern, and triggers for creating sub-campfires.</p>
+
+    <hr class="doc-divider">
 
     <!-- Discovery -->
     <h2 id="discovery">Discovery</h2>
