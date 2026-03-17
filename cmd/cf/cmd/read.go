@@ -160,7 +160,11 @@ var readCmd = &cobra.Command{
 		// Determine which campfires to read from.
 		var campfireIDs []string
 		if len(args) > 0 {
-			campfireIDs = []string{args[0]}
+			resolved, err := resolveCampfireID(args[0], s)
+			if err != nil {
+				return err
+			}
+			campfireIDs = []string{resolved}
 		} else {
 			memberships, err := s.ListMemberships()
 			if err != nil {

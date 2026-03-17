@@ -34,20 +34,6 @@ var sendCmd = &cobra.Command{
 	Short: "Send a message to a campfire",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		var campfireID, payload string
-		if len(args) == 2 {
-			campfireID = args[0]
-			payload = args[1]
-		} else {
-			// No campfire ID provided — fall back to project root.
-			id, _, ok := ProjectRoot()
-			if !ok {
-				return fmt.Errorf("campfire ID required: no .campfire/root found in this directory tree")
-			}
-			campfireID = id
-			payload = args[0]
-		}
-
 		// Merge deprecated --antecedent alias into --reply-to.
 		if legacyAnts, err := cmd.Flags().GetStringSlice("antecedent"); err == nil && len(legacyAnts) > 0 {
 			sendAntecedents = append(sendAntecedents, legacyAnts...)
@@ -63,6 +49,23 @@ var sendCmd = &cobra.Command{
 			return fmt.Errorf("opening store: %w", err)
 		}
 		defer s.Close()
+
+		var campfireID, payload string
+		if len(args) == 2 {
+			campfireID, err = resolveCampfireID(args[0], s)
+			if err != nil {
+				return err
+			}
+			payload = args[1]
+		} else {
+			// No campfire ID provided — fall back to project root.
+			id, _, ok := ProjectRoot()
+			if !ok {
+				return fmt.Errorf("campfire ID required: no .campfire/root found in this directory tree")
+			}
+			campfireID = id
+			payload = args[0]
+		}
 
 		m, err := s.GetMembership(campfireID)
 		if err != nil {

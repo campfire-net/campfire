@@ -16,9 +16,18 @@ var membersCmd = &cobra.Command{
 	Short: "List members of a campfire",
 	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		s, err := store.Open(store.StorePath(CFHome()))
+		if err != nil {
+			return fmt.Errorf("opening store: %w", err)
+		}
+		defer s.Close()
+
 		var campfireID string
 		if len(args) == 1 {
-			campfireID = args[0]
+			campfireID, err = resolveCampfireID(args[0], s)
+			if err != nil {
+				return err
+			}
 		} else {
 			id, _, ok := ProjectRoot()
 			if !ok {
@@ -26,12 +35,6 @@ var membersCmd = &cobra.Command{
 			}
 			campfireID = id
 		}
-
-		s, err := store.Open(store.StorePath(CFHome()))
-		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
-		}
-		defer s.Close()
 
 		m, err := s.GetMembership(campfireID)
 		if err != nil {

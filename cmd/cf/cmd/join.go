@@ -36,8 +36,6 @@ var joinCmd = &cobra.Command{
 	Short: "Join a campfire",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		campfireID := args[0]
-
 		agentID, err := identity.Load(IdentityPath())
 		if err != nil {
 			return fmt.Errorf("loading identity (run 'cf init' first): %w", err)
@@ -48,6 +46,11 @@ var joinCmd = &cobra.Command{
 			return fmt.Errorf("opening store: %w", err)
 		}
 		defer s.Close()
+
+		campfireID, err := resolveCampfireID(args[0], s)
+		if err != nil {
+			return err
+		}
 
 		// Check if already a member
 		existingMembership, _ := s.GetMembership(campfireID)

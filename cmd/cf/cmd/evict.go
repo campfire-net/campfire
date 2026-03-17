@@ -36,7 +36,6 @@ var evictCmd = &cobra.Command{
 	Short: "Evict a member from a campfire (creator only). Always rekeys the campfire.",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		oldCampfireID := args[0]
 		evictedPubkeyHex := args[1]
 
 		agentID, err := identity.Load(IdentityPath())
@@ -49,6 +48,11 @@ var evictCmd = &cobra.Command{
 			return fmt.Errorf("opening store: %w", err)
 		}
 		defer s.Close()
+
+		oldCampfireID, err := resolveCampfireID(args[0], s)
+		if err != nil {
+			return err
+		}
 
 		// Verify caller is a member and has creator role.
 		m, err := s.GetMembership(oldCampfireID)
