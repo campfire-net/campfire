@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -132,7 +133,8 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		return
 	}
 	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
-		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusUnauthorized)
+		log.Printf("handleDeliver: signature verification failed: %v", err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
@@ -160,7 +162,8 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		ReceivedAt:  time.Now().UnixNano(),
 	}
 	if _, err := h.store.AddMessage(rec); err != nil {
-		http.Error(w, "failed to store message", http.StatusInternalServerError)
+		log.Printf("handleDeliver: failed to store message for campfire %s: %v", campfireID, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -183,7 +186,8 @@ func (h *handler) handleSync(w http.ResponseWriter, r *http.Request, campfireID 
 		return
 	}
 	if err := verifyRequestSignature(senderHex, sigB64, []byte{}); err != nil {
-		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusUnauthorized)
+		log.Printf("handleSync: signature verification failed: %v", err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
@@ -200,6 +204,7 @@ func (h *handler) handleSync(w http.ResponseWriter, r *http.Request, campfireID 
 
 	records, err := h.store.ListMessages(campfireID, since)
 	if err != nil {
+		log.Printf("handleSync: failed to query messages for campfire %s: %v", campfireID, err)
 		http.Error(w, "failed to query messages", http.StatusInternalServerError)
 		return
 	}
@@ -216,6 +221,7 @@ func (h *handler) handleSync(w http.ResponseWriter, r *http.Request, campfireID 
 
 	data, err := cfencoding.Marshal(msgs)
 	if err != nil {
+		log.Printf("handleSync: failed to encode response for campfire %s: %v", campfireID, err)
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -251,7 +257,8 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID 
 		return
 	}
 	if err := verifyRequestSignature(senderHex, sigB64, []byte{}); err != nil {
-		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusUnauthorized)
+		log.Printf("handlePoll: signature verification failed: %v", err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
@@ -322,6 +329,7 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID 
 		}
 		data, err := cfencoding.Marshal(msgs)
 		if err != nil {
+			log.Printf("handlePoll: failed to encode response for campfire %s: %v", campfireID, err)
 			http.Error(w, "failed to encode response", http.StatusInternalServerError)
 			return
 		}
@@ -335,6 +343,7 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID 
 	// Initial sync: return immediately if messages already exist.
 	records, err := h.store.ListMessages(campfireID, since)
 	if err != nil {
+		log.Printf("handlePoll: failed to query messages for campfire %s: %v", campfireID, err)
 		http.Error(w, "failed to query messages", http.StatusInternalServerError)
 		return
 	}
@@ -352,6 +361,7 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID 
 	// Post-wait sync.
 	records, err = h.store.ListMessages(campfireID, since)
 	if err != nil {
+		log.Printf("handlePoll: failed to query messages (post-wait) for campfire %s: %v", campfireID, err)
 		http.Error(w, "failed to query messages", http.StatusInternalServerError)
 		return
 	}
@@ -382,7 +392,8 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 		return
 	}
 	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
-		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusUnauthorized)
+		log.Printf("handleMembership: signature verification failed: %v", err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
@@ -441,7 +452,8 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 		return
 	}
 	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
-		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusUnauthorized)
+		log.Printf("handleJoin: signature verification failed: %v", err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
@@ -454,7 +466,8 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 	// Fetch campfire private key from this node.
 	privKey, pubKey, err := kp(campfireID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("campfire not found: %v", err), http.StatusNotFound)
+		log.Printf("handleJoin: campfire %s not found: %v", campfireID, err)
+		http.Error(w, "campfire not found", http.StatusNotFound)
 		return
 	}
 
@@ -483,17 +496,20 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 		}
 		joinerX25519, err := parseX25519PublicKey(joinerX25519PubHex)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("parsing joiner X25519 key: %v", err), http.StatusBadRequest)
+			log.Printf("handleJoin: failed to parse joiner X25519 key: %v", err)
+			http.Error(w, "invalid ephemeral X25519 public key", http.StatusBadRequest)
 			return
 		}
 		respPriv, err := generateX25519Key()
 		if err != nil {
+			log.Printf("handleJoin: key generation failed: %v", err)
 			http.Error(w, "key generation failed", http.StatusInternalServerError)
 			return
 		}
 		respPub := respPriv.PublicKey()
 		shared, err := respPriv.ECDH(joinerX25519)
 		if err != nil {
+			log.Printf("handleJoin: ECDH failed: %v", err)
 			http.Error(w, "ECDH failed", http.StatusInternalServerError)
 			return
 		}
@@ -505,6 +521,7 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 	if membership.Threshold == 1 && sharedSecret != nil {
 		encrypted, err := aesGCMEncrypt(sharedSecret, privKey)
 		if err != nil {
+			log.Printf("handleJoin: encryption failed for campfire %s: %v", campfireID, err)
 			http.Error(w, "encryption failed", http.StatusInternalServerError)
 			return
 		}
@@ -516,12 +533,14 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 	if membership.Threshold > 1 && sharedSecret != nil {
 		pid, shareData, err := h.store.ClaimPendingThresholdShare(campfireID)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("claiming threshold share: %v", err), http.StatusInternalServerError)
+			log.Printf("handleJoin: failed to claim threshold share for campfire %s: %v", campfireID, err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		if shareData != nil {
 			encrypted, err := aesGCMEncrypt(sharedSecret, shareData)
 			if err != nil {
+				log.Printf("handleJoin: failed to encrypt threshold share for campfire %s: %v", campfireID, err)
 				http.Error(w, "encrypting threshold share failed", http.StatusInternalServerError)
 				return
 			}
@@ -615,7 +634,8 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 		return
 	}
 	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
-		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusUnauthorized)
+		log.Printf("handleSign: signature verification failed: %v", err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
@@ -632,12 +652,14 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 	// Load this node's DKG share for the campfire.
 	participantID, shareData, err := sp(campfireID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("loading threshold share: %v", err), http.StatusNotFound)
+		log.Printf("handleSign: failed to load threshold share for campfire %s: %v", campfireID, err)
+		http.Error(w, "threshold share not found", http.StatusNotFound)
 		return
 	}
 	_, dkgResult, err := threshold.UnmarshalResult(shareData)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("deserializing threshold share: %v", err), http.StatusInternalServerError)
+		log.Printf("handleSign: failed to deserialize threshold share for campfire %s: %v", campfireID, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -650,7 +672,8 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 		ss, err := h.transport.getOrCreateSignSession(req.SessionID, req.SignerIDs, req.MessageToSign, dkgResult, participantID)
 		h.transport.mu.Unlock()
 		if err != nil {
-			http.Error(w, fmt.Sprintf("creating signing session: %v", err), http.StatusInternalServerError)
+			log.Printf("handleSign: failed to create signing session %s for campfire %s: %v", req.SessionID, campfireID, err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -744,14 +767,14 @@ func verifyRequestSignature(senderHex, sigB64 string, body []byte) error {
 // RekeyRequest is the body for POST /campfire/{old-id}/rekey.
 // Two-phase protocol (same endpoint, distinguished by presence of encrypted payload):
 //
-//   Phase 1: EncryptedPrivKey and EncryptedShareData are both empty.
-//            Receiver generates an ephemeral X25519 keypair, caches it keyed by
-//            SenderX25519Pub, and responds with RekeyResponse{EphemeralX25519Pub}.
+//	Phase 1: EncryptedPrivKey and EncryptedShareData are both empty.
+//	         Receiver generates an ephemeral X25519 keypair, caches it keyed by
+//	         SenderX25519Pub, and responds with RekeyResponse{EphemeralX25519Pub}.
 //
-//   Phase 2: EncryptedPrivKey or EncryptedShareData is non-empty.
-//            Receiver looks up its cached ephemeral key by SenderX25519Pub,
-//            derives shared = ECDH(receiver_priv, sender_pub), decrypts,
-//            updates state, and responds 200 OK with no body.
+//	Phase 2: EncryptedPrivKey or EncryptedShareData is non-empty.
+//	         Receiver looks up its cached ephemeral key by SenderX25519Pub,
+//	         derives shared = ECDH(receiver_priv, sender_pub), decrypts,
+//	         updates state, and responds 200 OK with no body.
 type RekeyRequest struct {
 	// NewCampfireID is the new campfire public key (hex).
 	NewCampfireID string `json:"new_campfire_id"`
@@ -800,7 +823,8 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		return
 	}
 	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
-		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusUnauthorized)
+		log.Printf("handleRekey: signature verification failed: %v", err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
@@ -831,6 +855,7 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		// Phase 1: generate receiver ephemeral key, cache it, return pub key.
 		myPriv, err := generateX25519Key()
 		if err != nil {
+			log.Printf("handleRekey: key generation failed: %v", err)
 			http.Error(w, "key generation failed", http.StatusInternalServerError)
 			return
 		}
@@ -867,13 +892,15 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 	}
 	senderPub, err := parseX25519PublicKey(senderPubBytes)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("parsing sender X25519 key: %v", err), http.StatusBadRequest)
+		log.Printf("handleRekey: failed to parse sender X25519 key: %v", err)
+		http.Error(w, "invalid sender_x25519_pub", http.StatusBadRequest)
 		return
 	}
 
 	// Derive shared secret.
 	sharedSecret, err := myPriv.ECDH(senderPub)
 	if err != nil {
+		log.Printf("handleRekey: ECDH failed: %v", err)
 		http.Error(w, "ECDH failed", http.StatusInternalServerError)
 		return
 	}
@@ -892,14 +919,16 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 	if len(req.EncryptedPrivKey) > 0 {
 		newPrivKey, err = aesGCMDecrypt(sharedSecret, req.EncryptedPrivKey)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("decrypting new private key: %v", err), http.StatusBadRequest)
+			log.Printf("handleRekey: failed to decrypt private key for campfire %s: %v", oldCampfireID, err)
+			http.Error(w, "decryption failed", http.StatusBadRequest)
 			return
 		}
 	}
 	if len(req.EncryptedShareData) > 0 {
 		newShareData, err = aesGCMDecrypt(sharedSecret, req.EncryptedShareData)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("decrypting new share data: %v", err), http.StatusBadRequest)
+			log.Printf("handleRekey: failed to decrypt share data for campfire %s: %v", oldCampfireID, err)
+			http.Error(w, "decryption failed", http.StatusBadRequest)
 			return
 		}
 	}
@@ -927,7 +956,8 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 
 	// Update store: rename campfire_id in all tables.
 	if err := h.store.UpdateCampfireID(oldCampfireID, newCampfireID); err != nil {
-		http.Error(w, fmt.Sprintf("updating campfire ID: %v", err), http.StatusInternalServerError)
+		log.Printf("handleRekey: failed to update campfire ID %s -> %s: %v", oldCampfireID, newCampfireID, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
