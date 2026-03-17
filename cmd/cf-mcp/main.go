@@ -1283,7 +1283,7 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 	case "initialize":
 		return okResponse(req.ID, map[string]interface{}{
 			"protocolVersion": "2024-11-05",
-			"serverInfo":      mcpServerInfo{Name: "campfire", Version: "1.0.0"},
+			"serverInfo":      mcpServerInfo{Name: "campfire", Version: "0.2.0"},
 			"capabilities":    mcpCapabilities{Tools: map[string]interface{}{}},
 		})
 

@@ -13,10 +13,14 @@ services:
   go:
     image: golang:1.24-alpine
     working_dir: /src
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     volumes:
       - .:/src
       - go-cache:/go/pkg/mod
       - go-build-cache:/root/.cache/go-build
+    environment:
+      - HOME=/tmp/home
+      - GOPATH=/tmp/go
     entrypoint: ["go"]
 
 volumes:
