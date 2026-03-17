@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -185,7 +186,7 @@ var readCmd = &cobra.Command{
 				syncFromHTTPPeers(cfID, agentID, s)
 			} else {
 				// Filesystem transport: read from filesystem transport directory.
-				syncFromFilesystem(cfID, s)
+				syncFromFilesystem(cfID, m.TransportDir, s)
 			}
 		}
 
@@ -359,8 +360,12 @@ func syncFromGitHub(cfID, transportDir string, s *store.Store) {
 }
 
 // syncFromFilesystem reads messages from the filesystem transport into the local store.
-func syncFromFilesystem(cfID string, s *store.Store) {
-	transport := fs.New(fs.DefaultBaseDir())
+func syncFromFilesystem(cfID string, transportDir string, s *store.Store) {
+	baseDir := fs.DefaultBaseDir()
+	if transportDir != "" {
+		baseDir = filepath.Dir(transportDir)
+	}
+	transport := fs.New(baseDir)
 	fsMessages, err := transport.ListMessages(cfID)
 	if err != nil {
 		return

@@ -83,7 +83,7 @@ var sendCmd = &cobra.Command{
 		} else if isPeerHTTPCampfire(m.TransportDir, campfireID) {
 			msg, err = sendP2PHTTP(campfireID, payload, tags, antecedents, agentID, s, m)
 		} else {
-			msg, err = sendFilesystem(campfireID, payload, tags, antecedents, agentID)
+			msg, err = sendFilesystem(campfireID, payload, tags, antecedents, agentID, m.TransportDir)
 		}
 		if err != nil {
 			return err
@@ -116,9 +116,15 @@ func isPeerHTTPCampfire(transportDir, campfireID string) bool {
 	return err == nil
 }
 
-// sendFilesystem sends a message via the filesystem transport (original behavior).
-func sendFilesystem(campfireID, payload string, tags, antecedents []string, agentID *identity.Identity) (*message.Message, error) {
-	transport := fs.New(fs.DefaultBaseDir())
+// sendFilesystem sends a message via the filesystem transport.
+// transportDir is the campfire-specific directory from the membership record
+// (e.g. /tmp/campfire/<campfire-id>). Falls back to fs.DefaultBaseDir() when empty.
+func sendFilesystem(campfireID, payload string, tags, antecedents []string, agentID *identity.Identity, transportDir string) (*message.Message, error) {
+	baseDir := fs.DefaultBaseDir()
+	if transportDir != "" {
+		baseDir = filepath.Dir(transportDir)
+	}
+	transport := fs.New(baseDir)
 
 	// Verify sender is a member in the transport directory.
 	members, err := transport.ListMembers(campfireID)
