@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
@@ -14,10 +15,21 @@ var discoverCmd = &cobra.Command{
 	Use:   "discover",
 	Short: "List campfire beacons visible from here",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		beaconDir := BeaconDir()
-		beacons, err := beacon.Scan(beaconDir)
+		globalDir := BeaconDir()
+		globalBeacons, err := beacon.Scan(globalDir)
 		if err != nil {
 			return fmt.Errorf("scanning beacons: %w", err)
+		}
+
+		// Check for project-local beacons
+		var projectBeacons []beacon.Beacon
+		projectDir, hasProject := ProjectDir()
+		if hasProject {
+			projBeaconDir := filepath.Join(projectDir, ".campfire", "beacons")
+			projectBeacons, err = beacon.Scan(projBeaconDir)
+			if err != nil {
+				return fmt.Errorf("scanning project beacons: %w", err)
+			}
 		}
 
 		if jsonOutput {
@@ -29,8 +41,9 @@ var discoverCmd = &cobra.Command{
 				Description           string   `json:"description"`
 				SignatureValid        bool     `json:"signature_valid"`
 			}
+			allBeacons := append(projectBeacons, globalBeacons...)
 			var entries []entry
-			for _, b := range beacons {
+			for _, b := range allBeacons {
 				entries = append(entries, entry{
 					CampfireID:            b.CampfireIDHex(),
 					JoinProtocol:          b.JoinProtocol,
@@ -48,13 +61,14 @@ var discoverCmd = &cobra.Command{
 			return enc.Encode(entries)
 		}
 
-		if len(beacons) == 0 {
+		if len(projectBeacons) == 0 && len(globalBeacons) == 0 {
 			fmt.Println("No beacons found.")
 			return nil
 		}
 
-		for _, b := range beacons {
-			idShort := b.CampfireIDHex()
+		printBeacon := func(b beacon.Beacon) {
+			idFull := b.CampfireIDHex()
+			idShort := idFull
 			if len(idShort) > 12 {
 				idShort = idShort[:12]
 			}
@@ -74,7 +88,31 @@ var discoverCmd = &cobra.Command{
 			}
 
 			fmt.Printf("%s  %s  %s  sig:%s\n", idShort, b.JoinProtocol, desc, sigStatus)
+			fmt.Printf("  id: %s\n", idFull)
 			fmt.Printf("  transport: %s  requires: %s\n", b.Transport.Protocol, reqs)
+		}
+
+		if hasProject {
+			fmt.Println("Project beacons:")
+			if len(projectBeacons) == 0 {
+				fmt.Println("  (none)")
+			} else {
+				for _, b := range projectBeacons {
+					printBeacon(b)
+				}
+			}
+			fmt.Println("Global beacons:")
+			if len(globalBeacons) == 0 {
+				fmt.Println("  (none)")
+			} else {
+				for _, b := range globalBeacons {
+					printBeacon(b)
+				}
+			}
+		} else {
+			for _, b := range globalBeacons {
+				printBeacon(b)
+			}
 		}
 		return nil
 	},
