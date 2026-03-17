@@ -19,7 +19,6 @@ var admitCmd = &cobra.Command{
 	Short: "Admit a member to an invite-only campfire",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		campfireID := args[0]
 		memberKeyHex := args[1]
 
 		memberKey, err := hex.DecodeString(memberKeyHex)
@@ -35,6 +34,11 @@ var admitCmd = &cobra.Command{
 			return fmt.Errorf("opening store: %w", err)
 		}
 		defer s.Close()
+
+		campfireID, err := resolveCampfireID(args[0], s)
+		if err != nil {
+			return err
+		}
 
 		m, err := s.GetMembership(campfireID)
 		if err != nil {

@@ -34,7 +34,6 @@ var sendCmd = &cobra.Command{
 	Short: "Send a message to a campfire",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		campfireID := args[0]
 		payload := args[1]
 
 		// Merge deprecated --antecedent alias into --reply-to.
@@ -52,6 +51,11 @@ var sendCmd = &cobra.Command{
 			return fmt.Errorf("opening store: %w", err)
 		}
 		defer s.Close()
+
+		campfireID, err := resolveCampfireID(args[0], s)
+		if err != nil {
+			return err
+		}
 
 		m, err := s.GetMembership(campfireID)
 		if err != nil {
