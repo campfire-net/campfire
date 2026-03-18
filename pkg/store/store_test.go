@@ -1,9 +1,124 @@
 package store
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
+
+// --- workspace-pyw: exact tag matching ---
+
+// TestHasTag_ExactMatch verifies that HasTag matches the exact tag string.
+func TestHasTag_ExactMatch(t *testing.T) {
+	if !HasTag(`["campfire:compact"]`, "campfire:compact") {
+		t.Error("HasTag should match exact tag")
+	}
+}
+
+// TestHasTag_NoFalsePositive is the security regression test for workspace-pyw.
+// "xycampfire:compact" must NOT match a query for "campfire:compact".
+func TestHasTag_NoFalsePositive(t *testing.T) {
+	if HasTag(`["xycampfire:compact"]`, "campfire:compact") {
+		t.Error("HasTag must not match a tag that merely contains the substring")
+	}
+}
+
+// TestHasTag_MultipleTagsNoFalsePositive verifies multi-element arrays.
+func TestHasTag_MultipleTagsNoFalsePositive(t *testing.T) {
+	if HasTag(`["status","xycampfire:compact","other"]`, "campfire:compact") {
+		t.Error("HasTag must not match on substring in multi-tag array")
+	}
+}
+
+// TestIsCompactionEvent verifies that isCompactionEvent only fires on exact tag.
+func TestIsCompactionEvent_Exact(t *testing.T) {
+	rec := MessageRecord{Tags: `["campfire:compact"]`}
+	if !isCompactionEvent(rec) {
+		t.Error("isCompactionEvent should return true for exact campfire:compact tag")
+	}
+}
+
+// TestIsCompactionEvent_NoFalsePositive is the security regression test for workspace-pyw.
+func TestIsCompactionEvent_NoFalsePositive(t *testing.T) {
+	rec := MessageRecord{Tags: `["xycampfire:compact"]`}
+	if isCompactionEvent(rec) {
+		t.Error("isCompactionEvent must not fire for a tag that only contains campfire:compact as a substring")
+	}
+}
+
+// --- workspace-kw9: ListReferencingMessages LIKE injection ---
+
+// TestListReferencingMessages_WildcardID is the security regression test for workspace-kw9.
+// An ID containing SQL LIKE wildcards ('%' or '_') must not cause false matches.
+func TestListReferencingMessages_WildcardID(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	// Message A: references a normal ID.
+	normalID := "aabbccdd-0000-0000-0000-000000000001"
+	msgA := MessageRecord{
+		ID: "msg-a", CampfireID: "cf1", Sender: "s",
+		Payload: []byte("a"), Tags: "[]",
+		Antecedents: `["` + normalID + `"]`,
+		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+	}
+	s.AddMessage(msgA) //nolint:errcheck
+
+	// Message B: references an ID that shares a common prefix with the wildcard query below.
+	otherID := "aabbccdd-0000-0000-0000-000000000002"
+	msgB := MessageRecord{
+		ID: "msg-b", CampfireID: "cf1", Sender: "s",
+		Payload: []byte("b"), Tags: "[]",
+		Antecedents: `["` + otherID + `"]`,
+		Timestamp: 101, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 201,
+	}
+	s.AddMessage(msgB) //nolint:errcheck
+
+	// Query with an ID containing '%': must only match exact references.
+	wildcardID := "aabbccdd-0000-0000-0000-0000000000%"
+	refs, err := s.ListReferencingMessages(wildcardID)
+	if err != nil {
+		t.Fatalf("ListReferencingMessages() error: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("expected 0 results for wildcard ID query, got %d (LIKE injection)", len(refs))
+	}
+}
+
+// TestListReferencingMessages_ExactMatch verifies the normal path still works.
+func TestListReferencingMessages_ExactMatch(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	targetID := "target-id-0000-0000-0000-000000000001"
+	msgA := MessageRecord{
+		ID: "msg-ref", CampfireID: "cf1", Sender: "s",
+		Payload: []byte("references target"), Tags: "[]",
+		Antecedents: `["` + targetID + `"]`,
+		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+	}
+	s.AddMessage(msgA) //nolint:errcheck
+
+	// Unrelated message.
+	msgB := MessageRecord{
+		ID: "msg-unrelated", CampfireID: "cf1", Sender: "s",
+		Payload: []byte("unrelated"), Tags: "[]",
+		Antecedents: `[]`,
+		Timestamp: 101, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 201,
+	}
+	s.AddMessage(msgB) //nolint:errcheck
+
+	refs, err := s.ListReferencingMessages(targetID)
+	if err != nil {
+		t.Fatalf("ListReferencingMessages() error: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 referencing message, got %d", len(refs))
+	}
+	if refs[0].ID != "msg-ref" {
+		t.Errorf("got ID %q, want %q", refs[0].ID, "msg-ref")
+	}
+}
 
 func testStore(t *testing.T) *Store {
 	t.Helper()
@@ -361,5 +476,330 @@ func TestGetMessageByPrefix_CrossCampfire(t *testing.T) {
 	}
 	if got.CampfireID != "cf2" {
 		t.Errorf("CampfireID = %s, want cf2", got.CampfireID)
+	}
+}
+
+// helpers shared across ListMessages filter tests.
+func setupFilterTestStore(t *testing.T) (*Store, string) {
+	t.Helper()
+	s := testStore(t)
+	cfID := "filter-cf"
+	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+	msgs := []MessageRecord{
+		{ID: "m1", CampfireID: cfID, Sender: "aabbccdd", Payload: []byte("p1"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 1, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 10},
+		{ID: "m2", CampfireID: cfID, Sender: "aabbccdd", Payload: []byte("p2"), Tags: `["blocker"]`, Antecedents: "[]", Timestamp: 2, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 20},
+		{ID: "m3", CampfireID: cfID, Sender: "11223344", Payload: []byte("p3"), Tags: `["status","finding"]`, Antecedents: "[]", Timestamp: 3, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 30},
+		{ID: "m4", CampfireID: cfID, Sender: "11223344", Payload: []byte("p4"), Tags: `[]`, Antecedents: "[]", Timestamp: 4, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 40},
+	}
+	for _, m := range msgs {
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage(%s): %v", m.ID, err)
+		}
+	}
+	return s, cfID
+}
+
+func TestListMessages_NoFilter_ReturnsAll(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Errorf("got %d messages, want 4", len(msgs))
+	}
+}
+
+func TestListMessages_TagFilter_SingleTag(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Tags: []string{"status"}})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	// m1 has "status", m3 has "status" and "finding"
+	if len(msgs) != 2 {
+		t.Errorf("got %d messages, want 2", len(msgs))
+	}
+	ids := map[string]bool{msgs[0].ID: true, msgs[1].ID: true}
+	if !ids["m1"] || !ids["m3"] {
+		t.Errorf("expected m1 and m3, got %v", ids)
+	}
+}
+
+func TestListMessages_TagFilter_MultipleTagsOR(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Tags: []string{"blocker", "finding"}})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	// m2 has "blocker", m3 has "finding"
+	if len(msgs) != 2 {
+		t.Errorf("got %d messages, want 2", len(msgs))
+	}
+	ids := map[string]bool{msgs[0].ID: true, msgs[1].ID: true}
+	if !ids["m2"] || !ids["m3"] {
+		t.Errorf("expected m2 and m3, got %v", ids)
+	}
+}
+
+func TestListMessages_TagFilter_CaseInsensitive(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Tags: []string{"STATUS"}})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("got %d messages (case-insensitive), want 2", len(msgs))
+	}
+}
+
+func TestListMessages_TagFilter_NoMatch(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Tags: []string{"nonexistent"}})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("got %d messages, want 0", len(msgs))
+	}
+}
+
+func TestListMessages_SenderFilter_Prefix(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Sender: "aabb"})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	// m1 and m2 have sender "aabbccdd"
+	if len(msgs) != 2 {
+		t.Errorf("got %d messages, want 2", len(msgs))
+	}
+	ids := map[string]bool{msgs[0].ID: true, msgs[1].ID: true}
+	if !ids["m1"] || !ids["m2"] {
+		t.Errorf("expected m1 and m2, got %v", ids)
+	}
+}
+
+func TestListMessages_SenderFilter_CaseInsensitive(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Sender: "AABB"})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("got %d messages (case-insensitive sender), want 2", len(msgs))
+	}
+}
+
+func TestListMessages_BothFilters(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	// sender aabb + tag status → only m1
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Tags: []string{"status"}, Sender: "aabb"})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].ID != "m1" {
+		t.Errorf("ID = %s, want m1", msgs[0].ID)
+	}
+}
+
+func TestListMessages_EmptyFilter_ReturnsAll(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Errorf("got %d messages with empty filter, want 4", len(msgs))
+	}
+}
+
+// --- Compaction tests ---
+
+// setupCompactionTestStore creates a store with a campfire and a few messages,
+// then adds a compaction event that supersedes the first two.
+// Returns (store, campfireID, supersededIDs, compactionEventID).
+func setupCompactionTestStore(t *testing.T) (*Store, string, []string, string) {
+	t.Helper()
+	s := testStore(t)
+	cfID := "compact-cf"
+	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	msgs := []MessageRecord{
+		{ID: "c1", CampfireID: cfID, Sender: "aa", Payload: []byte("old1"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 1, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 10},
+		{ID: "c2", CampfireID: cfID, Sender: "aa", Payload: []byte("old2"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 2, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 20},
+		{ID: "c3", CampfireID: cfID, Sender: "bb", Payload: []byte("new1"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 3, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 30},
+	}
+	for _, m := range msgs {
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage(%s): %v", m.ID, err)
+		}
+	}
+
+	// Build compaction payload superseding c1 and c2.
+	superseded := []string{"c1", "c2"}
+	payload := CompactionPayload{
+		Supersedes:     superseded,
+		Summary:        []byte("summary of c1 and c2"),
+		Retention:      "archive",
+		CheckpointHash: "deadbeef",
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshalling compaction payload: %v", err)
+	}
+
+	compactionMsg := MessageRecord{
+		ID:          "compact-ev1",
+		CampfireID:  cfID,
+		Sender:      "aa",
+		Payload:     payloadJSON,
+		Tags:        `["campfire:compact"]`,
+		Antecedents: `["c2"]`,
+		Timestamp:   4,
+		Signature:   []byte("s"),
+		Provenance:  "[]",
+		ReceivedAt:  40,
+	}
+	if _, err := s.AddMessage(compactionMsg); err != nil {
+		t.Fatalf("AddMessage(compact-ev1): %v", err)
+	}
+
+	return s, cfID, superseded, "compact-ev1"
+}
+
+func TestListCompactionEvents_ReturnsCompactionMessages(t *testing.T) {
+	s, cfID, _, evID := setupCompactionTestStore(t)
+	events, err := s.ListCompactionEvents(cfID)
+	if err != nil {
+		t.Fatalf("ListCompactionEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d compaction events, want 1", len(events))
+	}
+	if events[0].ID != evID {
+		t.Errorf("compaction event ID = %s, want %s", events[0].ID, evID)
+	}
+}
+
+func TestListCompactionEvents_Empty(t *testing.T) {
+	s, cfID, _, _ := setupCompactionTestStore(t)
+	// Query a different campfire — should return nothing.
+	s.AddMembership(Membership{CampfireID: "other-cf", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+	events, err := s.ListCompactionEvents("other-cf")
+	if err != nil {
+		t.Fatalf("ListCompactionEvents: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("got %d events for campfire with no compaction, want 0", len(events))
+	}
+	_ = cfID
+}
+
+func TestListMessages_RespectCompaction_ExcludesSuperseded(t *testing.T) {
+	s, cfID, superseded, evID := setupCompactionTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{RespectCompaction: true})
+	if err != nil {
+		t.Fatalf("ListMessages(RespectCompaction): %v", err)
+	}
+
+	// Should have c3 + compact-ev1 (2 messages), not c1 or c2.
+	ids := make(map[string]bool)
+	for _, m := range msgs {
+		ids[m.ID] = true
+	}
+	for _, id := range superseded {
+		if ids[id] {
+			t.Errorf("superseded message %s should not appear when RespectCompaction=true", id)
+		}
+	}
+	if !ids["c3"] {
+		t.Error("non-superseded message c3 should appear")
+	}
+	if !ids[evID] {
+		t.Errorf("compaction event %s should always appear", evID)
+	}
+}
+
+func TestListMessages_CompactionEventAlwaysVisible(t *testing.T) {
+	s, cfID, _, evID := setupCompactionTestStore(t)
+
+	// Default (no compaction filtering): compaction event visible.
+	msgs, err := s.ListMessages(cfID, 0)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	ids := make(map[string]bool)
+	for _, m := range msgs {
+		ids[m.ID] = true
+	}
+	if !ids[evID] {
+		t.Errorf("compaction event %s should be visible in default read", evID)
+	}
+}
+
+func TestListMessages_NoRespectCompaction_ShowsAll(t *testing.T) {
+	s, cfID, _, _ := setupCompactionTestStore(t)
+	// Without RespectCompaction, all 4 messages (c1, c2, c3, compact-ev1) are returned.
+	msgs, err := s.ListMessages(cfID, 0)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Errorf("got %d messages without compaction filter, want 4", len(msgs))
+	}
+}
+
+func TestListMessages_RespectCompaction_MultipleEvents(t *testing.T) {
+	s := testStore(t)
+	cfID := "multi-compact-cf"
+	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	for i, id := range []string{"m1", "m2", "m3", "m4", "m5"} {
+		s.AddMessage(MessageRecord{
+			ID: id, CampfireID: cfID, Sender: "aa",
+			Payload: []byte("p"), Tags: `["status"]`, Antecedents: "[]",
+			Timestamp: int64(i + 1), Signature: []byte("s"), Provenance: "[]", ReceivedAt: int64(i + 10),
+		})
+	}
+
+	// Two compaction events: ev1 supersedes m1+m2, ev2 supersedes m3.
+	for _, ev := range []struct {
+		id        string
+		supersede []string
+		ts        int64
+	}{
+		{"ev1", []string{"m1", "m2"}, 6},
+		{"ev2", []string{"m3"}, 7},
+	} {
+		p, _ := json.Marshal(CompactionPayload{Supersedes: ev.supersede, Retention: "archive", CheckpointHash: "hash"})
+		s.AddMessage(MessageRecord{
+			ID: ev.id, CampfireID: cfID, Sender: "aa",
+			Payload: p, Tags: `["campfire:compact"]`, Antecedents: "[]",
+			Timestamp: ev.ts, Signature: []byte("s"), Provenance: "[]", ReceivedAt: ev.ts + 100,
+		})
+	}
+
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{RespectCompaction: true})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	ids := make(map[string]bool)
+	for _, m := range msgs {
+		ids[m.ID] = true
+	}
+	// m4, m5, ev1, ev2 should appear. m1, m2, m3 should not.
+	for _, bad := range []string{"m1", "m2", "m3"} {
+		if ids[bad] {
+			t.Errorf("message %s should be excluded by compaction", bad)
+		}
+	}
+	for _, good := range []string{"m4", "m5", "ev1", "ev2"} {
+		if !ids[good] {
+			t.Errorf("message %s should be visible", good)
+		}
 	}
 }

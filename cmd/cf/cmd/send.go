@@ -88,6 +88,11 @@ var sendCmd = &cobra.Command{
 			return fmt.Errorf("not a member of campfire %s", campfireID[:12])
 		}
 
+		// Enforce membership role before routing to transport.
+		if err := checkRoleCanSend(m.Role, sendTags); err != nil {
+			return err
+		}
+
 		// Build tags
 		tags := sendTags
 		if sendFuture {
@@ -95,6 +100,13 @@ var sendCmd = &cobra.Command{
 		}
 		if sendFulfills != "" {
 			tags = append(tags, "fulfills")
+		}
+
+		// Enforce membership role after the final tags slice is assembled.
+		// Must run after "future" and "fulfills" are appended so the check
+		// sees the complete tag set (workspace-w97).
+		if err := checkRoleCanSend(m.Role, tags); err != nil {
+			return err
 		}
 
 		// Build antecedents

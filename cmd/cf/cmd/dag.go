@@ -59,21 +59,24 @@ var dagCmd = &cobra.Command{
 		if !dagAll {
 			afterTS, _ = s.GetReadCursor(resolved)
 		}
-		msgs, err := s.ListMessages(resolved, afterTS)
+
+		// Unfiltered fetch for cursor computation; SQL-filtered fetch for display.
+		unfiltered, err := s.ListMessages(resolved, afterTS)
 		if err != nil {
 			return fmt.Errorf("listing messages: %w", err)
 		}
-
-		// Compute cursor from all messages BEFORE filtering.
 		var preMaxTS int64
-		for _, msg := range msgs {
+		for _, msg := range unfiltered {
 			if msg.Timestamp > preMaxTS {
 				preMaxTS = msg.Timestamp
 			}
 		}
 
-		// Apply post-query filters.
-		msgs = filterMessages(msgs, dagTagFilters, dagSenderFilter)
+		sqlFilter := store.MessageFilter{Tags: dagTagFilters, Sender: dagSenderFilter}
+		msgs, err := s.ListMessages(resolved, afterTS, sqlFilter)
+		if err != nil {
+			return fmt.Errorf("listing messages (filtered): %w", err)
+		}
 
 		if jsonOutput {
 			formatDAGJSON(msgs, os.Stdout)

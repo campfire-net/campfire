@@ -2,9 +2,11 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -15,7 +17,7 @@ CREATE TABLE IF NOT EXISTS campfire_memberships (
     campfire_id    TEXT PRIMARY KEY,
     transport_dir  TEXT NOT NULL,
     join_protocol  TEXT NOT NULL,
-    role           TEXT NOT NULL DEFAULT 'member',
+    role           TEXT NOT NULL DEFAULT 'full',
     joined_at      INTEGER NOT NULL,
     threshold      INTEGER NOT NULL DEFAULT 1,
     description    TEXT NOT NULL DEFAULT ''
@@ -276,24 +278,58 @@ func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 	return &matches[0], nil
 }
 
+// MessageFilter holds optional tag and sender filters for ListMessages.
+// Tags uses OR semantics: a message matches if it has ANY of the specified tags.
+// Sender matches on prefix of the sender hex string (case-insensitive).
+// Empty fields mean no filtering for that dimension.
+// When RespectCompaction is true, messages superseded by a compaction event are excluded
+// (compaction events themselves are always included).
+type MessageFilter struct {
+	Tags              []string
+	Sender            string
+	RespectCompaction bool
+}
+
 // ListMessages returns messages for a campfire, ordered by timestamp.
 // If campfireID is empty, returns messages across all campfires.
 // If afterTimestamp > 0, only returns messages with timestamp > afterTimestamp.
-func (s *Store) ListMessages(campfireID string, afterTimestamp int64) ([]MessageRecord, error) {
-	var rows *sql.Rows
-	var err error
-	if campfireID == "" {
-		rows, err = s.db.Query(
-			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
-			 FROM messages WHERE timestamp > ? ORDER BY timestamp`, afterTimestamp,
-		)
-	} else {
-		rows, err = s.db.Query(
-			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
-			 FROM messages WHERE campfire_id = ? AND timestamp > ? ORDER BY timestamp`,
-			campfireID, afterTimestamp,
-		)
+// An optional MessageFilter applies tag and sender filtering at the SQL level.
+// When filter.RespectCompaction is true, superseded messages are excluded.
+func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...MessageFilter) ([]MessageRecord, error) {
+	var f MessageFilter
+	if len(filter) > 0 {
+		f = filter[0]
 	}
+
+	// Build WHERE clauses and args dynamically.
+	conditions := []string{"timestamp > ?"}
+	args := []any{afterTimestamp}
+
+	if campfireID != "" {
+		conditions = append(conditions, "campfire_id = ?")
+		args = append(args, campfireID)
+	}
+
+	if len(f.Tags) > 0 {
+		// Match messages that have ANY of the given tags using json_each.
+		placeholders := make([]string, len(f.Tags))
+		for i, t := range f.Tags {
+			placeholders[i] = "?"
+			args = append(args, strings.ToLower(t))
+		}
+		tagClause := "EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) IN (" + strings.Join(placeholders, ",") + "))"
+		conditions = append(conditions, tagClause)
+	}
+
+	if f.Sender != "" {
+		conditions = append(conditions, "LOWER(sender) LIKE LOWER(?) || '%'")
+		args = append(args, f.Sender)
+	}
+
+	query := `SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
+	          FROM messages WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY timestamp`
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing messages: %w", err)
 	}
@@ -304,6 +340,103 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64) ([]Message
 		var m MessageRecord
 		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if !f.RespectCompaction {
+		return msgs, nil
+	}
+
+	// Collect superseded message IDs from all compaction events in the relevant campfire(s).
+	superseded, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("collecting superseded IDs: %w", err)
+	}
+	if len(superseded) == 0 {
+		return msgs, nil
+	}
+
+	// Filter out superseded messages but always keep compaction events themselves.
+	filtered := msgs[:0]
+	for _, m := range msgs {
+		if superseded[m.ID] && !isCompactionEvent(m) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	return filtered, nil
+}
+
+// isCompactionEvent is defined below using HasTag for exact matching.
+
+// collectSupersededIDs returns the set of message IDs superseded by any compaction
+// event in the given campfire. If campfireID is empty, collects across all campfires.
+func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error) {
+	events, err := s.ListCompactionEvents(campfireID)
+	if err != nil {
+		return nil, err
+	}
+	if len(events) == 0 {
+		return nil, nil
+	}
+	superseded := make(map[string]bool)
+	for _, ev := range events {
+		var payload CompactionPayload
+		if err := unmarshalCompactionPayload(ev.Payload, &payload); err != nil {
+			// Malformed compaction event — skip rather than fail.
+			continue
+		}
+		for _, id := range payload.Supersedes {
+			superseded[id] = true
+		}
+	}
+	return superseded, nil
+}
+
+// CompactionPayload is the JSON payload of a campfire:compact message.
+type CompactionPayload struct {
+	Supersedes     []string `json:"supersedes"`
+	Summary        []byte   `json:"summary"`
+	Retention      string   `json:"retention"`
+	CheckpointHash string   `json:"checkpoint_hash"`
+}
+
+// unmarshalCompactionPayload decodes a CompactionPayload from the raw message payload bytes.
+func unmarshalCompactionPayload(payload []byte, out *CompactionPayload) error {
+	return json.Unmarshal(payload, out)
+}
+
+// ListCompactionEvents returns all campfire:compact messages for a campfire.
+// If campfireID is empty, returns compaction events across all campfires.
+func (s *Store) ListCompactionEvents(campfireID string) ([]MessageRecord, error) {
+	var conditions []string
+	var args []any
+
+	conditions = append(conditions, `EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) = 'campfire:compact')`)
+
+	if campfireID != "" {
+		conditions = append(conditions, "campfire_id = ?")
+		args = append(args, campfireID)
+	}
+
+	query := `SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
+	          FROM messages WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY timestamp`
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing compaction events: %w", err)
+	}
+	defer rows.Close()
+
+	var msgs []MessageRecord
+	for rows.Next() {
+		var m MessageRecord
+		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
+			return nil, fmt.Errorf("scanning compaction event: %w", err)
 		}
 		msgs = append(msgs, m)
 	}
@@ -337,12 +470,16 @@ func (s *Store) SetReadCursor(campfireID string, timestamp int64) error {
 }
 
 // ListReferencingMessages finds messages whose antecedents contain the given message ID.
+// Uses json_each to perform an exact element match, avoiding LIKE wildcard injection
+// from IDs that contain '%' or '_' characters. (Security fix for workspace-kw9.)
 func (s *Store) ListReferencingMessages(messageID string) ([]MessageRecord, error) {
-	// JSON array search: antecedents contains the ID as a quoted string
-	pattern := fmt.Sprintf("%%%q%%", messageID)
 	rows, err := s.db.Query(
-		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
-		 FROM messages WHERE antecedents LIKE ? ORDER BY timestamp`, pattern,
+		`SELECT m.id, m.campfire_id, m.sender, m.payload, m.tags, m.antecedents, m.timestamp, m.signature, m.provenance, m.received_at, m.instance
+		 FROM messages m
+		 WHERE EXISTS (
+		     SELECT 1 FROM json_each(m.antecedents) WHERE value = ?
+		 )
+		 ORDER BY m.timestamp`, messageID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing referencing messages: %w", err)
@@ -552,4 +689,30 @@ func StorePath(cfHome string) string {
 // NowNano returns the current time in nanoseconds.
 func NowNano() int64 {
 	return time.Now().UnixNano()
+}
+
+// HasTag reports whether a JSON-encoded tags array contains the given tag as an
+// exact element match. It parses the JSON array and compares each element
+// verbatim, preventing false positives from substring matches (e.g.
+// "xycampfire:compact" would not match a query for "campfire:compact").
+// (Security fix for workspace-pyw.)
+func HasTag(tagsJSON, tag string) bool {
+	var tags []string
+	if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+		return false
+	}
+	for _, t := range tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// isCompactionEvent returns true if the message record carries the
+// "campfire:compact" tag as an exact element in its tags JSON array.
+// Uses HasTag rather than strings.Contains to avoid false positives from
+// tags that happen to contain the substring (e.g. "xycampfire:compact").
+func isCompactionEvent(rec MessageRecord) bool {
+	return HasTag(rec.Tags, "campfire:compact")
 }

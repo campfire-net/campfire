@@ -10,6 +10,29 @@ import (
 	"github.com/campfire-net/campfire/pkg/identity"
 )
 
+// Membership role constants.
+const (
+	// RoleObserver can read messages only. Cannot send. Client-side enforced.
+	RoleObserver = "observer"
+	// RoleWriter can read and send regular messages. Cannot send campfire:* system messages.
+	RoleWriter = "writer"
+	// RoleFull has full access: read, send, and sign system messages.
+	// This is the default for backward compatibility (empty role = full).
+	RoleFull = "full"
+)
+
+// EffectiveRole returns the canonical role string, defaulting empty/legacy
+// role values to RoleFull for backward compatibility.
+func EffectiveRole(role string) string {
+	switch role {
+	case RoleObserver, RoleWriter, RoleFull:
+		return role
+	default:
+		// empty, "member", "creator", and any unknown legacy value → full
+		return RoleFull
+	}
+}
+
 // Campfire represents a campfire's state.
 type Campfire struct {
 	Identity              *identity.Identity `cbor:"1,keyasint" json:"-"`
@@ -24,6 +47,7 @@ type Campfire struct {
 type Member struct {
 	PublicKey []byte `cbor:"1,keyasint" json:"public_key"`
 	JoinedAt  int64  `cbor:"2,keyasint" json:"joined_at"`
+	Role      string `cbor:"3,keyasint,omitempty" json:"role,omitempty"`
 }
 
 // CampfireState is the on-disk representation in the transport directory.
@@ -41,6 +65,7 @@ type CampfireState struct {
 type MemberRecord struct {
 	PublicKey []byte `cbor:"1,keyasint" json:"public_key"`
 	JoinedAt  int64  `cbor:"2,keyasint" json:"joined_at"`
+	Role      string `cbor:"3,keyasint,omitempty" json:"role,omitempty"`
 }
 
 // New creates a new campfire with the given parameters.

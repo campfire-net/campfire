@@ -37,10 +37,12 @@ func autoJoinRootCampfire(campfireID string, agentID *identity.Identity, s *stor
 	}
 	alreadyOnDisk := false
 	var existingJoinedAt int64
+	var existingRole string
 	for _, m := range members {
 		if fmt.Sprintf("%x", m.PublicKey) == agentID.PublicKeyHex() {
 			alreadyOnDisk = true
 			existingJoinedAt = m.JoinedAt
+			existingRole = m.Role
 			break
 		}
 	}
@@ -48,16 +50,18 @@ func autoJoinRootCampfire(campfireID string, agentID *identity.Identity, s *stor
 	now := time.Now().UnixNano()
 
 	if alreadyOnDisk {
-		// Pre-admitted — use the existing join timestamp.
+		// Pre-admitted — use the existing join timestamp and role.
 		now = existingJoinedAt
 	} else {
 		// Write member record to transport directory.
 		if err := transport.WriteMember(campfireID, campfire.MemberRecord{
 			PublicKey: agentID.PublicKey,
 			JoinedAt:  now,
+			Role:      campfire.RoleFull,
 		}); err != nil {
 			return fmt.Errorf("writing member record: %w", err)
 		}
+		existingRole = campfire.RoleFull
 	}
 
 	// Write campfire:member-joined system message (only if newly admitted).
@@ -92,7 +96,7 @@ func autoJoinRootCampfire(campfireID string, agentID *identity.Identity, s *stor
 		CampfireID:   campfireID,
 		TransportDir: transport.CampfireDir(campfireID),
 		JoinProtocol: state.JoinProtocol,
-		Role:         "member",
+		Role:         existingRole,
 		JoinedAt:     now,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
