@@ -405,30 +405,35 @@ var readCmd = &cobra.Command{
 		}
 
 		// Query messages.
+		// Fetch all (unfiltered) first to compute pre-filter cursors, then fetch
+		// filtered messages for display. This preserves the invariant that cursor
+		// advancement accounts for ALL messages (so filtered-out messages don't
+		// reappear on the next read), while pushing tag/sender filtering into SQL.
+		preCursors := map[string]int64{}
+		sqlFilter := store.MessageFilter{Tags: readTagFilters, Sender: readSenderFilter}
 		var allMessages []store.MessageRecord
 		for _, cfID := range campfireIDs {
 			var afterTS int64
 			if !readAll {
 				afterTS, _ = s.GetReadCursor(cfID)
 			}
-			msgs, err := s.ListMessages(cfID, afterTS)
+			// Unfiltered fetch for cursor computation.
+			unfiltered, err := s.ListMessages(cfID, afterTS)
 			if err != nil {
 				return fmt.Errorf("listing messages: %w", err)
 			}
-			allMessages = append(allMessages, msgs...)
-		}
-
-		// Compute cursor from all messages BEFORE filtering, so filtered-out
-		// messages don't reappear on the next read.
-		preCursors := map[string]int64{}
-		for _, m := range allMessages {
-			if m.Timestamp > preCursors[m.CampfireID] {
-				preCursors[m.CampfireID] = m.Timestamp
+			for _, m := range unfiltered {
+				if m.Timestamp > preCursors[m.CampfireID] {
+					preCursors[m.CampfireID] = m.Timestamp
+				}
 			}
+			// SQL-filtered fetch for display.
+			filtered, err := s.ListMessages(cfID, afterTS, sqlFilter)
+			if err != nil {
+				return fmt.Errorf("listing messages (filtered): %w", err)
+			}
+			allMessages = append(allMessages, filtered...)
 		}
-
-		// Apply post-query filters.
-		allMessages = filterMessages(allMessages, readTagFilters, readSenderFilter)
 
 		if jsonOutput {
 			type jsonMsg struct {

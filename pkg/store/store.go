@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -276,24 +277,54 @@ func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 	return &matches[0], nil
 }
 
+// MessageFilter holds optional tag and sender filters for ListMessages.
+// Tags uses OR semantics: a message matches if it has ANY of the specified tags.
+// Sender matches on prefix of the sender hex string (case-insensitive).
+// Empty fields mean no filtering for that dimension.
+type MessageFilter struct {
+	Tags   []string
+	Sender string
+}
+
 // ListMessages returns messages for a campfire, ordered by timestamp.
 // If campfireID is empty, returns messages across all campfires.
 // If afterTimestamp > 0, only returns messages with timestamp > afterTimestamp.
-func (s *Store) ListMessages(campfireID string, afterTimestamp int64) ([]MessageRecord, error) {
-	var rows *sql.Rows
-	var err error
-	if campfireID == "" {
-		rows, err = s.db.Query(
-			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
-			 FROM messages WHERE timestamp > ? ORDER BY timestamp`, afterTimestamp,
-		)
-	} else {
-		rows, err = s.db.Query(
-			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
-			 FROM messages WHERE campfire_id = ? AND timestamp > ? ORDER BY timestamp`,
-			campfireID, afterTimestamp,
-		)
+// An optional MessageFilter applies tag and sender filtering at the SQL level.
+func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...MessageFilter) ([]MessageRecord, error) {
+	var f MessageFilter
+	if len(filter) > 0 {
+		f = filter[0]
 	}
+
+	// Build WHERE clauses and args dynamically.
+	conditions := []string{"timestamp > ?"}
+	args := []any{afterTimestamp}
+
+	if campfireID != "" {
+		conditions = append(conditions, "campfire_id = ?")
+		args = append(args, campfireID)
+	}
+
+	if len(f.Tags) > 0 {
+		// Match messages that have ANY of the given tags using json_each.
+		placeholders := make([]string, len(f.Tags))
+		for i, t := range f.Tags {
+			placeholders[i] = "?"
+			args = append(args, strings.ToLower(t))
+		}
+		tagClause := "EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) IN (" + strings.Join(placeholders, ",") + "))"
+		conditions = append(conditions, tagClause)
+	}
+
+	if f.Sender != "" {
+		conditions = append(conditions, "LOWER(sender) LIKE LOWER(?) || '%'")
+		args = append(args, f.Sender)
+	}
+
+	query := `SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
+	          FROM messages WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY timestamp`
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing messages: %w", err)
 	}

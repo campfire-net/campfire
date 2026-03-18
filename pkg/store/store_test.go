@@ -363,3 +363,141 @@ func TestGetMessageByPrefix_CrossCampfire(t *testing.T) {
 		t.Errorf("CampfireID = %s, want cf2", got.CampfireID)
 	}
 }
+
+// helpers shared across ListMessages filter tests.
+func setupFilterTestStore(t *testing.T) (*Store, string) {
+	t.Helper()
+	s := testStore(t)
+	cfID := "filter-cf"
+	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+	msgs := []MessageRecord{
+		{ID: "m1", CampfireID: cfID, Sender: "aabbccdd", Payload: []byte("p1"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 1, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 10},
+		{ID: "m2", CampfireID: cfID, Sender: "aabbccdd", Payload: []byte("p2"), Tags: `["blocker"]`, Antecedents: "[]", Timestamp: 2, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 20},
+		{ID: "m3", CampfireID: cfID, Sender: "11223344", Payload: []byte("p3"), Tags: `["status","finding"]`, Antecedents: "[]", Timestamp: 3, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 30},
+		{ID: "m4", CampfireID: cfID, Sender: "11223344", Payload: []byte("p4"), Tags: `[]`, Antecedents: "[]", Timestamp: 4, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 40},
+	}
+	for _, m := range msgs {
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage(%s): %v", m.ID, err)
+		}
+	}
+	return s, cfID
+}
+
+func TestListMessages_NoFilter_ReturnsAll(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Errorf("got %d messages, want 4", len(msgs))
+	}
+}
+
+func TestListMessages_TagFilter_SingleTag(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Tags: []string{"status"}})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	// m1 has "status", m3 has "status" and "finding"
+	if len(msgs) != 2 {
+		t.Errorf("got %d messages, want 2", len(msgs))
+	}
+	ids := map[string]bool{msgs[0].ID: true, msgs[1].ID: true}
+	if !ids["m1"] || !ids["m3"] {
+		t.Errorf("expected m1 and m3, got %v", ids)
+	}
+}
+
+func TestListMessages_TagFilter_MultipleTagsOR(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Tags: []string{"blocker", "finding"}})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	// m2 has "blocker", m3 has "finding"
+	if len(msgs) != 2 {
+		t.Errorf("got %d messages, want 2", len(msgs))
+	}
+	ids := map[string]bool{msgs[0].ID: true, msgs[1].ID: true}
+	if !ids["m2"] || !ids["m3"] {
+		t.Errorf("expected m2 and m3, got %v", ids)
+	}
+}
+
+func TestListMessages_TagFilter_CaseInsensitive(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Tags: []string{"STATUS"}})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("got %d messages (case-insensitive), want 2", len(msgs))
+	}
+}
+
+func TestListMessages_TagFilter_NoMatch(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Tags: []string{"nonexistent"}})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("got %d messages, want 0", len(msgs))
+	}
+}
+
+func TestListMessages_SenderFilter_Prefix(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Sender: "aabb"})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	// m1 and m2 have sender "aabbccdd"
+	if len(msgs) != 2 {
+		t.Errorf("got %d messages, want 2", len(msgs))
+	}
+	ids := map[string]bool{msgs[0].ID: true, msgs[1].ID: true}
+	if !ids["m1"] || !ids["m2"] {
+		t.Errorf("expected m1 and m2, got %v", ids)
+	}
+}
+
+func TestListMessages_SenderFilter_CaseInsensitive(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Sender: "AABB"})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("got %d messages (case-insensitive sender), want 2", len(msgs))
+	}
+}
+
+func TestListMessages_BothFilters(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	// sender aabb + tag status → only m1
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Tags: []string{"status"}, Sender: "aabb"})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].ID != "m1" {
+		t.Errorf("ID = %s, want m1", msgs[0].ID)
+	}
+}
+
+func TestListMessages_EmptyFilter_ReturnsAll(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Errorf("got %d messages with empty filter, want 4", len(msgs))
+	}
+}
