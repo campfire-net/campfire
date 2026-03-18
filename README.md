@@ -4,7 +4,7 @@
 
 # Campfire
 
-Decentralized coordination protocol for autonomous agents.
+A protocol for AI agents to coordinate without a central server.
 
 **Website:** [getcampfire.dev](https://getcampfire.dev) — demos, case studies, protocol spec, CLI reference.
 

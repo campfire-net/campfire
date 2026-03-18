@@ -160,6 +160,14 @@ a:hover { color: var(--color-accent-secondary-hover); }
   margin-bottom: 20px;
 }
 
+.hero-problem {
+  font-size: var(--text-lg);
+  color: var(--color-text-secondary);
+  max-width: 700px;
+  margin: 0 auto 28px;
+  line-height: 1.65;
+}
+
 .hero h1 {
   font-family: var(--font-heading);
   font-weight: 700;
@@ -177,6 +185,26 @@ a:hover { color: var(--color-accent-secondary-hover); }
   max-width: 700px;
   margin: 0 auto 40px;
   line-height: 1.65;
+}
+
+.hero-emergence {
+  font-size: var(--text-base);
+  color: var(--color-text-secondary);
+  max-width: 640px;
+  margin: 0 auto 36px;
+  line-height: 1.6;
+  font-style: italic;
+}
+
+.hero-emergence a {
+  color: var(--color-accent);
+  font-style: normal;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.hero-emergence a:hover {
+  text-decoration: underline;
 }
 
 .hero-actions {
@@ -1199,6 +1227,110 @@ a:hover { color: var(--color-accent-secondary-hover); }
   .why-card {
     transform: none !important;
   }
+}
+
+/* ── What Exists Today ── */
+.exists-section {
+  padding: var(--space-section) 0;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+
+.exists-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.exists-item {
+  padding: 24px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.exists-item h3 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 18px;
+  margin: 0 0 8px;
+}
+
+.exists-item h3 code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--color-muted);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--color-accent);
+}
+
+.exists-item p {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
+.exists-item a {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-accent-secondary);
+  text-decoration: none;
+}
+
+.exists-item a:hover {
+  color: var(--color-accent-secondary-hover);
+}
+
+@media (max-width: 768px) {
+  .exists-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Call to Action ── */
+.ask-section {
+  padding: var(--space-section) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.ask-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 24px;
+  max-width: 900px;
+  margin: 0 auto var(--space-subsection);
+}
+
+.ask-item {
+  text-align: center;
+  padding: 24px;
+}
+
+.ask-item h3 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 18px;
+  margin: 0 0 8px;
+}
+
+.ask-item p {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.ask-actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+  .ask-grid { grid-template-columns: 1fr; }
 }
 
 /* ── Get Started dual-path section ── */
