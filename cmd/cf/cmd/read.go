@@ -272,6 +272,19 @@ var readCmd = &cobra.Command{
 				return err
 			}
 		} else {
+			// Show description header for each campfire with a description.
+			shown := map[string]bool{}
+			for _, cfID := range campfireIDs {
+				if shown[cfID] {
+					continue
+				}
+				shown[cfID] = true
+				mem, _ := s.GetMembership(cfID)
+				if mem != nil && mem.Description != "" {
+					fmt.Printf("# %s\n", mem.Description)
+				}
+			}
+
 			if len(allMessages) == 0 {
 				fmt.Println("No new messages.")
 			}

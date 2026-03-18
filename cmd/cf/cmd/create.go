@@ -147,6 +147,7 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 		Role:         "creator",
 		JoinedAt:     store.NowNano(),
 		Threshold:    cf.Threshold,
+		Description:  description,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
@@ -247,6 +248,7 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 		Role:         "creator",
 		JoinedAt:     store.NowNano(),
 		Threshold:    cf.Threshold,
+		Description:  createDescription,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
@@ -389,6 +391,7 @@ func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.St
 		Role:         "creator",
 		JoinedAt:     store.NowNano(),
 		Threshold:    cf.Threshold,
+		Description:  description,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}

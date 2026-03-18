@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -146,6 +147,9 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Stor
 		}
 	}
 
+	// Look up description from beacon (best-effort).
+	description := lookupBeaconDescription(campfireID)
+
 	// Record membership in local store
 	if err := s.AddMembership(store.Membership{
 		CampfireID:   campfireID,
@@ -153,6 +157,7 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Stor
 		JoinProtocol: state.JoinProtocol,
 		Role:         "member",
 		JoinedAt:     now,
+		Description:  description,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
@@ -206,6 +211,9 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store) 
 		return fmt.Errorf("writing campfire state: %w", err)
 	}
 
+	// Look up description from beacon (best-effort).
+	p2pDescription := lookupBeaconDescription(campfireID)
+
 	// Record membership in local store.
 	if err := s.AddMembership(store.Membership{
 		CampfireID:   campfireID,
@@ -214,6 +222,7 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store) 
 		Role:         "member",
 		JoinedAt:     store.NowNano(),
 		Threshold:    result.Threshold,
+		Description:  p2pDescription,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
@@ -433,6 +442,9 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) 
 		return fmt.Errorf("encoding transport dir: %w", err)
 	}
 
+	// Look up description from beacon (best-effort).
+	ghDescription := lookupBeaconDescription(campfireID)
+
 	// Record membership in local store.
 	if err := s.AddMembership(store.Membership{
 		CampfireID:   campfireID,
@@ -441,6 +453,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) 
 		Role:         "member",
 		JoinedAt:     store.NowNano(),
 		Threshold:    1,
+		Description:  ghDescription,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
@@ -507,6 +520,34 @@ func min16(s string) int {
 		return len(s)
 	}
 	return 16
+}
+
+// lookupBeaconDescription scans global and project beacon directories for a
+// beacon matching campfireID and returns its description. Returns "" on miss.
+func lookupBeaconDescription(campfireID string) string {
+	for _, dir := range []string{BeaconDir(), projectBeaconDir()} {
+		if dir == "" {
+			continue
+		}
+		beacons, err := beacon.Scan(dir)
+		if err != nil {
+			continue
+		}
+		for _, b := range beacons {
+			if b.CampfireIDHex() == campfireID {
+				return b.Description
+			}
+		}
+	}
+	return ""
+}
+
+// projectBeaconDir returns the .campfire/beacons dir for the current project, or "".
+func projectBeaconDir() string {
+	if _, projectDir, ok := ProjectRoot(); ok {
+		return filepath.Join(projectDir, ".campfire", "beacons")
+	}
+	return ""
 }
 
 func init() {

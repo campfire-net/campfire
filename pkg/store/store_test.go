@@ -178,6 +178,68 @@ func TestMessageInstanceFieldBackwardCompat(t *testing.T) {
 	}
 }
 
+func TestMembershipDescription(t *testing.T) {
+	s := testStore(t)
+
+	// AddMembership with description, GetMembership returns it.
+	if err := s.AddMembership(Membership{
+		CampfireID:   "desc-test",
+		TransportDir: "/tmp/campfire/desc-test",
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     2000,
+		Description:  "test campfire purpose",
+	}); err != nil {
+		t.Fatalf("AddMembership() error: %v", err)
+	}
+
+	m, err := s.GetMembership("desc-test")
+	if err != nil {
+		t.Fatalf("GetMembership() error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("should return membership")
+	}
+	if m.Description != "test campfire purpose" {
+		t.Errorf("description = %q, want %q", m.Description, "test campfire purpose")
+	}
+
+	// ListMemberships also returns description.
+	memberships, err := s.ListMemberships()
+	if err != nil {
+		t.Fatalf("ListMemberships() error: %v", err)
+	}
+	if len(memberships) != 1 {
+		t.Fatalf("got %d memberships, want 1", len(memberships))
+	}
+	if memberships[0].Description != "test campfire purpose" {
+		t.Errorf("listed description = %q, want %q", memberships[0].Description, "test campfire purpose")
+	}
+}
+
+func TestMembershipDescriptionEmpty(t *testing.T) {
+	s := testStore(t)
+
+	// Backward compatible: membership without description defaults to empty string.
+	if err := s.AddMembership(Membership{
+		CampfireID:   "no-desc",
+		TransportDir: "/tmp/campfire/no-desc",
+		JoinProtocol: "open",
+		Role:         "member",
+		JoinedAt:     3000,
+	}); err != nil {
+		t.Fatalf("AddMembership() error: %v", err)
+	}
+
+	m, err := s.GetMembership("no-desc")
+	if err != nil {
+		t.Fatalf("GetMembership() error: %v", err)
+	}
+	if m.Description != "" {
+		t.Errorf("description = %q, want empty string", m.Description)
+	}
+}
+
 func TestRemoveMembership(t *testing.T) {
 	s := testStore(t)
 
