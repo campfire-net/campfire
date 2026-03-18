@@ -60,7 +60,7 @@ If no .campfire/root exists, returns an error.`,
 			farewell := fmt.Sprintf("swarm ended by %s", agentShortID)
 			rootMembership, merr := s.GetMembership(campfireIDStr)
 			if merr == nil && rootMembership != nil {
-				_, serr := sendFilesystem(campfireIDStr, farewell, []string{"status"}, nil, agentID, rootMembership.TransportDir)
+				_, serr := sendFilesystem(campfireIDStr, farewell, []string{"status"}, nil, "", agentID, rootMembership.TransportDir)
 				if serr != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not send farewell message: %v\n", serr)
 				}

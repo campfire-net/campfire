@@ -133,7 +133,7 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 		announcePayload := fmt.Sprintf("sub-campfire created: %s (%s)", description, subShortID)
 		rootMembership, merr := s.GetMembership(rootCampfireID)
 		if merr == nil && rootMembership != nil {
-			if _, serr := sendFilesystem(rootCampfireID, announcePayload, []string{"campfire:sub-created"}, nil, agentID, rootMembership.TransportDir); serr != nil {
+			if _, serr := sendFilesystem(rootCampfireID, announcePayload, []string{"campfire:sub-created"}, nil, "", agentID, rootMembership.TransportDir); serr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not announce sub-campfire to root campfire: %v\n", serr)
 			}
 		}
