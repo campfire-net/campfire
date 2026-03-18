@@ -29,7 +29,254 @@ var (
 	readSelfEndpoint string
 	readTagFilters   []string
 	readSenderFilter string
+	readFields       string
 )
+
+// validFieldNames is the set of field names accepted by --fields.
+var validFieldNames = map[string]bool{
+	"id":          true,
+	"sender":      true,
+	"payload":     true,
+	"tags":        true,
+	"timestamp":   true,
+	"antecedents": true,
+	"signature":   true,
+	"provenance":  true,
+	"instance":    true,
+	"campfire_id": true,
+}
+
+// parseFieldSet parses a comma-separated list of field names and returns a set.
+// Returns (nil, nil) when s is empty (meaning all fields).
+// Returns an error when any field name is unknown.
+func parseFieldSet(s string) (map[string]bool, error) {
+	if s == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	fs := make(map[string]bool, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !validFieldNames[p] {
+			return nil, fmt.Errorf("unknown field %q; valid fields: id, sender, payload, tags, timestamp, antecedents, signature, provenance, instance, campfire_id", p)
+		}
+		fs[p] = true
+	}
+	return fs, nil
+}
+
+// printMessagesWithFields prints messages in human-readable format, filtering to
+// only the requested fields. When fields is nil, all fields are printed using the
+// original output format (backward compatible). When fields is non-nil, only the
+// requested fields are included.
+func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, fields map[string]bool) {
+	if len(allMessages) == 0 {
+		return
+	}
+
+	// Default path: nil fields means all fields, use the original output format exactly.
+	if fields == nil {
+		for _, m := range allMessages {
+			var tags []string
+			json.Unmarshal([]byte(m.Tags), &tags)
+			var antecedents []string
+			json.Unmarshal([]byte(m.Antecedents), &antecedents)
+
+			cfShort := m.CampfireID
+			if len(cfShort) > 6 {
+				cfShort = cfShort[:6]
+			}
+			senderShort := m.Sender
+			if len(senderShort) > 6 {
+				senderShort = senderShort[:6]
+			}
+			senderDisplay := "agent:" + senderShort
+			if m.Instance != "" {
+				senderDisplay += " (" + m.Instance + ")"
+			}
+			ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
+
+			// Status markers.
+			var markers []string
+			if s != nil {
+				for _, t := range tags {
+					if t == "future" {
+						refs, _ := s.ListReferencingMessages(m.ID)
+						fulfilled := false
+						for _, ref := range refs {
+							var refTags []string
+							json.Unmarshal([]byte(ref.Tags), &refTags)
+							for _, rt := range refTags {
+								if rt == "fulfills" {
+									fulfilled = true
+								}
+							}
+						}
+						if fulfilled {
+							markers = append(markers, "fulfilled")
+						} else {
+							markers = append(markers, "future")
+						}
+					}
+				}
+			}
+
+			statusStr := ""
+			if len(markers) > 0 {
+				statusStr = " [" + strings.Join(markers, ", ") + "]"
+			}
+
+			fmt.Printf("[campfire:%s] %s %s%s\n", cfShort, ts, senderDisplay, statusStr)
+			if len(tags) > 0 {
+				fmt.Printf("  tags: %s\n", strings.Join(tags, ", "))
+			}
+			if len(antecedents) > 0 {
+				shortAnts := make([]string, len(antecedents))
+				for i, a := range antecedents {
+					if len(a) > 8 {
+						shortAnts[i] = a[:8]
+					} else {
+						shortAnts[i] = a
+					}
+				}
+				fmt.Printf("  antecedents: %s\n", strings.Join(shortAnts, ", "))
+			}
+			fmt.Printf("  %s\n\n", string(m.Payload))
+		}
+		return
+	}
+
+	// Projection path: only emit the requested fields.
+	for _, m := range allMessages {
+		var tags []string
+		json.Unmarshal([]byte(m.Tags), &tags)
+		var antecedents []string
+		json.Unmarshal([]byte(m.Antecedents), &antecedents)
+
+		// Header line — always printed so output is parseable, but only includes
+		// requested header-level fields.
+		cfShort := m.CampfireID
+		if len(cfShort) > 6 {
+			cfShort = cfShort[:6]
+		}
+		senderShort := m.Sender
+		if len(senderShort) > 6 {
+			senderShort = senderShort[:6]
+		}
+
+		var headerParts []string
+		if fields["campfire_id"] {
+			headerParts = append(headerParts, fmt.Sprintf("[campfire:%s]", cfShort))
+		}
+		if fields["timestamp"] {
+			ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
+			headerParts = append(headerParts, ts)
+		}
+		if fields["sender"] {
+			senderDisplay := "agent:" + senderShort
+			if fields["instance"] && m.Instance != "" {
+				senderDisplay += " (" + m.Instance + ")"
+			}
+			headerParts = append(headerParts, senderDisplay)
+		} else if fields["instance"] && m.Instance != "" {
+			headerParts = append(headerParts, "("+m.Instance+")")
+		}
+
+		if len(headerParts) > 0 {
+			fmt.Println(strings.Join(headerParts, " "))
+		}
+
+		if fields["id"] {
+			idDisplay := m.ID
+			if len(idDisplay) > 8 {
+				idDisplay = idDisplay[:8]
+			}
+			fmt.Printf("  id: %s\n", idDisplay)
+		}
+		if fields["tags"] && len(tags) > 0 {
+			fmt.Printf("  tags: %s\n", strings.Join(tags, ", "))
+		}
+		if fields["antecedents"] && len(antecedents) > 0 {
+			shortAnts := make([]string, len(antecedents))
+			for i, a := range antecedents {
+				if len(a) > 8 {
+					shortAnts[i] = a[:8]
+				} else {
+					shortAnts[i] = a
+				}
+			}
+			fmt.Printf("  antecedents: %s\n", strings.Join(shortAnts, ", "))
+		}
+		if fields["payload"] {
+			fmt.Printf("  %s\n", string(m.Payload))
+		}
+		fmt.Println()
+	}
+}
+
+// encodeMessagesJSONWithFields encodes messages to JSON on w, including only the
+// fields specified in the fields set. When fields is nil, all fields are included.
+func encodeMessagesJSONWithFields(allMessages []store.MessageRecord, fields map[string]bool, w io.Writer) error {
+	all := fields == nil
+
+	var out []map[string]interface{}
+	for _, m := range allMessages {
+		var tags []string
+		json.Unmarshal([]byte(m.Tags), &tags)
+		var antecedents []string
+		json.Unmarshal([]byte(m.Antecedents), &antecedents)
+		if antecedents == nil {
+			antecedents = []string{}
+		}
+
+		obj := make(map[string]interface{})
+		if all || fields["id"] {
+			obj["id"] = m.ID
+		}
+		if all || fields["campfire_id"] {
+			obj["campfire_id"] = m.CampfireID
+		}
+		if all || fields["sender"] {
+			obj["sender"] = m.Sender
+		}
+		if all || fields["instance"] {
+			if m.Instance != "" {
+				obj["instance"] = m.Instance
+			}
+		}
+		if all || fields["payload"] {
+			obj["payload"] = string(m.Payload)
+		}
+		if all || fields["tags"] {
+			if tags == nil {
+				tags = []string{}
+			}
+			obj["tags"] = tags
+		}
+		if all || fields["antecedents"] {
+			obj["antecedents"] = antecedents
+		}
+		if all || fields["timestamp"] {
+			obj["timestamp"] = m.Timestamp
+		}
+		if all || fields["provenance"] {
+			obj["provenance"] = json.RawMessage(m.Provenance)
+		}
+		if all || fields["signature"] {
+			obj["signature"] = m.Signature
+		}
+		out = append(out, obj)
+	}
+	if out == nil {
+		out = []map[string]interface{}{}
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
 
 // natPollConfig holds all parameters for the NAT poll loop.
 type natPollConfig struct {
@@ -165,76 +412,9 @@ func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, 
 }
 
 // printMessages prints message records in the standard human-readable format.
-// Returns the messages that were printed (for cursor tracking).
+// It is a backward-compatible wrapper around printMessagesWithFields with no field projection.
 func printMessages(allMessages []store.MessageRecord, s *store.Store) {
-	if len(allMessages) == 0 {
-		return
-	}
-	for _, m := range allMessages {
-		var tags []string
-		json.Unmarshal([]byte(m.Tags), &tags)
-		var antecedents []string
-		json.Unmarshal([]byte(m.Antecedents), &antecedents)
-
-		cfShort := m.CampfireID
-		if len(cfShort) > 6 {
-			cfShort = cfShort[:6]
-		}
-		senderShort := m.Sender
-		if len(senderShort) > 6 {
-			senderShort = senderShort[:6]
-		}
-		senderDisplay := "agent:" + senderShort
-		if m.Instance != "" {
-			senderDisplay += " (" + m.Instance + ")"
-		}
-		ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
-
-		// Status markers
-		var markers []string
-		for _, t := range tags {
-			if t == "future" {
-				refs, _ := s.ListReferencingMessages(m.ID)
-				fulfilled := false
-				for _, ref := range refs {
-					var refTags []string
-					json.Unmarshal([]byte(ref.Tags), &refTags)
-					for _, rt := range refTags {
-						if rt == "fulfills" {
-							fulfilled = true
-						}
-					}
-				}
-				if fulfilled {
-					markers = append(markers, "fulfilled")
-				} else {
-					markers = append(markers, "future")
-				}
-			}
-		}
-
-		statusStr := ""
-		if len(markers) > 0 {
-			statusStr = " [" + strings.Join(markers, ", ") + "]"
-		}
-
-		fmt.Printf("[campfire:%s] %s %s%s\n", cfShort, ts, senderDisplay, statusStr)
-		if len(tags) > 0 {
-			fmt.Printf("  tags: %s\n", strings.Join(tags, ", "))
-		}
-		if len(antecedents) > 0 {
-			shortAnts := make([]string, len(antecedents))
-			for i, a := range antecedents {
-				if len(a) > 8 {
-					shortAnts[i] = a[:8]
-				} else {
-					shortAnts[i] = a
-				}
-			}
-			fmt.Printf("  antecedents: %s\n", strings.Join(shortAnts, ", "))
-		}
-		fmt.Printf("  %s\n\n", string(m.Payload))
-	}
+	printMessagesWithFields(allMessages, s, nil)
 }
 
 var readCmd = &cobra.Command{
@@ -248,6 +428,12 @@ var readCmd = &cobra.Command{
 				return fmt.Errorf("--pull is mutually exclusive with --all, --peek, and --follow")
 			}
 			return runPull(readPull)
+		}
+
+		// Parse --fields early so we can error before any I/O.
+		fieldSet, err := parseFieldSet(readFields)
+		if err != nil {
+			return err
 		}
 
 		agentID, err := identity.Load(IdentityPath())
@@ -375,7 +561,7 @@ var readCmd = &cobra.Command{
 				// Note: cursor advances based on ALL new messages (pre-filter),
 				// so filtered-out messages don't re-appear on the next poll.
 				if len(newMessages) > 0 {
-					printMessages(filteredMessages, s)
+					printMessagesWithFields(filteredMessages, s, fieldSet)
 
 					// Update cursors (unless --peek).
 					if !readPeek {
@@ -431,44 +617,7 @@ var readCmd = &cobra.Command{
 		allMessages = filterMessages(allMessages, readTagFilters, readSenderFilter)
 
 		if jsonOutput {
-			type jsonMsg struct {
-				ID          string          `json:"id"`
-				CampfireID  string          `json:"campfire_id"`
-				Sender      string          `json:"sender"`
-				Instance    string          `json:"instance,omitempty"`
-				Payload     string          `json:"payload"`
-				Tags        []string        `json:"tags"`
-				Antecedents []string        `json:"antecedents"`
-				Timestamp   int64           `json:"timestamp"`
-				Provenance  json.RawMessage `json:"provenance"`
-			}
-			var out []jsonMsg
-			for _, m := range allMessages {
-				var tags []string
-				json.Unmarshal([]byte(m.Tags), &tags)
-				var antecedents []string
-				json.Unmarshal([]byte(m.Antecedents), &antecedents)
-				if antecedents == nil {
-					antecedents = []string{}
-				}
-				out = append(out, jsonMsg{
-					ID:          m.ID,
-					CampfireID:  m.CampfireID,
-					Sender:      m.Sender,
-					Instance:    m.Instance,
-					Payload:     string(m.Payload),
-					Tags:        tags,
-					Antecedents: antecedents,
-					Timestamp:   m.Timestamp,
-					Provenance:  json.RawMessage(m.Provenance),
-				})
-			}
-			if out == nil {
-				out = []jsonMsg{}
-			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			if err := enc.Encode(out); err != nil {
+			if err := encodeMessagesJSONWithFields(allMessages, fieldSet, os.Stdout); err != nil {
 				return err
 			}
 		} else {
@@ -488,7 +637,7 @@ var readCmd = &cobra.Command{
 			if len(allMessages) == 0 {
 				fmt.Println("No new messages.")
 			}
-			printMessages(allMessages, s)
+			printMessagesWithFields(allMessages, s, fieldSet)
 		}
 
 		// Update read cursors from pre-filter timestamps (unless --all or --peek).
@@ -769,5 +918,6 @@ func init() {
 	readCmd.Flags().StringVar(&readSelfEndpoint, "endpoint", "", "this agent's own HTTP endpoint (empty = NAT mode, poll peers)")
 	readCmd.Flags().StringArrayVar(&readTagFilters, "tag", nil, "filter messages by tag (OR semantics, repeatable)")
 	readCmd.Flags().StringVar(&readSenderFilter, "sender", "", "filter messages by sender hex prefix")
+	readCmd.Flags().StringVar(&readFields, "fields", "", "comma-separated list of fields to include (e.g. id,sender,payload); omit for all fields")
 	rootCmd.AddCommand(readCmd)
 }
