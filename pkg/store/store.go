@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -281,15 +282,19 @@ func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 // Tags uses OR semantics: a message matches if it has ANY of the specified tags.
 // Sender matches on prefix of the sender hex string (case-insensitive).
 // Empty fields mean no filtering for that dimension.
+// When RespectCompaction is true, messages superseded by a compaction event are excluded
+// (compaction events themselves are always included).
 type MessageFilter struct {
-	Tags   []string
-	Sender string
+	Tags              []string
+	Sender            string
+	RespectCompaction bool
 }
 
 // ListMessages returns messages for a campfire, ordered by timestamp.
 // If campfireID is empty, returns messages across all campfires.
 // If afterTimestamp > 0, only returns messages with timestamp > afterTimestamp.
 // An optional MessageFilter applies tag and sender filtering at the SQL level.
+// When filter.RespectCompaction is true, superseded messages are excluded.
 func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...MessageFilter) ([]MessageRecord, error) {
 	var f MessageFilter
 	if len(filter) > 0 {
@@ -335,6 +340,107 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...
 		var m MessageRecord
 		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if !f.RespectCompaction {
+		return msgs, nil
+	}
+
+	// Collect superseded message IDs from all compaction events in the relevant campfire(s).
+	superseded, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("collecting superseded IDs: %w", err)
+	}
+	if len(superseded) == 0 {
+		return msgs, nil
+	}
+
+	// Filter out superseded messages but always keep compaction events themselves.
+	filtered := msgs[:0]
+	for _, m := range msgs {
+		if superseded[m.ID] && !isCompactionEvent(m) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	return filtered, nil
+}
+
+// isCompactionEvent returns true if the message has the "campfire:compact" tag.
+func isCompactionEvent(m MessageRecord) bool {
+	// Quick scan without full JSON decode for performance.
+	return strings.Contains(m.Tags, `"campfire:compact"`)
+}
+
+// collectSupersededIDs returns the set of message IDs superseded by any compaction
+// event in the given campfire. If campfireID is empty, collects across all campfires.
+func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error) {
+	events, err := s.ListCompactionEvents(campfireID)
+	if err != nil {
+		return nil, err
+	}
+	if len(events) == 0 {
+		return nil, nil
+	}
+	superseded := make(map[string]bool)
+	for _, ev := range events {
+		var payload CompactionPayload
+		if err := unmarshalCompactionPayload(ev.Payload, &payload); err != nil {
+			// Malformed compaction event — skip rather than fail.
+			continue
+		}
+		for _, id := range payload.Supersedes {
+			superseded[id] = true
+		}
+	}
+	return superseded, nil
+}
+
+// CompactionPayload is the JSON payload of a campfire:compact message.
+type CompactionPayload struct {
+	Supersedes     []string `json:"supersedes"`
+	Summary        []byte   `json:"summary"`
+	Retention      string   `json:"retention"`
+	CheckpointHash string   `json:"checkpoint_hash"`
+}
+
+// unmarshalCompactionPayload decodes a CompactionPayload from the raw message payload bytes.
+func unmarshalCompactionPayload(payload []byte, out *CompactionPayload) error {
+	return json.Unmarshal(payload, out)
+}
+
+// ListCompactionEvents returns all campfire:compact messages for a campfire.
+// If campfireID is empty, returns compaction events across all campfires.
+func (s *Store) ListCompactionEvents(campfireID string) ([]MessageRecord, error) {
+	var conditions []string
+	var args []any
+
+	conditions = append(conditions, `EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) = 'campfire:compact')`)
+
+	if campfireID != "" {
+		conditions = append(conditions, "campfire_id = ?")
+		args = append(args, campfireID)
+	}
+
+	query := `SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
+	          FROM messages WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY timestamp`
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing compaction events: %w", err)
+	}
+	defer rows.Close()
+
+	var msgs []MessageRecord
+	for rows.Next() {
+		var m MessageRecord
+		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
+			return nil, fmt.Errorf("scanning compaction event: %w", err)
 		}
 		msgs = append(msgs, m)
 	}

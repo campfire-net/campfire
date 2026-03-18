@@ -595,15 +595,22 @@ var readCmd = &cobra.Command{
 		// filtered messages for display. This preserves the invariant that cursor
 		// advancement accounts for ALL messages (so filtered-out messages don't
 		// reappear on the next read), while pushing tag/sender filtering into SQL.
+		//
+		// Compaction: by default, respect compaction (exclude superseded messages).
+		// --all disables compaction filtering so all messages (including compacted) are shown.
 		preCursors := map[string]int64{}
-		sqlFilter := store.MessageFilter{Tags: readTagFilters, Sender: readSenderFilter}
+		sqlFilter := store.MessageFilter{
+			Tags:              readTagFilters,
+			Sender:            readSenderFilter,
+			RespectCompaction: !readAll,
+		}
 		var allMessages []store.MessageRecord
 		for _, cfID := range campfireIDs {
 			var afterTS int64
 			if !readAll {
 				afterTS, _ = s.GetReadCursor(cfID)
 			}
-			// Unfiltered fetch for cursor computation.
+			// Unfiltered fetch for cursor computation (no compaction, no tag/sender filter).
 			unfiltered, err := s.ListMessages(cfID, afterTS)
 			if err != nil {
 				return fmt.Errorf("listing messages: %w", err)
@@ -613,7 +620,7 @@ var readCmd = &cobra.Command{
 					preCursors[m.CampfireID] = m.Timestamp
 				}
 			}
-			// SQL-filtered fetch for display.
+			// SQL-filtered fetch for display (with compaction awareness when !readAll).
 			filtered, err := s.ListMessages(cfID, afterTS, sqlFilter)
 			if err != nil {
 				return fmt.Errorf("listing messages (filtered): %w", err)
