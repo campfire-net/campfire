@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"encoding/json"
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
@@ -415,6 +418,69 @@ func TestViewList_LatestDefinitionWins(t *testing.T) {
 	}
 	if views[0].def.Predicate != `(tag "new")` {
 		t.Errorf("expected latest predicate, got %q", views[0].def.Predicate)
+	}
+}
+
+// TestViewRead_NegationPredicateExcludesSystemMessages verifies that campfire:*
+// system messages (e.g. campfire:view definitions) are not included in view
+// materialization results when a negation predicate is used.
+//
+// Without the fix in runViewRead, a (not (tag "foo")) predicate would match the
+// campfire:view definition message (it doesn't have tag "foo"), leaking it into
+// the result set.
+func TestViewRead_NegationPredicateExcludesSystemMessages(t *testing.T) {
+	agentID, s, campfireID := setupViewTestEnv(t, campfire.RoleFull)
+	defer s.Close()
+
+	// Add two user messages: one tagged "foo", one not.
+	addTestMessage(t, s, agentID, campfireID, "has foo tag", []string{"foo"}, 1000)
+	addTestMessage(t, s, agentID, campfireID, "no foo tag", []string{"bar"}, 2000)
+
+	// Add the view definition with a campfire:view system tag.
+	// The payload of this view message is NOT tagged "foo" — so (not (tag "foo"))
+	// would match it if system messages are not filtered out first.
+	addViewMessage(t, s, agentID, campfireID, viewDefinition{
+		Name:      "not-foo",
+		Predicate: `(not (tag "foo"))`,
+		Ordering:  "timestamp asc",
+		Refresh:   "on-read",
+	})
+
+	// Capture stdout from runViewRead.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("creating pipe: %v", err)
+	}
+	origStdout := os.Stdout
+	os.Stdout = w
+
+	runErr := runViewRead(campfireID, "not-foo")
+
+	w.Close()
+	os.Stdout = origStdout
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading pipe: %v", err)
+	}
+
+	if runErr != nil {
+		t.Fatalf("runViewRead: %v", runErr)
+	}
+
+	output := string(out)
+
+	// Only "no foo tag" should appear — the campfire:view system message must not.
+	if !strings.Contains(output, "no foo tag") {
+		t.Errorf("expected 'no foo tag' in output, got:\n%s", output)
+	}
+	if strings.Contains(output, "has foo tag") {
+		t.Errorf("'has foo tag' should not appear in (not (tag \"foo\")) results, got:\n%s", output)
+	}
+	// The view definition payload contains the JSON predicate spec — it should
+	// never appear as a user-visible result.
+	if strings.Contains(output, `"not-foo"`) || strings.Contains(output, `"predicate"`) {
+		t.Errorf("system message (campfire:view definition) leaked into view results:\n%s", output)
 	}
 }
 

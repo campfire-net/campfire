@@ -236,10 +236,24 @@ func runViewRead(campfireIDArg, name string) error {
 		return fmt.Errorf("listing messages: %w", err)
 	}
 
-	// Evaluate predicate against each message.
+	// Evaluate predicate against each message, skipping campfire:* system messages.
+	// System messages (e.g. campfire:view definitions) must not appear in view
+	// results. This is especially important for negation predicates like
+	// (not (tag "foo")) which would otherwise match system messages that lack
+	// the negated tag.
 	var matched []store.MessageRecord
 	for _, m := range allMsgs {
 		ctx := buildMessageContext(m)
+		isSystem := false
+		for _, tag := range ctx.Tags {
+			if strings.HasPrefix(tag, "campfire:") {
+				isSystem = true
+				break
+			}
+		}
+		if isSystem {
+			continue
+		}
 		if predicate.Eval(pred, ctx) {
 			matched = append(matched, m)
 		}
