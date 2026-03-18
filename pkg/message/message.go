@@ -21,6 +21,11 @@ type Message struct {
 	Timestamp   int64           `cbor:"6,keyasint" json:"timestamp"`
 	Signature   []byte          `cbor:"7,keyasint" json:"signature"`
 	Provenance  []ProvenanceHop `cbor:"8,keyasint" json:"provenance"`
+	// Instance is tainted (sender-asserted, not verified) metadata identifying
+	// the sender's role or instance name (e.g. "strategist", "cfo").
+	// NOT covered by message signature — can be set to any string.
+	// Empty string is the default for backward compatibility.
+	Instance string `cbor:"9,keyasint,omitempty" json:"instance,omitempty"`
 }
 
 // ProvenanceHop records a campfire's relay of a message.

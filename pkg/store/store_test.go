@@ -84,6 +84,100 @@ func TestGetMembership(t *testing.T) {
 	}
 }
 
+func TestMessageInstanceField(t *testing.T) {
+	s := testStore(t)
+
+	// Add a membership so FK is satisfied
+	s.AddMembership(Membership{
+		CampfireID:   "cf1",
+		TransportDir: "/tmp/campfire/cf1",
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1000,
+	})
+
+	// Insert message with instance
+	rec := MessageRecord{
+		ID:          "msg-inst-1",
+		CampfireID:  "cf1",
+		Sender:      "aabbcc",
+		Payload:     []byte("hello"),
+		Tags:        `["test"]`,
+		Antecedents: `[]`,
+		Timestamp:   1000,
+		Signature:   []byte("sig"),
+		Provenance:  `[]`,
+		ReceivedAt:  2000,
+		Instance:    "strategist",
+	}
+	inserted, err := s.AddMessage(rec)
+	if err != nil {
+		t.Fatalf("AddMessage() error: %v", err)
+	}
+	if !inserted {
+		t.Fatal("message should have been inserted")
+	}
+
+	// Retrieve and verify instance is stored
+	got, err := s.GetMessage("msg-inst-1")
+	if err != nil {
+		t.Fatalf("GetMessage() error: %v", err)
+	}
+	if got.Instance != "strategist" {
+		t.Errorf("instance = %q, want %q", got.Instance, "strategist")
+	}
+
+	// List messages and verify instance
+	msgs, err := s.ListMessages("cf1", 0)
+	if err != nil {
+		t.Fatalf("ListMessages() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].Instance != "strategist" {
+		t.Errorf("listed instance = %q, want %q", msgs[0].Instance, "strategist")
+	}
+}
+
+func TestMessageInstanceFieldBackwardCompat(t *testing.T) {
+	s := testStore(t)
+
+	s.AddMembership(Membership{
+		CampfireID:   "cf1",
+		TransportDir: "/tmp/campfire/cf1",
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1000,
+	})
+
+	// Insert message without instance (empty string)
+	rec := MessageRecord{
+		ID:          "msg-no-inst",
+		CampfireID:  "cf1",
+		Sender:      "aabbcc",
+		Payload:     []byte("hello"),
+		Tags:        `["test"]`,
+		Antecedents: `[]`,
+		Timestamp:   1000,
+		Signature:   []byte("sig"),
+		Provenance:  `[]`,
+		ReceivedAt:  2000,
+	}
+	_, err := s.AddMessage(rec)
+	if err != nil {
+		t.Fatalf("AddMessage() error: %v", err)
+	}
+
+	got, err := s.GetMessage("msg-no-inst")
+	if err != nil {
+		t.Fatalf("GetMessage() error: %v", err)
+	}
+	if got.Instance != "" {
+		t.Errorf("instance = %q, want empty string", got.Instance)
+	}
+}
+
 func TestRemoveMembership(t *testing.T) {
 	s := testStore(t)
 

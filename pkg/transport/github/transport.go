@@ -241,6 +241,7 @@ func (t *Transport) Poll(campfireID string) ([]message.Message, error) {
 			Signature:   msg.Signature,
 			Provenance:  string(provenanceJSON),
 			ReceivedAt:  time.Now().UnixNano(),
+			Instance:    msg.Instance,
 		}
 		if _, err := t.store.AddMessage(rec); err != nil {
 			continue

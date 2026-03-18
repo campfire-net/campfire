@@ -226,6 +226,7 @@ var readCmd = &cobra.Command{
 				ID          string          `json:"id"`
 				CampfireID  string          `json:"campfire_id"`
 				Sender      string          `json:"sender"`
+				Instance    string          `json:"instance,omitempty"`
 				Payload     string          `json:"payload"`
 				Tags        []string        `json:"tags"`
 				Antecedents []string        `json:"antecedents"`
@@ -245,6 +246,7 @@ var readCmd = &cobra.Command{
 					ID:          m.ID,
 					CampfireID:  m.CampfireID,
 					Sender:      m.Sender,
+					Instance:    m.Instance,
 					Payload:     string(m.Payload),
 					Tags:        tags,
 					Antecedents: antecedents,
@@ -279,6 +281,9 @@ var readCmd = &cobra.Command{
 					senderShort = senderShort[:6]
 				}
 				senderDisplay := "agent:" + senderShort
+				if m.Instance != "" {
+					senderDisplay += " (" + m.Instance + ")"
+				}
 				ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
 
 				// Status markers
@@ -412,6 +417,7 @@ func syncFromFilesystem(cfID string, transportDir string, s *store.Store) {
 			Signature:   fsMsg.Signature,
 			Provenance:  string(provJSON),
 			ReceivedAt:  store.NowNano(),
+			Instance:    fsMsg.Instance,
 		})
 	}
 }
@@ -451,6 +457,7 @@ func syncFromHTTPPeers(cfID string, agentID *identity.Identity, s *store.Store) 
 				Signature:   msg.Signature,
 				Provenance:  string(provJSON),
 				ReceivedAt:  store.NowNano(),
+				Instance:    msg.Instance,
 			})
 		}
 	}
@@ -471,6 +478,9 @@ func printNATMessages(campfireID string, msgs []message.Message, w io.Writer, s 
 			senderShort = senderShort[:6]
 		}
 		senderDisplay := "agent:" + senderShort
+		if m.Instance != "" {
+			senderDisplay += " (" + m.Instance + ")"
+		}
 		ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
 
 		fmt.Fprintf(w, "[campfire:%s] %s %s\n", cfShort, ts, senderDisplay)

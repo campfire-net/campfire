@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS messages (
     signature      BLOB NOT NULL,
     provenance     TEXT NOT NULL DEFAULT '[]',
     received_at    INTEGER NOT NULL,
+    instance       TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (campfire_id) REFERENCES campfire_memberships(campfire_id)
 );
 
@@ -105,6 +106,8 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
+	// Migrate: add instance column to messages table if not present (backward compat).
+	db.Exec("ALTER TABLE messages ADD COLUMN instance TEXT NOT NULL DEFAULT ''") //nolint:errcheck
 	return &Store{db: db}, nil
 }
 
@@ -188,16 +191,19 @@ type MessageRecord struct {
 	Antecedents string `json:"antecedents"` // JSON array
 	Timestamp   int64  `json:"timestamp"`
 	Signature   []byte `json:"signature"`
-	Provenance  string `json:"provenance"`  // JSON array
+	Provenance  string `json:"provenance"` // JSON array
 	ReceivedAt  int64  `json:"received_at"`
+	// Instance is tainted (sender-asserted, not verified) metadata identifying
+	// the sender's role or instance name. Empty string for backward compatibility.
+	Instance string `json:"instance,omitempty"`
 }
 
 // AddMessage inserts a message if not already present. Returns true if inserted.
 func (s *Store) AddMessage(m MessageRecord) (bool, error) {
 	result, err := s.db.Exec(
-		`INSERT OR IGNORE INTO messages (id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.CampfireID, m.Sender, m.Payload, m.Tags, m.Antecedents, m.Timestamp, m.Signature, m.Provenance, m.ReceivedAt,
+		`INSERT OR IGNORE INTO messages (id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.CampfireID, m.Sender, m.Payload, m.Tags, m.Antecedents, m.Timestamp, m.Signature, m.Provenance, m.ReceivedAt, m.Instance,
 	)
 	if err != nil {
 		return false, fmt.Errorf("adding message: %w", err)
@@ -219,11 +225,11 @@ func (s *Store) HasMessage(id string) (bool, error) {
 // GetMessage retrieves a single message by ID.
 func (s *Store) GetMessage(id string) (*MessageRecord, error) {
 	row := s.db.QueryRow(
-		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 		 FROM messages WHERE id = ?`, id,
 	)
 	var m MessageRecord
-	err := row.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt)
+	err := row.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -241,12 +247,12 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64) ([]Message
 	var err error
 	if campfireID == "" {
 		rows, err = s.db.Query(
-			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 			 FROM messages WHERE timestamp > ? ORDER BY timestamp`, afterTimestamp,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 			 FROM messages WHERE campfire_id = ? AND timestamp > ? ORDER BY timestamp`,
 			campfireID, afterTimestamp,
 		)
@@ -259,7 +265,7 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64) ([]Message
 	var msgs []MessageRecord
 	for rows.Next() {
 		var m MessageRecord
-		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}
 		msgs = append(msgs, m)
@@ -298,7 +304,7 @@ func (s *Store) ListReferencingMessages(messageID string) ([]MessageRecord, erro
 	// JSON array search: antecedents contains the ID as a quoted string
 	pattern := fmt.Sprintf("%%%q%%", messageID)
 	rows, err := s.db.Query(
-		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 		 FROM messages WHERE antecedents LIKE ? ORDER BY timestamp`, pattern,
 	)
 	if err != nil {
@@ -309,7 +315,7 @@ func (s *Store) ListReferencingMessages(messageID string) ([]MessageRecord, erro
 	var msgs []MessageRecord
 	for rows.Next() {
 		var m MessageRecord
-		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}
 		msgs = append(msgs, m)

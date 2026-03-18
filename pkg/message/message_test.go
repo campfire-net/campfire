@@ -3,8 +3,21 @@ package message
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"testing"
+
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 )
+
+// cborMarshal is a test helper that wraps cfencoding.Marshal.
+func cborMarshal(v interface{}) ([]byte, error) {
+	return cfencoding.Marshal(v)
+}
+
+// cborUnmarshal is a test helper that wraps cfencoding.Unmarshal.
+func cborUnmarshal(data []byte, v interface{}) error {
+	return cfencoding.Unmarshal(data, v)
+}
 
 func testKeypair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
@@ -102,6 +115,98 @@ func TestNilTags(t *testing.T) {
 	}
 	if !msg.VerifySignature() {
 		t.Error("nil-tags message should verify")
+	}
+}
+
+func TestInstanceField(t *testing.T) {
+	pub, priv := testKeypair(t)
+
+	// Message with instance set
+	msg, err := NewMessage(priv, pub, []byte("hello"), []string{"test"}, nil)
+	if err != nil {
+		t.Fatalf("NewMessage() error: %v", err)
+	}
+	msg.Instance = "strategist"
+
+	// Instance is tainted metadata — signature must still verify even after setting it
+	if !msg.VerifySignature() {
+		t.Error("message with instance should still verify (instance not in signature)")
+	}
+
+	// Changing instance should NOT break signature (it's not covered)
+	msg.Instance = "cfo"
+	if !msg.VerifySignature() {
+		t.Error("changing instance should not break signature")
+	}
+}
+
+func TestInstanceFieldBackwardCompat(t *testing.T) {
+	pub, priv := testKeypair(t)
+
+	// Message without instance (empty string default)
+	msg, err := NewMessage(priv, pub, []byte("hello"), []string{"test"}, nil)
+	if err != nil {
+		t.Fatalf("NewMessage() error: %v", err)
+	}
+
+	if msg.Instance != "" {
+		t.Errorf("default instance should be empty string, got %q", msg.Instance)
+	}
+	if !msg.VerifySignature() {
+		t.Error("message without instance should verify")
+	}
+}
+
+func TestInstanceFieldSerializationRoundtrip(t *testing.T) {
+	pub, priv := testKeypair(t)
+
+	msg, _ := NewMessage(priv, pub, []byte("hello"), []string{"test"}, nil)
+	msg.Instance = "marketing"
+
+	// CBOR roundtrip
+	data, err := cborMarshal(msg)
+	if err != nil {
+		t.Fatalf("CBOR marshal error: %v", err)
+	}
+	var decoded Message
+	if err := cborUnmarshal(data, &decoded); err != nil {
+		t.Fatalf("CBOR unmarshal error: %v", err)
+	}
+	if decoded.Instance != "marketing" {
+		t.Errorf("CBOR roundtrip: instance = %q, want %q", decoded.Instance, "marketing")
+	}
+
+	// JSON roundtrip
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("JSON marshal error: %v", err)
+	}
+	var jsonDecoded Message
+	if err := json.Unmarshal(jsonData, &jsonDecoded); err != nil {
+		t.Fatalf("JSON unmarshal error: %v", err)
+	}
+	if jsonDecoded.Instance != "marketing" {
+		t.Errorf("JSON roundtrip: instance = %q, want %q", jsonDecoded.Instance, "marketing")
+	}
+}
+
+func TestInstanceFieldCBORBackwardCompat(t *testing.T) {
+	pub, priv := testKeypair(t)
+
+	// Create a message without instance, marshal it, then unmarshal
+	// Simulates receiving a message from an older version that doesn't have instance
+	msg, _ := NewMessage(priv, pub, []byte("hello"), nil, nil)
+
+	data, err := cborMarshal(msg)
+	if err != nil {
+		t.Fatalf("CBOR marshal error: %v", err)
+	}
+	var decoded Message
+	if err := cborUnmarshal(data, &decoded); err != nil {
+		t.Fatalf("CBOR unmarshal error: %v", err)
+	}
+	if decoded.Instance != "" {
+		t.Errorf("decoded instance should be empty, got %q", decoded.Instance)
 	}
 }
 
