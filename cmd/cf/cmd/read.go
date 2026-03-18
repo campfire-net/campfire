@@ -418,6 +418,15 @@ var readCmd = &cobra.Command{
 			allMessages = append(allMessages, msgs...)
 		}
 
+		// Compute cursor from all messages BEFORE filtering, so filtered-out
+		// messages don't reappear on the next read.
+		preCursors := map[string]int64{}
+		for _, m := range allMessages {
+			if m.Timestamp > preCursors[m.CampfireID] {
+				preCursors[m.CampfireID] = m.Timestamp
+			}
+		}
+
 		// Apply post-query filters.
 		allMessages = filterMessages(allMessages, readTagFilters, readSenderFilter)
 
@@ -482,15 +491,9 @@ var readCmd = &cobra.Command{
 			printMessages(allMessages, s)
 		}
 
-		// Update read cursors (unless --all or --peek).
-		if !readAll && !readPeek && len(allMessages) > 0 {
-			cursors := map[string]int64{}
-			for _, m := range allMessages {
-				if m.Timestamp > cursors[m.CampfireID] {
-					cursors[m.CampfireID] = m.Timestamp
-				}
-			}
-			for cfID, ts := range cursors {
+		// Update read cursors from pre-filter timestamps (unless --all or --peek).
+		if !readAll && !readPeek && len(preCursors) > 0 {
+			for cfID, ts := range preCursors {
 				s.SetReadCursor(cfID, ts)
 			}
 		}
@@ -681,6 +684,7 @@ func runPull(idsArg string) error {
 			ID          string          `json:"id"`
 			CampfireID  string          `json:"campfire_id"`
 			Sender      string          `json:"sender"`
+			Instance    string          `json:"instance,omitempty"`
 			Payload     string          `json:"payload"`
 			Tags        []string        `json:"tags"`
 			Antecedents []string        `json:"antecedents"`
@@ -700,6 +704,7 @@ func runPull(idsArg string) error {
 				ID:          m.ID,
 				CampfireID:  m.CampfireID,
 				Sender:      m.Sender,
+				Instance:    m.Instance,
 				Payload:     string(m.Payload),
 				Tags:        tags,
 				Antecedents: antecedents,
@@ -730,6 +735,9 @@ func runPull(idsArg string) error {
 			senderShort = senderShort[:6]
 		}
 		senderDisplay := "agent:" + senderShort
+		if m.Instance != "" {
+			senderDisplay += " (" + m.Instance + ")"
+		}
 		ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
 
 		fmt.Printf("[campfire:%s] %s %s\n", cfShort, ts, senderDisplay)

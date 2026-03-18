@@ -64,6 +64,14 @@ var dagCmd = &cobra.Command{
 			return fmt.Errorf("listing messages: %w", err)
 		}
 
+		// Compute cursor from all messages BEFORE filtering.
+		var preMaxTS int64
+		for _, msg := range msgs {
+			if msg.Timestamp > preMaxTS {
+				preMaxTS = msg.Timestamp
+			}
+		}
+
 		// Apply post-query filters.
 		msgs = filterMessages(msgs, dagTagFilters, dagSenderFilter)
 
@@ -73,15 +81,9 @@ var dagCmd = &cobra.Command{
 			formatDAGOutput(msgs, os.Stdout)
 		}
 
-		// Update read cursor (same behavior as cf read).
-		if !dagAll && len(msgs) > 0 {
-			var maxTS int64
-			for _, msg := range msgs {
-				if msg.Timestamp > maxTS {
-					maxTS = msg.Timestamp
-				}
-			}
-			s.SetReadCursor(resolved, maxTS) //nolint:errcheck
+		// Update read cursor from pre-filter timestamp.
+		if !dagAll && preMaxTS > 0 {
+			s.SetReadCursor(resolved, preMaxTS) //nolint:errcheck
 		}
 
 		return nil
