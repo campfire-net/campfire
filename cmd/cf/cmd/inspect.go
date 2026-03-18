@@ -70,6 +70,7 @@ var inspectCmd = &cobra.Command{
 				ID             string    `json:"id"`
 				CampfireID     string    `json:"campfire_id"`
 				Sender         string    `json:"sender"`
+				Instance       string    `json:"instance,omitempty"`
 				Payload        string    `json:"payload"`
 				Tags           []string  `json:"tags"`
 				Antecedents    []string  `json:"antecedents"`
@@ -85,6 +86,7 @@ var inspectCmd = &cobra.Command{
 				ID:             msg.ID,
 				CampfireID:     msg.CampfireID,
 				Sender:         msg.Sender,
+				Instance:       msg.Instance,
 				Payload:        string(msg.Payload),
 				Tags:           tags,
 				Antecedents:    antecedents,
@@ -126,6 +128,9 @@ var inspectCmd = &cobra.Command{
 		fmt.Printf("Message: %s\n", msg.ID)
 		fmt.Printf("Campfire: %s\n", msg.CampfireID)
 		fmt.Printf("Sender: %s\n", msg.Sender)
+		if msg.Instance != "" {
+			fmt.Printf("Instance: %s (tainted)\n", msg.Instance)
+		}
 		fmt.Printf("Signature: %s\n", sigStatus)
 		fmt.Printf("Timestamp: %s\n", time.Unix(0, msg.Timestamp).Format("2006-01-02 15:04:05"))
 		if len(tags) > 0 {

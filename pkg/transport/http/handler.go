@@ -160,6 +160,7 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		Signature:   msg.Signature,
 		Provenance:  string(provJSON),
 		ReceivedAt:  time.Now().UnixNano(),
+		Instance:    msg.Instance,
 	}
 	if _, err := h.store.AddMessage(rec); err != nil {
 		log.Printf("handleDeliver: failed to store message for campfire %s: %v", campfireID, err)
@@ -1002,6 +1003,7 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 				Signature:   rekeyMsg.Signature,
 				Provenance:  string(provJSON),
 				ReceivedAt:  time.Now().UnixNano(),
+				Instance:    rekeyMsg.Instance,
 			})
 		}
 	}
@@ -1049,5 +1051,6 @@ func recordToMessage(rec store.MessageRecord) (message.Message, error) {
 		Timestamp:   rec.Timestamp,
 		Signature:   rec.Signature,
 		Provenance:  provenance,
+		Instance:    rec.Instance,
 	}, nil
 }

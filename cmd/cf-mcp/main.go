@@ -285,6 +285,10 @@ func init() {
 						"type":        "string",
 						"description": "Message ID this message fulfills (adds fulfills tag + reply-to in one step)",
 					},
+					"instance": map[string]interface{}{
+						"type":        "string",
+						"description": "Sender instance/role name (tainted, not verified). E.g. 'strategist', 'cfo'.",
+					},
 				},
 				"required": []string{"campfire_id", "message"},
 			}),
@@ -702,6 +706,7 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 	}
 	future := getBool(params, "future")
 	fulfills := getStr(params, "fulfills")
+	instance := getStr(params, "instance")
 
 	agentID, err := identity.Load(s.identityPath())
 	if err != nil {
@@ -752,6 +757,7 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 	if err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("creating message: %v", err))
 	}
+	msg.Instance = instance // tainted metadata, not covered by signature
 
 	state, err := transport.ReadState(campfireID)
 	if err != nil {
@@ -779,6 +785,7 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		"tags":        msg.Tags,
 		"antecedents": msg.Antecedents,
 		"timestamp":   msg.Timestamp,
+		"instance":    msg.Instance,
 	})
 	return okResponse(id, result)
 }
@@ -852,6 +859,7 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 		ID          string          `json:"id"`
 		CampfireID  string          `json:"campfire_id"`
 		Sender      string          `json:"sender"`
+		Instance    string          `json:"instance,omitempty"`
 		Payload     string          `json:"payload"`
 		Tags        []string        `json:"tags"`
 		Antecedents []string        `json:"antecedents"`
@@ -871,6 +879,7 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 			ID:          m.ID,
 			CampfireID:  m.CampfireID,
 			Sender:      m.Sender,
+			Instance:    m.Instance,
 			Payload:     string(m.Payload),
 			Tags:        tags,
 			Antecedents: ants,

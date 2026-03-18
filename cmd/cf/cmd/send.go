@@ -27,6 +27,7 @@ var (
 	sendAntecedents []string
 	sendFuture      bool
 	sendFulfills    string
+	sendInstance    string
 )
 
 var sendCmd = &cobra.Command{
@@ -105,15 +106,16 @@ var sendCmd = &cobra.Command{
 		// Route based on transport type.
 		var msg *message.Message
 		if isGitHubCampfire(m.TransportDir) {
-			msg, err = sendGitHub(campfireID, payload, tags, antecedents, agentID, s, m)
+			msg, err = sendGitHub(campfireID, payload, tags, antecedents, sendInstance, agentID, s, m)
 		} else if isPeerHTTPCampfire(m.TransportDir, campfireID) {
-			msg, err = sendP2PHTTP(campfireID, payload, tags, antecedents, agentID, s, m)
+			msg, err = sendP2PHTTP(campfireID, payload, tags, antecedents, sendInstance, agentID, s, m)
 		} else {
-			msg, err = sendFilesystem(campfireID, payload, tags, antecedents, agentID, m.TransportDir)
+			msg, err = sendFilesystem(campfireID, payload, tags, antecedents, sendInstance, agentID, m.TransportDir)
 		}
 		if err != nil {
 			return err
 		}
+
 
 		if jsonOutput {
 			out := map[string]interface{}{
@@ -124,6 +126,7 @@ var sendCmd = &cobra.Command{
 				"tags":        msg.Tags,
 				"antecedents": msg.Antecedents,
 				"timestamp":   msg.Timestamp,
+				"instance":    msg.Instance,
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
@@ -145,7 +148,7 @@ func isPeerHTTPCampfire(transportDir, campfireID string) bool {
 // sendFilesystem sends a message via the filesystem transport.
 // transportDir is the campfire-specific directory from the membership record
 // (e.g. /tmp/campfire/<campfire-id>). Falls back to fs.DefaultBaseDir() when empty.
-func sendFilesystem(campfireID, payload string, tags, antecedents []string, agentID *identity.Identity, transportDir string) (*message.Message, error) {
+func sendFilesystem(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, transportDir string) (*message.Message, error) {
 	baseDir := fs.DefaultBaseDir()
 	if transportDir != "" {
 		baseDir = filepath.Dir(transportDir)
@@ -173,6 +176,7 @@ func sendFilesystem(campfireID, payload string, tags, antecedents []string, agen
 	if err != nil {
 		return nil, fmt.Errorf("creating message: %w", err)
 	}
+	msg.Instance = instance // tainted metadata, not covered by signature
 
 	// Read campfire state for provenance hop.
 	state, err := transport.ReadState(campfireID)
@@ -201,7 +205,7 @@ func sendFilesystem(campfireID, payload string, tags, antecedents []string, agen
 // sendGitHub sends a message via the GitHub Issues transport.
 // The campfire state (repo + issue number) is read from m.TransportDir.
 // The agent signs the message and POSTs it as a campfire-msg-v1: comment.
-func sendGitHub(campfireID, payload string, tags, antecedents []string, agentID *identity.Identity, s *store.Store, m *store.Membership) (*message.Message, error) {
+func sendGitHub(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s *store.Store, m *store.Membership) (*message.Message, error) {
 	meta, ok := parseGitHubTransportDir(m.TransportDir)
 	if !ok {
 		return nil, fmt.Errorf("invalid GitHub transport dir: %s", m.TransportDir)
@@ -229,6 +233,7 @@ func sendGitHub(campfireID, payload string, tags, antecedents []string, agentID 
 	if err != nil {
 		return nil, fmt.Errorf("creating message: %w", err)
 	}
+	msg.Instance = instance // tainted metadata, not covered by signature
 
 	// Send via GitHub transport (posts as Issue comment).
 	if err := tr.Send(campfireID, msg); err != nil {
@@ -241,7 +246,7 @@ func sendGitHub(campfireID, payload string, tags, antecedents []string, agentID 
 // sendP2PHTTP sends a message via the P2P HTTP transport.
 // For threshold=1: signs provenance hop with campfire key, fans out to peers.
 // For threshold>1: runs FROST signing rounds with co-signers, then fans out.
-func sendP2PHTTP(campfireID, payload string, tags, antecedents []string, agentID *identity.Identity, s *store.Store, m *store.Membership) (*message.Message, error) {
+func sendP2PHTTP(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s *store.Store, m *store.Membership) (*message.Message, error) {
 	// Load campfire state from local CBOR file.
 	statePath := filepath.Join(m.TransportDir, campfireID+".cbor")
 	stateData, err := os.ReadFile(statePath)
@@ -258,6 +263,7 @@ func sendP2PHTTP(campfireID, payload string, tags, antecedents []string, agentID
 	if err != nil {
 		return nil, fmt.Errorf("creating message: %w", err)
 	}
+	msg.Instance = instance // tainted metadata, not covered by signature
 
 	// Load peer endpoints.
 	peers, err := s.ListPeerEndpoints(campfireID)
@@ -347,6 +353,7 @@ func sendP2PHTTP(campfireID, payload string, tags, antecedents []string, agentID
 		Signature:   msg.Signature,
 		Provenance:  string(provJSON),
 		ReceivedAt:  store.NowNano(),
+		Instance:    msg.Instance,
 	})
 
 	return msg, nil
@@ -497,5 +504,6 @@ func init() {
 	sendCmd.Flags().MarkHidden("antecedent") //nolint:errcheck
 	sendCmd.Flags().BoolVar(&sendFuture, "future", false, "tag this message as a future")
 	sendCmd.Flags().StringVar(&sendFulfills, "fulfills", "", "message ID this fulfills (adds 'fulfills' tag + reply-to in one step)")
+	sendCmd.Flags().StringVar(&sendInstance, "instance", "", "sender instance/role name (tainted, not verified)")
 	rootCmd.AddCommand(sendCmd)
 }

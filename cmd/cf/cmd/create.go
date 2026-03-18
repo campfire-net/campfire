@@ -133,7 +133,7 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 		announcePayload := fmt.Sprintf("sub-campfire created: %s (%s)", description, subShortID)
 		rootMembership, merr := s.GetMembership(rootCampfireID)
 		if merr == nil && rootMembership != nil {
-			if _, serr := sendFilesystem(rootCampfireID, announcePayload, []string{"campfire:sub-created"}, nil, agentID, rootMembership.TransportDir); serr != nil {
+			if _, serr := sendFilesystem(rootCampfireID, announcePayload, []string{"campfire:sub-created"}, nil, "", agentID, rootMembership.TransportDir); serr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not announce sub-campfire to root campfire: %v\n", serr)
 			}
 		}
@@ -147,6 +147,7 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 		Role:         "creator",
 		JoinedAt:     store.NowNano(),
 		Threshold:    cf.Threshold,
+		Description:  description,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
@@ -247,6 +248,7 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 		Role:         "creator",
 		JoinedAt:     store.NowNano(),
 		Threshold:    cf.Threshold,
+		Description:  createDescription,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
@@ -389,6 +391,7 @@ func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.St
 		Role:         "creator",
 		JoinedAt:     store.NowNano(),
 		Threshold:    cf.Threshold,
+		Description:  description,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}

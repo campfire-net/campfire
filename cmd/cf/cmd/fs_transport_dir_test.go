@@ -77,7 +77,7 @@ func TestFSTransportDirFromMembership(t *testing.T) {
 
 	// Send a message using sendFilesystem with the membership TransportDir.
 	// This must NOT fall back to DefaultBaseDir() — it must use customBaseDir.
-	msg, err := sendFilesystem(campfireID, "hello from transport-dir-test", nil, nil, agentID, transportDir)
+	msg, err := sendFilesystem(campfireID, "hello from transport-dir-test", nil, nil, "", agentID, transportDir)
 	if err != nil {
 		t.Fatalf("sendFilesystem: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestFSTransportDirFallback(t *testing.T) {
 
 	// Should fail with "listing members" error (transport dir doesn't exist),
 	// not a nil-pointer panic or unexpected error about an unrelated dir.
-	_, err = sendFilesystem(fakeID, "test", nil, nil, agentID, "")
+	_, err = sendFilesystem(fakeID, "test", nil, nil, "", agentID, "")
 	if err == nil {
 		t.Fatal("expected error for non-existent campfire, got nil")
 	}

@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS campfire_memberships (
     join_protocol  TEXT NOT NULL,
     role           TEXT NOT NULL DEFAULT 'member',
     joined_at      INTEGER NOT NULL,
-    threshold      INTEGER NOT NULL DEFAULT 1
+    threshold      INTEGER NOT NULL DEFAULT 1,
+    description    TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS messages (
     signature      BLOB NOT NULL,
     provenance     TEXT NOT NULL DEFAULT '[]',
     received_at    INTEGER NOT NULL,
+    instance       TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (campfire_id) REFERENCES campfire_memberships(campfire_id)
 );
 
@@ -90,6 +92,7 @@ type Membership struct {
 	Role         string `json:"role"`
 	JoinedAt     int64  `json:"joined_at"`
 	Threshold    uint   `json:"threshold"`
+	Description  string `json:"description"`
 }
 
 // Open opens or creates the SQLite store at the given path.
@@ -105,6 +108,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
+	// Migrate: add instance column to messages table if not present (backward compat).
+	db.Exec("ALTER TABLE messages ADD COLUMN instance TEXT NOT NULL DEFAULT ''") //nolint:errcheck
+	// Backward-compatible migration: add description column if missing.
+	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN description TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 	return &Store{db: db}, nil
 }
 
@@ -120,9 +127,9 @@ func (s *Store) AddMembership(m Membership) error {
 		threshold = 1
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold,
+		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description,
 	)
 	if err != nil {
 		return fmt.Errorf("adding membership: %w", err)
@@ -142,11 +149,11 @@ func (s *Store) RemoveMembership(campfireID string) error {
 // GetMembership returns a single membership by campfire ID.
 func (s *Store) GetMembership(campfireID string) (*Membership, error) {
 	row := s.db.QueryRow(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description
 		 FROM campfire_memberships WHERE campfire_id = ?`, campfireID,
 	)
 	var m Membership
-	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold)
+	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -159,7 +166,7 @@ func (s *Store) GetMembership(campfireID string) (*Membership, error) {
 // ListMemberships returns all campfire memberships.
 func (s *Store) ListMemberships() ([]Membership, error) {
 	rows, err := s.db.Query(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description
 		 FROM campfire_memberships ORDER BY joined_at`,
 	)
 	if err != nil {
@@ -170,7 +177,7 @@ func (s *Store) ListMemberships() ([]Membership, error) {
 	var memberships []Membership
 	for rows.Next() {
 		var m Membership
-		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold); err != nil {
+		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description); err != nil {
 			return nil, fmt.Errorf("scanning membership: %w", err)
 		}
 		memberships = append(memberships, m)
@@ -188,16 +195,19 @@ type MessageRecord struct {
 	Antecedents string `json:"antecedents"` // JSON array
 	Timestamp   int64  `json:"timestamp"`
 	Signature   []byte `json:"signature"`
-	Provenance  string `json:"provenance"`  // JSON array
+	Provenance  string `json:"provenance"` // JSON array
 	ReceivedAt  int64  `json:"received_at"`
+	// Instance is tainted (sender-asserted, not verified) metadata identifying
+	// the sender's role or instance name. Empty string for backward compatibility.
+	Instance string `json:"instance,omitempty"`
 }
 
 // AddMessage inserts a message if not already present. Returns true if inserted.
 func (s *Store) AddMessage(m MessageRecord) (bool, error) {
 	result, err := s.db.Exec(
-		`INSERT OR IGNORE INTO messages (id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.CampfireID, m.Sender, m.Payload, m.Tags, m.Antecedents, m.Timestamp, m.Signature, m.Provenance, m.ReceivedAt,
+		`INSERT OR IGNORE INTO messages (id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.CampfireID, m.Sender, m.Payload, m.Tags, m.Antecedents, m.Timestamp, m.Signature, m.Provenance, m.ReceivedAt, m.Instance,
 	)
 	if err != nil {
 		return false, fmt.Errorf("adding message: %w", err)
@@ -219,11 +229,11 @@ func (s *Store) HasMessage(id string) (bool, error) {
 // GetMessage retrieves a single message by ID.
 func (s *Store) GetMessage(id string) (*MessageRecord, error) {
 	row := s.db.QueryRow(
-		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 		 FROM messages WHERE id = ?`, id,
 	)
 	var m MessageRecord
-	err := row.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt)
+	err := row.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -231,6 +241,39 @@ func (s *Store) GetMessage(id string) (*MessageRecord, error) {
 		return nil, fmt.Errorf("querying message: %w", err)
 	}
 	return &m, nil
+}
+
+// GetMessageByPrefix resolves a message ID prefix to a single message.
+// Returns nil if no message matches. Returns an error if the prefix is ambiguous.
+func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+		 FROM messages WHERE id LIKE ? ORDER BY id`,
+		prefix+"%",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying messages by prefix: %w", err)
+	}
+	defer rows.Close()
+
+	var matches []MessageRecord
+	for rows.Next() {
+		var m MessageRecord
+		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt); err != nil {
+			return nil, fmt.Errorf("scanning message: %w", err)
+		}
+		matches = append(matches, m)
+		if len(matches) > 1 {
+			return nil, fmt.Errorf("ambiguous message ID prefix %s, matches multiple messages", prefix)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	return &matches[0], nil
 }
 
 // ListMessages returns messages for a campfire, ordered by timestamp.
@@ -241,12 +284,12 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64) ([]Message
 	var err error
 	if campfireID == "" {
 		rows, err = s.db.Query(
-			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 			 FROM messages WHERE timestamp > ? ORDER BY timestamp`, afterTimestamp,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+			`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 			 FROM messages WHERE campfire_id = ? AND timestamp > ? ORDER BY timestamp`,
 			campfireID, afterTimestamp,
 		)
@@ -259,7 +302,7 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64) ([]Message
 	var msgs []MessageRecord
 	for rows.Next() {
 		var m MessageRecord
-		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}
 		msgs = append(msgs, m)
@@ -298,7 +341,7 @@ func (s *Store) ListReferencingMessages(messageID string) ([]MessageRecord, erro
 	// JSON array search: antecedents contains the ID as a quoted string
 	pattern := fmt.Sprintf("%%%q%%", messageID)
 	rows, err := s.db.Query(
-		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 		 FROM messages WHERE antecedents LIKE ? ORDER BY timestamp`, pattern,
 	)
 	if err != nil {
@@ -309,7 +352,7 @@ func (s *Store) ListReferencingMessages(messageID string) ([]MessageRecord, erro
 	var msgs []MessageRecord
 	for rows.Next() {
 		var m MessageRecord
-		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}
 		msgs = append(msgs, m)
