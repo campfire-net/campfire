@@ -142,6 +142,99 @@ func runNATPoll(cfg natPollConfig, w io.Writer) error {
 	return nil
 }
 
+// followIntervalForTransport returns the poll interval for --follow based on transport type.
+// GitHub campfires use 5s to avoid API rate limiting; all others use 2s.
+func followIntervalForTransport(transportDir, campfireID string) time.Duration {
+	if isGitHubCampfire(transportDir) {
+		return 5 * time.Second
+	}
+	return 2 * time.Second
+}
+
+// syncCampfire runs the appropriate sync function for a single campfire based on its transport.
+func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, s *store.Store) {
+	if isGitHubCampfire(m.TransportDir) {
+		syncFromGitHub(cfID, m.TransportDir, s)
+	} else if isPeerHTTPCampfire(m.TransportDir, cfID) {
+		syncFromHTTPPeers(cfID, agentID, s)
+	} else {
+		syncFromFilesystem(cfID, m.TransportDir, s)
+	}
+}
+
+// printMessages prints message records in the standard human-readable format.
+// Returns the messages that were printed (for cursor tracking).
+func printMessages(allMessages []store.MessageRecord, s *store.Store) {
+	if len(allMessages) == 0 {
+		return
+	}
+	for _, m := range allMessages {
+		var tags []string
+		json.Unmarshal([]byte(m.Tags), &tags)
+		var antecedents []string
+		json.Unmarshal([]byte(m.Antecedents), &antecedents)
+
+		cfShort := m.CampfireID
+		if len(cfShort) > 6 {
+			cfShort = cfShort[:6]
+		}
+		senderShort := m.Sender
+		if len(senderShort) > 6 {
+			senderShort = senderShort[:6]
+		}
+		senderDisplay := "agent:" + senderShort
+		if m.Instance != "" {
+			senderDisplay += " (" + m.Instance + ")"
+		}
+		ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
+
+		// Status markers
+		var markers []string
+		for _, t := range tags {
+			if t == "future" {
+				refs, _ := s.ListReferencingMessages(m.ID)
+				fulfilled := false
+				for _, ref := range refs {
+					var refTags []string
+					json.Unmarshal([]byte(ref.Tags), &refTags)
+					for _, rt := range refTags {
+						if rt == "fulfills" {
+							fulfilled = true
+						}
+					}
+				}
+				if fulfilled {
+					markers = append(markers, "fulfilled")
+				} else {
+					markers = append(markers, "future")
+				}
+			}
+		}
+
+		statusStr := ""
+		if len(markers) > 0 {
+			statusStr = " [" + strings.Join(markers, ", ") + "]"
+		}
+
+		fmt.Printf("[campfire:%s] %s %s%s\n", cfShort, ts, senderDisplay, statusStr)
+		if len(tags) > 0 {
+			fmt.Printf("  tags: %s\n", strings.Join(tags, ", "))
+		}
+		if len(antecedents) > 0 {
+			shortAnts := make([]string, len(antecedents))
+			for i, a := range antecedents {
+				if len(a) > 8 {
+					shortAnts[i] = a[:8]
+				} else {
+					shortAnts[i] = a
+				}
+			}
+			fmt.Printf("  antecedents: %s\n", strings.Join(shortAnts, ", "))
+		}
+		fmt.Printf("  %s\n\n", string(m.Payload))
+	}
+}
+
 var readCmd = &cobra.Command{
 	Use:   "read [campfire-id]",
 	Short: "Read messages",
@@ -197,23 +290,111 @@ var readCmd = &cobra.Command{
 			}
 		}
 
-		// Sync messages for each campfire.
+		// Build membership lookup for campfires.
+		type campfireEntry struct {
+			id         string
+			membership *store.Membership
+		}
+		var entries []campfireEntry
 		for _, cfID := range campfireIDs {
 			m, err := s.GetMembership(cfID)
 			if err != nil || m == nil {
 				continue
 			}
+			entries = append(entries, campfireEntry{id: cfID, membership: m})
+		}
 
-			if isGitHubCampfire(m.TransportDir) {
-				// GitHub transport: poll GitHub API for new comments.
-				syncFromGitHub(cfID, m.TransportDir, s)
-			} else if isPeerHTTPCampfire(m.TransportDir, cfID) {
-				// P2P HTTP transport: sync from all known peers.
-				syncFromHTTPPeers(cfID, agentID, s)
-			} else {
-				// Filesystem transport: read from filesystem transport directory.
-				syncFromFilesystem(cfID, m.TransportDir, s)
+		// --follow: loop sync → query → print → sleep for ALL transports.
+		if readFollow {
+			// Determine poll interval from the first campfire's transport.
+			// If following multiple campfires, use the shortest interval.
+			interval := 2 * time.Second
+			for _, e := range entries {
+				i := followIntervalForTransport(e.membership.TransportDir, e.id)
+				if i < interval {
+					interval = i
+				}
 			}
+
+			// Set up signal handling for clean exit.
+			stopCh := make(chan os.Signal, 1)
+			signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
+			defer signal.Stop(stopCh)
+
+			// Show description headers once.
+			shown := map[string]bool{}
+			for _, e := range entries {
+				if shown[e.id] {
+					continue
+				}
+				shown[e.id] = true
+				if e.membership.Description != "" {
+					fmt.Printf("# %s\n", e.membership.Description)
+				}
+			}
+
+			// Track cursors per campfire for detecting new messages.
+			cursors := map[string]int64{}
+			if !readAll {
+				for _, e := range entries {
+					c, _ := s.GetReadCursor(e.id)
+					cursors[e.id] = c
+				}
+			}
+
+			for {
+				// Check for stop signal (non-blocking).
+				select {
+				case <-stopCh:
+					return nil
+				default:
+				}
+
+				// Sync all campfires.
+				for _, e := range entries {
+					syncCampfire(e.id, e.membership, agentID, s)
+				}
+
+				// Query new messages since last cursor.
+				var newMessages []store.MessageRecord
+				for _, e := range entries {
+					afterTS := cursors[e.id]
+					msgs, err := s.ListMessages(e.id, afterTS)
+					if err != nil {
+						continue
+					}
+					newMessages = append(newMessages, msgs...)
+				}
+
+				// Print and advance cursors.
+				if len(newMessages) > 0 {
+					printMessages(newMessages, s)
+
+					// Update cursors (unless --peek).
+					if !readPeek {
+						for _, m := range newMessages {
+							if m.Timestamp > cursors[m.CampfireID] {
+								cursors[m.CampfireID] = m.Timestamp
+							}
+						}
+						for cfID, ts := range cursors {
+							s.SetReadCursor(cfID, ts)
+						}
+					}
+				}
+
+				// Sleep with signal check.
+				select {
+				case <-stopCh:
+					return nil
+				case <-time.After(interval):
+				}
+			}
+		}
+
+		// One-shot mode: sync → query → print → exit.
+		for _, e := range entries {
+			syncCampfire(e.id, e.membership, agentID, s)
 		}
 
 		// Query messages.
@@ -288,72 +469,7 @@ var readCmd = &cobra.Command{
 			if len(allMessages) == 0 {
 				fmt.Println("No new messages.")
 			}
-			for _, m := range allMessages {
-				var tags []string
-				json.Unmarshal([]byte(m.Tags), &tags)
-				var antecedents []string
-				json.Unmarshal([]byte(m.Antecedents), &antecedents)
-
-				cfShort := m.CampfireID
-				if len(cfShort) > 6 {
-					cfShort = cfShort[:6]
-				}
-				senderShort := m.Sender
-				if len(senderShort) > 6 {
-					senderShort = senderShort[:6]
-				}
-				senderDisplay := "agent:" + senderShort
-				if m.Instance != "" {
-					senderDisplay += " (" + m.Instance + ")"
-				}
-				ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
-
-				// Status markers
-				var markers []string
-				for _, t := range tags {
-					if t == "future" {
-						// Check if fulfilled
-						refs, _ := s.ListReferencingMessages(m.ID)
-						fulfilled := false
-						for _, ref := range refs {
-							var refTags []string
-							json.Unmarshal([]byte(ref.Tags), &refTags)
-							for _, rt := range refTags {
-								if rt == "fulfills" {
-									fulfilled = true
-								}
-							}
-						}
-						if fulfilled {
-							markers = append(markers, "fulfilled")
-						} else {
-							markers = append(markers, "future")
-						}
-					}
-				}
-
-				statusStr := ""
-				if len(markers) > 0 {
-					statusStr = " [" + strings.Join(markers, ", ") + "]"
-				}
-
-				fmt.Printf("[campfire:%s] %s %s%s\n", cfShort, ts, senderDisplay, statusStr)
-				if len(tags) > 0 {
-					fmt.Printf("  tags: %s\n", strings.Join(tags, ", "))
-				}
-				if len(antecedents) > 0 {
-					shortAnts := make([]string, len(antecedents))
-					for i, a := range antecedents {
-						if len(a) > 8 {
-							shortAnts[i] = a[:8]
-						} else {
-							shortAnts[i] = a
-						}
-					}
-					fmt.Printf("  antecedents: %s\n", strings.Join(shortAnts, ", "))
-				}
-				fmt.Printf("  %s\n\n", string(m.Payload))
-			}
+			printMessages(allMessages, s)
 		}
 
 		// Update read cursors (unless --all or --peek).
