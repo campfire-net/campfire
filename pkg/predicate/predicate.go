@@ -31,6 +31,13 @@ import (
 	"unicode"
 )
 
+// MaxDepth is the maximum recursion depth for predicate evaluation.
+// Deeply nested expressions beyond this limit return ErrDepthExceeded.
+const MaxDepth = 64
+
+// ErrDepthExceeded is returned when a predicate exceeds MaxDepth.
+var ErrDepthExceeded = fmt.Errorf("predicate depth exceeds maximum (%d)", MaxDepth)
+
 // NodeType identifies the kind of predicate node.
 type NodeType int
 
@@ -70,11 +77,12 @@ type MessageContext struct {
 // EvalResult holds the result of evaluating a predicate node.
 // Boolean predicates set Bool; numeric/string expressions set Num/Str.
 type EvalResult struct {
-	Bool bool
-	Num  float64
-	Str  string
+	Bool  bool
+	Num   float64
+	Str   string
 	IsNum bool
 	IsStr bool
+	Err   error
 }
 
 // Parse parses an S-expression predicate string into an AST.
@@ -96,15 +104,28 @@ func Parse(input string) (*Node, error) {
 
 // Eval evaluates a predicate AST against a message context.
 // Returns true if the message matches the predicate.
+// Returns false if the predicate exceeds MaxDepth.
 func Eval(node *Node, ctx *MessageContext) bool {
-	r := eval(node, ctx)
+	r := evalDepth(node, ctx, 0)
 	return r.Bool
+}
+
+// EvalSafe evaluates a predicate and returns an error if depth is exceeded.
+func EvalSafe(node *Node, ctx *MessageContext) (bool, error) {
+	r := evalDepth(node, ctx, 0)
+	if r.Err != nil {
+		return false, r.Err
+	}
+	return r.Bool, nil
 }
 
 // EvalNumeric evaluates a predicate AST and returns its numeric result.
 // For use with weight/score expressions.
 func EvalNumeric(node *Node, ctx *MessageContext) (float64, error) {
-	r := eval(node, ctx)
+	r := evalDepth(node, ctx, 0)
+	if r.Err != nil {
+		return 0, r.Err
+	}
 	if r.IsNum {
 		return r.Num, nil
 	}
@@ -395,11 +416,18 @@ func truncate(s string, n int) string {
 
 // --- Evaluator ---
 
-func eval(node *Node, ctx *MessageContext) EvalResult {
+func evalDepth(node *Node, ctx *MessageContext, depth int) EvalResult {
+	if depth > MaxDepth {
+		return EvalResult{Err: ErrDepthExceeded}
+	}
 	switch node.Type {
 	case NodeAnd:
 		for _, c := range node.Children {
-			if !eval(c, ctx).Bool {
+			r := evalDepth(c, ctx, depth+1)
+			if r.Err != nil {
+				return r
+			}
+			if !r.Bool {
 				return EvalResult{Bool: false}
 			}
 		}
@@ -407,14 +435,22 @@ func eval(node *Node, ctx *MessageContext) EvalResult {
 
 	case NodeOr:
 		for _, c := range node.Children {
-			if eval(c, ctx).Bool {
+			r := evalDepth(c, ctx, depth+1)
+			if r.Err != nil {
+				return r
+			}
+			if r.Bool {
 				return EvalResult{Bool: true}
 			}
 		}
 		return EvalResult{Bool: false}
 
 	case NodeNot:
-		return EvalResult{Bool: !eval(node.Children[0], ctx).Bool}
+		r := evalDepth(node.Children[0], ctx, depth+1)
+		if r.Err != nil {
+			return r
+		}
+		return EvalResult{Bool: !r.Bool}
 
 	case NodeTag:
 		target := strings.ToLower(node.Value)
@@ -439,41 +475,41 @@ func eval(node *Node, ctx *MessageContext) EvalResult {
 		return evalLiteral(node.Value)
 
 	case NodeGt:
-		left := eval(node.Children[0], ctx)
-		right := eval(node.Children[1], ctx)
+		left := evalDepth(node.Children[0], ctx, depth+1)
+		right := evalDepth(node.Children[1], ctx, depth+1)
 		return EvalResult{Bool: toNum(left) > toNum(right)}
 
 	case NodeLt:
-		left := eval(node.Children[0], ctx)
-		right := eval(node.Children[1], ctx)
+		left := evalDepth(node.Children[0], ctx, depth+1)
+		right := evalDepth(node.Children[1], ctx, depth+1)
 		return EvalResult{Bool: toNum(left) < toNum(right)}
 
 	case NodeGte:
-		left := eval(node.Children[0], ctx)
-		right := eval(node.Children[1], ctx)
+		left := evalDepth(node.Children[0], ctx, depth+1)
+		right := evalDepth(node.Children[1], ctx, depth+1)
 		return EvalResult{Bool: toNum(left) >= toNum(right)}
 
 	case NodeLte:
-		left := eval(node.Children[0], ctx)
-		right := eval(node.Children[1], ctx)
+		left := evalDepth(node.Children[0], ctx, depth+1)
+		right := evalDepth(node.Children[1], ctx, depth+1)
 		return EvalResult{Bool: toNum(left) <= toNum(right)}
 
 	case NodeEq:
-		left := eval(node.Children[0], ctx)
-		right := eval(node.Children[1], ctx)
+		left := evalDepth(node.Children[0], ctx, depth+1)
+		right := evalDepth(node.Children[1], ctx, depth+1)
 		if left.IsStr && right.IsStr {
 			return EvalResult{Bool: left.Str == right.Str}
 		}
 		return EvalResult{Bool: toNum(left) == toNum(right)}
 
 	case NodeMul:
-		left := eval(node.Children[0], ctx)
-		right := eval(node.Children[1], ctx)
+		left := evalDepth(node.Children[0], ctx, depth+1)
+		right := evalDepth(node.Children[1], ctx, depth+1)
 		return EvalResult{Num: toNum(left) * toNum(right), IsNum: true}
 
 	case NodePow:
-		base := eval(node.Children[0], ctx)
-		exp := eval(node.Children[1], ctx)
+		base := evalDepth(node.Children[0], ctx, depth+1)
+		exp := evalDepth(node.Children[1], ctx, depth+1)
 		return EvalResult{Num: math.Pow(toNum(base), toNum(exp)), IsNum: true}
 	}
 

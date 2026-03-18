@@ -6,6 +6,120 @@ import (
 	"testing"
 )
 
+// --- workspace-pyw: exact tag matching ---
+
+// TestHasTag_ExactMatch verifies that HasTag matches the exact tag string.
+func TestHasTag_ExactMatch(t *testing.T) {
+	if !HasTag(`["campfire:compact"]`, "campfire:compact") {
+		t.Error("HasTag should match exact tag")
+	}
+}
+
+// TestHasTag_NoFalsePositive is the security regression test for workspace-pyw.
+// "xycampfire:compact" must NOT match a query for "campfire:compact".
+func TestHasTag_NoFalsePositive(t *testing.T) {
+	if HasTag(`["xycampfire:compact"]`, "campfire:compact") {
+		t.Error("HasTag must not match a tag that merely contains the substring")
+	}
+}
+
+// TestHasTag_MultipleTagsNoFalsePositive verifies multi-element arrays.
+func TestHasTag_MultipleTagsNoFalsePositive(t *testing.T) {
+	if HasTag(`["status","xycampfire:compact","other"]`, "campfire:compact") {
+		t.Error("HasTag must not match on substring in multi-tag array")
+	}
+}
+
+// TestIsCompactionEvent verifies that isCompactionEvent only fires on exact tag.
+func TestIsCompactionEvent_Exact(t *testing.T) {
+	rec := MessageRecord{Tags: `["campfire:compact"]`}
+	if !isCompactionEvent(rec) {
+		t.Error("isCompactionEvent should return true for exact campfire:compact tag")
+	}
+}
+
+// TestIsCompactionEvent_NoFalsePositive is the security regression test for workspace-pyw.
+func TestIsCompactionEvent_NoFalsePositive(t *testing.T) {
+	rec := MessageRecord{Tags: `["xycampfire:compact"]`}
+	if isCompactionEvent(rec) {
+		t.Error("isCompactionEvent must not fire for a tag that only contains campfire:compact as a substring")
+	}
+}
+
+// --- workspace-kw9: ListReferencingMessages LIKE injection ---
+
+// TestListReferencingMessages_WildcardID is the security regression test for workspace-kw9.
+// An ID containing SQL LIKE wildcards ('%' or '_') must not cause false matches.
+func TestListReferencingMessages_WildcardID(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	// Message A: references a normal ID.
+	normalID := "aabbccdd-0000-0000-0000-000000000001"
+	msgA := MessageRecord{
+		ID: "msg-a", CampfireID: "cf1", Sender: "s",
+		Payload: []byte("a"), Tags: "[]",
+		Antecedents: `["` + normalID + `"]`,
+		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+	}
+	s.AddMessage(msgA) //nolint:errcheck
+
+	// Message B: references an ID that shares a common prefix with the wildcard query below.
+	otherID := "aabbccdd-0000-0000-0000-000000000002"
+	msgB := MessageRecord{
+		ID: "msg-b", CampfireID: "cf1", Sender: "s",
+		Payload: []byte("b"), Tags: "[]",
+		Antecedents: `["` + otherID + `"]`,
+		Timestamp: 101, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 201,
+	}
+	s.AddMessage(msgB) //nolint:errcheck
+
+	// Query with an ID containing '%': must only match exact references.
+	wildcardID := "aabbccdd-0000-0000-0000-0000000000%"
+	refs, err := s.ListReferencingMessages(wildcardID)
+	if err != nil {
+		t.Fatalf("ListReferencingMessages() error: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("expected 0 results for wildcard ID query, got %d (LIKE injection)", len(refs))
+	}
+}
+
+// TestListReferencingMessages_ExactMatch verifies the normal path still works.
+func TestListReferencingMessages_ExactMatch(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	targetID := "target-id-0000-0000-0000-000000000001"
+	msgA := MessageRecord{
+		ID: "msg-ref", CampfireID: "cf1", Sender: "s",
+		Payload: []byte("references target"), Tags: "[]",
+		Antecedents: `["` + targetID + `"]`,
+		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+	}
+	s.AddMessage(msgA) //nolint:errcheck
+
+	// Unrelated message.
+	msgB := MessageRecord{
+		ID: "msg-unrelated", CampfireID: "cf1", Sender: "s",
+		Payload: []byte("unrelated"), Tags: "[]",
+		Antecedents: `[]`,
+		Timestamp: 101, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 201,
+	}
+	s.AddMessage(msgB) //nolint:errcheck
+
+	refs, err := s.ListReferencingMessages(targetID)
+	if err != nil {
+		t.Fatalf("ListReferencingMessages() error: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 referencing message, got %d", len(refs))
+	}
+	if refs[0].ID != "msg-ref" {
+		t.Errorf("got ID %q, want %q", refs[0].ID, "msg-ref")
+	}
+}
+
 func testStore(t *testing.T) *Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "store.db")

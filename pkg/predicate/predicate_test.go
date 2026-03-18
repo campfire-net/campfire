@@ -1,6 +1,7 @@
 package predicate
 
 import (
+	"fmt"
 	"math"
 	"testing"
 )
@@ -320,7 +321,7 @@ func TestEval_NilPayload(t *testing.T) {
 		t.Fatalf("parse error: %v", err)
 	}
 	ctx := &MessageContext{} // nil payload
-	r := eval(node, ctx)
+	r := evalDepth(node, ctx, 0)
 	if r.IsNum || r.IsStr || r.Bool {
 		t.Error("field on nil payload should return zero result")
 	}
@@ -375,4 +376,39 @@ func TestParse_EscapedStrings(t *testing.T) {
 	if !Eval(node, ctx) {
 		t.Error("expected match for escaped quote tag")
 	}
+}
+
+func TestEval_DepthLimit(t *testing.T) {
+	// Build a deeply nested expression: (not (not (not ... (tag "x") ...)))
+	expr := `(tag "x")`
+	for i := 0; i < MaxDepth+5; i++ {
+		expr = fmt.Sprintf("(not %s)", expr)
+	}
+	node, err := Parse(expr)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	ctx := &MessageContext{Tags: []string{"x"}}
+	_, err = EvalSafe(node, ctx)
+	if err != ErrDepthExceeded {
+		t.Errorf("expected ErrDepthExceeded, got %v", err)
+	}
+}
+
+func TestEval_AtMaxDepth(t *testing.T) {
+	// Build expression at exactly MaxDepth — should succeed
+	expr := `(tag "x")`
+	for i := 0; i < MaxDepth-1; i++ {
+		expr = fmt.Sprintf("(not %s)", expr)
+	}
+	node, err := Parse(expr)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	ctx := &MessageContext{Tags: []string{"x"}}
+	_, err = EvalSafe(node, ctx)
+	if err != nil {
+		t.Errorf("unexpected error at max depth: %v", err)
+	}
+	// Don't check bool value — odd/even nesting of not will flip it
 }

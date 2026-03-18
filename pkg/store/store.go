@@ -371,11 +371,7 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...
 	return filtered, nil
 }
 
-// isCompactionEvent returns true if the message has the "campfire:compact" tag.
-func isCompactionEvent(m MessageRecord) bool {
-	// Quick scan without full JSON decode for performance.
-	return strings.Contains(m.Tags, `"campfire:compact"`)
-}
+// isCompactionEvent is defined below using HasTag for exact matching.
 
 // collectSupersededIDs returns the set of message IDs superseded by any compaction
 // event in the given campfire. If campfireID is empty, collects across all campfires.
@@ -474,12 +470,16 @@ func (s *Store) SetReadCursor(campfireID string, timestamp int64) error {
 }
 
 // ListReferencingMessages finds messages whose antecedents contain the given message ID.
+// Uses json_each to perform an exact element match, avoiding LIKE wildcard injection
+// from IDs that contain '%' or '_' characters. (Security fix for workspace-kw9.)
 func (s *Store) ListReferencingMessages(messageID string) ([]MessageRecord, error) {
-	// JSON array search: antecedents contains the ID as a quoted string
-	pattern := fmt.Sprintf("%%%q%%", messageID)
 	rows, err := s.db.Query(
-		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
-		 FROM messages WHERE antecedents LIKE ? ORDER BY timestamp`, pattern,
+		`SELECT m.id, m.campfire_id, m.sender, m.payload, m.tags, m.antecedents, m.timestamp, m.signature, m.provenance, m.received_at, m.instance
+		 FROM messages m
+		 WHERE EXISTS (
+		     SELECT 1 FROM json_each(m.antecedents) WHERE value = ?
+		 )
+		 ORDER BY m.timestamp`, messageID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing referencing messages: %w", err)
@@ -689,4 +689,30 @@ func StorePath(cfHome string) string {
 // NowNano returns the current time in nanoseconds.
 func NowNano() int64 {
 	return time.Now().UnixNano()
+}
+
+// HasTag reports whether a JSON-encoded tags array contains the given tag as an
+// exact element match. It parses the JSON array and compares each element
+// verbatim, preventing false positives from substring matches (e.g.
+// "xycampfire:compact" would not match a query for "campfire:compact").
+// (Security fix for workspace-pyw.)
+func HasTag(tagsJSON, tag string) bool {
+	var tags []string
+	if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+		return false
+	}
+	for _, t := range tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// isCompactionEvent returns true if the message record carries the
+// "campfire:compact" tag as an exact element in its tags JSON array.
+// Uses HasTag rather than strings.Contains to avoid false positives from
+// tags that happen to contain the substring (e.g. "xycampfire:compact").
+func isCompactionEvent(rec MessageRecord) bool {
+	return HasTag(rec.Tags, "campfire:compact")
 }
