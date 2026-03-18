@@ -247,7 +247,7 @@ func (s *Store) GetMessage(id string) (*MessageRecord, error) {
 // Returns nil if no message matches. Returns an error if the prefix is ambiguous.
 func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 	rows, err := s.db.Query(
-		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 		 FROM messages WHERE id LIKE ? ORDER BY id`,
 		prefix+"%",
 	)
@@ -259,7 +259,7 @@ func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 	var matches []MessageRecord
 	for rows.Next() {
 		var m MessageRecord
-		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}
 		matches = append(matches, m)
