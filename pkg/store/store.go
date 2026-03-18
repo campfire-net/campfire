@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS campfire_memberships (
     join_protocol  TEXT NOT NULL,
     role           TEXT NOT NULL DEFAULT 'member',
     joined_at      INTEGER NOT NULL,
-    threshold      INTEGER NOT NULL DEFAULT 1
+    threshold      INTEGER NOT NULL DEFAULT 1,
+    description    TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -90,6 +91,7 @@ type Membership struct {
 	Role         string `json:"role"`
 	JoinedAt     int64  `json:"joined_at"`
 	Threshold    uint   `json:"threshold"`
+	Description  string `json:"description"`
 }
 
 // Open opens or creates the SQLite store at the given path.
@@ -105,6 +107,8 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
+	// Backward-compatible migration: add description column if missing.
+	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN description TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 	return &Store{db: db}, nil
 }
 
@@ -120,9 +124,9 @@ func (s *Store) AddMembership(m Membership) error {
 		threshold = 1
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold,
+		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description,
 	)
 	if err != nil {
 		return fmt.Errorf("adding membership: %w", err)
@@ -142,11 +146,11 @@ func (s *Store) RemoveMembership(campfireID string) error {
 // GetMembership returns a single membership by campfire ID.
 func (s *Store) GetMembership(campfireID string) (*Membership, error) {
 	row := s.db.QueryRow(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description
 		 FROM campfire_memberships WHERE campfire_id = ?`, campfireID,
 	)
 	var m Membership
-	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold)
+	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -159,7 +163,7 @@ func (s *Store) GetMembership(campfireID string) (*Membership, error) {
 // ListMemberships returns all campfire memberships.
 func (s *Store) ListMemberships() ([]Membership, error) {
 	rows, err := s.db.Query(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description
 		 FROM campfire_memberships ORDER BY joined_at`,
 	)
 	if err != nil {
@@ -170,7 +174,7 @@ func (s *Store) ListMemberships() ([]Membership, error) {
 	var memberships []Membership
 	for rows.Next() {
 		var m Membership
-		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold); err != nil {
+		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description); err != nil {
 			return nil, fmt.Errorf("scanning membership: %w", err)
 		}
 		memberships = append(memberships, m)

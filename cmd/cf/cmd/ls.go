@@ -36,6 +36,7 @@ var lsCmd = &cobra.Command{
 				Threshold    uint   `json:"threshold"`
 				MemberCount  int    `json:"member_count"`
 				JoinedAt     string `json:"joined_at"`
+				Description  string `json:"description"`
 			}
 			var entries []entry
 			for _, m := range memberships {
@@ -51,6 +52,7 @@ var lsCmd = &cobra.Command{
 					Threshold:    threshold,
 					MemberCount:  len(members),
 					JoinedAt:     time.Unix(0, m.JoinedAt).Format(time.RFC3339),
+					Description:  m.Description,
 				})
 			}
 			if entries == nil {
@@ -76,12 +78,17 @@ var lsCmd = &cobra.Command{
 			if threshold == 0 {
 				threshold = 1
 			}
-			fmt.Printf("%s  %s  %d members  threshold=%d  %s\n",
+			descSuffix := ""
+			if m.Description != "" {
+				descSuffix = "  " + m.Description
+			}
+			fmt.Printf("%s  %s  %d members  threshold=%d  %s%s\n",
 				idShort,
 				m.JoinProtocol,
 				len(members),
 				threshold,
 				m.Role,
+				descSuffix,
 			)
 		}
 		return nil
