@@ -678,7 +678,7 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		CampfireID:   campfireID,
 		TransportDir: transport.CampfireDir(campfireID),
 		JoinProtocol: state.JoinProtocol,
-		Role:         "member",
+		Role:         campfire.RoleFull,
 		JoinedAt:     now,
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))

@@ -1,6 +1,9 @@
 package cmd
 
 // Tests for workspace-o3l.2: membership roles (observer/writer/full) with client-side enforcement.
+// Also covers regression tests for:
+//   - workspace-4s4: joinFilesystem() must preserve role from pre-admitted MemberRecord
+//   - workspace-w97: checkRoleCanSend must run after final tags slice is assembled
 
 import (
 	"fmt"
@@ -242,7 +245,7 @@ func TestEmptyRoleDefaultsToFull(t *testing.T) {
 	}
 }
 
-// TestMemberRoleDefaultsToFull verifies that the legacy "member"/"creator" roles
+// TestLegacyRolesDefaultToFull verifies that the legacy "member"/"creator" roles
 // (which were the original values) are treated as "full".
 func TestLegacyRolesDefaultToFull(t *testing.T) {
 	cfHomeDir := t.TempDir()
@@ -365,4 +368,121 @@ func TestAdmitDefaultRoleIsFull(t *testing.T) {
 		}
 	}
 	t.Error("member not found")
+}
+
+// TestJoinFilesystemPreservesAdmittedRole is a regression test for workspace-4s4:
+// joinFilesystem() must read the Role from the pre-admitted MemberRecord and pass it
+// through to AddMembership, rather than always storing "member"/"full".
+func TestJoinFilesystemPreservesAdmittedRole(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	transportBaseDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+	t.Setenv("CF_TRANSPORT_DIR", transportBaseDir)
+
+	// Create a campfire identity (the campfire, not the agent).
+	cfID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating campfire identity: %v", err)
+	}
+	campfireID := cfID.PublicKeyHex()
+
+	// Set up the transport directory with state file.
+	cfDir := filepath.Join(transportBaseDir, campfireID)
+	for _, sub := range []string{"members", "messages"} {
+		if err := os.MkdirAll(filepath.Join(cfDir, sub), 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", sub, err)
+		}
+	}
+	state := &campfire.CampfireState{
+		PublicKey:             cfID.PublicKey,
+		PrivateKey:            cfID.PrivateKey,
+		JoinProtocol:          "invite-only",
+		ReceptionRequirements: []string{},
+		CreatedAt:             time.Now().UnixNano(),
+	}
+	stateData, err := cfencoding.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfDir, "campfire.cbor"), stateData, 0644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	// Create the joining agent.
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating agent identity: %v", err)
+	}
+	if err := agentID.Save(filepath.Join(cfHomeDir, "identity.json")); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	// Pre-admit the agent as an observer (simulating cf admit --role observer).
+	transport := fs.New(transportBaseDir)
+	preAdmitTime := time.Now().UnixNano()
+	if err := transport.WriteMember(campfireID, campfire.MemberRecord{
+		PublicKey: agentID.PublicKey,
+		JoinedAt:  preAdmitTime,
+		Role:      campfire.RoleObserver,
+	}); err != nil {
+		t.Fatalf("pre-admitting member: %v", err)
+	}
+
+	// Open store and call joinFilesystem.
+	s, err := store.Open(filepath.Join(cfHomeDir, "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	if err := joinFilesystem(campfireID, agentID, s); err != nil {
+		t.Fatalf("joinFilesystem: %v", err)
+	}
+
+	// Verify the stored membership has Role == "observer" (not "full" or "member").
+	m, err := s.GetMembership(campfireID)
+	if err != nil {
+		t.Fatalf("GetMembership: %v", err)
+	}
+	if m == nil {
+		t.Fatal("membership not found after join")
+	}
+	if m.Role != campfire.RoleObserver {
+		t.Errorf("membership Role = %q, want %q (workspace-4s4: pre-admitted role must be preserved)", m.Role, campfire.RoleObserver)
+	}
+}
+
+// TestSendRoleCheckSeesAssembledTags is a regression test for workspace-w97:
+// the role check in the send command must see the final assembled tags, including
+// "future" (from --future) and "fulfills" (from --fulfills), not just the raw
+// user-provided --tag values. A "writer" role must be blocked from sending a
+// message when the assembled tag list includes a campfire:* tag.
+func TestSendRoleCheckSeesAssembledTags(t *testing.T) {
+	// This test verifies checkRoleCanSend logic directly with assembled tags.
+	// The send command passes the final tags slice to checkRoleCanSend.
+
+	// writer + no system tags = allowed
+	if err := checkRoleCanSend(campfire.RoleWriter, []string{"status", "future"}); err != nil {
+		t.Errorf("writer with non-system tags should be allowed, got: %v", err)
+	}
+
+	// writer + system tag added after assembly = blocked
+	// (simulates --tag campfire:compact being in the raw sendTags)
+	if err := checkRoleCanSend(campfire.RoleWriter, []string{"campfire:compact", "future"}); err == nil {
+		t.Error("writer with campfire:* tag in assembled tags should be blocked")
+	} else if !isRoleError(err) {
+		t.Errorf("expected role enforcement error, got: %v", err)
+	}
+
+	// observer + any tags = always blocked
+	if err := checkRoleCanSend(campfire.RoleObserver, []string{"future"}); err == nil {
+		t.Error("observer should always be blocked from sending")
+	} else if !isRoleError(err) {
+		t.Errorf("expected role enforcement error, got: %v", err)
+	}
+
+	// full + system tags = allowed
+	if err := checkRoleCanSend(campfire.RoleFull, []string{"campfire:compact", "future", "fulfills"}); err != nil {
+		t.Errorf("full role should be allowed with any tags, got: %v", err)
+	}
 }

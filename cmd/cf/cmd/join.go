@@ -86,10 +86,12 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Stor
 	}
 	alreadyOnDisk := false
 	var existingJoinedAt int64
+	var existingRole string
 	for _, m := range members {
 		if fmt.Sprintf("%x", m.PublicKey) == agentID.PublicKeyHex() {
 			alreadyOnDisk = true
 			existingJoinedAt = m.JoinedAt
+			existingRole = m.Role
 			break
 		}
 	}
@@ -98,6 +100,7 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Stor
 
 	if alreadyOnDisk {
 		// Pre-admitted (e.g., via DM or cf admit). Just register locally.
+		// Preserve the role that was set by the admitting member (workspace-4s4).
 		now = existingJoinedAt
 	} else {
 		// Need to be admitted first
@@ -115,9 +118,11 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Stor
 		if err := transport.WriteMember(campfireID, campfire.MemberRecord{
 			PublicKey: agentID.PublicKey,
 			JoinedAt:  now,
+			Role:      campfire.RoleFull,
 		}); err != nil {
 			return fmt.Errorf("writing member record: %w", err)
 		}
+		existingRole = campfire.RoleFull
 	}
 
 	// Write campfire:member-joined system message (only if newly admitted)
@@ -150,12 +155,14 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Stor
 	// Look up description from beacon (best-effort).
 	description := lookupBeaconDescription(campfireID)
 
-	// Record membership in local store
+	// Record membership in local store.
+	// Use existingRole (read from transport MemberRecord when pre-admitted,
+	// or RoleFull for open-protocol joins) so admitted roles are preserved (workspace-4s4).
 	if err := s.AddMembership(store.Membership{
 		CampfireID:   campfireID,
 		TransportDir: transport.CampfireDir(campfireID),
 		JoinProtocol: state.JoinProtocol,
-		Role:         "member",
+		Role:         existingRole,
 		JoinedAt:     now,
 		Description:  description,
 	}); err != nil {
@@ -219,7 +226,7 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store) 
 		CampfireID:   campfireID,
 		TransportDir: stateDir,
 		JoinProtocol: result.JoinProtocol,
-		Role:         "member",
+		Role:         campfire.RoleFull,
 		JoinedAt:     store.NowNano(),
 		Threshold:    result.Threshold,
 		Description:  p2pDescription,
@@ -450,7 +457,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) 
 		CampfireID:   campfireID,
 		TransportDir: transportDir,
 		JoinProtocol: "open", // populated from beacon in production; simplified here
-		Role:         "member",
+		Role:         campfire.RoleFull,
 		JoinedAt:     store.NowNano(),
 		Threshold:    1,
 		Description:  ghDescription,

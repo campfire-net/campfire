@@ -102,6 +102,13 @@ var sendCmd = &cobra.Command{
 			tags = append(tags, "fulfills")
 		}
 
+		// Enforce membership role after the final tags slice is assembled.
+		// Must run after "future" and "fulfills" are appended so the check
+		// sees the complete tag set (workspace-w97).
+		if err := checkRoleCanSend(m.Role, tags); err != nil {
+			return err
+		}
+
 		// Build antecedents
 		antecedents := sendAntecedents
 		if sendFulfills != "" {

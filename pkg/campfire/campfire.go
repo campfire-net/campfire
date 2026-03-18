@@ -10,16 +10,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/identity"
 )
 
-// Campfire represents a campfire's state.
-type Campfire struct {
-	Identity              *identity.Identity `cbor:"1,keyasint" json:"-"`
-	JoinProtocol          string             `cbor:"2,keyasint" json:"join_protocol"`
-	ReceptionRequirements []string           `cbor:"3,keyasint" json:"reception_requirements"`
-	Members               []Member           `cbor:"4,keyasint" json:"members"`
-	CreatedAt             int64              `cbor:"5,keyasint" json:"created_at"`
-	Threshold             uint               `cbor:"6,keyasint" json:"threshold"`
-}
-
 // Membership role constants.
 const (
 	// RoleObserver can read messages only. Cannot send. Client-side enforced.
@@ -41,6 +31,16 @@ func EffectiveRole(role string) string {
 		// empty, "member", "creator", and any unknown legacy value → full
 		return RoleFull
 	}
+}
+
+// Campfire represents a campfire's state.
+type Campfire struct {
+	Identity              *identity.Identity `cbor:"1,keyasint" json:"-"`
+	JoinProtocol          string             `cbor:"2,keyasint" json:"join_protocol"`
+	ReceptionRequirements []string           `cbor:"3,keyasint" json:"reception_requirements"`
+	Members               []Member           `cbor:"4,keyasint" json:"members"`
+	CreatedAt             int64              `cbor:"5,keyasint" json:"created_at"`
+	Threshold             uint               `cbor:"6,keyasint" json:"threshold"`
 }
 
 // Member represents a campfire member.

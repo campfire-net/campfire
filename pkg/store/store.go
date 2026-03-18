@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS campfire_memberships (
     campfire_id    TEXT PRIMARY KEY,
     transport_dir  TEXT NOT NULL,
     join_protocol  TEXT NOT NULL,
-    role           TEXT NOT NULL DEFAULT 'member',
+    role           TEXT NOT NULL DEFAULT 'full',
     joined_at      INTEGER NOT NULL,
     threshold      INTEGER NOT NULL DEFAULT 1,
     description    TEXT NOT NULL DEFAULT ''
