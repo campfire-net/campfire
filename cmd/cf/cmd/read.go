@@ -27,6 +27,8 @@ var (
 	readFollow       bool
 	readPull         string
 	readSelfEndpoint string
+	readTagFilters   []string
+	readSenderFilter string
 )
 
 // natPollConfig holds all parameters for the NAT poll loop.
@@ -366,9 +368,14 @@ var readCmd = &cobra.Command{
 					newMessages = append(newMessages, msgs...)
 				}
 
+				// Apply post-query filters for display.
+				filteredMessages := filterMessages(newMessages, readTagFilters, readSenderFilter)
+
 				// Print and advance cursors.
+				// Note: cursor advances based on ALL new messages (pre-filter),
+				// so filtered-out messages don't re-appear on the next poll.
 				if len(newMessages) > 0 {
-					printMessages(newMessages, s)
+					printMessages(filteredMessages, s)
 
 					// Update cursors (unless --peek).
 					if !readPeek {
@@ -410,6 +417,9 @@ var readCmd = &cobra.Command{
 			}
 			allMessages = append(allMessages, msgs...)
 		}
+
+		// Apply post-query filters.
+		allMessages = filterMessages(allMessages, readTagFilters, readSenderFilter)
 
 		if jsonOutput {
 			type jsonMsg struct {
@@ -749,5 +759,7 @@ func init() {
 	readCmd.Flags().BoolVar(&readFollow, "follow", false, "stream messages in real time (NAT mode: keep polling)")
 	readCmd.Flags().StringVar(&readPull, "pull", "", "fetch specific messages by ID (comma-separated)")
 	readCmd.Flags().StringVar(&readSelfEndpoint, "endpoint", "", "this agent's own HTTP endpoint (empty = NAT mode, poll peers)")
+	readCmd.Flags().StringArrayVar(&readTagFilters, "tag", nil, "filter messages by tag (OR semantics, repeatable)")
+	readCmd.Flags().StringVar(&readSenderFilter, "sender", "", "filter messages by sender hex prefix")
 	rootCmd.AddCommand(readCmd)
 }

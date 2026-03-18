@@ -12,7 +12,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var dagAll bool
+var (
+	dagAll          bool
+	dagTagFilters   []string
+	dagSenderFilter string
+)
 
 var dagCmd = &cobra.Command{
 	Use:   "dag <campfire-id>",
@@ -59,6 +63,9 @@ var dagCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("listing messages: %w", err)
 		}
+
+		// Apply post-query filters.
+		msgs = filterMessages(msgs, dagTagFilters, dagSenderFilter)
 
 		if jsonOutput {
 			formatDAGJSON(msgs, os.Stdout)
@@ -177,5 +184,7 @@ func formatDAGJSON(msgs []store.MessageRecord, w io.Writer) {
 
 func init() {
 	dagCmd.Flags().BoolVar(&dagAll, "all", false, "show all messages (default: unread only)")
+	dagCmd.Flags().StringArrayVar(&dagTagFilters, "tag", nil, "filter messages by tag (OR semantics, repeatable)")
+	dagCmd.Flags().StringVar(&dagSenderFilter, "sender", "", "filter messages by sender hex prefix")
 	rootCmd.AddCommand(dagCmd)
 }
