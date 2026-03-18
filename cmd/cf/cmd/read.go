@@ -25,6 +25,7 @@ var (
 	readAll          bool
 	readPeek         bool
 	readFollow       bool
+	readPull         string
 	readSelfEndpoint string
 )
 
@@ -146,6 +147,14 @@ var readCmd = &cobra.Command{
 	Short: "Read messages",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// --pull is mutually exclusive with --all, --peek, --follow.
+		if readPull != "" {
+			if readAll || readPeek || readFollow {
+				return fmt.Errorf("--pull is mutually exclusive with --all, --peek, and --follow")
+			}
+			return runPull(readPull)
+		}
+
 		agentID, err := identity.Load(IdentityPath())
 		if err != nil {
 			return fmt.Errorf("loading identity: %w", err)
@@ -502,10 +511,114 @@ func printNATMessages(campfireID string, msgs []message.Message, w io.Writer, s 
 	}
 }
 
+// runPull fetches specific messages by ID (comma-separated) from the local store.
+// It does NOT advance the read cursor and does NOT sync transports.
+func runPull(idsArg string) error {
+	s, err := store.Open(store.StorePath(CFHome()))
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ids := strings.Split(idsArg, ",")
+	var messages []store.MessageRecord
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		msg, err := s.GetMessageByPrefix(id)
+		if err != nil {
+			return err
+		}
+		if msg == nil {
+			return fmt.Errorf("message not found: %s", id)
+		}
+		messages = append(messages, *msg)
+	}
+
+	if jsonOutput {
+		type jsonMsg struct {
+			ID          string          `json:"id"`
+			CampfireID  string          `json:"campfire_id"`
+			Sender      string          `json:"sender"`
+			Payload     string          `json:"payload"`
+			Tags        []string        `json:"tags"`
+			Antecedents []string        `json:"antecedents"`
+			Timestamp   int64           `json:"timestamp"`
+			Provenance  json.RawMessage `json:"provenance"`
+		}
+		var out []jsonMsg
+		for _, m := range messages {
+			var tags []string
+			json.Unmarshal([]byte(m.Tags), &tags)
+			var antecedents []string
+			json.Unmarshal([]byte(m.Antecedents), &antecedents)
+			if antecedents == nil {
+				antecedents = []string{}
+			}
+			out = append(out, jsonMsg{
+				ID:          m.ID,
+				CampfireID:  m.CampfireID,
+				Sender:      m.Sender,
+				Payload:     string(m.Payload),
+				Tags:        tags,
+				Antecedents: antecedents,
+				Timestamp:   m.Timestamp,
+				Provenance:  json.RawMessage(m.Provenance),
+			})
+		}
+		if out == nil {
+			out = []jsonMsg{}
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	for _, m := range messages {
+		var tags []string
+		json.Unmarshal([]byte(m.Tags), &tags)
+		var antecedents []string
+		json.Unmarshal([]byte(m.Antecedents), &antecedents)
+
+		cfShort := m.CampfireID
+		if len(cfShort) > 6 {
+			cfShort = cfShort[:6]
+		}
+		senderShort := m.Sender
+		if len(senderShort) > 6 {
+			senderShort = senderShort[:6]
+		}
+		senderDisplay := "agent:" + senderShort
+		ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
+
+		fmt.Printf("[campfire:%s] %s %s\n", cfShort, ts, senderDisplay)
+		if len(tags) > 0 {
+			fmt.Printf("  tags: %s\n", strings.Join(tags, ", "))
+		}
+		if len(antecedents) > 0 {
+			shortAnts := make([]string, len(antecedents))
+			for i, a := range antecedents {
+				if len(a) > 8 {
+					shortAnts[i] = a[:8]
+				} else {
+					shortAnts[i] = a
+				}
+			}
+			fmt.Printf("  antecedents: %s\n", strings.Join(shortAnts, ", "))
+		}
+		fmt.Printf("  %s\n\n", string(m.Payload))
+	}
+
+	return nil
+}
+
 func init() {
 	readCmd.Flags().BoolVar(&readAll, "all", false, "show all messages (not just unread)")
 	readCmd.Flags().BoolVar(&readPeek, "peek", false, "show unread messages without updating cursor")
 	readCmd.Flags().BoolVar(&readFollow, "follow", false, "stream messages in real time (NAT mode: keep polling)")
+	readCmd.Flags().StringVar(&readPull, "pull", "", "fetch specific messages by ID (comma-separated)")
 	readCmd.Flags().StringVar(&readSelfEndpoint, "endpoint", "", "this agent's own HTTP endpoint (empty = NAT mode, poll peers)")
 	rootCmd.AddCommand(readCmd)
 }

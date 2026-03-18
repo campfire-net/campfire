@@ -239,6 +239,39 @@ func (s *Store) GetMessage(id string) (*MessageRecord, error) {
 	return &m, nil
 }
 
+// GetMessageByPrefix resolves a message ID prefix to a single message.
+// Returns nil if no message matches. Returns an error if the prefix is ambiguous.
+func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at
+		 FROM messages WHERE id LIKE ? ORDER BY id`,
+		prefix+"%",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying messages by prefix: %w", err)
+	}
+	defer rows.Close()
+
+	var matches []MessageRecord
+	for rows.Next() {
+		var m MessageRecord
+		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt); err != nil {
+			return nil, fmt.Errorf("scanning message: %w", err)
+		}
+		matches = append(matches, m)
+		if len(matches) > 1 {
+			return nil, fmt.Errorf("ambiguous message ID prefix %s, matches multiple messages", prefix)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	return &matches[0], nil
+}
+
 // ListMessages returns messages for a campfire, ordered by timestamp.
 // If campfireID is empty, returns messages across all campfires.
 // If afterTimestamp > 0, only returns messages with timestamp > afterTimestamp.

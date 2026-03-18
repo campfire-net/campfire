@@ -198,3 +198,106 @@ func TestRemoveMembership(t *testing.T) {
 		t.Errorf("got %d memberships after remove, want 0", len(memberships))
 	}
 }
+
+func TestGetMessageByPrefix_ExactMatch(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	msg := MessageRecord{
+		ID: "abc12345-6789-0000-0000-000000000000", CampfireID: "cf1",
+		Sender: "sender1", Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
+		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+	}
+	s.AddMessage(msg)
+
+	got, err := s.GetMessageByPrefix(msg.ID)
+	if err != nil {
+		t.Fatalf("GetMessageByPrefix() error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected message, got nil")
+	}
+	if got.ID != msg.ID {
+		t.Errorf("ID = %s, want %s", got.ID, msg.ID)
+	}
+}
+
+func TestGetMessageByPrefix_PrefixMatch(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	msg := MessageRecord{
+		ID: "abc12345-6789-0000-0000-000000000000", CampfireID: "cf1",
+		Sender: "sender1", Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
+		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+	}
+	s.AddMessage(msg)
+
+	got, err := s.GetMessageByPrefix("abc123")
+	if err != nil {
+		t.Fatalf("GetMessageByPrefix() error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected message, got nil")
+	}
+	if got.ID != msg.ID {
+		t.Errorf("ID = %s, want %s", got.ID, msg.ID)
+	}
+}
+
+func TestGetMessageByPrefix_NotFound(t *testing.T) {
+	s := testStore(t)
+
+	got, err := s.GetMessageByPrefix("nonexistent")
+	if err != nil {
+		t.Fatalf("GetMessageByPrefix() error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil, got message with ID %s", got.ID)
+	}
+}
+
+func TestGetMessageByPrefix_Ambiguous(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	for _, id := range []string{
+		"abc12345-aaaa-0000-0000-000000000000",
+		"abc12345-bbbb-0000-0000-000000000000",
+	} {
+		s.AddMessage(MessageRecord{
+			ID: id, CampfireID: "cf1", Sender: "s", Payload: []byte("p"),
+			Tags: "[]", Antecedents: "[]", Timestamp: 100, Signature: []byte("s"),
+			Provenance: "[]", ReceivedAt: 200,
+		})
+	}
+
+	_, err := s.GetMessageByPrefix("abc123")
+	if err == nil {
+		t.Fatal("expected error for ambiguous prefix, got nil")
+	}
+}
+
+func TestGetMessageByPrefix_CrossCampfire(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+	s.AddMembership(Membership{CampfireID: "cf2", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	msg := MessageRecord{
+		ID: "xyz99999-0000-0000-0000-000000000000", CampfireID: "cf2",
+		Sender: "sender2", Payload: []byte("from cf2"), Tags: "[]", Antecedents: "[]",
+		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+	}
+	s.AddMessage(msg)
+
+	got, err := s.GetMessageByPrefix("xyz999")
+	if err != nil {
+		t.Fatalf("GetMessageByPrefix() error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected message, got nil")
+	}
+	if got.CampfireID != "cf2" {
+		t.Errorf("CampfireID = %s, want cf2", got.CampfireID)
+	}
+}
