@@ -14,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var admitRole string
+
 var admitCmd = &cobra.Command{
 	Use:   "admit <campfire-id> <member-public-key-hex>",
 	Short: "Admit a member to an invite-only campfire",
@@ -68,10 +70,23 @@ var admitCmd = &cobra.Command{
 
 		now := time.Now().UnixNano()
 
+		// Validate role and default to "full".
+		switch admitRole {
+		case campfire.RoleObserver, campfire.RoleWriter, campfire.RoleFull, "":
+			// valid
+		default:
+			return fmt.Errorf("invalid role %q: must be one of observer, writer, full", admitRole)
+		}
+		role := admitRole
+		if role == "" {
+			role = campfire.RoleFull
+		}
+
 		// Write member record
 		if err := transport.WriteMember(campfireID, campfire.MemberRecord{
 			PublicKey: memberKey,
 			JoinedAt:  now,
+			Role:      role,
 		}); err != nil {
 			return fmt.Errorf("writing member record: %w", err)
 		}
@@ -105,6 +120,7 @@ var admitCmd = &cobra.Command{
 			out := map[string]string{
 				"campfire_id": campfireID,
 				"member":      memberKeyHex,
+				"role":        role,
 				"status":      "admitted",
 			}
 			enc := json.NewEncoder(os.Stdout)
@@ -112,11 +128,12 @@ var admitCmd = &cobra.Command{
 			return enc.Encode(out)
 		}
 
-		fmt.Printf("Admitted %s to campfire %s\n", memberKeyHex[:12], campfireID[:12])
+		fmt.Printf("Admitted %s to campfire %s (role: %s)\n", memberKeyHex[:12], campfireID[:12], role)
 		return nil
 	},
 }
 
 func init() {
+	admitCmd.Flags().StringVar(&admitRole, "role", "", "membership role: observer, writer, or full (default: full)")
 	rootCmd.AddCommand(admitCmd)
 }
