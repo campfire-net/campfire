@@ -231,7 +231,8 @@ func runViewRead(campfireIDArg, name string) error {
 	}
 
 	// Load all messages (not just unread — views see everything).
-	allMsgs, err := s.ListMessages(campfireID, 0)
+	// RespectCompaction: true so superseded messages are excluded from view results.
+	allMsgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{RespectCompaction: true})
 	if err != nil {
 		return fmt.Errorf("listing messages: %w", err)
 	}

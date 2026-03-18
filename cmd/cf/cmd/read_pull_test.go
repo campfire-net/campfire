@@ -27,7 +27,7 @@ func TestRunPull_ExactID(t *testing.T) {
 	s.SetReadCursor("cf1", 500000000)
 	s.Close()
 
-	err = runPull("msg-abc123-0000-0000-0000-000000000000")
+	err = runPull("msg-abc123-0000-0000-0000-000000000000", nil)
 	if err != nil {
 		t.Fatalf("runPull() error: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestRunPull_PrefixID(t *testing.T) {
 	})
 	s.Close()
 
-	err = runPull("msg-abc")
+	err = runPull("msg-abc", nil)
 	if err != nil {
 		t.Fatalf("runPull() with prefix error: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestRunPull_MultipleIDs(t *testing.T) {
 	})
 	s.Close()
 
-	err = runPull("msg-aaa-0000,msg-bbb-0000")
+	err = runPull("msg-aaa-0000,msg-bbb-0000", nil)
 	if err != nil {
 		t.Fatalf("runPull() with multiple IDs error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestRunPull_NotFound(t *testing.T) {
 	}
 	s.Close()
 
-	err = runPull("msg-nonexistent")
+	err = runPull("msg-nonexistent", nil)
 	if err == nil {
 		t.Fatal("expected error for non-existent message, got nil")
 	}

@@ -291,6 +291,48 @@ type natPollConfig struct {
 	// stopCh receives a signal to terminate the loop. If nil, runNATPoll
 	// registers its own SIGINT/SIGTERM handler.
 	stopCh chan os.Signal
+	// tagFilters and senderFilter apply the same --tag/--sender semantics as
+	// the direct-mode read path. Empty values mean no filtering.
+	tagFilters   []string
+	senderFilter string
+}
+
+// filterNATMessages applies tag and sender filters to a slice of message.Message.
+// tagFilters uses OR semantics: a message matches if it has ANY of the specified tags.
+// senderFilter matches on a hex prefix of the sender bytes (case-insensitive).
+// Empty values mean no filtering.
+func filterNATMessages(msgs []message.Message, tagFilters []string, senderFilter string) []message.Message {
+	if len(tagFilters) == 0 && senderFilter == "" {
+		return msgs
+	}
+
+	tagSet := make(map[string]bool, len(tagFilters))
+	for _, t := range tagFilters {
+		tagSet[strings.ToLower(t)] = true
+	}
+	senderPrefix := strings.ToLower(senderFilter)
+
+	var result []message.Message
+	for _, m := range msgs {
+		senderHex := fmt.Sprintf("%x", m.Sender)
+		if senderPrefix != "" && !strings.HasPrefix(strings.ToLower(senderHex), senderPrefix) {
+			continue
+		}
+		if len(tagSet) > 0 {
+			matched := false
+			for _, tg := range m.Tags {
+				if tagSet[strings.ToLower(tg)] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		result = append(result, m)
+	}
+	return result
 }
 
 // errNoReachablePeers is returned by runNATPoll when no non-empty peer endpoints exist.
@@ -374,7 +416,10 @@ func runNATPoll(cfg natPollConfig, w io.Writer) error {
 
 		if len(msgs) > 0 {
 			cursor = newCursor
-			printNATMessages(cfg.campfireID, msgs, w, cfg.st)
+			filtered := filterNATMessages(msgs, cfg.tagFilters, cfg.senderFilter)
+			if len(filtered) > 0 {
+				printNATMessages(cfg.campfireID, filtered, w, cfg.st)
+			}
 		}
 
 		if !cfg.follow {
@@ -423,17 +468,17 @@ var readCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// --pull is mutually exclusive with --all, --peek, --follow.
-		if readPull != "" {
-			if readAll || readPeek || readFollow {
-				return fmt.Errorf("--pull is mutually exclusive with --all, --peek, and --follow")
-			}
-			return runPull(readPull)
-		}
-
 		// Parse --fields early so we can error before any I/O.
 		fieldSet, err := parseFieldSet(readFields)
 		if err != nil {
 			return err
+		}
+
+		if readPull != "" {
+			if readAll || readPeek || readFollow {
+				return fmt.Errorf("--pull is mutually exclusive with --all, --peek, and --follow")
+			}
+			return runPull(readPull, fieldSet)
 		}
 
 		agentID, err := identity.Load(IdentityPath())
@@ -816,7 +861,8 @@ func printNATMessages(campfireID string, msgs []message.Message, w io.Writer, s 
 
 // runPull fetches specific messages by ID (comma-separated) from the local store.
 // It does NOT advance the read cursor and does NOT sync transports.
-func runPull(idsArg string) error {
+// fieldSet controls which fields appear in output; nil means all fields.
+func runPull(idsArg string, fieldSet map[string]bool) error {
 	s, err := store.Open(store.StorePath(CFHome()))
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
@@ -841,84 +887,10 @@ func runPull(idsArg string) error {
 	}
 
 	if jsonOutput {
-		type jsonMsg struct {
-			ID          string          `json:"id"`
-			CampfireID  string          `json:"campfire_id"`
-			Sender      string          `json:"sender"`
-			Instance    string          `json:"instance,omitempty"`
-			Payload     string          `json:"payload"`
-			Tags        []string        `json:"tags"`
-			Antecedents []string        `json:"antecedents"`
-			Timestamp   int64           `json:"timestamp"`
-			Provenance  json.RawMessage `json:"provenance"`
-		}
-		var out []jsonMsg
-		for _, m := range messages {
-			var tags []string
-			json.Unmarshal([]byte(m.Tags), &tags)
-			var antecedents []string
-			json.Unmarshal([]byte(m.Antecedents), &antecedents)
-			if antecedents == nil {
-				antecedents = []string{}
-			}
-			out = append(out, jsonMsg{
-				ID:          m.ID,
-				CampfireID:  m.CampfireID,
-				Sender:      m.Sender,
-				Instance:    m.Instance,
-				Payload:     string(m.Payload),
-				Tags:        tags,
-				Antecedents: antecedents,
-				Timestamp:   m.Timestamp,
-				Provenance:  json.RawMessage(m.Provenance),
-			})
-		}
-		if out == nil {
-			out = []jsonMsg{}
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		return encodeMessagesJSONWithFields(messages, fieldSet, os.Stdout)
 	}
 
-	for _, m := range messages {
-		var tags []string
-		json.Unmarshal([]byte(m.Tags), &tags)
-		var antecedents []string
-		json.Unmarshal([]byte(m.Antecedents), &antecedents)
-
-		cfShort := m.CampfireID
-		if len(cfShort) > 6 {
-			cfShort = cfShort[:6]
-		}
-		senderShort := m.Sender
-		if len(senderShort) > 6 {
-			senderShort = senderShort[:6]
-		}
-		senderDisplay := "agent:" + senderShort
-		if m.Instance != "" {
-			senderDisplay += " (" + m.Instance + ")"
-		}
-		ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
-
-		fmt.Printf("[campfire:%s] %s %s\n", cfShort, ts, senderDisplay)
-		if len(tags) > 0 {
-			fmt.Printf("  tags: %s\n", strings.Join(tags, ", "))
-		}
-		if len(antecedents) > 0 {
-			shortAnts := make([]string, len(antecedents))
-			for i, a := range antecedents {
-				if len(a) > 8 {
-					shortAnts[i] = a[:8]
-				} else {
-					shortAnts[i] = a
-				}
-			}
-			fmt.Printf("  antecedents: %s\n", strings.Join(shortAnts, ", "))
-		}
-		fmt.Printf("  %s\n\n", string(m.Payload))
-	}
-
+	printMessagesWithFields(messages, s, fieldSet)
 	return nil
 }
 
