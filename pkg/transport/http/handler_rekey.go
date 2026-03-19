@@ -236,7 +236,15 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		}
 	}
 
-	// Update campfire state file.
+	// Update store FIRST: rename campfire_id in all tables.
+	// If this fails, leave state files untouched so the campfire remains recoverable.
+	if err := h.store.UpdateCampfireID(oldCampfireID, newCampfireID); err != nil {
+		log.Printf("handleRekey: failed to update campfire ID %s -> %s: %v", oldCampfireID, newCampfireID, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Update campfire state file only after the DB update succeeds.
 	safeTransportDir, sanitizeErr := sanitizeTransportDir(membership.TransportDir)
 	if sanitizeErr != nil {
 		log.Printf("handleRekey: invalid transport dir for campfire %s: %v", oldCampfireID, sanitizeErr)
@@ -258,16 +266,14 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		}
 		if newStateData, marshalErr := cfencoding.Marshal(newState); marshalErr == nil {
 			newStateFile := filepath.Join(safeTransportDir, newCampfireID+".cbor")
-			os.WriteFile(newStateFile, newStateData, 0600) //nolint:errcheck
+			if writeErr := os.WriteFile(newStateFile, newStateData, 0600); writeErr != nil {
+				log.Printf("handleRekey: failed to write new state file for %s: %v", newCampfireID, writeErr)
+			} else {
+				if removeErr := os.Remove(stateFile); removeErr != nil {
+					log.Printf("handleRekey: failed to remove old state file for %s: %v", oldCampfireID, removeErr)
+				}
+			}
 		}
-		os.Remove(stateFile) //nolint:errcheck
-	}
-
-	// Update store: rename campfire_id in all tables.
-	if err := h.store.UpdateCampfireID(oldCampfireID, newCampfireID); err != nil {
-		log.Printf("handleRekey: failed to update campfire ID %s -> %s: %v", oldCampfireID, newCampfireID, err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
 	}
 
 	// Update in-memory peer list.
