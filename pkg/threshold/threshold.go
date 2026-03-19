@@ -14,10 +14,12 @@
 package threshold
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/taurusgroup/frost-ed25519/pkg/eddsa"
 	"github.com/taurusgroup/frost-ed25519/pkg/frost"
@@ -151,12 +153,23 @@ func routeDKG(msg *messages.Message, participantIDs []uint32, selfID uint32, inb
 	return nil
 }
 
+// RunDKGTimeout is the maximum time RunDKG will wait for all participants to complete.
+// If any goroutine hangs (e.g., due to a dropped message from routeDKG), the DKG
+// will be cancelled after this deadline rather than hanging indefinitely.
+const RunDKGTimeout = 30 * time.Second
+
 // RunDKG runs a complete DKG in-process, passing messages directly between
 // participant states. Each message is serialized to bytes and deserialized per
 // recipient to ensure independent copies (the FROST library mutates messages
 // during processing). Intended for unit tests and local simulations; real
 // deployments drive participants via the round-based API and a network transport.
+//
+// Returns an error if the DKG does not complete within RunDKGTimeout, which
+// prevents indefinite hangs when routeDKG drops messages due to serialization errors.
 func RunDKG(participantIDs []uint32, threshold int) (map[uint32]*DKGResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), RunDKGTimeout)
+	defer cancel()
+
 	n := len(participantIDs)
 
 	// Per-participant byte-level inboxes. Buffer conservatively.
@@ -214,6 +227,9 @@ func RunDKG(participantIDs []uint32, threshold int) (map[uint32]*DKGResult, erro
 				select {
 				case <-p.Done():
 					return
+				case <-ctx.Done():
+					// Timeout or cancellation: unblock wg.Wait().
+					return
 				case raw, ok := <-inbox:
 					if !ok {
 						return
@@ -233,6 +249,12 @@ func RunDKG(participantIDs []uint32, threshold int) (map[uint32]*DKGResult, erro
 	}
 
 	wg.Wait()
+
+	// If the context expired, return a timeout error rather than trying to collect
+	// results from participants that may not have completed.
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("threshold: RunDKG timed out after %s (likely due to dropped messages)", RunDKGTimeout)
+	}
 
 	results := make(map[uint32]*DKGResult, n)
 	for id, p := range participants {

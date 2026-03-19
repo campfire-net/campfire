@@ -699,11 +699,13 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 			outRaw = append(outRaw, b)
 		}
 	} else {
-		// Round 2: look up the existing session, advance state, deliver inbound share messages.
-		h.transport.mu.RLock()
+		// Round 2: look up the existing session under write lock to prevent concurrent pruning.
+		// We hold the write lock for the duration of the round-2 state mutation and cleanup
+		// so that pruneSignSessions cannot delete the session out from under us.
+		h.transport.mu.Lock()
 		sessionState, ok := h.transport.signSessions[req.SessionID]
-		h.transport.mu.RUnlock()
 		if !ok {
+			h.transport.mu.Unlock()
 			http.Error(w, "signing session not found (round 2 without round 1?)", http.StatusBadRequest)
 			return
 		}
@@ -725,6 +727,10 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 		// Advance again to process any newly deliverable state.
 		additionalMsgs := ss.ProcessAll()
 
+		// Clean up after round 2 (while still holding the write lock).
+		delete(h.transport.signSessions, req.SessionID)
+		h.transport.mu.Unlock()
+
 		// Return all outbound messages: own shares + any additional output.
 		allOut := append(sharesMsgs, additionalMsgs...)
 		for _, m := range allOut {
@@ -734,9 +740,6 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 			}
 			outRaw = append(outRaw, b)
 		}
-
-		// Clean up after round 2.
-		h.transport.removeSignSession(req.SessionID)
 	}
 
 	resp := SignRoundResponse{Messages: outRaw}

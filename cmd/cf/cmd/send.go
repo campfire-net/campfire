@@ -19,7 +19,6 @@ import (
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
-	frostmessages "github.com/taurusgroup/frost-ed25519/pkg/messages"
 )
 
 var (
@@ -424,67 +423,20 @@ func thresholdSignHop(msg *message.Message, cfState *campfire.CampfireState, mem
 		return nil, 0, fmt.Errorf("computing hop sign bytes: %w", err)
 	}
 
-	// Build signer ID list: self + co-signers.
-	signerIDs := []uint32{myParticipantID}
-	for _, cs := range coSigners {
-		signerIDs = append(signerIDs, cs.participantID)
+	// Build co-signer list for RunFROSTSign.
+	frostCoSigners := make([]cfhttp.CoSigner, len(coSigners))
+	for i, cs := range coSigners {
+		frostCoSigners[i] = cfhttp.CoSigner{
+			Endpoint:      cs.endpoint,
+			ParticipantID: cs.participantID,
+		}
 	}
 
 	sessionID := uuid.New().String()
 
-	// Initialize our signing session.
-	mySS, err := threshold.NewSigningSession(myDKGResult.SecretShare, myDKGResult.Public, signBytes, signerIDs)
+	sig, err := cfhttp.RunFROSTSign(myDKGResult, myParticipantID, signBytes, frostCoSigners, campfireID, sessionID, agentID)
 	if err != nil {
-		return nil, 0, fmt.Errorf("creating signing session: %w", err)
-	}
-
-	// Round 1: get our commitment messages.
-	myRound1Msgs := mySS.Start()
-
-	// Round 1: send to all co-signers and collect their commitments.
-	var allPeerRound1Msgs []*frostmessages.Message
-	for _, cs := range coSigners {
-		peerMsgs, err := cfhttp.SendSignRound(cs.endpoint, campfireID, sessionID, 1, signerIDs, signBytes, myRound1Msgs, agentID)
-		if err != nil {
-			return nil, 0, fmt.Errorf("sign round 1 to %s: %w", cs.endpoint, err)
-		}
-		allPeerRound1Msgs = append(allPeerRound1Msgs, peerMsgs...)
-	}
-
-	// Deliver all peer round-1 messages to our session.
-	for _, m := range allPeerRound1Msgs {
-		mySS.Deliver(m) //nolint:errcheck
-	}
-
-	// Process to generate round-2 messages.
-	myRound2Msgs := mySS.ProcessAll()
-
-	// Round 2: send to all co-signers and collect their shares.
-	var allPeerRound2Msgs []*frostmessages.Message
-	for _, cs := range coSigners {
-		peerMsgs, err := cfhttp.SendSignRound(cs.endpoint, campfireID, sessionID, 2, nil, nil, myRound2Msgs, agentID)
-		if err != nil {
-			return nil, 0, fmt.Errorf("sign round 2 to %s: %w", cs.endpoint, err)
-		}
-		allPeerRound2Msgs = append(allPeerRound2Msgs, peerMsgs...)
-	}
-
-	// Deliver all peer round-2 messages to our session.
-	for _, peerMsg := range allPeerRound2Msgs {
-		mySS.Deliver(peerMsg) //nolint:errcheck
-	}
-	mySS.ProcessAll()
-
-	// Wait for signing to complete.
-	select {
-	case <-mySS.Done():
-	case <-time.After(10 * time.Second):
-		return nil, 0, fmt.Errorf("threshold signing timed out")
-	}
-
-	sig, err := mySS.Signature()
-	if err != nil {
-		return nil, 0, fmt.Errorf("extracting signature: %w", err)
+		return nil, 0, fmt.Errorf("FROST signing: %w", err)
 	}
 	return sig, hopTimestamp, nil
 }
