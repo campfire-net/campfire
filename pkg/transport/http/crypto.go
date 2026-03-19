@@ -11,7 +11,7 @@ import (
 	"io"
 )
 
-// hkdfSHA256 implements HKDF (RFC 5869) with SHA-256.
+// HkdfSHA256 implements HKDF (RFC 5869) with SHA-256.
 // It derives a 32-byte key from an X25519 shared secret (IKM) and an
 // application-specific info string. A zero-length salt causes HKDF-Extract
 // to use a block of zeros as the HMAC key, which is the RFC-specified default.
@@ -20,7 +20,10 @@ import (
 // directly to AES-GCM. Raw X25519 output is uniformly random but is not a
 // proper key derivation step — HKDF provides domain separation and allows
 // the same shared secret to produce independent keys for different purposes.
-func hkdfSHA256(sharedSecret []byte, info string) ([]byte, error) {
+//
+// Exported so callers outside the package (e.g., deliverRekey in cmd/cf) can
+// use the same derivation without duplicating the logic.
+func HkdfSHA256(sharedSecret []byte, info string) ([]byte, error) {
 	h := sha256.New
 
 	// Extract: PRK = HMAC-SHA256(salt=zeros, IKM=sharedSecret)

@@ -145,7 +145,7 @@ func TestHKDFSHA256Length(t *testing.T) {
 	ikm := make([]byte, 32)
 	rand.Read(ikm) //nolint:errcheck
 
-	okm, err := hkdfSHA256(ikm, "campfire-join-v1")
+	okm, err := HkdfSHA256(ikm, "campfire-join-v1")
 	if err != nil {
 		t.Fatalf("hkdfSHA256: %v", err)
 	}
@@ -158,8 +158,8 @@ func TestHKDFSHA256Deterministic(t *testing.T) {
 	ikm := make([]byte, 32)
 	rand.Read(ikm) //nolint:errcheck
 
-	okm1, _ := hkdfSHA256(ikm, "test-info")
-	okm2, _ := hkdfSHA256(ikm, "test-info")
+	okm1, _ := HkdfSHA256(ikm, "test-info")
+	okm2, _ := HkdfSHA256(ikm, "test-info")
 	if !bytes.Equal(okm1, okm2) {
 		t.Error("hkdfSHA256 is not deterministic for same inputs")
 	}
@@ -169,8 +169,8 @@ func TestHKDFSHA256DifferentInfo(t *testing.T) {
 	ikm := make([]byte, 32)
 	rand.Read(ikm) //nolint:errcheck
 
-	okm1, _ := hkdfSHA256(ikm, "campfire-join-v1")
-	okm2, _ := hkdfSHA256(ikm, "campfire-rekey-v1")
+	okm1, _ := HkdfSHA256(ikm, "campfire-join-v1")
+	okm2, _ := HkdfSHA256(ikm, "campfire-rekey-v1")
 	if bytes.Equal(okm1, okm2) {
 		t.Error("different info strings produced same OKM (domain separation failure)")
 	}
@@ -182,8 +182,8 @@ func TestHKDFSHA256DifferentIKM(t *testing.T) {
 	rand.Read(ikm1) //nolint:errcheck
 	rand.Read(ikm2) //nolint:errcheck
 
-	okm1, _ := hkdfSHA256(ikm1, "test")
-	okm2, _ := hkdfSHA256(ikm2, "test")
+	okm1, _ := HkdfSHA256(ikm1, "test")
+	okm2, _ := HkdfSHA256(ikm2, "test")
 	if bytes.Equal(okm1, okm2) {
 		t.Error("different IKM produced same OKM")
 	}
@@ -195,7 +195,7 @@ func TestHKDFSHA256NotRawSharedSecret(t *testing.T) {
 	ikm := make([]byte, 32)
 	rand.Read(ikm) //nolint:errcheck
 
-	okm, err := hkdfSHA256(ikm, "campfire-join-v1")
+	okm, err := HkdfSHA256(ikm, "campfire-join-v1")
 	if err != nil {
 		t.Fatalf("hkdfSHA256: %v", err)
 	}
@@ -272,11 +272,11 @@ func TestX25519ECDHWithHKDF(t *testing.T) {
 		t.Fatalf("ECDH B->A: %v", err)
 	}
 
-	keyA, err := hkdfSHA256(rawAB, "campfire-join-v1")
+	keyA, err := HkdfSHA256(rawAB, "campfire-join-v1")
 	if err != nil {
 		t.Fatalf("hkdfSHA256 A side: %v", err)
 	}
-	keyB, err := hkdfSHA256(rawBA, "campfire-join-v1")
+	keyB, err := HkdfSHA256(rawBA, "campfire-join-v1")
 	if err != nil {
 		t.Fatalf("hkdfSHA256 B side: %v", err)
 	}

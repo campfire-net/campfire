@@ -201,7 +201,7 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		http.Error(w, "ECDH failed", http.StatusInternalServerError)
 		return
 	}
-	sharedSecret, err := hkdfSHA256(rawShared, "campfire-rekey-v1")
+	sharedSecret, err := HkdfSHA256(rawShared, "campfire-rekey-v1")
 	if err != nil {
 		log.Printf("handleRekey: key derivation failed: %v", err)
 		http.Error(w, "key derivation failed", http.StatusInternalServerError)

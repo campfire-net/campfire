@@ -225,7 +225,7 @@ func Join(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint str
 		if err != nil {
 			return nil, fmt.Errorf("ECDH: %w", err)
 		}
-		derivedKey, err := hkdfSHA256(rawShared, "campfire-join-v1")
+		derivedKey, err := HkdfSHA256(rawShared, "campfire-join-v1")
 		if err != nil {
 			return nil, fmt.Errorf("deriving join key: %w", err)
 		}

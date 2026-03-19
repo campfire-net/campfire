@@ -574,9 +574,15 @@ func deliverRekey(
 	if err != nil {
 		return fmt.Errorf("parsing receiver ephemeral pub: %w", err)
 	}
-	sharedSecret, err := senderPriv.ECDH(receiverPub)
+	rawShared, err := senderPriv.ECDH(receiverPub)
 	if err != nil {
 		return fmt.Errorf("ECDH: %w", err)
+	}
+	// Apply HKDF-SHA256 to the raw ECDH output for domain separation
+	// and proper key derivation. Info string must match the handler side.
+	sharedSecret, err := cfhttp.HkdfSHA256(rawShared, "campfire-rekey-v1")
+	if err != nil {
+		return fmt.Errorf("HKDF: %w", err)
 	}
 
 	// Phase 2: encrypt and send key material.
