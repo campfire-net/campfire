@@ -162,29 +162,39 @@ func runViewCreate(campfireIDArg, name string) error {
 		return fmt.Errorf("encoding view definition: %w", err)
 	}
 
-	// Create a signed message with the campfire:view tag.
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, payloadBytes, tags, []string{})
+	// Route to transport — same path as cf send.
+	// sendP2PHTTP stores locally itself; sendFilesystem and sendGitHub do not.
+	var msg *message.Message
+	if isGitHubCampfire(m.TransportDir) {
+		msg, err = sendGitHub(campfireID, string(payloadBytes), tags, []string{}, "", agentID, s, m)
+	} else if isPeerHTTPCampfire(m.TransportDir, campfireID) {
+		msg, err = sendP2PHTTP(campfireID, string(payloadBytes), tags, []string{}, "", agentID, s, m)
+	} else {
+		msg, err = sendFilesystem(campfireID, string(payloadBytes), tags, []string{}, "", agentID, m.TransportDir)
+	}
 	if err != nil {
-		return fmt.Errorf("creating view message: %w", err)
+		return fmt.Errorf("sending view message: %w", err)
 	}
 
-	// Store locally.
-	tagsJSON, _ := json.Marshal(msg.Tags)
-	anteJSON, _ := json.Marshal(msg.Antecedents)
-	provJSON, _ := json.Marshal(msg.Provenance)
-	if _, err := s.AddMessage(store.MessageRecord{
-		ID:          msg.ID,
-		CampfireID:  campfireID,
-		Sender:      agentID.PublicKeyHex(),
-		Payload:     msg.Payload,
-		Tags:        string(tagsJSON),
-		Antecedents: string(anteJSON),
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
-		Provenance:  string(provJSON),
-		ReceivedAt:  store.NowNano(),
-	}); err != nil {
-		return fmt.Errorf("storing view message: %w", err)
+	// Store locally for filesystem and GitHub transports (P2P HTTP stores in sendP2PHTTP).
+	if !isPeerHTTPCampfire(m.TransportDir, campfireID) {
+		tagsJSON, _ := json.Marshal(msg.Tags)
+		anteJSON, _ := json.Marshal(msg.Antecedents)
+		provJSON, _ := json.Marshal(msg.Provenance)
+		if _, err := s.AddMessage(store.MessageRecord{
+			ID:          msg.ID,
+			CampfireID:  campfireID,
+			Sender:      agentID.PublicKeyHex(),
+			Payload:     msg.Payload,
+			Tags:        string(tagsJSON),
+			Antecedents: string(anteJSON),
+			Timestamp:   msg.Timestamp,
+			Signature:   msg.Signature,
+			Provenance:  string(provJSON),
+			ReceivedAt:  store.NowNano(),
+		}); err != nil {
+			return fmt.Errorf("storing view message: %w", err)
+		}
 	}
 
 	if jsonOutput {
