@@ -139,6 +139,22 @@ func (s *Store) AddMembership(m Membership) error {
 	return nil
 }
 
+// UpdateMembershipRole updates the role field for an existing membership.
+func (s *Store) UpdateMembershipRole(campfireID, role string) error {
+	res, err := s.db.Exec(`UPDATE campfire_memberships SET role = ? WHERE campfire_id = ?`, role, campfireID)
+	if err != nil {
+		return fmt.Errorf("updating membership role: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("membership not found: %s", campfireID)
+	}
+	return nil
+}
+
 // RemoveMembership removes a campfire membership.
 func (s *Store) RemoveMembership(campfireID string) error {
 	_, err := s.db.Exec(`DELETE FROM campfire_memberships WHERE campfire_id = ?`, campfireID)
