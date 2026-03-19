@@ -4,9 +4,39 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
+	"io"
 )
+
+// hkdfSHA256 implements HKDF (RFC 5869) with SHA-256.
+// It derives a 32-byte key from an X25519 shared secret (IKM) and an
+// application-specific info string. A zero-length salt causes HKDF-Extract
+// to use a block of zeros as the HMAC key, which is the RFC-specified default.
+//
+// This function MUST be used instead of passing the raw X25519 shared secret
+// directly to AES-GCM. Raw X25519 output is uniformly random but is not a
+// proper key derivation step — HKDF provides domain separation and allows
+// the same shared secret to produce independent keys for different purposes.
+func hkdfSHA256(sharedSecret []byte, info string) ([]byte, error) {
+	h := sha256.New
+
+	// Extract: PRK = HMAC-SHA256(salt=zeros, IKM=sharedSecret)
+	salt := make([]byte, h().Size())
+	extractor := hmac.New(h, salt)
+	extractor.Write(sharedSecret)
+	prk := extractor.Sum(nil)
+
+	// Expand: OKM = T(1) = HMAC-SHA256(PRK, info || 0x01)
+	expander := hmac.New(h, prk)
+	io.WriteString(expander, info) //nolint:errcheck
+	expander.Write([]byte{0x01})
+	okm := expander.Sum(nil) // 32 bytes for SHA-256
+
+	return okm[:32], nil
+}
 
 // generateX25519Key creates a new ephemeral X25519 private key.
 func generateX25519Key() (*ecdh.PrivateKey, error) {

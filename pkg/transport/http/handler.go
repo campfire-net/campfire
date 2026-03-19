@@ -514,7 +514,13 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 			http.Error(w, "ECDH failed", http.StatusInternalServerError)
 			return
 		}
-		sharedSecret = shared
+		derivedKey, err := hkdfSHA256(shared, "campfire-join-v1")
+		if err != nil {
+			log.Printf("handleJoin: key derivation failed: %v", err)
+			http.Error(w, "key derivation failed", http.StatusInternalServerError)
+			return
+		}
+		sharedSecret = derivedKey
 		resp.ResponderX25519Pub = fmt.Sprintf("%x", respPub.Bytes())
 	}
 
@@ -898,11 +904,18 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		return
 	}
 
-	// Derive shared secret.
-	sharedSecret, err := myPriv.ECDH(senderPub)
+	// Derive shared secret via ECDH + HKDF (RFC 5869, SHA-256).
+	// Raw X25519 output must not be used directly as an AES key.
+	rawShared, err := myPriv.ECDH(senderPub)
 	if err != nil {
 		log.Printf("handleRekey: ECDH failed: %v", err)
 		http.Error(w, "ECDH failed", http.StatusInternalServerError)
+		return
+	}
+	sharedSecret, err := hkdfSHA256(rawShared, "campfire-rekey-v1")
+	if err != nil {
+		log.Printf("handleRekey: key derivation failed: %v", err)
+		http.Error(w, "key derivation failed", http.StatusInternalServerError)
 		return
 	}
 

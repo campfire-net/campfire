@@ -12,10 +12,13 @@ import (
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -67,6 +70,23 @@ func addMembershipWithDir(t *testing.T, s *store.Store, campfireID, transportDir
 	if err != nil {
 		t.Fatalf("adding membership: %v", err)
 	}
+}
+
+// testHKDFSHA256 mirrors the HKDF-SHA256 derivation in crypto.go.
+// Tests must use this to derive the AES key from the raw X25519 shared secret
+// so that the key material matches what the server-side handler expects.
+func testHKDFSHA256(sharedSecret []byte, info string) []byte {
+	h := sha256.New
+	salt := make([]byte, h().Size())
+	extractor := hmac.New(h, salt)
+	extractor.Write(sharedSecret)
+	prk := extractor.Sum(nil)
+
+	expander := hmac.New(h, prk)
+	io.WriteString(expander, info) //nolint:errcheck
+	expander.Write([]byte{0x01})
+	okm := expander.Sum(nil)
+	return okm[:32]
 }
 
 // rekeyTestEncrypt is an AES-256-GCM encrypt helper for tests.
@@ -243,13 +263,15 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing receiver ephemeral pub: %v", err)
 	}
-	sharedSecret, err := senderPriv.ECDH(receiverPub)
+	rawShared, err := senderPriv.ECDH(receiverPub)
 	if err != nil {
 		t.Fatalf("ECDH: %v", err)
 	}
+	// Apply HKDF to match server-side key derivation (campfire-rekey-v1).
+	derivedKey := testHKDFSHA256(rawShared, "campfire-rekey-v1")
 
 	// Encrypt new campfire private key.
-	encNewPrivKey, err := rekeyTestEncrypt(sharedSecret, newCFPriv)
+	encNewPrivKey, err := rekeyTestEncrypt(derivedKey, newCFPriv)
 	if err != nil {
 		t.Fatalf("encrypting new private key: %v", err)
 	}
@@ -476,12 +498,14 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing receiver ephemeral pub: %v", err)
 	}
-	sharedSecret, err := senderPriv.ECDH(receiverPub)
+	rawShared2, err := senderPriv.ECDH(receiverPub)
 	if err != nil {
 		t.Fatalf("ECDH: %v", err)
 	}
+	// Apply HKDF to match server-side key derivation (campfire-rekey-v1).
+	derivedKey2 := testHKDFSHA256(rawShared2, "campfire-rekey-v1")
 
-	encNewShare, err := rekeyTestEncrypt(sharedSecret, newShareBData)
+	encNewShare, err := rekeyTestEncrypt(derivedKey2, newShareBData)
 	if err != nil {
 		t.Fatalf("encrypting new share: %v", err)
 	}
