@@ -151,13 +151,6 @@ var sendCmd = &cobra.Command{
 	},
 }
 
-// isPeerHTTPCampfire detects a p2p-http campfire by checking for the CBOR state file.
-func isPeerHTTPCampfire(transportDir, campfireID string) bool {
-	statePath := filepath.Join(transportDir, campfireID+".cbor")
-	_, err := os.Stat(statePath)
-	return err == nil
-}
-
 // sendFilesystem sends a message via the filesystem transport.
 // transportDir is the campfire-specific directory from the membership record
 // (e.g. /tmp/campfire/<campfire-id>). Falls back to fs.DefaultBaseDir() when empty.
