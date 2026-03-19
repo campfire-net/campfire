@@ -1457,3 +1457,127 @@ func TestUpsertPeerEndpoint_DefaultRole(t *testing.T) {
 		t.Errorf("default role: got %q, want %q", role, "member")
 	}
 }
+
+// --- workspace-oiaw: UpdateMembershipRole / GetReadCursor / SetReadCursor / HasMessage ---
+
+// TestUpdateMembershipRole_HappyPath verifies that UpdateMembershipRole changes the role
+// of an existing membership.
+func TestUpdateMembershipRole_HappyPath(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf-role", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1}) //nolint:errcheck
+
+	if err := s.UpdateMembershipRole("cf-role", "admin"); err != nil {
+		t.Fatalf("UpdateMembershipRole() error: %v", err)
+	}
+
+	m, err := s.GetMembership("cf-role")
+	if err != nil {
+		t.Fatalf("GetMembership() error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("membership not found after update")
+	}
+	if m.Role != "admin" {
+		t.Errorf("role = %q, want %q", m.Role, "admin")
+	}
+}
+
+// TestUpdateMembershipRole_NotFound verifies that UpdateMembershipRole returns an error
+// when the campfire_id does not exist.
+func TestUpdateMembershipRole_NotFound(t *testing.T) {
+	s := testStore(t)
+
+	err := s.UpdateMembershipRole("nonexistent", "admin")
+	if err == nil {
+		t.Fatal("UpdateMembershipRole() expected error for nonexistent campfire, got nil")
+	}
+}
+
+// TestGetReadCursor_NoCursor verifies that GetReadCursor returns 0 when no cursor exists.
+func TestGetReadCursor_NoCursor(t *testing.T) {
+	s := testStore(t)
+
+	ts, err := s.GetReadCursor("cf-nocursor")
+	if err != nil {
+		t.Fatalf("GetReadCursor() error: %v", err)
+	}
+	if ts != 0 {
+		t.Errorf("GetReadCursor() = %d, want 0 for missing cursor", ts)
+	}
+}
+
+// TestSetAndGetReadCursor verifies that SetReadCursor persists the value and GetReadCursor
+// returns it.
+func TestSetAndGetReadCursor(t *testing.T) {
+	s := testStore(t)
+
+	if err := s.SetReadCursor("cf-cursor", 12345); err != nil {
+		t.Fatalf("SetReadCursor() error: %v", err)
+	}
+
+	ts, err := s.GetReadCursor("cf-cursor")
+	if err != nil {
+		t.Fatalf("GetReadCursor() error: %v", err)
+	}
+	if ts != 12345 {
+		t.Errorf("GetReadCursor() = %d, want 12345", ts)
+	}
+}
+
+// TestSetReadCursor_Upsert verifies that calling SetReadCursor a second time overwrites
+// the existing cursor (UPSERT behavior).
+func TestSetReadCursor_Upsert(t *testing.T) {
+	s := testStore(t)
+
+	if err := s.SetReadCursor("cf-upsert", 100); err != nil {
+		t.Fatalf("first SetReadCursor() error: %v", err)
+	}
+	if err := s.SetReadCursor("cf-upsert", 200); err != nil {
+		t.Fatalf("second SetReadCursor() error: %v", err)
+	}
+
+	ts, err := s.GetReadCursor("cf-upsert")
+	if err != nil {
+		t.Fatalf("GetReadCursor() error: %v", err)
+	}
+	if ts != 200 {
+		t.Errorf("GetReadCursor() = %d after upsert, want 200", ts)
+	}
+}
+
+// TestHasMessage_Missing verifies that HasMessage returns false for an unknown ID.
+func TestHasMessage_Missing(t *testing.T) {
+	s := testStore(t)
+
+	found, err := s.HasMessage("no-such-message")
+	if err != nil {
+		t.Fatalf("HasMessage() error: %v", err)
+	}
+	if found {
+		t.Error("HasMessage() = true for nonexistent message, want false")
+	}
+}
+
+// TestHasMessage_Present verifies that HasMessage returns true after a message is added.
+func TestHasMessage_Present(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf-hasmsg", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1}) //nolint:errcheck
+
+	msg := MessageRecord{
+		ID: "msg-present", CampfireID: "cf-hasmsg", Sender: "s",
+		Payload: []byte("hello"), Tags: "[]",
+		Antecedents: "[]",
+		Timestamp: 1000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000,
+	}
+	if _, err := s.AddMessage(msg); err != nil {
+		t.Fatalf("AddMessage() error: %v", err)
+	}
+
+	found, err := s.HasMessage("msg-present")
+	if err != nil {
+		t.Fatalf("HasMessage() error: %v", err)
+	}
+	if !found {
+		t.Error("HasMessage() = false for existing message, want true")
+	}
+}
