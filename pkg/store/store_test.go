@@ -2,6 +2,7 @@ package store
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -361,5 +362,111 @@ func TestGetMessageByPrefix_CrossCampfire(t *testing.T) {
 	}
 	if got.CampfireID != "cf2" {
 		t.Errorf("CampfireID = %s, want cf2", got.CampfireID)
+	}
+}
+
+// --- workspace-pik: ClaimPendingThresholdShare concurrent race ---
+
+// TestClaimPendingThresholdShareConcurrent verifies that when two goroutines
+// race to claim the single pending share for a campfire, exactly one succeeds
+// (gets non-nil shareData) and the other gets nil or an error. The invariant
+// is that a single stored share can only be delivered once.
+func TestClaimPendingThresholdShareConcurrent(t *testing.T) {
+	s := testStore(t)
+	campfireID := "cf-concurrent-claim-test"
+
+	// Store exactly one pending share.
+	shareData := []byte("test-dkg-share-data")
+	if err := s.StorePendingThresholdShare(campfireID, 1, shareData); err != nil {
+		t.Fatalf("StorePendingThresholdShare: %v", err)
+	}
+
+	type result struct {
+		pid  uint32
+		data []byte
+		err  error
+	}
+
+	results := make([]result, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	for i := 0; i < 2; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			pid, data, err := s.ClaimPendingThresholdShare(campfireID)
+			results[i] = result{pid: pid, data: data, err: err}
+		}()
+	}
+	wg.Wait()
+
+	// Count successes (non-nil data).
+	successes := 0
+	for _, r := range results {
+		if r.err != nil {
+			t.Logf("goroutine got error: %v", r.err)
+			continue
+		}
+		if r.data != nil {
+			successes++
+		}
+	}
+
+	if successes != 1 {
+		t.Errorf("expected exactly 1 goroutine to claim the share, got %d", successes)
+	}
+}
+
+// TestClaimPendingThresholdShare_EmptyPool verifies that ClaimPendingThresholdShare
+// returns nil without error when no shares are available.
+func TestClaimPendingThresholdShare_EmptyPool(t *testing.T) {
+	s := testStore(t)
+	campfireID := "cf-empty-pool-test"
+
+	pid, data, err := s.ClaimPendingThresholdShare(campfireID)
+	if err != nil {
+		t.Fatalf("ClaimPendingThresholdShare on empty pool: %v", err)
+	}
+	if data != nil {
+		t.Errorf("expected nil data for empty pool, got pid=%d data=%v", pid, data)
+	}
+}
+
+// TestClaimPendingThresholdShare_ExhaustsAll verifies that after all shares are
+// claimed, subsequent calls return nil without error.
+func TestClaimPendingThresholdShare_ExhaustsAll(t *testing.T) {
+	s := testStore(t)
+	campfireID := "cf-exhaust-test"
+
+	// Store 2 shares.
+	if err := s.StorePendingThresholdShare(campfireID, 1, []byte("share-1")); err != nil {
+		t.Fatalf("StorePendingThresholdShare(1): %v", err)
+	}
+	if err := s.StorePendingThresholdShare(campfireID, 2, []byte("share-2")); err != nil {
+		t.Fatalf("StorePendingThresholdShare(2): %v", err)
+	}
+
+	// Claim both shares.
+	for i := 0; i < 2; i++ {
+		pid, data, err := s.ClaimPendingThresholdShare(campfireID)
+		if err != nil {
+			t.Fatalf("claim %d: unexpected error: %v", i+1, err)
+		}
+		if data == nil {
+			t.Fatalf("claim %d: expected non-nil data", i+1)
+		}
+		if pid == 0 {
+			t.Fatalf("claim %d: expected non-zero participant_id", i+1)
+		}
+	}
+
+	// Third claim should return nil (pool exhausted).
+	pid, data, err := s.ClaimPendingThresholdShare(campfireID)
+	if err != nil {
+		t.Fatalf("claim on exhausted pool: unexpected error: %v", err)
+	}
+	if data != nil {
+		t.Errorf("expected nil data after pool exhausted, got pid=%d data=%v", pid, data)
 	}
 }
