@@ -117,6 +117,50 @@ func TestSign1of3MustFail(t *testing.T) {
 	t.Logf("Sign(1-of-3) produced a signature that correctly fails ed25519.Verify")
 }
 
+// --- workspace-zqc: UnmarshalResult error paths ---
+
+// TestUnmarshalResultCorruptData verifies that UnmarshalResult returns an
+// error (not a panic) when given corrupt bytes.
+func TestUnmarshalResultCorruptData(t *testing.T) {
+	corrupt := []byte("not valid json {{{")
+	_, _, err := threshold.UnmarshalResult(corrupt)
+	if err == nil {
+		t.Fatal("expected error for corrupt data, got nil")
+	}
+}
+
+// TestUnmarshalResultTruncatedData verifies that UnmarshalResult returns an
+// error (not a panic) when given truncated JSON (syntactically invalid).
+func TestUnmarshalResultTruncatedData(t *testing.T) {
+	truncated := []byte(`{"participant_id":1,"secret_share":`)
+	_, _, err := threshold.UnmarshalResult(truncated)
+	if err == nil {
+		t.Fatal("expected error for truncated data, got nil")
+	}
+}
+
+// TestUnmarshalResultCorruptSecretShare verifies that UnmarshalResult returns
+// an error when the outer JSON is valid but the embedded secret share bytes
+// are corrupt (not valid JSON for the expected type).
+func TestUnmarshalResultCorruptSecretShare(t *testing.T) {
+	// Syntactically valid outer JSON, but secret_share and public contain
+	// JSON string literals rather than valid FROST JSON objects.
+	data := []byte(`{"participant_id":1,"secret_share":"bm90dmFsaWQ=","public":"bm90dmFsaWQ="}`)
+	_, _, err := threshold.UnmarshalResult(data)
+	if err == nil {
+		t.Fatal("expected error for corrupt secret share bytes, got nil")
+	}
+}
+
+// TestUnmarshalResultEmptyBytes verifies that UnmarshalResult returns an
+// error for empty input.
+func TestUnmarshalResultEmptyBytes(t *testing.T) {
+	_, _, err := threshold.UnmarshalResult([]byte{})
+	if err == nil {
+		t.Fatal("expected error for empty data, got nil")
+	}
+}
+
 // TestDKGMultipleMessages verifies DKG works with non-sequential IDs.
 func TestDKGNonSequentialIDs(t *testing.T) {
 	participantIDs := []uint32{10, 20, 42}

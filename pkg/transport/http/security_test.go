@@ -675,6 +675,91 @@ func TestValidateJoinerEndpointUnit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// workspace-88t — isPrivateIP missing CGNAT / IPv6 ULA / link-local / reserved
+// ---------------------------------------------------------------------------
+
+// TestIsPrivateIPExtendedRanges verifies that validateJoinerEndpoint (and by
+// extension isPrivateIP) rejects addresses from ranges that had no test
+// coverage: CGNAT (100.64.0.0/10), IPv6 ULA (fc00::/7), IPv6 link-local
+// (fe80::/10), and reserved (240.0.0.0/4).
+func TestIsPrivateIPExtendedRanges(t *testing.T) {
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating campfire key: %v", err)
+	}
+	campfireID := fmt.Sprintf("%x", cfPub)
+	idA := tempIdentity(t)
+	sHost := tempStore(t)
+
+	if err := sHost.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: t.TempDir(),
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     time.Now().UnixNano(),
+		Threshold:    1,
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+90)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	tr := cfhttp.New(addr, sHost)
+	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
+	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
+		if id == campfireID {
+			return cfPriv, cfPub, nil
+		}
+		return nil, nil, fmt.Errorf("not found")
+	})
+	if err := tr.Start(); err != nil {
+		t.Fatalf("starting transport: %v", err)
+	}
+	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// All of these are private/reserved and must be rejected with 400.
+	badEndpoints := []struct {
+		name     string
+		endpoint string
+	}{
+		{"CGNAT 100.64.1.1", "http://100.64.1.1/evil"},
+		{"IPv6 ULA fc00::1", "http://[fc00::1]/evil"},
+		{"IPv6 link-local fe80::1", "http://[fe80::1]/evil"},
+		{"IPv4 reserved 240.1.1.1", "http://240.1.1.1/evil"},
+	}
+
+	for _, tc := range badEndpoints {
+		t.Run(tc.name, func(t *testing.T) {
+			joinerEphemeral, _ := ecdh.X25519().GenerateKey(rand.Reader)
+			joinReq := cfhttp.JoinRequest{
+				JoinerPubkey:       idA.PublicKeyHex(),
+				JoinerEndpoint:     tc.endpoint,
+				EphemeralX25519Pub: fmt.Sprintf("%x", joinerEphemeral.PublicKey().Bytes()),
+			}
+			body, _ := json.Marshal(joinReq)
+			req, _ := http.NewRequest(http.MethodPost,
+				fmt.Sprintf("%s/campfire/%s/join", ep, campfireID), bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Campfire-Sender", idA.PublicKeyHex())
+			req.Header.Set("X-Campfire-Signature", signHeader(idA, body))
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("join HTTP error: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("endpoint %q (%s): expected 400, got %d", tc.endpoint, tc.name, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -985,5 +986,58 @@ func TestListMessages_AfterReceivedAt(t *testing.T) {
 	}
 	if !idsNewWay["normal"] {
 		t.Error("normal message ReceivedAt = now+1ms should appear with AfterReceivedAt = now")
+	}
+}
+
+// --- workspace-pik: ClaimPendingThresholdShare concurrent race ---
+
+// TestClaimPendingThresholdShareConcurrent verifies that when two goroutines
+// race to claim the single pending share for a campfire, exactly one succeeds
+// (gets non-nil shareData) and the other gets nil or an error. The invariant
+// is that a single stored share can only be delivered once.
+func TestClaimPendingThresholdShareConcurrent(t *testing.T) {
+	s := testStore(t)
+	campfireID := "cf-concurrent-claim-test"
+
+	// Store exactly one pending share.
+	shareData := []byte("test-dkg-share-data")
+	if err := s.StorePendingThresholdShare(campfireID, 1, shareData); err != nil {
+		t.Fatalf("StorePendingThresholdShare: %v", err)
+	}
+
+	type result struct {
+		pid  uint32
+		data []byte
+		err  error
+	}
+
+	results := make([]result, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	for i := 0; i < 2; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			pid, data, err := s.ClaimPendingThresholdShare(campfireID)
+			results[i] = result{pid: pid, data: data, err: err}
+		}()
+	}
+	wg.Wait()
+
+	// Count successes (non-nil data).
+	successes := 0
+	for _, r := range results {
+		if r.err != nil {
+			t.Logf("goroutine got error: %v", r.err)
+			continue
+		}
+		if r.data != nil {
+			successes++
+		}
+	}
+
+	if successes != 1 {
+		t.Errorf("expected exactly 1 goroutine to claim the share, got %d", successes)
 	}
 }
