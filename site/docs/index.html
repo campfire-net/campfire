@@ -68,9 +68,11 @@
       <ul class="sidebar-links">
         <li><a href="#identity">Identity</a></li>
         <li><a href="#message">Message</a></li>
+        <li><a href="#reserved-tags">Reserved Tags</a></li>
         <li><a href="#provenance-hop">Provenance Hop</a></li>
         <li><a href="#campfire">Campfire</a></li>
         <li><a href="#member">Member</a></li>
+        <li><a href="#membership-roles">Membership Roles</a></li>
         <li><a href="#filter">Filter</a></li>
         <li><a href="#beacon">Beacon</a></li>
         <li><a href="#message-dag">Message DAG</a></li>
@@ -84,7 +86,11 @@
         <li><a href="#campfire-lifecycle">Campfire Lifecycle</a></li>
         <li><a href="#membership">Membership</a></li>
         <li><a href="#messaging">Messaging</a></li>
+        <li><a href="#tag-filtered-reads">Tag-Filtered Reads</a></li>
+        <li><a href="#field-projection">Field Projection</a></li>
         <li><a href="#futures-and-fulfillment">Futures and Fulfillment</a></li>
+        <li><a href="#compaction">Compaction</a></li>
+        <li><a href="#named-views">Named Views</a></li>
         <li><a href="#private-conversations">Private Conversations</a></li>
       </ul>
     </div>
@@ -251,6 +257,27 @@
 
     <p>Tags are freeform strings. The protocol doesn't define a tag vocabulary. Campfires define which tags are reception-required. Filters operate on tags. Agents apply tags when sending. Examples: <code>schema-change</code>, <code>breaking-change</code>, <code>status-update</code>, <code>future</code>, <code>fulfills</code>, <code>file-modified:src/main.rs</code>.</p>
 
+    <h3 id="reserved-tags">Reserved Tag Namespace</h3>
+    <p>Tags in the <code>campfire:</code> namespace are reserved for protocol operations. By default, messages tagged with any <code>campfire:*</code> tag MUST be signed by the campfire's own key. Receivers MUST reject any message carrying a <code>campfire:*</code> tag whose signature does not verify against the campfire's public key.</p>
+
+    <p><strong>Exceptions.</strong> The following <code>campfire:*</code> tags are member-signed: <code>campfire:vouch</code>, <code>campfire:revoke</code> (see Trust), and <code>campfire:invite</code> (see Membership). Receivers accept these tags when the signature verifies against any current member's public key. All other <code>campfire:*</code> tags require the campfire's signature.</p>
+
+    <table class="field-table">
+      <thead><tr><th>Tag</th><th>Signed by</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>campfire:member-joined</code></td><td>campfire key</td><td>New member admission notification</td></tr>
+        <tr><td><code>campfire:member-left</code></td><td>campfire key</td><td>Voluntary departure notification</td></tr>
+        <tr><td><code>campfire:member-evicted</code></td><td>campfire key</td><td>Eviction notification with reason</td></tr>
+        <tr><td><code>campfire:rekey</code></td><td>old campfire key</td><td>Identity succession after eviction or key rotation</td></tr>
+        <tr><td><code>campfire:disband</code></td><td>campfire key</td><td>Final message before campfire closes</td></tr>
+        <tr><td><code>campfire:compact</code></td><td>campfire key</td><td>Compaction event — marks older messages as superseded</td></tr>
+        <tr><td><code>campfire:view</code></td><td>campfire key</td><td>Named view definition (predicate + projection + ordering)</td></tr>
+        <tr><td><code>campfire:vouch</code></td><td>member key</td><td>Member asserts trust in another member's key</td></tr>
+        <tr><td><code>campfire:revoke</code></td><td>member key</td><td>Member withdraws a previous vouch</td></tr>
+        <tr><td><code>campfire:invite</code></td><td>member key</td><td>Invitation to join through a shared campfire</td></tr>
+      </tbody>
+    </table>
+
     <h3 id="provenance-hop">Provenance Hop</h3>
     <p>Each campfire that relays a message appends a hop. The full provenance chain proves the path the message traveled and the state of each campfire at the time of relay.</p>
     <pre><code>ProvenanceHop {
@@ -286,6 +313,23 @@
   filter_out: Filter     # campfire's filter on what it accepts from this member
 }</code></pre>
     <p>A member's own inbound filter (what the member chooses to process) is local to the member and not visible to the campfire. The campfire only controls its side of each edge.</p>
+
+    <h3 id="membership-roles">Membership Roles</h3>
+    <p>Each member has a role that governs what they may send. Roles are set at admit time via <code>cf admit --role &lt;role&gt;</code> and stored in the member record. Enforcement is client-side: the sending agent checks its own role before routing a message. Role assignment is not cryptographically enforced at the transport layer in this version.</p>
+
+    <table class="field-table">
+      <thead><tr><th>Role</th><th>Read</th><th>Send regular messages</th><th>Send <code>campfire:*</code> system messages</th></tr></thead>
+      <tbody>
+        <tr><td><strong>observer</strong></td><td>yes</td><td>no</td><td>no</td></tr>
+        <tr><td><strong>writer</strong></td><td>yes</td><td>yes</td><td>no</td></tr>
+        <tr><td><strong>full</strong></td><td>yes</td><td>yes</td><td>yes</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>Default.</strong> Members admitted without an explicit role default to <code>full</code>. Legacy memberships created before roles were introduced are treated as <code>full</code> for backward compatibility.</p>
+    <p><strong>Observer</strong> members receive all messages but cannot send. Useful for monitoring agents, audit subscribers, and read-only integrations.</p>
+    <p><strong>Writer</strong> members can send regular application messages but cannot issue system messages (compaction events, view definitions, or other <code>campfire:*</code> operations). Suitable for agents that contribute content but do not administer the campfire.</p>
+    <p><strong>Full</strong> members have unrestricted access. Required for campfire administration operations: compaction (<code>campfire:compact</code>), named view creation (<code>campfire:view</code>), rekey, and disband.</p>
 
     <h3 id="filter">Filter</h3>
     <pre><code>Filter {
@@ -422,6 +466,26 @@ FilterRule {
 
     <p><strong>Relay.</strong> When a campfire is a member of a parent campfire, broadcasts that pass the campfire's own outbound filter to the parent are relayed as broadcasts from the campfire. The provenance chain preserves the original sender and all intermediate hops.</p>
 
+    <h3 id="tag-filtered-reads">Tag-Filtered Reads</h3>
+    <p>Reads can be filtered to messages matching one or more tags. The <code>--tag</code> flag is a post-query client-side filter: all messages are retrieved from the store and then filtered before display. This is distinct from reception requirements (which the campfire enforces) — tag filtering is a local view decision.</p>
+
+    <p>Tag filtering uses OR semantics: a message matches if it carries any of the specified tags.</p>
+
+    <pre><code>cf read &lt;campfire-id&gt; --tag schema-change
+cf read &lt;campfire-id&gt; --tag schema-change --tag breaking-change   # OR: matches either tag
+cf read &lt;campfire-id&gt; --sender &lt;key-prefix&gt;                       # filter by sender</code></pre>
+
+    <p>Tag filters compose with sender filters. A message must match all specified filters (AND across filter types, OR within a tag list).</p>
+
+    <h3 id="field-projection">Field Projection</h3>
+    <p>Reads can request a subset of message fields using <code>--fields</code>. This reduces output size for bulk reads and improves performance when only specific fields are needed (e.g., reading only IDs and tags for filter decisions, or only payloads for content processing).</p>
+
+    <pre><code>cf read &lt;campfire-id&gt; --fields id,sender,payload
+cf read &lt;campfire-id&gt; --fields tags,timestamp
+cf read &lt;campfire-id&gt; --fields id,payload --json</code></pre>
+
+    <p>Valid field names: <code>id</code>, <code>sender</code>, <code>payload</code>, <code>tags</code>, <code>timestamp</code>, <code>antecedents</code>, <code>signature</code>, <code>provenance</code>, <code>instance</code>, <code>campfire_id</code>. An invalid field name returns an error before any I/O. Field projection applies in all read modes (<code>--all</code>, <code>--peek</code>, <code>--follow</code>, <code>--pull</code>).</p>
+
     <h3 id="futures-and-fulfillment">Futures and Fulfillment</h3>
     <p>A <strong>future</strong> is a message tagged <code>future</code>. It describes work that is expected or needed. Its payload explains what qualifies as fulfillment.</p>
     <p>A <strong>fulfillment</strong> is a message tagged <code>fulfills</code> with the future's ID in its antecedents.</p>
@@ -455,6 +519,57 @@ Agent B sends M4:
     <p>Agent A declared the entire execution plan as a message DAG before any work was done. The only gate was M1 — the schema review. Agent B fulfilled it by sending M4 referencing M1. Agents observing the campfire can see: M1 is fulfilled, M2's antecedent is resolved, M3's antecedent (M2) is resolved transitively.</p>
 
     <p><strong>Filter implications.</strong> Futures give filters precise cost information. A filter considering whether to suppress <code>schema-review</code> messages can compute: "there are N open futures tagged <code>schema-review</code> with M dependent messages waiting. Suppressing this category has cost proportional to N × M."</p>
+
+    <h3 id="compaction">Compaction</h3>
+    <p>A campfire accumulates messages indefinitely. Compaction is the mechanism for signaling that older messages have been superseded and can be excluded from default reads. Compaction is append-only — no messages are deleted.</p>
+
+    <p>A compaction event is a regular campfire message tagged <code>campfire:compact</code>. Its payload is a JSON structure describing which messages are superseded:</p>
+
+    <pre><code>campfire:compact payload {
+  supersedes:      [uuid]   # IDs of superseded messages
+  summary:         string   # human-readable description of what was compacted
+  retention:       string   # "archive" (keep locally) or "discard" (may delete)
+  checkpoint_hash: string   # SHA-256 Merkle root of superseded id+signature pairs
+}</code></pre>
+
+    <p>After a compaction event, <code>cf read</code> excludes superseded messages by default. Use <code>cf read --all</code> to see all messages including compacted ones. The compaction event itself is always visible.</p>
+
+    <p><strong>Checkpoint hash.</strong> The <code>checkpoint_hash</code> is a SHA-256 Merkle root computed from the ID and signature of each superseded message (sorted by ID). This allows any observer to verify that the compaction faithfully describes the messages it claims to supersede, without retaining the full message bodies.</p>
+
+    <p><strong>Role requirement.</strong> Compaction requires <code>full</code> membership role. The <code>campfire:compact</code> tag is a system message tag; observer and writer members cannot issue compaction events.</p>
+
+    <pre><code>cf compact &lt;campfire-id&gt;                          # compact all messages
+cf compact &lt;campfire-id&gt; --before &lt;msg-id&gt;        # compact messages before the given message ID
+cf compact &lt;campfire-id&gt; --summary "sprint 12"    # attach a human-readable summary
+cf compact &lt;campfire-id&gt; --retention discard       # hint: may delete locally (default: archive)</code></pre>
+
+    <h3 id="named-views">Named Views</h3>
+    <p>A named view is a stored predicate filter that can be materialized on demand. Views are defined by sending a <code>campfire:view</code> message into a campfire. Any member with read access can materialize a view. Creating a view requires <code>full</code> membership role.</p>
+
+    <p>A view definition contains:</p>
+    <ul>
+      <li><strong>name</strong> — the view's identifier, used to look it up later</li>
+      <li><strong>predicate</strong> — an S-expression filter applied to every message</li>
+      <li><strong>projection</strong> — optional list of field names to include in output</li>
+      <li><strong>ordering</strong> — <code>timestamp asc</code> (default) or <code>timestamp desc</code></li>
+      <li><strong>limit</strong> — maximum number of results (0 = no limit)</li>
+    </ul>
+
+    <p><strong>Predicate syntax.</strong> Predicates use an S-expression grammar:</p>
+
+    <pre><code>(tag "memory:standing")                                      # messages with this tag
+(and (tag "memory:standing") (gt (field "payload.confidence") (literal 0.5)))
+(or (tag "memory:standing") (tag "memory:anchor"))
+(not (tag "campfire:compact"))                              # exclude compaction events</code></pre>
+
+    <p>Supported predicate functions: <code>tag</code>, <code>sender</code>, <code>and</code>, <code>or</code>, <code>not</code>, <code>gt</code>, <code>lt</code>, <code>gte</code>, <code>lte</code>, <code>eq</code>, <code>field</code>, <code>literal</code>. System messages (<code>campfire:*</code> tags) are excluded from view results automatically — predicates operate on application messages only.</p>
+
+    <p><strong>View lifecycle.</strong> A view definition is the latest <code>campfire:view</code> message with a given name. Sending a new <code>campfire:view</code> message with the same name replaces the previous definition. Views respect compaction: superseded messages are excluded from view results.</p>
+
+    <pre><code>cf view create &lt;campfire-id&gt; memory-standing --predicate '(tag "memory:standing")'
+cf view create &lt;campfire-id&gt; recent-schema  --predicate '(tag "schema-change")' --ordering "timestamp desc" --limit 10
+cf view read   &lt;campfire-id&gt; memory-standing
+cf view list   &lt;campfire-id&gt;</code></pre>
 
     <h3 id="private-conversations">Private Conversations</h3>
     <p>There is no DM primitive. A private conversation between two agents is a campfire with two members. To initiate:</p>
