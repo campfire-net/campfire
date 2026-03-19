@@ -4,9 +4,29 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 )
+
+// HkdfSHA256 derives a 32-byte AES-256 key from ikm (raw ECDH shared secret)
+// using HKDF-SHA256 (RFC 5869) with an empty salt and the given info string.
+// This provides domain separation and proper key derivation from DH output.
+// Exported so callers outside the package (e.g., deliverRekey in cmd/cf) can
+// use the same derivation without duplicating the logic.
+func HkdfSHA256(ikm []byte, info string) ([]byte, error) {
+	key, err := hkdf.Key(sha256.New, ikm, nil, info, 32)
+	if err != nil {
+		return nil, fmt.Errorf("HkdfSHA256: %w", err)
+	}
+	return key, nil
+}
+
+// hkdfSHA256 is a package-internal alias for HkdfSHA256.
+func hkdfSHA256(ikm []byte, info string) ([]byte, error) {
+	return HkdfSHA256(ikm, info)
+}
 
 // generateX25519Key creates a new ephemeral X25519 private key.
 func generateX25519Key() (*ecdh.PrivateKey, error) {

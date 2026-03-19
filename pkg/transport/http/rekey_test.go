@@ -69,6 +69,16 @@ func addMembershipWithDir(t *testing.T, s *store.Store, campfireID, transportDir
 	}
 }
 
+// testHKDFSHA256 mirrors the server-side hkdfSHA256 for use in tests.
+// Derives a 32-byte key using HKDF-SHA256 with no salt and the given info string.
+func testHKDFSHA256(ikm []byte, info string) []byte {
+	key, err := cfhttp.HkdfSHA256(ikm, info)
+	if err != nil {
+		panic(fmt.Sprintf("testHKDFSHA256: %v", err))
+	}
+	return key
+}
+
 // rekeyTestEncrypt is an AES-256-GCM encrypt helper for tests.
 // Returns nonce || ciphertext. key must be 32 bytes.
 func rekeyTestEncrypt(key, plaintext []byte) ([]byte, error) {
@@ -237,16 +247,17 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 		t.Fatal("expected receiver ephemeral pub key in phase 1 response")
 	}
 
-	// Derive shared secret.
+	// Derive shared secret via ECDH + HKDF, matching the handler side.
 	receiverPubBytes, _ := hex.DecodeString(receiverEphemeralPubHex)
 	receiverPub, err := ecdh.X25519().NewPublicKey(receiverPubBytes)
 	if err != nil {
 		t.Fatalf("parsing receiver ephemeral pub: %v", err)
 	}
-	sharedSecret, err := senderPriv.ECDH(receiverPub)
+	rawShared, err := senderPriv.ECDH(receiverPub)
 	if err != nil {
 		t.Fatalf("ECDH: %v", err)
 	}
+	sharedSecret := testHKDFSHA256(rawShared, "campfire-rekey-v1")
 
 	// Encrypt new campfire private key.
 	encNewPrivKey, err := rekeyTestEncrypt(sharedSecret, newCFPriv)
@@ -476,10 +487,11 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing receiver ephemeral pub: %v", err)
 	}
-	sharedSecret, err := senderPriv.ECDH(receiverPub)
+	rawShared2, err := senderPriv.ECDH(receiverPub)
 	if err != nil {
 		t.Fatalf("ECDH: %v", err)
 	}
+	sharedSecret := testHKDFSHA256(rawShared2, "campfire-rekey-v1")
 
 	encNewShare, err := rekeyTestEncrypt(sharedSecret, newShareBData)
 	if err != nil {
@@ -553,4 +565,107 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 	}
 
 	t.Logf("Rekey threshold=2 test passed: old=%s new=%s", oldCampfireID[:12], newCampfireID[:12])
+}
+
+// TestRekeyHKDFRequiredForDecrypt verifies that the handler applies HKDF-SHA256
+// to the raw ECDH shared secret before decryption. A payload encrypted with
+// only the raw ECDH output (no HKDF) must be rejected with a decryption error.
+// This is a regression test for the deliverRekey KDF mismatch bug.
+func TestRekeyHKDFRequiredForDecrypt(t *testing.T) {
+	// Generate campfire keypair.
+	cfPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating campfire key: %v", err)
+	}
+	campfireID := fmt.Sprintf("%x", cfPub)
+	newCFPub, newCFPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating new campfire key: %v", err)
+	}
+	newCampfireID := fmt.Sprintf("%x", newCFPub)
+
+	idA := tempIdentity(t)
+	idB := tempIdentity(t)
+
+	sB := tempStore(t)
+	stateDirB, _ := setupCampfireState(t, nil, cfPub, 1)
+	addMembershipWithDir(t, sB, campfireID, stateDirB, 1)
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+38)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	senderPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating sender ephemeral key: %v", err)
+	}
+	senderPubHex := fmt.Sprintf("%x", senderPriv.PublicKey().Bytes())
+
+	rekeyPayload, _ := json.Marshal(map[string]string{
+		"old_key": campfireID,
+		"new_key": newCampfireID,
+	})
+	rekeyMsg := &message.Message{
+		ID:          "test-hkdf-required",
+		Sender:      ed25519.PublicKey(cfPub),
+		Payload:     rekeyPayload,
+		Tags:        []string{"campfire:rekey"},
+		Antecedents: []string{},
+		Timestamp:   time.Now().UnixNano(),
+		Provenance:  []message.ProvenanceHop{},
+	}
+	rekeyMsgCBOR, _ := cfencoding.Marshal(rekeyMsg)
+
+	// Phase 1: get receiver's ephemeral pub.
+	phase1Req := cfhttp.RekeyRequest{
+		NewCampfireID:       newCampfireID,
+		SenderX25519Pub:     senderPubHex,
+		EvictedMemberPubkey: idB.PublicKeyHex(),
+		RekeyMessageCBOR:    rekeyMsgCBOR,
+	}
+	receiverEphemeralPubHex, err := cfhttp.SendRekeyPhase1(epB, campfireID, phase1Req, idA)
+	if err != nil {
+		t.Fatalf("rekey phase 1: %v", err)
+	}
+	if receiverEphemeralPubHex == "" {
+		t.Fatal("expected receiver ephemeral pub in phase 1 response")
+	}
+
+	receiverPubBytes, _ := hex.DecodeString(receiverEphemeralPubHex)
+	receiverPub, err := ecdh.X25519().NewPublicKey(receiverPubBytes)
+	if err != nil {
+		t.Fatalf("parsing receiver ephemeral pub: %v", err)
+	}
+	rawShared, err := senderPriv.ECDH(receiverPub)
+	if err != nil {
+		t.Fatalf("ECDH: %v", err)
+	}
+
+	// Encrypt with RAW ECDH shared secret — no HKDF. Handler must reject this.
+	encWithRaw, err := rekeyTestEncrypt(rawShared, newCFPriv)
+	if err != nil {
+		t.Fatalf("encrypting with raw shared secret: %v", err)
+	}
+
+	// Phase 2 with payload encrypted using raw ECDH (no HKDF) — must fail.
+	phase2BadReq := cfhttp.RekeyRequest{
+		NewCampfireID:       newCampfireID,
+		SenderX25519Pub:     senderPubHex,
+		EvictedMemberPubkey: idB.PublicKeyHex(),
+		RekeyMessageCBOR:    rekeyMsgCBOR,
+		EncryptedPrivKey:    encWithRaw,
+	}
+	err = cfhttp.SendRekey(epB, campfireID, phase2BadReq, idA)
+	if err == nil {
+		t.Fatal("expected decryption error when payload is encrypted with raw ECDH (no HKDF), got nil")
+	}
+	t.Logf("correctly rejected raw-ECDH-encrypted payload: %v", err)
 }

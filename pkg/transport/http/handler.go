@@ -898,11 +898,17 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		return
 	}
 
-	// Derive shared secret.
-	sharedSecret, err := myPriv.ECDH(senderPub)
+	// Derive shared secret via ECDH + HKDF (RFC 5869, SHA-256).
+	rawShared, err := myPriv.ECDH(senderPub)
 	if err != nil {
 		log.Printf("handleRekey: ECDH failed: %v", err)
 		http.Error(w, "ECDH failed", http.StatusInternalServerError)
+		return
+	}
+	sharedSecret, err := hkdfSHA256(rawShared, "campfire-rekey-v1")
+	if err != nil {
+		log.Printf("handleRekey: HKDF failed: %v", err)
+		http.Error(w, "key derivation failed", http.StatusInternalServerError)
 		return
 	}
 
