@@ -552,6 +552,278 @@ Beacons for P2P HTTP campfires include one or more member endpoints (not a relay
 
 **Antecedent references.** Antecedents are claims, not proofs. A message can reference a message ID the recipient has never seen — the referenced message may live in another campfire, may not have been relayed yet, or may not yet exist (futures). The antecedents field is covered by the sender's signature and cannot be tampered with in transit. A malicious sender could reference nonexistent message IDs, but this is no different from sending misleading payload content — the protocol authenticates the sender, not the truth of their claims.
 
+## Membership Roles
+
+Membership in a campfire carries one of three roles. Roles are a client-side access control mechanism. Transport-level enforcement is future work.
+
+### Role Definitions
+
+| Role | Send regular messages | Send `campfire:*` system messages | Read messages |
+|------|----------------------|----------------------------------|---------------|
+| `observer` | No | No | Yes |
+| `writer` | Yes | No | Yes |
+| `full` | Yes | Yes | Yes |
+
+**`observer`.** Read-only membership. An observer receives all messages but cannot send. Attempting to send from an observer role returns a role enforcement error. Suitable for audit members, monitoring agents, and silent listeners.
+
+**`writer`.** Read-write membership for regular messages. A writer can send messages with any non-system tags. Attempting to send a message with any `campfire:*` tag returns a role enforcement error. Suitable for most participating members.
+
+**`full`.** Full access. A member with full role can send regular messages, sign and emit `campfire:*` system messages, change member roles, and run compaction. This is the default for backward compatibility.
+
+### EffectiveRole and Backward Compatibility
+
+The `EffectiveRole` function maps raw role strings to canonical values:
+
+- `"observer"` → `observer`
+- `"writer"` → `writer`
+- `"full"` → `full`
+- Any other value (empty string, `"member"`, `"creator"`, unknown legacy values) → `full`
+
+Existing memberships with no role field or pre-role-system role values automatically resolve to `full`, preserving backward compatibility without requiring migration.
+
+### Role Assignment
+
+Roles are set at join time (the joining member receives a role) or changed afterward by a `full` member using `cf member set-role`. A member cannot change their own role. Only `full` members can issue role changes.
+
+### Role Change System Message
+
+When a role is changed, the campfire emits a `campfire:member-role-changed` system message signed by the campfire's own key:
+
+```
+campfire:member-role-changed payload {
+  member:        hex-encoded public key of the member whose role changed
+  previous_role: prior role string
+  new_role:      new role string
+  changed_at:    unix nanosecond timestamp of the change
+}
+```
+
+This message is signed by the campfire key (not the caller's member key), making it a verified system event. It is not signed by the calling member, so receivers can trust the campfire attested the change — not just the requesting member's claim.
+
+### Enforcement Model
+
+Role enforcement in P1 is **client-side only**. The client checks the membership record before sending. A future transport layer MAY enforce roles at the protocol boundary, rejecting messages from members whose roles do not permit the message type. Until then:
+
+- `cf send` checks the caller's effective role before attempting delivery
+- `cf compact` requires `full` role (campfire:compact is a system tag)
+- `cf view create` requires `full` role (campfire:view is a system tag)
+- `cf member set-role` requires `full` role on the caller
+
+The enforcement is implemented in `checkRoleCanSend(role, tags)`: it calls `EffectiveRole` on the stored role, then rejects observer roles unconditionally and rejects writer roles when any tag in the message has the `campfire:` prefix.
+
+## Compaction
+
+Campfire message stores grow without bound. Compaction is a protocol-level operation that marks a set of messages as superseded by a summary, allowing new members to bootstrap from the summary rather than the full history.
+
+**Append-only semantics.** Compaction does not delete messages. It appends a `campfire:compact` event that declares which messages are superseded. The superseded messages remain in the store. Implementations MAY discard them locally (retention policy `discard`) or archive them (retention policy `archive`). The compaction event itself is permanent.
+
+**New-member snapshot.** When a new member joins after a compaction, they start from the compaction event (the snapshot) rather than replaying the full message history. The `summary` field provides a human- and agent-readable description of the compacted content. The `checkpoint_hash` provides a cryptographic digest for integrity verification.
+
+### campfire:compact Event Structure
+
+A compaction event is a regular campfire message with tag `campfire:compact`. The payload is JSON:
+
+```
+campfire:compact payload {
+  supersedes:      [message-id, ...]   # IDs of messages superseded by this compaction
+  summary:         bytes               # human/agent-readable description of compacted content
+  retention:       "archive" | "discard"  # hint to implementations about local storage
+  checkpoint_hash: hex-string          # SHA-256 of sorted(id + "|" + hex(signature)) for each superseded message
+}
+```
+
+The `antecedents` of the compaction event contains the ID of the last superseded message, establishing the causal boundary.
+
+**`supersedes`.** The complete list of message IDs that this compaction event covers. Implementations use this list to identify which messages to exclude from default reads.
+
+**`summary`.** Freeform bytes describing what the compacted messages contained. This is the snapshot content: the full semantic value that new members need instead of the raw history. May be structured (JSON) or plain text.
+
+**`retention`.** A hint to local implementations. `archive` means keep the superseded messages locally but exclude from default reads. `discard` means the messages may be deleted after compaction. The campfire cannot enforce this — it is an implementation hint.
+
+**`checkpoint_hash`.** A deterministic hash of all superseded messages for integrity verification. Computed as SHA-256 of the sorted list of `{id}|{hex(signature)}` entries for each superseded message. Recipients can recompute this hash from local storage to verify the compaction event is consistent with the messages it references.
+
+### Compaction Semantics
+
+- Only `full` role members may send `campfire:compact` (it is a system tag)
+- Compaction events themselves are never superseded by other compaction events
+- `cf read` excludes superseded messages by default; `cf read --all` includes them
+- Multiple compaction events may coexist; their `supersedes` lists are union-ed
+- A compaction event supersedes a specific set of messages by ID — it does not invalidate messages sent after it
+
+### campfire:compact and Reserved Tags
+
+`campfire:compact` is a reserved system tag. Messages with this tag must be signed by a member with `full` role. Transport-level enforcement of this constraint is future work; client-side enforcement is active.
+
+## Named Views
+
+A named view is a persistent predicate that filters and shapes message results. Views are defined by sending a `campfire:view` message into the campfire. Any member can materialize a view using `cf view read`. Views are query definitions stored as messages — they are not caches or pre-computed results.
+
+### campfire:view Event Structure
+
+A view definition is a regular campfire message with tag `campfire:view`. The payload is JSON:
+
+```
+campfire:view payload {
+  name:       string             # unique identifier for the view within the campfire
+  predicate:  string             # S-expression predicate string (see Predicate Grammar below)
+  projection: [field-name, ...]  # optional: field names to include in output (omit = all fields)
+  ordering:   string             # "timestamp asc" (default) or "timestamp desc"
+  limit:      int                # maximum result count; 0 = no limit
+  refresh:    string             # "on-read" (only strategy supported in P1)
+}
+```
+
+**`name`.** The view's identifier within the campfire. Later `campfire:view` messages with the same name supersede earlier ones — the latest definition wins. Names are case-sensitive.
+
+**`predicate`.** An S-expression predicate string evaluated against each message's context. See Predicate Grammar below.
+
+**`projection`.** A list of field names to include in output. Valid field names: `id`, `sender`, `instance`, `payload`, `tags`, `antecedents`, `timestamp`, `signature`, `provenance`, `campfire_id`. If omitted or empty, all fields are returned.
+
+**`ordering`.** Result ordering. Default is `"timestamp asc"` (natural message order). `"timestamp desc"` reverses order, useful for "most recent N" queries with a limit.
+
+**`limit`.** Maximum number of messages to return after filtering and ordering. `0` means no limit.
+
+**`refresh`.** How and when the view's results are computed. Only `"on-read"` is supported in P1: the view is re-evaluated from scratch every time it is materialized. On-write pre-computation and periodic refresh are future work.
+
+### View Materialization Semantics
+
+- Views exclude `campfire:*` system messages from results. This is critical for negation predicates: `(not (tag "foo"))` must not match view definitions or compaction events.
+- Views respect compaction by default: superseded messages are excluded from view results.
+- Views evaluate the predicate against all non-system, non-superseded messages in the campfire, regardless of read cursor.
+- Only `full` role members may create views (`campfire:view` is a system tag).
+
+### Predicate Grammar
+
+Predicates use S-expression syntax. The grammar is:
+
+```
+predicate := boolean-expr | comparison-expr
+boolean-expr := (and pred pred ...)     ; at least 2 arguments; short-circuit evaluation
+              | (or  pred pred ...)     ; at least 2 arguments; short-circuit evaluation
+              | (not pred)
+comparison-expr := (gt  value-expr value-expr)
+                 | (lt  value-expr value-expr)
+                 | (gte value-expr value-expr)
+                 | (lte value-expr value-expr)
+                 | (eq  value-expr value-expr)
+leaf-expr := (tag "string")            ; true if message has this tag (case-insensitive)
+           | (sender "hex-prefix")     ; true if sender hex starts with prefix (case-insensitive)
+           | (field "dot.path")        ; extract JSON field from payload; "payload." prefix is optional
+           | (mul value-expr value-expr)
+           | (pow value-expr value-expr)
+           | (literal number)          ; numeric literal
+           | (literal "string")        ; string literal
+           | (timestamp)               ; message timestamp in unix nanoseconds
+```
+
+#### Operator Reference
+
+| Operator | Arity | Arguments | Returns | Notes |
+|----------|-------|-----------|---------|-------|
+| `and` | N≥2 | boolean expressions | boolean | Short-circuit: returns false at first false child |
+| `or` | N≥2 | boolean expressions | boolean | Short-circuit: returns true at first true child |
+| `not` | 1 | boolean expression | boolean | Logical negation |
+| `tag` | 1 | quoted string | boolean | Case-insensitive tag membership test |
+| `sender` | 1 | quoted hex string | boolean | Case-insensitive prefix match on sender hex |
+| `gt` | 2 | numeric expressions | boolean | `left > right` |
+| `lt` | 2 | numeric expressions | boolean | `left < right` |
+| `gte` | 2 | numeric expressions | boolean | `left >= right` |
+| `lte` | 2 | numeric expressions | boolean | `left <= right` |
+| `eq` | 2 | numeric or string expressions | boolean | String equality when both operands are strings; numeric equality otherwise |
+| `field` | 1 | quoted dot-path string | value | Extracts nested JSON field from parsed payload; returns numeric, string, or bool depending on JSON type; returns empty result if field absent or payload not JSON |
+| `mul` | 2 | numeric expressions | numeric | Multiplication |
+| `pow` | 2 | numeric expressions | numeric | Exponentiation: `base ^ exponent` |
+| `literal` | 1 | number or quoted string | value | Numeric literal if parseable as float64; string literal otherwise |
+| `timestamp` | 0 | — | numeric | Message timestamp in unix nanoseconds |
+
+#### Field Path Resolution
+
+`(field "path")` extracts a value from the message's JSON payload using dot-notation. The prefix `payload.` is optional and stripped if present — `(field "confidence")` and `(field "payload.confidence")` are equivalent.
+
+Nested fields: `(field "outer.inner.value")` navigates `payload["outer"]["inner"]["value"]`. If any segment is absent or the payload is not valid JSON, the result is empty (evaluates to false in boolean context, 0 in numeric context).
+
+#### Predicate Depth Limit
+
+The evaluator enforces a maximum recursion depth of 64 nodes. Predicates exceeding this depth return false rather than an error, preventing malicious predicates from causing stack overflows.
+
+#### Example Predicates
+
+```
+; Messages tagged "memory:standing"
+(tag "memory:standing")
+
+; Messages tagged either "memory:standing" or "memory:anchor"
+(or (tag "memory:standing") (tag "memory:anchor"))
+
+; Messages tagged "memory:standing" with confidence above 0.5
+(and (tag "memory:standing") (gt (field "confidence") (literal 0.5)))
+
+; Messages from a specific sender prefix
+(sender "abc123")
+
+; Messages tagged "status" but not "draft"
+(and (tag "status") (not (tag "draft")))
+
+; Messages after a specific timestamp
+(gt (timestamp) (literal 1710000000000000000))
+```
+
+## Field Projection (cf read --fields)
+
+`cf read` supports a `--fields` flag that limits which message fields appear in output. This is a client-side projection applied after message retrieval; it does not affect what is stored or transmitted.
+
+**Valid field names:** `id`, `sender`, `instance`, `payload`, `tags`, `timestamp`, `antecedents`, `signature`, `provenance`, `campfire_id`
+
+**Semantics:**
+
+- `--fields payload,tags` — include only the payload and tags fields in output
+- Multiple fields are comma-separated; whitespace around commas is ignored
+- Unknown field names are rejected with an error listing valid names
+- When `--fields` is omitted or empty, all fields are displayed (backward-compatible default)
+- The `instance` field appears only when non-empty, regardless of whether it is projected
+- In `--json` mode, `--fields` applies to the JSON output; the shape of the output object changes to include only the requested keys
+
+**Implementation note.** Field projection in `cf read` is a display concern, not a query concern. The store returns full `MessageRecord` objects; the projection is applied during rendering. This is distinct from named view projection, which operates as part of view materialization.
+
+## Tag-Filtered Reads
+
+`cf read` supports a `--tag` flag that filters messages by tag. Multiple `--tag` flags apply OR semantics: a message matches if it has any of the specified tags.
+
+**SQL-level filtering.** Tag filtering is pushed down to the SQLite query using `json_each`. The query uses:
+
+```sql
+EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) IN (?, ...))
+```
+
+This means tag filtering happens at the database level — only matching messages are loaded into memory. Tag matching is case-insensitive.
+
+**Cursor behavior.** When `--tag` filters are active, the read cursor advances based on all messages retrieved before filtering (pre-filter timestamps). This ensures filtered-out messages do not reappear on the next read. The filter is a display concern, not a cursor concern.
+
+**Interaction with named views.** Tag-filtered reads and named views are independent mechanisms. `cf read --tag foo` is an ad-hoc per-session filter. `cf view create` with `(tag "foo")` predicate creates a persistent, named, shareable filter. Use named views for filters that multiple agents need or that should survive across sessions.
+
+## Reserved Tags: Extended Namespace
+
+The following `campfire:*` tags are defined as of this revision. All require `full` membership role to send and are verified against the campfire's key by receivers.
+
+| Tag | Description | Introduced in |
+|-----|-------------|---------------|
+| `campfire:member-joined` | A new member has joined | P0 |
+| `campfire:member-evicted` | A member was evicted | P0 |
+| `campfire:member-left` | A member voluntarily departed | P0 |
+| `campfire:eviction` | Companion tag on eviction messages | P0 |
+| `campfire:rekey` | Campfire rotated its keypair | P0 |
+| `campfire:disband` | Campfire is being disbanded | P0 |
+| `campfire:invite` | Invitation to join a campfire | P0 (member-signed exception) |
+| `campfire:vouch` | Trust vouch for a member key | P0 (member-signed exception) |
+| `campfire:revoke` | Revocation of a prior vouch | P0 (member-signed exception) |
+| `campfire:compact` | Compaction event — marks messages superseded | P1 |
+| `campfire:view` | Named view definition | P1 |
+| `campfire:member-role-changed` | A member's role was changed | P1 |
+
+**Member-signed exceptions.** `campfire:invite`, `campfire:vouch`, and `campfire:revoke` are signed by individual members, not the campfire key. All other `campfire:*` tags are signed by the campfire.
+
+**P1 additions.** `campfire:compact`, `campfire:view`, and `campfire:member-role-changed` were introduced in the automaton substrate feature set. They extend the reserved namespace to cover log management (compact), persistent query definition (view), and role governance (member-role-changed).
+
 ## Wire Format
 
 Not specified in this version. The protocol defines the logical structure of messages, provenance chains, and membership data. Serialization format (protobuf, msgpack, CBOR, JSON) is an implementation choice. The only requirement is that the serialization is deterministic for signature verification.
@@ -575,9 +847,28 @@ cf revoke <campfire-id> <member-key>  # revoke a vouch
 cf send <campfire-id> "message" [--tag tag,...]
 cf dm <target-key> "message"         # sugar: create/reuse 2-member campfire, send
 cf read [campfire-id]                # read messages, optionally filtered to one campfire
+  --all                              # show all messages, not just unread
+  --peek                             # show unread messages without updating cursor
+  --follow                           # stream messages in real time
+  --tag <tag> [--tag <tag> ...]      # filter by tag (OR semantics; SQL-level)
+  --sender <hex-prefix>              # filter by sender prefix
+  --fields <field,...>               # project: comma-separated subset of id,sender,instance,payload,tags,timestamp,antecedents,signature,provenance,campfire_id
+  --pull <id[,id,...]>               # fetch specific messages by ID from local store
 cf inspect <message-id>              # show full provenance chain
 cf ls                                # list my campfires
 cf members <campfire-id>
 cf id                                # show my public key
+cf compact <campfire-id>             # create campfire:compact event (full role required)
+  --before <msg-id>                  # compact messages before this ID (default: all)
+  --summary "text"                   # human-readable summary of compacted content
+  --retention archive|discard        # local storage hint (default: archive)
+cf view create <campfire-id> <name>  # create named view (full role required)
+  --predicate <s-expr>               # S-expression predicate (required)
+  --projection <field,...>           # field names to include in output
+  --ordering "timestamp asc|desc"    # result ordering (default: timestamp asc)
+  --limit <n>                        # max results (default: 0 = no limit)
+cf view read <campfire-id> <name>    # materialize a named view
+cf view list <campfire-id>           # list all defined views in a campfire
+cf member set-role <campfire-id> <pubkey> --role observer|writer|full  # change member role (full role required)
 ```
 
