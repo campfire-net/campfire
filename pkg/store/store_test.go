@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // --- workspace-pyw: exact tag matching ---
@@ -801,5 +802,188 @@ func TestListMessages_RespectCompaction_MultipleEvents(t *testing.T) {
 		if !ids[good] {
 			t.Errorf("message %s should be visible", good)
 		}
+	}
+}
+
+// --- workspace-27q / workspace-2i1: isCompactionMsg uses HasTag ---
+
+// TestIsCompactionEvent_SubstringFalsePositive verifies that the store's
+// isCompactionEvent does not fire for tags that merely contain campfire:compact
+// as a substring (e.g. "xycampfire:compact" or "campfire:compact-v2").
+// This is the existing regression test carried from workspace-pyw; confirmed here
+// for workspace-27q parity.
+func TestIsCompactionEvent_SubstringFalsePositive(t *testing.T) {
+	cases := []struct {
+		tags    string
+		wantHit bool
+	}{
+		{`["campfire:compact"]`, true},
+		{`["xycampfire:compact"]`, false},
+		{`["campfire:compact-v2"]`, false},
+		{`["campfire:compact","status"]`, true},
+		{`["status","campfire:compact"]`, true},
+		{`[]`, false},
+	}
+	for _, tc := range cases {
+		rec := MessageRecord{Tags: tc.tags}
+		got := isCompactionEvent(rec)
+		if got != tc.wantHit {
+			t.Errorf("isCompactionEvent(%q) = %v, want %v", tc.tags, got, tc.wantHit)
+		}
+	}
+}
+
+// --- workspace-x9p: collectSupersededIDs cache ---
+
+// TestCollectSupersededIDs_Cache verifies that the superseded-ID cache avoids
+// redundant compaction event fetches. We call collectSupersededIDs twice and
+// verify the second call hits the cache (same result, no error).
+func TestCollectSupersededIDs_Cache(t *testing.T) {
+	s := testStore(t)
+	campfireID := "cf-cache"
+	s.AddMembership(Membership{CampfireID: campfireID, TransportDir: "/tmp", JoinProtocol: "open", Role: "full", JoinedAt: 1}) //nolint:errcheck
+
+	// Add two regular messages.
+	m1 := MessageRecord{ID: "msg1", CampfireID: campfireID, Sender: "s", Payload: []byte("a"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 100, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 100}
+	m2 := MessageRecord{ID: "msg2", CampfireID: campfireID, Sender: "s", Payload: []byte("b"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 200, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 200}
+	s.AddMessage(m1) //nolint:errcheck
+	s.AddMessage(m2) //nolint:errcheck
+
+	// Add a compaction event superseding msg1 and msg2.
+	payload, _ := json.Marshal(CompactionPayload{Supersedes: []string{"msg1", "msg2"}, Summary: []byte("compact"), Retention: "archive", CheckpointHash: "abc"})
+	ev := MessageRecord{ID: "ev1", CampfireID: campfireID, Sender: "s", Payload: payload, Tags: `["campfire:compact"]`, Antecedents: `["msg2"]`, Timestamp: 300, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 300}
+	s.AddMessage(ev) //nolint:errcheck
+
+	// First call: cache miss, populates cache.
+	sup1, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		t.Fatalf("first collectSupersededIDs: %v", err)
+	}
+	if !sup1["msg1"] || !sup1["msg2"] {
+		t.Errorf("first call: expected msg1 and msg2 in superseded set, got %v", sup1)
+	}
+
+	// Second call: should hit cache and return the same result.
+	sup2, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		t.Fatalf("second collectSupersededIDs: %v", err)
+	}
+	if len(sup2) != len(sup1) {
+		t.Errorf("cache mismatch: first=%d ids, second=%d ids", len(sup1), len(sup2))
+	}
+	for id := range sup1 {
+		if !sup2[id] {
+			t.Errorf("cached result missing id %q", id)
+		}
+	}
+
+	// Add a new compaction event: the cache must be invalidated (new max timestamp).
+	payload2, _ := json.Marshal(CompactionPayload{Supersedes: []string{"msg3"}, Summary: []byte("compact2"), Retention: "archive", CheckpointHash: "def"})
+	ev2 := MessageRecord{ID: "ev2", CampfireID: campfireID, Sender: "s", Payload: payload2, Tags: `["campfire:compact"]`, Antecedents: `["ev1"]`, Timestamp: 400, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 400}
+	s.AddMessage(ev2) //nolint:errcheck
+
+	sup3, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		t.Fatalf("third collectSupersededIDs: %v", err)
+	}
+	// After the new compaction event, msg3 should also appear.
+	if !sup3["msg3"] {
+		t.Errorf("cache was not invalidated: msg3 not in superseded set after new compaction event")
+	}
+}
+
+// --- workspace-d68: poll cursor uses ReceivedAt, filter must use received_at ---
+
+// TestListMessages_AfterReceivedAt verifies that when AfterReceivedAt is set in
+// MessageFilter, the query filters by received_at rather than timestamp. This is
+// the regression test for workspace-d68 where the poll cursor (ReceivedAt) was
+// used as input to a filter on the timestamp column, causing messages from
+// clock-skewed senders to be permanently missed.
+func TestListMessages_AfterReceivedAt(t *testing.T) {
+	s := testStore(t)
+	campfireID := "cf-receivedAt"
+	s.AddMembership(Membership{CampfireID: campfireID, TransportDir: "/tmp", JoinProtocol: "open", Role: "full", JoinedAt: 1}) //nolint:errcheck
+
+	now := time.Now().UnixNano()
+
+	// Message with a past Timestamp (sender clock is 60 seconds behind server),
+	// but received now (so ReceivedAt is current).
+	pastTimestamp := now - int64(60*time.Second)
+	msgSkewed := MessageRecord{
+		ID: "skewed", CampfireID: campfireID, Sender: "s",
+		Payload: []byte("skewed"), Tags: `["status"]`, Antecedents: "[]",
+		Timestamp:  pastTimestamp, // sender's clock is 60s behind
+		Signature:  []byte("s"),
+		Provenance: "[]",
+		ReceivedAt: now, // received now by the server
+	}
+
+	// Message with a normal Timestamp and ReceivedAt.
+	msgNormal := MessageRecord{
+		ID: "normal", CampfireID: campfireID, Sender: "s",
+		Payload: []byte("normal"), Tags: `["status"]`, Antecedents: "[]",
+		Timestamp:  now,
+		Signature:  []byte("s"),
+		Provenance: "[]",
+		ReceivedAt: now + int64(time.Millisecond),
+	}
+
+	s.AddMessage(msgSkewed) //nolint:errcheck
+	s.AddMessage(msgNormal) //nolint:errcheck
+
+	// Cursor set to 10 minutes ago — both messages have ReceivedAt > cursor.
+	cursor := now - int64(10*time.Minute)
+
+	// Filter using AfterReceivedAt (the fix): both messages should appear because
+	// their ReceivedAt values are after the cursor, even though msgSkewed's
+	// Timestamp is 60 seconds before now.
+	msgs, err := s.ListMessages(campfireID, 0, MessageFilter{AfterReceivedAt: cursor})
+	if err != nil {
+		t.Fatalf("ListMessages with AfterReceivedAt: %v", err)
+	}
+	ids := make(map[string]bool)
+	for _, m := range msgs {
+		ids[m.ID] = true
+	}
+	if !ids["skewed"] {
+		t.Error("skewed message (past Timestamp, current ReceivedAt) should appear when filtering by AfterReceivedAt — would have been missed with old timestamp filter")
+	}
+	if !ids["normal"] {
+		t.Error("normal message should appear when filtering by AfterReceivedAt")
+	}
+
+	// Contrast: using the old timestamp filter would miss the skewed message.
+	// The cursor points to 10 minutes ago; msgSkewed.Timestamp = now-60s which is
+	// after the cursor, so in this particular case it would still appear. But if
+	// we set the timestamp cursor to NOW, the skewed message would be missed.
+	timestampCursor := now // cursor at exactly now
+	msgsOldWay, err := s.ListMessages(campfireID, timestampCursor)
+	if err != nil {
+		t.Fatalf("ListMessages old way: %v", err)
+	}
+	idsOldWay := make(map[string]bool)
+	for _, m := range msgsOldWay {
+		idsOldWay[m.ID] = true
+	}
+	// With timestamp filter at 'now', the skewed message (Timestamp = now-60s) would be excluded.
+	if idsOldWay["skewed"] {
+		t.Error("(sanity check) old timestamp filter should exclude skewed message when cursor >= message Timestamp")
+	}
+
+	// With AfterReceivedAt set to 'now', only msgNormal (ReceivedAt = now+1ms) should appear.
+	msgsNewWay, err := s.ListMessages(campfireID, 0, MessageFilter{AfterReceivedAt: now})
+	if err != nil {
+		t.Fatalf("ListMessages new way (at now): %v", err)
+	}
+	idsNewWay := make(map[string]bool)
+	for _, m := range msgsNewWay {
+		idsNewWay[m.ID] = true
+	}
+	if idsNewWay["skewed"] {
+		// skewed message's ReceivedAt == now, so received_at > now is false
+		t.Error("skewed message ReceivedAt == cursor should not appear (strict >)")
+	}
+	if !idsNewWay["normal"] {
+		t.Error("normal message ReceivedAt = now+1ms should appear with AfterReceivedAt = now")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/predicate"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/spf13/cobra"
 )
 
@@ -111,7 +112,7 @@ func runViewCreate(campfireIDArg, name string) error {
 		return fmt.Errorf("querying membership: %w", err)
 	}
 	if m == nil {
-		return fmt.Errorf("not a member of campfire %s", campfireID[:minInt(12, len(campfireID))])
+		return fmt.Errorf("not a member of campfire %s", campfireID[:min(12, len(campfireID))])
 	}
 
 	// View creation uses campfire:view tag — requires full role.
@@ -165,11 +166,13 @@ func runViewCreate(campfireIDArg, name string) error {
 	// Route to transport — same path as cf send.
 	// sendP2PHTTP stores locally itself; sendFilesystem and sendGitHub do not.
 	var msg *message.Message
-	if isGitHubCampfire(m.TransportDir) {
+	transportType := transport.ResolveType(*m)
+	switch transportType {
+	case transport.TypeGitHub:
 		msg, err = sendGitHub(campfireID, string(payloadBytes), tags, []string{}, "", agentID, s, m)
-	} else if isPeerHTTPCampfire(m.TransportDir, campfireID) {
+	case transport.TypePeerHTTP:
 		msg, err = sendP2PHTTP(campfireID, string(payloadBytes), tags, []string{}, "", agentID, s, m)
-	} else {
+	default:
 		msg, err = sendFilesystem(campfireID, string(payloadBytes), tags, []string{}, "", agentID, m.TransportDir)
 	}
 	if err != nil {
@@ -177,7 +180,7 @@ func runViewCreate(campfireIDArg, name string) error {
 	}
 
 	// Store locally for filesystem and GitHub transports (P2P HTTP stores in sendP2PHTTP).
-	if !isPeerHTTPCampfire(m.TransportDir, campfireID) {
+	if transportType != transport.TypePeerHTTP {
 		tagsJSON, _ := json.Marshal(msg.Tags)
 		anteJSON, _ := json.Marshal(msg.Antecedents)
 		provJSON, _ := json.Marshal(msg.Provenance)
@@ -231,7 +234,7 @@ func runViewRead(campfireIDArg, name string) error {
 		return err
 	}
 	if def == nil {
-		return fmt.Errorf("view %q not found in campfire %s", name, campfireID[:minInt(12, len(campfireID))])
+		return fmt.Errorf("view %q not found in campfire %s", name, campfireID[:min(12, len(campfireID))])
 	}
 
 	// Parse the predicate.

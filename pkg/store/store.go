@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -81,9 +82,24 @@ CREATE TABLE IF NOT EXISTS pending_threshold_shares (
 );
 `
 
+// supersededCacheEntry is a cached result of collectSupersededIDs for a campfire.
+// It is valid as long as the maximum compaction event timestamp hasn't changed.
+type supersededCacheEntry struct {
+	maxCompactionTS int64
+	superseded      map[string]bool
+}
+
 // Store is the local SQLite database for an agent.
 type Store struct {
 	db *sql.DB
+
+	// supersededCache caches the superseded-ID sets per campfire to avoid
+	// fetching and parsing all compaction payloads on every ListMessages call.
+	// Key: campfireID. Cache is invalidated when max compaction timestamp changes.
+	// Cross-campfire queries (campfireID=="") are not cached.
+	// (Fix for workspace-x9p: O(events × ids) work on every ListMessages call.)
+	supersededMu    sync.RWMutex
+	supersededCache map[string]supersededCacheEntry
 }
 
 // Membership represents a campfire membership record.
@@ -114,7 +130,10 @@ func Open(path string) (*Store, error) {
 	db.Exec("ALTER TABLE messages ADD COLUMN instance TEXT NOT NULL DEFAULT ''") //nolint:errcheck
 	// Backward-compatible migration: add description column if missing.
 	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN description TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
-	return &Store{db: db}, nil
+	return &Store{
+		db:              db,
+		supersededCache: make(map[string]supersededCacheEntry),
+	}, nil
 }
 
 // Close closes the database.
@@ -300,10 +319,15 @@ func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 // Empty fields mean no filtering for that dimension.
 // When RespectCompaction is true, messages superseded by a compaction event are excluded
 // (compaction events themselves are always included).
+// AfterReceivedAt filters by received_at > value instead of timestamp > afterTimestamp.
+// Use this in the poll path so cursor and filter use the same field, preventing
+// message loss when sender clocks are skewed relative to the server clock.
+// (Fix for workspace-d68.)
 type MessageFilter struct {
 	Tags              []string
 	Sender            string
 	RespectCompaction bool
+	AfterReceivedAt   int64 // if > 0, overrides afterTimestamp; filters by received_at
 }
 
 // ListMessages returns messages for a campfire, ordered by timestamp.
@@ -311,6 +335,7 @@ type MessageFilter struct {
 // If afterTimestamp > 0, only returns messages with timestamp > afterTimestamp.
 // An optional MessageFilter applies tag and sender filtering at the SQL level.
 // When filter.RespectCompaction is true, superseded messages are excluded.
+// When filter.AfterReceivedAt > 0, filters by received_at instead of timestamp.
 func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...MessageFilter) ([]MessageRecord, error) {
 	var f MessageFilter
 	if len(filter) > 0 {
@@ -318,8 +343,19 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...
 	}
 
 	// Build WHERE clauses and args dynamically.
-	conditions := []string{"timestamp > ?"}
-	args := []any{afterTimestamp}
+	// When AfterReceivedAt is set, filter by received_at (the poll cursor field)
+	// instead of timestamp (message creation time). This aligns cursor and filter
+	// to the same field, preventing message loss from sender clock skew.
+	// (Fix for workspace-d68.)
+	var conditions []string
+	var args []any
+	if f.AfterReceivedAt > 0 {
+		conditions = []string{"received_at > ?"}
+		args = []any{f.AfterReceivedAt}
+	} else {
+		conditions = []string{"timestamp > ?"}
+		args = []any{afterTimestamp}
+	}
 
 	if campfireID != "" {
 		conditions = append(conditions, "campfire_id = ?")
@@ -389,10 +425,75 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...
 
 // isCompactionEvent is defined below using HasTag for exact matching.
 
+// maxCompactionTimestamp returns the maximum timestamp among campfire:compact events
+// for the given campfire. Returns 0 if there are none.
+func (s *Store) maxCompactionTimestamp(campfireID string) (int64, error) {
+	var conditions []string
+	var args []any
+	conditions = append(conditions, `EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) = 'campfire:compact')`)
+	if campfireID != "" {
+		conditions = append(conditions, "campfire_id = ?")
+		args = append(args, campfireID)
+	}
+	query := `SELECT COALESCE(MAX(timestamp), 0) FROM messages WHERE ` + strings.Join(conditions, " AND ")
+	var maxTS int64
+	if err := s.db.QueryRow(query, args...).Scan(&maxTS); err != nil {
+		return 0, fmt.Errorf("querying max compaction timestamp: %w", err)
+	}
+	return maxTS, nil
+}
+
 // collectSupersededIDs returns the set of message IDs superseded by any compaction
 // event in the given campfire. If campfireID is empty, collects across all campfires.
+//
+// Results are cached per campfire keyed by the max compaction event timestamp.
+// A new compaction event has a newer timestamp, causing a cache miss and rebuild.
+// Cross-campfire queries (campfireID=="") are not cached.
+// (Fix for workspace-x9p: avoid O(events × ids) work on every ListMessages call.)
 func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error) {
-	events, err := s.ListCompactionEvents(campfireID)
+	if campfireID != "" {
+		maxTS, err := s.maxCompactionTimestamp(campfireID)
+		if err != nil {
+			return nil, err
+		}
+		if maxTS == 0 {
+			return nil, nil
+		}
+
+		s.supersededMu.RLock()
+		entry, ok := s.supersededCache[campfireID]
+		s.supersededMu.RUnlock()
+		if ok && entry.maxCompactionTS == maxTS {
+			return entry.superseded, nil
+		}
+
+		// Cache miss: rebuild superseded set.
+		events, err := s.ListCompactionEvents(campfireID)
+		if err != nil {
+			return nil, err
+		}
+		superseded := make(map[string]bool)
+		for _, ev := range events {
+			var payload CompactionPayload
+			if err := unmarshalCompactionPayload(ev.Payload, &payload); err != nil {
+				continue
+			}
+			for _, id := range payload.Supersedes {
+				superseded[id] = true
+			}
+		}
+
+		s.supersededMu.Lock()
+		s.supersededCache[campfireID] = supersededCacheEntry{
+			maxCompactionTS: maxTS,
+			superseded:      superseded,
+		}
+		s.supersededMu.Unlock()
+		return superseded, nil
+	}
+
+	// Cross-campfire path: no caching.
+	events, err := s.ListCompactionEvents("")
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +504,6 @@ func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error)
 	for _, ev := range events {
 		var payload CompactionPayload
 		if err := unmarshalCompactionPayload(ev.Payload, &payload); err != nil {
-			// Malformed compaction event — skip rather than fail.
 			continue
 		}
 		for _, id := range payload.Supersedes {

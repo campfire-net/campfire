@@ -152,7 +152,8 @@ func TestFollowIntervalForTransport(t *testing.T) {
 		{transportDir: `github:{"repo":"owner/repo","issue_number":42}`, campfireID: "test", wantInterval: 5 * time.Second},
 	}
 	for _, tt := range tests {
-		got := followIntervalForTransport(tt.transportDir, tt.campfireID)
+		m := store.Membership{TransportDir: tt.transportDir, CampfireID: tt.campfireID}
+		got := followIntervalForTransport(m)
 		if got != tt.wantInterval {
 			t.Errorf("followIntervalForTransport(%q, %q) = %v, want %v", tt.transportDir, tt.campfireID, got, tt.wantInterval)
 		}
@@ -217,7 +218,7 @@ func TestFollowLoopConfig(t *testing.T) {
 		t.Fatal("membership not found")
 	}
 
-	interval := followIntervalForTransport(mem.TransportDir, campfireID)
+	interval := followIntervalForTransport(*mem)
 	if interval != 2*time.Second {
 		t.Errorf("expected 2s filesystem interval, got %v", interval)
 	}

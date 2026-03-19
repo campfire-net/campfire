@@ -57,6 +57,7 @@ type Transport struct {
 	issueNumbers map[string]int       // campfireID -> GitHub Issue number
 
 	stopCh  chan struct{}
+	doneCh  chan struct{} // closed by pollLoop when it exits
 	running bool
 }
 
@@ -103,11 +104,13 @@ func (t *Transport) Start() error {
 	}
 	t.running = true
 	t.stopCh = make(chan struct{})
+	t.doneCh = make(chan struct{})
 	go t.pollLoop()
 	return nil
 }
 
 // Stop shuts down the background poll loop and waits for it to exit.
+// It is safe to call Stop multiple times or before Start.
 func (t *Transport) Stop() error {
 	t.mu.Lock()
 	if !t.running {
@@ -116,12 +119,17 @@ func (t *Transport) Stop() error {
 	}
 	close(t.stopCh)
 	t.running = false
+	doneCh := t.doneCh
 	t.mu.Unlock()
+	// Wait for pollLoop to exit so callers know the goroutine is gone.
+	<-doneCh
 	return nil
 }
 
 // pollLoop runs continuously, polling all registered campfires on each tick.
+// It closes doneCh when it exits so Stop() can synchronize.
 func (t *Transport) pollLoop() {
+	defer close(t.doneCh)
 	interval := time.Duration(t.cfg.PollIntervalSecs) * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

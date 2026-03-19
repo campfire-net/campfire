@@ -45,13 +45,7 @@ var dagCmd = &cobra.Command{
 			return fmt.Errorf("querying membership: %w", err)
 		}
 		if m != nil {
-			if isGitHubCampfire(m.TransportDir) {
-				syncFromGitHub(resolved, m.TransportDir, s)
-			} else if isPeerHTTPCampfire(m.TransportDir, resolved) {
-				syncFromHTTPPeers(resolved, agentID, s)
-			} else {
-				syncFromFilesystem(resolved, m.TransportDir, s)
-			}
+			syncCampfire(resolved, m, agentID, s)
 		}
 
 		// Query messages.

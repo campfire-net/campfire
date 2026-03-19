@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
@@ -144,7 +145,7 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, 
 				}
 				fmt.Printf("  antecedents: %s\n", strings.Join(shortAnts, ", "))
 			}
-			fmt.Printf("  %s\n\n", string(m.Payload))
+			fmt.Printf("  %s\n\n", sanitizePayload(m.Payload))
 		}
 		return
 	}
@@ -211,7 +212,7 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, 
 			fmt.Printf("  antecedents: %s\n", strings.Join(shortAnts, ", "))
 		}
 		if fields["payload"] {
-			fmt.Printf("  %s\n", string(m.Payload))
+			fmt.Printf("  %s\n", sanitizePayload(m.Payload))
 		}
 		fmt.Println()
 	}
@@ -385,6 +386,9 @@ func runNATPoll(cfg natPollConfig, w io.Writer) error {
 	if timeout <= 0 {
 		timeout = 30
 	}
+	// firstErr records the first poll error in one-shot mode so it is reported
+	// instead of the last error when all peers have been tried.
+	var firstErr error
 
 	for {
 		// Check for stop signal (non-blocking).
@@ -398,6 +402,9 @@ func runNATPoll(cfg natPollConfig, w io.Writer) error {
 		if err != nil {
 			// Rotate to next peer on error.
 			peerIdx = (peerIdx + 1) % len(peers)
+			if !cfg.follow && firstErr == nil {
+				firstErr = err
+			}
 			time.Sleep(1 * time.Second)
 			// Re-check stop after sleep.
 			select {
@@ -408,11 +415,13 @@ func runNATPoll(cfg natPollConfig, w io.Writer) error {
 			if !cfg.follow {
 				// In one-shot mode, do not retry indefinitely; return after exhausting all peers once.
 				if peerIdx == 0 {
-					return fmt.Errorf("polling peers: %w", err)
+					return fmt.Errorf("polling peers: %w", firstErr)
 				}
 			}
 			continue
 		}
+		// Reset firstErr on success so subsequent failures report fresh errors.
+		firstErr = nil
 
 		if len(msgs) > 0 {
 			cursor = newCursor
@@ -438,8 +447,8 @@ func runNATPoll(cfg natPollConfig, w io.Writer) error {
 
 // followIntervalForTransport returns the poll interval for --follow based on transport type.
 // GitHub campfires use 5s to avoid API rate limiting; all others use 2s.
-func followIntervalForTransport(transportDir, campfireID string) time.Duration {
-	if isGitHubCampfire(transportDir) {
+func followIntervalForTransport(m store.Membership) time.Duration {
+	if transport.ResolveType(m) == transport.TypeGitHub {
 		return 5 * time.Second
 	}
 	return 2 * time.Second
@@ -447,11 +456,12 @@ func followIntervalForTransport(transportDir, campfireID string) time.Duration {
 
 // syncCampfire runs the appropriate sync function for a single campfire based on its transport.
 func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, s *store.Store) {
-	if isGitHubCampfire(m.TransportDir) {
+	switch transport.ResolveType(*m) {
+	case transport.TypeGitHub:
 		syncFromGitHub(cfID, m.TransportDir, s)
-	} else if isPeerHTTPCampfire(m.TransportDir, cfID) {
+	case transport.TypePeerHTTP:
 		syncFromHTTPPeers(cfID, agentID, s)
-	} else {
+	default:
 		syncFromFilesystem(cfID, m.TransportDir, s)
 	}
 }
@@ -460,6 +470,21 @@ func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, 
 // It is a backward-compatible wrapper around printMessagesWithFields with no field projection.
 func printMessages(allMessages []store.MessageRecord, s *store.Store) {
 	printMessagesWithFields(allMessages, s, nil)
+}
+
+// sanitizePayload strips terminal control characters (escape sequences and other
+// non-printable bytes) from a message payload before displaying it. This prevents
+// terminal injection via crafted message content.
+func sanitizePayload(payload []byte) string {
+	out := make([]byte, 0, len(payload))
+	for _, b := range payload {
+		// Allow printable ASCII (0x20-0x7E), tab (0x09), and newline (0x0A, 0x0D).
+		// Reject ESC (0x1B) and all other control characters to block escape sequences.
+		if b == 0x09 || b == 0x0A || b == 0x0D || (b >= 0x20 && b <= 0x7E) || b >= 0x80 {
+			out = append(out, b)
+		}
+	}
+	return string(out)
 }
 
 var readCmd = &cobra.Command{
@@ -543,7 +568,7 @@ var readCmd = &cobra.Command{
 			// If following multiple campfires, use the shortest interval.
 			interval := 2 * time.Second
 			for _, e := range entries {
-				i := followIntervalForTransport(e.membership.TransportDir, e.id)
+				i := followIntervalForTransport(*e.membership)
 				if i < interval {
 					interval = i
 				}
@@ -739,17 +764,35 @@ func syncFromGitHub(cfID, transportDir string, s *store.Store) {
 }
 
 // syncFromFilesystem reads messages from the filesystem transport into the local store.
+// Only messages with valid Ed25519 signatures are stored; invalid messages are silently
+// skipped to prevent injection of unsigned content via shared filesystem directories.
+// Provenance hops are also verified; any hop with an invalid signature is rejected.
 func syncFromFilesystem(cfID string, transportDir string, s *store.Store) {
 	baseDir := fs.DefaultBaseDir()
 	if transportDir != "" {
 		baseDir = filepath.Dir(transportDir)
 	}
-	transport := fs.New(baseDir)
-	fsMessages, err := transport.ListMessages(cfID)
+	fsTransport := fs.New(baseDir)
+	fsMessages, err := fsTransport.ListMessages(cfID)
 	if err != nil {
 		return
 	}
 	for _, fsMsg := range fsMessages {
+		// workspace-h0t: verify message signature before storing.
+		if !fsMsg.VerifySignature() {
+			continue
+		}
+		// workspace-h0t: verify all provenance hops.
+		hopOK := true
+		for _, hop := range fsMsg.Provenance {
+			if !message.VerifyHop(fsMsg.ID, hop) {
+				hopOK = false
+				break
+			}
+		}
+		if !hopOK {
+			continue
+		}
 		provJSON, err := json.Marshal(fsMsg.Provenance)
 		if err != nil {
 			continue
@@ -855,7 +898,7 @@ func printNATMessages(campfireID string, msgs []message.Message, w io.Writer, s 
 			}
 			fmt.Fprintf(w, "  antecedents: %s\n", strings.Join(shortAnts, ", "))
 		}
-		fmt.Fprintf(w, "  %s\n\n", string(m.Payload))
+		fmt.Fprintf(w, "  %s\n\n", sanitizePayload(m.Payload))
 	}
 }
 

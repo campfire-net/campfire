@@ -107,7 +107,7 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 		return nil, fmt.Errorf("querying membership: %w", err)
 	}
 	if m == nil {
-		return nil, fmt.Errorf("not a member of campfire %s", campfireID[:minInt(12, len(campfireID))])
+		return nil, fmt.Errorf("not a member of campfire %s", campfireID[:min(12, len(campfireID))])
 	}
 
 	// Only "full" role members can compact (campfire:compact is a system tag).
@@ -124,12 +124,16 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 	// Determine the set of messages to supersede.
 	var toSupersede []store.MessageRecord
 	if beforeMsgID != "" {
-		// Find the before message.
+		// Find the before message by exact ID or unique prefix.
 		var beforeTS int64
+		var matchedID string
 		for _, msg := range allMsgs {
-			if msg.ID == beforeMsgID {
+			if msg.ID == beforeMsgID || strings.HasPrefix(msg.ID, beforeMsgID) {
+				if matchedID != "" {
+					return nil, fmt.Errorf("ambiguous message prefix %q matches multiple messages", beforeMsgID)
+				}
 				beforeTS = msg.Timestamp
-				break
+				matchedID = msg.ID
 			}
 		}
 		if beforeTS == 0 {
@@ -236,8 +240,11 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 
 // isCompactionMsg returns true if the message has the campfire:compact tag.
 // Used to exclude existing compaction events from the set of messages to supersede.
+// Uses HasTag (exact JSON element match) rather than strings.Contains to avoid false
+// positives from tags like "xycampfire:compact". Unified with isCompactionEvent
+// in store.go. (Fix for workspace-27q / workspace-2i1.)
 func isCompactionMsg(m store.MessageRecord) bool {
-	return strings.Contains(m.Tags, `"campfire:compact"`)
+	return store.HasTag(m.Tags, "campfire:compact")
 }
 
 // computeCheckpointHash computes SHA-256 of sorted(id + "|" + hex(signature)) for each message.

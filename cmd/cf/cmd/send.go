@@ -14,6 +14,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
+	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
@@ -117,11 +118,12 @@ var sendCmd = &cobra.Command{
 
 		// Route based on transport type.
 		var msg *message.Message
-		if isGitHubCampfire(m.TransportDir) {
+		switch transport.ResolveType(*m) {
+		case transport.TypeGitHub:
 			msg, err = sendGitHub(campfireID, payload, tags, antecedents, sendInstance, agentID, s, m)
-		} else if isPeerHTTPCampfire(m.TransportDir, campfireID) {
+		case transport.TypePeerHTTP:
 			msg, err = sendP2PHTTP(campfireID, payload, tags, antecedents, sendInstance, agentID, s, m)
-		} else {
+		default:
 			msg, err = sendFilesystem(campfireID, payload, tags, antecedents, sendInstance, agentID, m.TransportDir)
 		}
 		if err != nil {
@@ -386,7 +388,7 @@ func thresholdSignHop(msg *message.Message, cfState *campfire.CampfireState, mem
 		return nil, 0, fmt.Errorf("loading threshold share: %w", err)
 	}
 	if share == nil {
-		return nil, 0, fmt.Errorf("no threshold share — DKG not completed for campfire %s", campfireID[:minInt(12, len(campfireID))])
+		return nil, 0, fmt.Errorf("no threshold share — DKG not completed for campfire %s", campfireID[:min(12, len(campfireID))])
 	}
 	myParticipantID, myDKGResult, err := threshold.UnmarshalResult(share.SecretShare)
 	if err != nil {
@@ -501,12 +503,6 @@ func thresholdSignHop(msg *message.Message, cfState *campfire.CampfireState, mem
 	return sig, hopTimestamp, nil
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 func init() {
 	sendCmd.Flags().StringSliceVar(&sendTags, "tag", nil, "message tags")
