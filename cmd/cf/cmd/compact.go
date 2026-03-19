@@ -15,13 +15,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/spf13/cobra"
 )
 
@@ -189,42 +190,41 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 	// Enforce role before sending.
 	_ = campfire.EffectiveRole(m.Role) // already checked above
 
-	// Send via filesystem transport, get the message back so we can store locally.
-	transportDir := m.TransportDir
-	baseDir := transportDir
-	if baseDir != "" {
-		baseDir = filepath.Dir(transportDir)
-	}
+	// Route the compaction message through the appropriate transport.
+	compactTags := []string{"campfire:compact"}
+	compactAntes := []string{lastSupersededID}
+	payloadStr := string(payloadJSON)
 
-	msg, err := sendFilesystem(
-		campfireID,
-		string(payloadJSON),
-		[]string{"campfire:compact"},
-		[]string{lastSupersededID},
-		"compact",
-		agentID,
-		transportDir,
-	)
+	var sentMsg *message.Message
+	switch transport.ResolveType(*m) {
+	case transport.TypeGitHub:
+		sentMsg, err = sendGitHub(campfireID, payloadStr, compactTags, compactAntes, "compact", agentID, s, m)
+	case transport.TypePeerHTTP:
+		sentMsg, err = sendP2PHTTP(campfireID, payloadStr, compactTags, compactAntes, "compact", agentID, s, m)
+	default: // TypeFilesystem
+		sentMsg, err = sendFilesystem(campfireID, payloadStr, compactTags, compactAntes, "compact", agentID, m.TransportDir)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("sending compaction event: %w", err)
 	}
 
 	// Store the compaction event in the local SQLite store so ListCompactionEvents can find it.
-	tagsJSON, _ := json.Marshal(msg.Tags)
-	anteJSON, _ := json.Marshal(msg.Antecedents)
-	provJSON, _ := json.Marshal(msg.Provenance)
+	// (sendP2PHTTP already stores locally; sendFilesystem and sendGitHub do not — store here for all paths.)
+	tagsJSON, _ := json.Marshal(sentMsg.Tags)
+	anteJSON, _ := json.Marshal(sentMsg.Antecedents)
+	provJSON, _ := json.Marshal(sentMsg.Provenance)
 	s.AddMessage(store.MessageRecord{ //nolint:errcheck
-		ID:          msg.ID,
+		ID:          sentMsg.ID,
 		CampfireID:  campfireID,
 		Sender:      agentID.PublicKeyHex(),
-		Payload:     msg.Payload,
+		Payload:     sentMsg.Payload,
 		Tags:        string(tagsJSON),
 		Antecedents: string(anteJSON),
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
+		Timestamp:   sentMsg.Timestamp,
+		Signature:   sentMsg.Signature,
 		Provenance:  string(provJSON),
 		ReceivedAt:  store.NowNano(),
-		Instance:    msg.Instance,
+		Instance:    sentMsg.Instance,
 	})
 
 	return &compactResult{

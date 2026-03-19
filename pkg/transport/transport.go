@@ -25,7 +25,7 @@ func (t Type) String() string {
 	case TypeGitHub:
 		return "github"
 	case TypePeerHTTP:
-		return "http"
+		return "p2p-http"
 	default:
 		return "unknown"
 	}
