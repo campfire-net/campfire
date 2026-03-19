@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -477,7 +478,7 @@ func pollForKeyDelivery(tr *ghtr.Transport, campfireID string, agentID *identity
 			// Verify sender is the campfire creator. msg.Sender holds the raw
 			// Ed25519 public key bytes of the message author. Only the holder of
 			// the campfire private key (the creator) is authorised to deliver it.
-			if !bytesEqual(msg.Sender, campfirePubKeyBytes) {
+			if subtle.ConstantTimeCompare(msg.Sender, campfirePubKeyBytes) != 1 {
 				continue
 			}
 
@@ -496,20 +497,6 @@ func pollForKeyDelivery(tr *ghtr.Transport, campfireID string, agentID *identity
 		time.Sleep(100 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("key delivery not received after %d poll attempts", maxAttempts)
-}
-
-// bytesEqual returns true when a and b have the same length and identical bytes.
-// Uses a simple loop to avoid importing bytes package solely for this comparison.
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 

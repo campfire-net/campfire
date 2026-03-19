@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -19,32 +18,8 @@ import (
 
 // handleDeliver receives a CBOR-encoded Message from a peer.
 // POST /campfire/{id}/deliver
-func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfireID string) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "cannot read body", http.StatusBadRequest)
-		return
-	}
-
-	// Verify sender signature headers
-	senderHex := r.Header.Get("X-Campfire-Sender")
-	sigB64 := r.Header.Get("X-Campfire-Signature")
-	if senderHex == "" || sigB64 == "" {
-		http.Error(w, "missing signature headers", http.StatusUnauthorized)
-		return
-	}
-	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
-		log.Printf("handleDeliver: signature verification failed: %v", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
-	}
-
-	// Membership check: sender must be a known member of this campfire.
-	if !h.checkMembership(w, campfireID, senderHex) {
-		return
-	}
-
+// Auth (signature + membership) is enforced by authMiddleware in route.
+func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfireID, senderHex string, body []byte) {
 	// Decode message
 	var msg message.Message
 	if err := cfencoding.Unmarshal(body, &msg); err != nil {
@@ -69,25 +44,8 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 
 // handleSync serves messages from the local store newer than the given timestamp.
 // GET /campfire/{id}/sync?since={nanosecond-timestamp}
-func (h *handler) handleSync(w http.ResponseWriter, r *http.Request, campfireID string) {
-	// Verify sender signature (query params don't have body — sign empty body)
-	senderHex := r.Header.Get("X-Campfire-Sender")
-	sigB64 := r.Header.Get("X-Campfire-Signature")
-	if senderHex == "" || sigB64 == "" {
-		http.Error(w, "missing signature headers", http.StatusUnauthorized)
-		return
-	}
-	if err := verifyRequestSignature(senderHex, sigB64, []byte{}); err != nil {
-		log.Printf("handleSync: signature verification failed: %v", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
-	}
-
-	// Membership check: sender must be a known member of this campfire.
-	if !h.checkMembership(w, campfireID, senderHex) {
-		return
-	}
-
+// Auth (signature + membership) is enforced by authMiddleware in route.
+func (h *handler) handleSync(w http.ResponseWriter, r *http.Request, campfireID, senderHex string, body []byte) {
 	sinceStr := r.URL.Query().Get("since")
 	var since int64
 	if sinceStr != "" {
@@ -132,35 +90,17 @@ func (h *handler) handleSync(w http.ResponseWriter, r *http.Request, campfireID 
 // GET /campfire/{id}/poll?since={ns}&timeout={s}
 //
 // Behaviour:
-//  1. Auth check (401 on failure).
-//  2. Membership check (403 if sender not a member).
+//  1. Auth check (401 on failure) — enforced by authMiddleware in route.
+//  2. Membership check (403 if sender not a member) — enforced by authMiddleware.
 //  3. Parse query params (400 on bad since; timeout default=30, cap=120).
 //  4. Subscribe to PollBroker (503 if limit exceeded).
 //  5. Initial sync: if records exist → 200 with CBOR body + X-Campfire-Cursor.
 //  6. Block on channel or timeout.
 //  7. Post-wait sync: if records exist → 200; else → 204 + X-Campfire-Cursor=since.
-func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID string) {
+func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID, senderHex string, body []byte) {
 	// Null-broker guard.
 	if h.transport == nil || h.transport.pollBroker == nil {
 		http.Error(w, "long poll not supported", http.StatusNotImplemented)
-		return
-	}
-
-	// Verify auth (empty body, same pattern as handleSync).
-	senderHex := r.Header.Get("X-Campfire-Sender")
-	sigB64 := r.Header.Get("X-Campfire-Signature")
-	if senderHex == "" || sigB64 == "" {
-		http.Error(w, "missing signature headers", http.StatusUnauthorized)
-		return
-	}
-	if err := verifyRequestSignature(senderHex, sigB64, []byte{}); err != nil {
-		log.Printf("handlePoll: signature verification failed: %v", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
-	}
-
-	// Membership check: sender must be in peer_endpoints or be this node's self key.
-	if !h.checkMembership(w, campfireID, senderHex) {
 		return
 	}
 
@@ -265,32 +205,8 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID 
 
 // handleMembership receives a membership change notification.
 // POST /campfire/{id}/membership
-func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campfireID string) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "cannot read body", http.StatusBadRequest)
-		return
-	}
-
-	// Verify sender signature
-	senderHex := r.Header.Get("X-Campfire-Sender")
-	sigB64 := r.Header.Get("X-Campfire-Signature")
-	if senderHex == "" || sigB64 == "" {
-		http.Error(w, "missing signature headers", http.StatusUnauthorized)
-		return
-	}
-	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
-		log.Printf("handleMembership: signature verification failed: %v", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
-	}
-
-	// Membership check: sender must be a known member of this campfire.
-	if !h.checkMembership(w, campfireID, senderHex) {
-		return
-	}
-
+// Auth (signature + membership) is enforced by authMiddleware in route.
+func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campfireID, senderHex string, body []byte) {
 	var event MembershipEvent
 	if err := json.Unmarshal(body, &event); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -319,6 +235,12 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 		h.transport.RemovePeer(campfireID, senderHex)
 	case "evict":
 		// Eviction is issued by the creator on behalf of another member.
+		// Only the creator may evict — verify against stored CreatorPubkey.
+		membership, err := h.store.GetMembership(campfireID)
+		if err == nil && membership != nil && membership.CreatorPubkey != "" && senderHex != membership.CreatorPubkey {
+			http.Error(w, "only the campfire creator may evict members", http.StatusForbidden)
+			return
+		}
 		h.transport.RemovePeer(campfireID, event.Member)
 	default:
 		http.Error(w, "unknown event type", http.StatusBadRequest)
