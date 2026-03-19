@@ -410,3 +410,186 @@ func TestJoinKeyExchange(t *testing.T) {
 	_ = sB
 	_ = idA
 }
+
+// TestJoinThresholdShareDistributed verifies that when threshold>1 and a pending DKG
+// share is available, the joiner receives ThresholdShareData in the JoinResponse and
+// the joiner's participant ID is correctly persisted in peer_endpoints.
+func TestJoinThresholdShareDistributed(t *testing.T) {
+	campfireID := "test-campfire-threshold-join"
+
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating campfire identity: %v", err)
+	}
+
+	idA := tempIdentity(t) // admitting member
+	idB := tempIdentity(t) // joiner
+
+	sA := tempStore(t)
+
+	// threshold=2 campfire.
+	err = sA.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: os.TempDir(),
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     time.Now().UnixNano(),
+		Threshold:    2,
+	})
+	if err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	// Store a pending DKG share for participant 2 (the joiner).
+	pendingShare := []byte("fake-dkg-share-for-participant-2")
+	const joinerParticipantID = uint32(2)
+	if err := sA.StorePendingThresholdShare(campfireID, joinerParticipantID, pendingShare); err != nil {
+		t.Fatalf("storing pending threshold share: %v", err)
+	}
+
+	base := portBase()
+	addrA := fmt.Sprintf("127.0.0.1:%d", base+10)
+	epA := fmt.Sprintf("http://%s", addrA)
+
+	trA := cfhttp.New(addrA, sA)
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trA.SetKeyProvider(func(id string) ([]byte, []byte, error) {
+		if id == campfireID {
+			return cfPriv, cfPub, nil
+		}
+		return nil, nil, fmt.Errorf("campfire not found: %s", id)
+	})
+	if err := trA.Start(); err != nil {
+		t.Fatalf("starting transport A: %v", err)
+	}
+	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	joinerEndpoint := "http://127.0.0.1:19999"
+	result, err := cfhttp.Join(epA, campfireID, idB, joinerEndpoint)
+	if err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+
+	// Joiner should receive the decrypted DKG share.
+	if len(result.ThresholdShareData) == 0 {
+		t.Fatal("expected ThresholdShareData to be non-empty, got empty")
+	}
+	if string(result.ThresholdShareData) != string(pendingShare) {
+		t.Errorf("ThresholdShareData mismatch: got %q, want %q", result.ThresholdShareData, pendingShare)
+	}
+
+	// Joiner should receive the correct participant ID.
+	if result.MyParticipantID != joinerParticipantID {
+		t.Errorf("MyParticipantID = %d, want %d", result.MyParticipantID, joinerParticipantID)
+	}
+
+	// No private key should be returned for threshold>1.
+	if len(result.CampfirePrivKey) != 0 {
+		t.Error("expected CampfirePrivKey to be nil for threshold>1")
+	}
+
+	// Joiner's participant ID should be persisted in peer_endpoints.
+	peers, err := sA.ListPeerEndpoints(campfireID)
+	if err != nil {
+		t.Fatalf("listing peer endpoints: %v", err)
+	}
+	var found bool
+	for _, p := range peers {
+		if p.MemberPubkey == idB.PublicKeyHex() {
+			found = true
+			if p.ParticipantID != joinerParticipantID {
+				t.Errorf("peer_endpoints participant_id = %d, want %d", p.ParticipantID, joinerParticipantID)
+			}
+			if p.Endpoint != joinerEndpoint {
+				t.Errorf("peer_endpoints endpoint = %q, want %q", p.Endpoint, joinerEndpoint)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("joiner %s not found in peer_endpoints after join", idB.PublicKeyHex())
+	}
+
+	// The pending share should have been consumed (claimed).
+	pid, remaining, err := sA.ClaimPendingThresholdShare(campfireID)
+	if err != nil {
+		t.Fatalf("checking remaining pending shares: %v", err)
+	}
+	if remaining != nil {
+		t.Errorf("expected no remaining pending shares after join, got pid=%d data=%q", pid, remaining)
+	}
+}
+
+// TestJoinThresholdNoPendingShare verifies that when threshold>1 but no pending DKG
+// share is available, the handler returns 200 without ThresholdShareData (no panic, no 500).
+func TestJoinThresholdNoPendingShare(t *testing.T) {
+	campfireID := "test-campfire-threshold-noshare"
+
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating campfire identity: %v", err)
+	}
+
+	idA := tempIdentity(t) // admitting member
+	idB := tempIdentity(t) // joiner
+
+	sA := tempStore(t)
+
+	err = sA.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: os.TempDir(),
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     time.Now().UnixNano(),
+		Threshold:    3,
+	})
+	if err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+	// Intentionally do NOT store any pending threshold share.
+
+	base := portBase()
+	addrA := fmt.Sprintf("127.0.0.1:%d", base+11)
+	epA := fmt.Sprintf("http://%s", addrA)
+
+	trA := cfhttp.New(addrA, sA)
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trA.SetKeyProvider(func(id string) ([]byte, []byte, error) {
+		if id == campfireID {
+			return cfPriv, cfPub, nil
+		}
+		return nil, nil, fmt.Errorf("campfire not found: %s", id)
+	})
+	if err := trA.Start(); err != nil {
+		t.Fatalf("starting transport A: %v", err)
+	}
+	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	result, err := cfhttp.Join(epA, campfireID, idB, "")
+	if err != nil {
+		t.Fatalf("join failed (expected success with empty share): %v", err)
+	}
+
+	// No share data should be present.
+	if len(result.ThresholdShareData) != 0 {
+		t.Errorf("expected ThresholdShareData to be empty when no pending share, got %d bytes", len(result.ThresholdShareData))
+	}
+
+	// No participant ID should be assigned.
+	if result.MyParticipantID != 0 {
+		t.Errorf("expected MyParticipantID=0 when no pending share, got %d", result.MyParticipantID)
+	}
+
+	// No private key either.
+	if len(result.CampfirePrivKey) != 0 {
+		t.Error("expected CampfirePrivKey to be nil for threshold>1")
+	}
+
+	// Threshold should be reported correctly.
+	if result.Threshold != 3 {
+		t.Errorf("threshold = %d, want 3", result.Threshold)
+	}
+
+	_ = idA
+}
