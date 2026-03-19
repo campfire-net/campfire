@@ -297,13 +297,28 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 		return
 	}
 
-	// Update local peer list based on event
+	// Update local peer list based on event.
+	// Identity validation: the sender (verified via signature) must match
+	// the member field for join/leave events to prevent identity injection.
 	switch event.Event {
 	case "join":
-		if event.Endpoint != "" {
-			h.transport.AddPeer(campfireID, event.Member, event.Endpoint)
+		// A node can only announce its own join.
+		if event.Member != senderHex {
+			http.Error(w, "join member must match sender", http.StatusBadRequest)
+			return
 		}
-	case "leave", "evict":
+		if event.Endpoint != "" {
+			h.transport.AddPeer(campfireID, senderHex, event.Endpoint)
+		}
+	case "leave":
+		// A node can only announce its own departure.
+		if event.Member != senderHex {
+			http.Error(w, "leave member must match sender", http.StatusBadRequest)
+			return
+		}
+		h.transport.RemovePeer(campfireID, senderHex)
+	case "evict":
+		// Eviction is issued by the creator on behalf of another member.
 		h.transport.RemovePeer(campfireID, event.Member)
 	default:
 		http.Error(w, "unknown event type", http.StatusBadRequest)

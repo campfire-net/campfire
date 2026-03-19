@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -418,4 +419,133 @@ func TestJoinKeyExchange(t *testing.T) {
 	// Suppress unused
 	_ = sB
 	_ = idA
+}
+
+// TestMembershipJoinIdentityInjectionRejected verifies that a join event where
+// event.Member != X-Campfire-Sender is rejected with 400.
+func TestMembershipJoinIdentityInjectionRejected(t *testing.T) {
+	campfireID := "test-campfire-injection"
+	attacker := tempIdentity(t)
+	victim := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	// Add attacker as a member so membership check passes.
+	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: attacker.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+50)
+	ep := fmt.Sprintf("http://%s", addr)
+	startTransport(t, addr, s)
+
+	body, err := json.Marshal(cfhttp.MembershipEvent{
+		Event:    "join",
+		Member:   victim.PublicKeyHex(),
+		Endpoint: ep,
+	})
+	if err != nil {
+		t.Fatalf("marshaling event: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/membership", ep, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	sig := attacker.Sign(body)
+	req.Header.Set("X-Campfire-Sender", attacker.PublicKeyHex())
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for mismatched join member, got %d", resp.StatusCode)
+	}
+}
+
+// TestMembershipJoinValidSender verifies a well-formed join event is accepted.
+func TestMembershipJoinValidSender(t *testing.T) {
+	campfireID := "test-campfire-valid-join"
+	joiner := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	// Add joiner as a known member so membership check passes.
+	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: joiner.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+51)
+	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransport(t, addr, s)
+
+	joinEvent := cfhttp.MembershipEvent{
+		Event:    "join",
+		Member:   joiner.PublicKeyHex(),
+		Endpoint: ep,
+	}
+	if err := cfhttp.NotifyMembership(ep, campfireID, joinEvent, joiner); err != nil {
+		t.Fatalf("valid join should be accepted: %v", err)
+	}
+
+	peers := tr.Peers(campfireID)
+	found := false
+	for _, p := range peers {
+		if p.PubKeyHex == joiner.PublicKeyHex() {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("joiner not found in peer list after valid join")
+	}
+}
+
+// TestMembershipLeaveIdentityMismatchRejected verifies a leave event where
+// event.Member != sender is rejected.
+func TestMembershipLeaveIdentityMismatchRejected(t *testing.T) {
+	campfireID := "test-campfire-leave-mismatch"
+	attacker := tempIdentity(t)
+	target := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	// Add attacker as member so membership check passes.
+	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: attacker.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+52)
+	ep := fmt.Sprintf("http://%s", addr)
+	startTransport(t, addr, s)
+
+	body, err := json.Marshal(cfhttp.MembershipEvent{
+		Event:  "leave",
+		Member: target.PublicKeyHex(),
+	})
+	if err != nil {
+		t.Fatalf("marshaling event: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/membership", ep, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	sig := attacker.Sign(body)
+	req.Header.Set("X-Campfire-Sender", attacker.PublicKeyHex())
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for leave with mismatched member, got %d", resp.StatusCode)
+	}
 }

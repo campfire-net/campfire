@@ -353,11 +353,11 @@ func TestMembershipNonMemberForbidden(t *testing.T) {
 }
 
 // TestMembershipMemberAllowed verifies that a campfire member can send membership
-// notifications (200).
+// notifications for themselves (200). After workspace-17qu.6, join events require
+// event.Member == sender to prevent identity injection.
 func TestMembershipMemberAllowed(t *testing.T) {
 	campfireID := "membership-member"
 	idMember := tempIdentity(t)
-	idOther := tempIdentity(t)
 	s := tempStore(t)
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
@@ -367,10 +367,10 @@ func TestMembershipMemberAllowed(t *testing.T) {
 	startTransportWithSelf(t, addr, s, idMember)
 	ep := fmt.Sprintf("http://%s", addr)
 
-	// idMember sends a join event for idOther.
+	// idMember sends a join event for themselves (member == sender).
 	joinEvent := cfhttp.MembershipEvent{
 		Event:    "join",
-		Member:   idOther.PublicKeyHex(),
+		Member:   idMember.PublicKeyHex(),
 		Endpoint: "http://127.0.0.1:9999",
 	}
 	if err := cfhttp.NotifyMembership(ep, campfireID, joinEvent, idMember); err != nil {
