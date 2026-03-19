@@ -591,3 +591,155 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 
 	t.Logf("Rekey threshold=2 test passed: old=%s new=%s", oldCampfireID[:12], newCampfireID[:12])
 }
+
+// TestRekeyNonCreatorForbidden verifies that a non-creator member cannot trigger a rekey.
+func TestRekeyNonCreatorForbidden(t *testing.T) {
+	oldCFPub, oldCFPriv, _ := ed25519.GenerateKey(nil)
+	oldCampfireID := fmt.Sprintf("%x", oldCFPub)
+
+	idCreator := tempIdentity(t)
+	idMember := tempIdentity(t)
+
+	sB := tempStore(t)
+	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
+
+	// Add membership WITH creator_pubkey set to idCreator.
+	err := sB.AddMembership(store.Membership{
+		CampfireID:    oldCampfireID,
+		TransportDir:  stateDirB,
+		JoinProtocol:  "open",
+		Role:          "member",
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		CreatorPubkey: idCreator.PublicKeyHex(),
+	})
+	if err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	// Add idMember to peer endpoints so membership check passes.
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:   oldCampfireID,
+		MemberPubkey: idMember.PublicKeyHex(),
+		Endpoint:     "http://127.0.0.1:9997",
+	})
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+40)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idCreator.PublicKeyHex(), epB)
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Non-creator member tries to send rekey.
+	senderPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	senderPubHex := fmt.Sprintf("%x", senderPriv.PublicKey().Bytes())
+
+	newCFPub, _, _ := ed25519.GenerateKey(nil)
+	newCampfireID := fmt.Sprintf("%x", newCFPub)
+
+	phase1Req := cfhttp.RekeyRequest{
+		NewCampfireID:   newCampfireID,
+		SenderX25519Pub: senderPubHex,
+	}
+	_, err = cfhttp.SendRekeyPhase1(epB, oldCampfireID, phase1Req, idMember)
+	if err == nil {
+		t.Fatal("expected error: non-creator should be forbidden from rekey")
+	}
+	t.Logf("non-creator rekey correctly rejected: %v", err)
+}
+
+// TestRekeyForgedSenderRejected verifies that a rekey message signed by the sender's
+// personal key (not the campfire key) is rejected.
+func TestRekeyForgedSenderRejected(t *testing.T) {
+	oldCFPub, oldCFPriv, _ := ed25519.GenerateKey(nil)
+	oldCampfireID := fmt.Sprintf("%x", oldCFPub)
+
+	idA := tempIdentity(t)
+
+	sB := tempStore(t)
+	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
+	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 1)
+
+	// Add A to B's peer endpoints.
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:   oldCampfireID,
+		MemberPubkey: idA.PublicKeyHex(),
+		Endpoint:     "http://127.0.0.1:9997",
+	})
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+42)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Build a rekey message signed by A's personal key (NOT the campfire key).
+	newCFPub, _, _ := ed25519.GenerateKey(nil)
+	newCampfireID := fmt.Sprintf("%x", newCFPub)
+
+	rekeyPayload, _ := json.Marshal(map[string]string{
+		"old_key": oldCampfireID,
+		"new_key": newCampfireID,
+		"reason":  "forged eviction",
+	})
+	// Sign with A's personal key — this should be rejected.
+	forgedMsg, err := message.NewMessage(
+		idA.PrivateKey, idA.PublicKey,
+		rekeyPayload,
+		[]string{"campfire:rekey"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("creating forged message: %v", err)
+	}
+	forgedMsgCBOR, _ := cfencoding.Marshal(forgedMsg)
+
+	senderPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	senderPubHex := fmt.Sprintf("%x", senderPriv.PublicKey().Bytes())
+
+	phase1Req := cfhttp.RekeyRequest{
+		NewCampfireID:   newCampfireID,
+		SenderX25519Pub: senderPubHex,
+		RekeyMessageCBOR: forgedMsgCBOR,
+	}
+	receiverPubHex, err := cfhttp.SendRekeyPhase1(epB, oldCampfireID, phase1Req, idA)
+	if err != nil {
+		// Phase 1 may reject early due to the sig check — that's fine.
+		t.Logf("phase 1 rejected forged message: %v", err)
+		return
+	}
+
+	// If phase 1 succeeded (sig check is on phase 2), try phase 2.
+	receiverPubBytes, _ := hex.DecodeString(receiverPubHex)
+	receiverPub, _ := ecdh.X25519().NewPublicKey(receiverPubBytes)
+	rawShared, _ := senderPriv.ECDH(receiverPub)
+	derivedKey := testHKDFSHA256(rawShared, "campfire-rekey-v1")
+
+	newPrivKey := make([]byte, 64)
+	rand.Read(newPrivKey) //nolint:errcheck
+	encKey, _ := rekeyTestEncrypt(derivedKey, newPrivKey)
+
+	phase2Req := cfhttp.RekeyRequest{
+		NewCampfireID:    newCampfireID,
+		SenderX25519Pub:  senderPubHex,
+		RekeyMessageCBOR: forgedMsgCBOR,
+		EncryptedPrivKey: encKey,
+	}
+	err = cfhttp.SendRekey(epB, oldCampfireID, phase2Req, idA)
+	if err == nil {
+		t.Fatal("expected phase 2 to reject forged rekey message signature")
+	}
+	t.Logf("forged rekey signature correctly rejected: %v", err)
+}

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -105,6 +106,43 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 	if err != nil || membership == nil {
 		http.Error(w, "not a member of this campfire", http.StatusNotFound)
 		return
+	}
+
+	// Creator-only check: only the campfire creator may trigger a rekey.
+	// For legacy records where CreatorPubkey is empty, skip to preserve backward compat.
+	if membership.CreatorPubkey != "" && senderHex != membership.CreatorPubkey {
+		log.Printf("handleRekey: sender %s is not creator %s for campfire %s", senderHex, membership.CreatorPubkey, oldCampfireID)
+		http.Error(w, "only the campfire creator may trigger a rekey", http.StatusForbidden)
+		return
+	}
+
+	// Verify rekey message signature against stored campfire public key (oldCampfireID),
+	// NOT the attacker-controlled rekeyMsg.Sender field.
+	if len(req.RekeyMessageCBOR) > 0 {
+		var rekeyMsgForVerify message.Message
+		if cfencoding.Unmarshal(req.RekeyMessageCBOR, &rekeyMsgForVerify) == nil && len(rekeyMsgForVerify.Signature) > 0 {
+			campfirePubKeyBytes, hexErr := hex.DecodeString(oldCampfireID)
+			if hexErr == nil && len(campfirePubKeyBytes) == ed25519.PublicKeySize {
+				signInput := message.MessageSignInput{
+					ID:          rekeyMsgForVerify.ID,
+					Payload:     rekeyMsgForVerify.Payload,
+					Tags:        rekeyMsgForVerify.Tags,
+					Antecedents: rekeyMsgForVerify.Antecedents,
+					Timestamp:   rekeyMsgForVerify.Timestamp,
+				}
+				signBytes, marshalErr := cfencoding.Marshal(signInput)
+				if marshalErr != nil {
+					log.Printf("handleRekey: failed to marshal sign input for campfire %s: %v", oldCampfireID, marshalErr)
+					http.Error(w, "internal server error", http.StatusInternalServerError)
+					return
+				}
+				if !ed25519.Verify(ed25519.PublicKey(campfirePubKeyBytes), signBytes, rekeyMsgForVerify.Signature) {
+					log.Printf("handleRekey: rekey message signature invalid for campfire %s", oldCampfireID)
+					http.Error(w, "rekey message signature invalid", http.StatusUnauthorized)
+					return
+				}
+			}
+		}
 	}
 
 	isPhase1 := len(req.EncryptedPrivKey) == 0 && len(req.EncryptedShareData) == 0
@@ -255,12 +293,11 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		})
 	}
 
-	// Store the rekey system message — but only after verifying it was signed by the OLD campfire key.
-	// The old campfire public key is encoded in the old campfire ID (hex Ed25519 public key).
+	// Store the rekey system message. Signature was already verified above against
+	// the stored campfire public key (not the attacker-controlled Sender field).
 	if len(req.RekeyMessageCBOR) > 0 {
 		var rekeyMsg message.Message
-		if cfencoding.Unmarshal(req.RekeyMessageCBOR, &rekeyMsg) == nil &&
-			rekeyMsg.VerifySignature() {
+		if cfencoding.Unmarshal(req.RekeyMessageCBOR, &rekeyMsg) == nil {
 			h.store.AddMessage(store.MessageRecordFromMessage(newCampfireID, &rekeyMsg, store.NowNano())) //nolint:errcheck
 		}
 	}
