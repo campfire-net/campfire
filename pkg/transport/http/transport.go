@@ -23,6 +23,7 @@ type PeerInfo struct {
 
 // signingSessionState holds ephemeral state for a co-signer during a FROST signing round.
 type signingSessionState struct {
+	mu        sync.Mutex // protects session during Start/Deliver in round 1
 	session   *threshold.SigningSession
 	createdAt time.Time
 }
@@ -196,22 +197,24 @@ func (t *Transport) SetThresholdShareProvider(p ThresholdShareProvider) {
 }
 
 // getOrCreateSignSession looks up an existing signing session or creates a new one.
+// Returns the signingSessionState so callers can acquire its per-session lock.
 // Must be called with t.mu held (write lock).
-func (t *Transport) getOrCreateSignSession(sessionID string, signerIDs []uint32, msg []byte, myShare *threshold.DKGResult, myParticipantID uint32) (*threshold.SigningSession, error) {
+func (t *Transport) getOrCreateSignSession(sessionID string, signerIDs []uint32, msg []byte, myShare *threshold.DKGResult, myParticipantID uint32) (*signingSessionState, error) {
 	if existing, ok := t.signSessions[sessionID]; ok {
-		return existing.session, nil
+		return existing, nil
 	}
 	ss, err := threshold.NewSigningSession(myShare.SecretShare, myShare.Public, msg, signerIDs)
 	if err != nil {
 		return nil, err
 	}
-	t.signSessions[sessionID] = &signingSessionState{
+	state := &signingSessionState{
 		session:   ss,
 		createdAt: time.Now(),
 	}
+	t.signSessions[sessionID] = state
 	// Prune stale sessions older than 5 minutes.
 	t.pruneSignSessions()
-	return ss, nil
+	return state, nil
 }
 
 // pruneSignSessions removes signing sessions older than 5 minutes.

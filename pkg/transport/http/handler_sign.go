@@ -83,14 +83,20 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 
 	if req.Round == 1 {
 		// Round 1: create a new signing session and return this participant's commitments.
+		// Acquire global lock only to find/create the session state.
 		h.transport.mu.Lock()
-		ss, err := h.transport.getOrCreateSignSession(req.SessionID, req.SignerIDs, req.MessageToSign, dkgResult, participantID)
+		sessionState, err := h.transport.getOrCreateSignSession(req.SessionID, req.SignerIDs, req.MessageToSign, dkgResult, participantID)
 		h.transport.mu.Unlock()
 		if err != nil {
 			log.Printf("handleSign: failed to create signing session %s for campfire %s: %v", req.SessionID, campfireID, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+
+		// Acquire per-session lock for Start()+Deliver() — prevents concurrent
+		// round-1 requests from racing on the same SigningSession state machine.
+		sessionState.mu.Lock()
+		ss := sessionState.session
 
 		// Start generates this participant's round-1 commitment messages.
 		commitMsgs := ss.Start()
@@ -103,6 +109,7 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 			}
 			ss.Deliver(&msg) //nolint:errcheck
 		}
+		sessionState.mu.Unlock()
 
 		// Return this participant's commitment messages (the initiator needs them).
 		for _, m := range commitMsgs {
