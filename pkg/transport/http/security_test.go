@@ -760,6 +760,120 @@ func TestIsPrivateIPExtendedRanges(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// workspace-sdgd — handleDeliver sender spoofing / inner message signature
+// ---------------------------------------------------------------------------
+
+// TestDeliverSenderSpoofingRejected verifies that handleDeliver rejects a message
+// where the CBOR msg.Sender does not match the authenticated X-Campfire-Sender header.
+//
+// Attack: member M1 constructs a valid HTTP request (header + sig = M1), but
+// the inner message was created by and attributed to M2. The handler must reject
+// this with 400 — not store it.
+func TestDeliverSenderSpoofingRejected(t *testing.T) {
+	campfireID := "test-deliver-spoof"
+
+	// M1 is the authenticated sender (controls the HTTP request signature).
+	// M2 is the victim whose identity is being spoofed.
+	m1 := tempIdentity(t)
+	m2 := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, m1.PublicKeyHex())
+	addPeerEndpoint(t, s, campfireID, m2.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+91)
+	startTransportWithSelf(t, addr, s, m1)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	// Build a message legitimately authored by M2 (msg.Sender = M2 pubkey, signed by M2).
+	m2msg, err := message.NewMessage(m2.PrivateKey, m2.PublicKey, []byte("spoofed content"), []string{"test"}, nil)
+	if err != nil {
+		t.Fatalf("creating message: %v", err)
+	}
+
+	// Encode the message body.
+	body, err := cfencoding.Marshal(m2msg)
+	if err != nil {
+		t.Fatalf("encoding message: %v", err)
+	}
+
+	// M1 signs the HTTP request body (valid request-level auth for M1).
+	sig := m1.Sign(body)
+
+	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	// Header claims sender = M1, but message body contains M2's pubkey as Sender.
+	req.Header.Set("X-Campfire-Sender", m1.PublicKeyHex())
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for spoofed sender, got %d", resp.StatusCode)
+	}
+}
+
+// TestDeliverInvalidMessageSigRejected verifies that handleDeliver rejects a message
+// with a tampered payload (broken inner Ed25519 signature) even though the HTTP
+// request signature is valid.
+//
+// Attack: M1 delivers a legitimately authenticated request body, but the CBOR
+// message inside has a tampered Payload — msg.VerifySignature() must fail.
+func TestDeliverInvalidMessageSigRejected(t *testing.T) {
+	campfireID := "test-deliver-bad-sig"
+
+	m1 := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, m1.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+92)
+	startTransportWithSelf(t, addr, s, m1)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	// Create a legitimate message.
+	msg, err := message.NewMessage(m1.PrivateKey, m1.PublicKey, []byte("original payload"), []string{"test"}, nil)
+	if err != nil {
+		t.Fatalf("creating message: %v", err)
+	}
+
+	// Tamper: replace the payload after signing (breaks inner signature).
+	msg.Payload = []byte("tampered payload")
+
+	// Encode the tampered message.
+	body, err := cfencoding.Marshal(msg)
+	if err != nil {
+		t.Fatalf("encoding tampered message: %v", err)
+	}
+
+	// M1 signs the request body (valid request auth over tampered CBOR).
+	sig := m1.Sign(body)
+
+	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req.Header.Set("X-Campfire-Sender", m1.PublicKeyHex())
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for invalid message signature, got %d", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

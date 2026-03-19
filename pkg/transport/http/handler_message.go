@@ -27,6 +27,22 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		return
 	}
 
+	// Verify the inner message signature (prevents tampered message content).
+	if !msg.VerifySignature() {
+		log.Printf("handleDeliver: message signature invalid for campfire %s", campfireID)
+		http.Error(w, "invalid message signature", http.StatusBadRequest)
+		return
+	}
+
+	// Verify that msg.Sender matches the authenticated senderHex from the request headers.
+	// This prevents a member from delivering a message attributed to a different member
+	// (e.g., M1 sending a message where msg.Sender == M2's pubkey).
+	if msg.SenderHex() != senderHex {
+		log.Printf("handleDeliver: sender mismatch for campfire %s: header=%s msg=%s", campfireID, senderHex, msg.SenderHex())
+		http.Error(w, "sender mismatch", http.StatusBadRequest)
+		return
+	}
+
 	// Store in local SQLite
 	if _, err := h.store.AddMessage(store.MessageRecordFromMessage(campfireID, &msg, store.NowNano())); err != nil {
 		log.Printf("handleDeliver: failed to store message for campfire %s: %v", campfireID, err)
