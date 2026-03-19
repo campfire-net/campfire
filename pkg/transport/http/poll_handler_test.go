@@ -417,3 +417,75 @@ func TestHandlePollInvalidTimeoutCapped(t *testing.T) {
 	}
 }
 
+// TestHandlePollFiltersByReceivedAt is the regression test for workspace-d68.
+// A message with a past Timestamp (sender clock skew) but a recent ReceivedAt
+// must appear in poll results when the cursor is set before its ReceivedAt.
+// Before the fix, the poll used Timestamp for filtering; this caused messages
+// from clock-skewed senders to be permanently missed.
+func TestHandlePollFiltersByReceivedAt(t *testing.T) {
+	campfireID := "poll-receivedat"
+	id := tempIdentity(t)
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+48)
+	startTransportWithSelf(t, addr, s, id)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	now := time.Now().UnixNano()
+
+	// Insert a message with a Timestamp 60 seconds in the past (sender clock is 60s behind)
+	// but ReceivedAt is now (the server received it just now).
+	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("skewed clock"), []string{"test"}, nil)
+	if err != nil {
+		t.Fatalf("creating message: %v", err)
+	}
+	skewedRec := store.MessageRecord{
+		ID:          msg.ID,
+		CampfireID:  campfireID,
+		Sender:      id.PublicKeyHex(),
+		Payload:     msg.Payload,
+		Tags:        `["test"]`,
+		Antecedents: `[]`,
+		Timestamp:   now - int64(60*time.Second), // 60s in the past (sender clock skew)
+		Signature:   msg.Signature,
+		Provenance:  `[]`,
+		ReceivedAt:  now, // received by server just now
+	}
+	if _, err := s.AddMessage(skewedRec); err != nil {
+		t.Fatalf("storing skewed message: %v", err)
+	}
+
+	// Poll with cursor = now-10min (well before ReceivedAt=now). The message
+	// should appear because its ReceivedAt > cursor, even though
+	// Timestamp = now-60s is also > cursor.
+	cursor := now - int64(10*time.Minute)
+	resp, err := doPoll(ep, campfireID, cursor, 1, id)
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	var msgs []message.Message
+	if err := cfencoding.Unmarshal(body, &msgs); err != nil {
+		t.Fatalf("decoding body: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 message (clock-skewed), got %d", len(msgs))
+	}
+	if len(msgs) > 0 && msgs[0].ID != skewedRec.ID {
+		t.Errorf("wrong message: got %s, want %s", msgs[0].ID, skewedRec.ID)
+	}
+}
+

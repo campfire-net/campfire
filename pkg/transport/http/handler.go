@@ -146,23 +146,7 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 	}
 
 	// Store in local SQLite
-	tagsJSON, _ := json.Marshal(msg.Tags)
-	anteJSON, _ := json.Marshal(msg.Antecedents)
-	provJSON, _ := json.Marshal(msg.Provenance)
-	rec := store.MessageRecord{
-		ID:          msg.ID,
-		CampfireID:  campfireID,
-		Sender:      fmt.Sprintf("%x", msg.Sender),
-		Payload:     msg.Payload,
-		Tags:        string(tagsJSON),
-		Antecedents: string(anteJSON),
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
-		Provenance:  string(provJSON),
-		ReceivedAt:  time.Now().UnixNano(),
-		Instance:    msg.Instance,
-	}
-	if _, err := h.store.AddMessage(rec); err != nil {
+	if _, err := h.store.AddMessage(store.MessageRecordFromMessage(campfireID, &msg, store.NowNano())); err != nil {
 		log.Printf("handleDeliver: failed to store message for campfire %s: %v", campfireID, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -341,8 +325,13 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID 
 		w.Write(data) //nolint:errcheck
 	}
 
+	// The poll cursor is a received_at nanosecond timestamp. Filter by received_at
+	// so cursor and filter use the same field, preventing message loss when sender
+	// clocks are skewed relative to the server. (Fix for workspace-d68.)
+	pollFilter := store.MessageFilter{AfterReceivedAt: since}
+
 	// Initial sync: return immediately if messages already exist.
-	records, err := h.store.ListMessages(campfireID, since)
+	records, err := h.store.ListMessages(campfireID, 0, pollFilter)
 	if err != nil {
 		log.Printf("handlePoll: failed to query messages for campfire %s: %v", campfireID, err)
 		http.Error(w, "failed to query messages", http.StatusInternalServerError)
@@ -360,7 +349,7 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID 
 	}
 
 	// Post-wait sync.
-	records, err = h.store.ListMessages(campfireID, since)
+	records, err = h.store.ListMessages(campfireID, 0, pollFilter)
 	if err != nil {
 		log.Printf("handlePoll: failed to query messages (post-wait) for campfire %s: %v", campfireID, err)
 		http.Error(w, "failed to query messages", http.StatusInternalServerError)
@@ -989,22 +978,7 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 	if len(req.RekeyMessageCBOR) > 0 {
 		var rekeyMsg message.Message
 		if cfencoding.Unmarshal(req.RekeyMessageCBOR, &rekeyMsg) == nil {
-			tagsJSON, _ := json.Marshal(rekeyMsg.Tags)
-			anteJSON, _ := json.Marshal(rekeyMsg.Antecedents)
-			provJSON, _ := json.Marshal(rekeyMsg.Provenance)
-			h.store.AddMessage(store.MessageRecord{ //nolint:errcheck
-				ID:          rekeyMsg.ID,
-				CampfireID:  newCampfireID,
-				Sender:      fmt.Sprintf("%x", rekeyMsg.Sender),
-				Payload:     rekeyMsg.Payload,
-				Tags:        string(tagsJSON),
-				Antecedents: string(anteJSON),
-				Timestamp:   rekeyMsg.Timestamp,
-				Signature:   rekeyMsg.Signature,
-				Provenance:  string(provJSON),
-				ReceivedAt:  time.Now().UnixNano(),
-				Instance:    rekeyMsg.Instance,
-			})
+			h.store.AddMessage(store.MessageRecordFromMessage(newCampfireID, &rekeyMsg, store.NowNano())) //nolint:errcheck
 		}
 	}
 
