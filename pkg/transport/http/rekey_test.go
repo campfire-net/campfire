@@ -743,3 +743,139 @@ func TestRekeyForgedSenderRejected(t *testing.T) {
 	}
 	t.Logf("forged rekey signature correctly rejected: %v", err)
 }
+
+// TestRekeyDBFailureLeavesStateFileIntact verifies the atomicity guarantee:
+// if UpdateCampfireID fails (DB closed after phase 1 but before phase 2 commit),
+// the old campfire state file must remain untouched so the campfire is recoverable.
+//
+// This guards against the regression where file ops happened before the DB update,
+// leaving a node with the old .cbor file deleted but the DB still holding the old
+// campfire_id — an unrecoverable inconsistency.
+func TestRekeyDBFailureLeavesStateFileIntact(t *testing.T) {
+	oldCFPub, oldCFPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating old campfire key: %v", err)
+	}
+	oldCampfireID := fmt.Sprintf("%x", oldCFPub)
+
+	newCFPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating new campfire key: %v", err)
+	}
+	newCampfireID := fmt.Sprintf("%x", newCFPub)
+
+	idA := tempIdentity(t) // creator / sender
+
+	sB := tempStore(t)
+	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
+	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 1)
+
+	// Add A to B's peer endpoints so membership check passes.
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:   oldCampfireID,
+		MemberPubkey: idA.PublicKeyHex(),
+		Endpoint:     "http://127.0.0.1:9996",
+	})
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+46)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Build campfire:rekey message signed by old key.
+	rekeyPayload, _ := json.Marshal(map[string]string{
+		"old_key": oldCampfireID,
+		"new_key": newCampfireID,
+		"reason":  "eviction",
+	})
+	rekeyMsg, err := message.NewMessage(
+		ed25519.PrivateKey(oldCFPriv),
+		ed25519.PublicKey(oldCFPub),
+		rekeyPayload,
+		[]string{"campfire:rekey"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("creating rekey message: %v", err)
+	}
+	rekeyMsgCBOR, err := cfencoding.Marshal(rekeyMsg)
+	if err != nil {
+		t.Fatalf("encoding rekey message: %v", err)
+	}
+
+	// Phase 1: get receiver's ephemeral pub key.
+	senderPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating sender ephemeral key: %v", err)
+	}
+	senderPubHex := fmt.Sprintf("%x", senderPriv.PublicKey().Bytes())
+
+	phase1Req := cfhttp.RekeyRequest{
+		NewCampfireID:    newCampfireID,
+		SenderX25519Pub:  senderPubHex,
+		RekeyMessageCBOR: rekeyMsgCBOR,
+	}
+	receiverEphemeralPubHex, err := cfhttp.SendRekeyPhase1(epB, oldCampfireID, phase1Req, idA)
+	if err != nil {
+		t.Fatalf("rekey phase 1: %v", err)
+	}
+	if receiverEphemeralPubHex == "" {
+		t.Fatal("expected receiver ephemeral pub key in phase 1 response")
+	}
+
+	// Derive shared secret and encrypt new private key.
+	receiverPubBytes, _ := hex.DecodeString(receiverEphemeralPubHex)
+	receiverPub, err := ecdh.X25519().NewPublicKey(receiverPubBytes)
+	if err != nil {
+		t.Fatalf("parsing receiver ephemeral pub: %v", err)
+	}
+	rawShared, err := senderPriv.ECDH(receiverPub)
+	if err != nil {
+		t.Fatalf("ECDH: %v", err)
+	}
+	derivedKey := testHKDFSHA256(rawShared, "campfire-rekey-v1")
+
+	newPrivKey := make([]byte, ed25519.PrivateKeySize)
+	rand.Read(newPrivKey) //nolint:errcheck
+	encNewPrivKey, err := rekeyTestEncrypt(derivedKey, newPrivKey)
+	if err != nil {
+		t.Fatalf("encrypting new private key: %v", err)
+	}
+
+	// Close the DB AFTER phase 1 so that UpdateCampfireID will fail in phase 2.
+	// The transport is still running and will accept the HTTP request, but the
+	// DB write will fail.
+	sB.Close()
+
+	// Phase 2 must fail because the DB is closed.
+	phase2Req := cfhttp.RekeyRequest{
+		NewCampfireID:    newCampfireID,
+		SenderX25519Pub:  senderPubHex,
+		RekeyMessageCBOR: rekeyMsgCBOR,
+		EncryptedPrivKey: encNewPrivKey,
+	}
+	err = cfhttp.SendRekey(epB, oldCampfireID, phase2Req, idA)
+	if err == nil {
+		t.Fatal("expected phase 2 to fail when DB is closed")
+	}
+	t.Logf("phase 2 correctly failed with DB closed: %v", err)
+
+	// The old campfire state file must still exist — the campfire is recoverable.
+	oldStateFile := filepath.Join(stateDirB, oldCampfireID+".cbor")
+	if _, statErr := os.Stat(oldStateFile); os.IsNotExist(statErr) {
+		t.Error("old campfire state file must NOT be removed when UpdateCampfireID fails (DB failure leaves inconsistent state)")
+	}
+
+	// The new campfire state file must NOT have been written.
+	newStateFile := filepath.Join(stateDirB, newCampfireID+".cbor")
+	if _, statErr := os.Stat(newStateFile); !os.IsNotExist(statErr) {
+		t.Error("new campfire state file must NOT be written when UpdateCampfireID fails")
+	}
+}
