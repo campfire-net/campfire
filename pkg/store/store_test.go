@@ -1331,3 +1331,129 @@ func TestClaimPendingThresholdShareConcurrent(t *testing.T) {
 		t.Errorf("expected exactly 1 goroutine to claim the share, got %d", successes)
 	}
 }
+
+// --- workspace-dq5g: peer_endpoints role column ---
+
+// TestUpsertPeerEndpoint_Role verifies that a role stored via UpsertPeerEndpoint
+// is retrievable via GetPeerRole and appears in ListPeerEndpoints.
+func TestUpsertPeerEndpoint_Role(t *testing.T) {
+	s := testStore(t)
+	campfireID := "role-cf"
+
+	if err := s.AddMembership(Membership{
+		CampfireID:   campfireID,
+		TransportDir: "/tmp",
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	cases := []struct {
+		pubkey string
+		role   string
+	}{
+		{"pubkey-observer", "observer"},
+		{"pubkey-writer", "writer"},
+		{"pubkey-member", "member"},
+		{"pubkey-creator", "creator"},
+	}
+	for _, tc := range cases {
+		err := s.UpsertPeerEndpoint(PeerEndpoint{
+			CampfireID:   campfireID,
+			MemberPubkey: tc.pubkey,
+			Endpoint:     "http://example.com",
+			Role:         tc.role,
+		})
+		if err != nil {
+			t.Fatalf("UpsertPeerEndpoint(%s, %s): %v", tc.pubkey, tc.role, err)
+		}
+	}
+
+	// Verify GetPeerRole returns correct role for each.
+	for _, tc := range cases {
+		got, err := s.GetPeerRole(campfireID, tc.pubkey)
+		if err != nil {
+			t.Fatalf("GetPeerRole(%s): %v", tc.pubkey, err)
+		}
+		if got != tc.role {
+			t.Errorf("GetPeerRole(%s): got %q, want %q", tc.pubkey, got, tc.role)
+		}
+	}
+
+	// Verify ListPeerEndpoints returns the correct role for each.
+	endpoints, err := s.ListPeerEndpoints(campfireID)
+	if err != nil {
+		t.Fatalf("ListPeerEndpoints: %v", err)
+	}
+	byPubkey := make(map[string]string)
+	for _, ep := range endpoints {
+		byPubkey[ep.MemberPubkey] = ep.Role
+	}
+	for _, tc := range cases {
+		got := byPubkey[tc.pubkey]
+		if got != tc.role {
+			t.Errorf("ListPeerEndpoints role for %s: got %q, want %q", tc.pubkey, got, tc.role)
+		}
+	}
+}
+
+// TestGetPeerRole_NotFound verifies that GetPeerRole returns "member" for unknown peers.
+func TestGetPeerRole_NotFound(t *testing.T) {
+	s := testStore(t)
+	campfireID := "role-cf-notfound"
+
+	if err := s.AddMembership(Membership{
+		CampfireID:   campfireID,
+		TransportDir: "/tmp",
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	role, err := s.GetPeerRole(campfireID, "nonexistent-pubkey")
+	if err != nil {
+		t.Fatalf("GetPeerRole: %v", err)
+	}
+	if role != "member" {
+		t.Errorf("GetPeerRole for unknown peer: got %q, want %q", role, "member")
+	}
+}
+
+// TestUpsertPeerEndpoint_DefaultRole verifies that UpsertPeerEndpoint with empty
+// role string defaults to "member".
+func TestUpsertPeerEndpoint_DefaultRole(t *testing.T) {
+	s := testStore(t)
+	campfireID := "role-cf-default"
+
+	if err := s.AddMembership(Membership{
+		CampfireID:   campfireID,
+		TransportDir: "/tmp",
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	err := s.UpsertPeerEndpoint(PeerEndpoint{
+		CampfireID:   campfireID,
+		MemberPubkey: "pubkey-noRole",
+		Endpoint:     "http://example.com",
+		// Role is intentionally empty.
+	})
+	if err != nil {
+		t.Fatalf("UpsertPeerEndpoint: %v", err)
+	}
+
+	role, err := s.GetPeerRole(campfireID, "pubkey-noRole")
+	if err != nil {
+		t.Fatalf("GetPeerRole: %v", err)
+	}
+	if role != "member" {
+		t.Errorf("default role: got %q, want %q", role, "member")
+	}
+}
