@@ -12,13 +12,14 @@ import (
 
 const schema = `
 CREATE TABLE IF NOT EXISTS campfire_memberships (
-    campfire_id    TEXT PRIMARY KEY,
-    transport_dir  TEXT NOT NULL,
-    join_protocol  TEXT NOT NULL,
-    role           TEXT NOT NULL DEFAULT 'member',
-    joined_at      INTEGER NOT NULL,
-    threshold      INTEGER NOT NULL DEFAULT 1,
-    description    TEXT NOT NULL DEFAULT ''
+    campfire_id     TEXT PRIMARY KEY,
+    transport_dir   TEXT NOT NULL,
+    join_protocol   TEXT NOT NULL,
+    role            TEXT NOT NULL DEFAULT 'member',
+    joined_at       INTEGER NOT NULL,
+    threshold       INTEGER NOT NULL DEFAULT 1,
+    description     TEXT NOT NULL DEFAULT '',
+    creator_pubkey  TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -86,13 +87,17 @@ type Store struct {
 
 // Membership represents a campfire membership record.
 type Membership struct {
-	CampfireID   string `json:"campfire_id"`
-	TransportDir string `json:"transport_dir"`
-	JoinProtocol string `json:"join_protocol"`
-	Role         string `json:"role"`
-	JoinedAt     int64  `json:"joined_at"`
-	Threshold    uint   `json:"threshold"`
-	Description  string `json:"description"`
+	CampfireID    string `json:"campfire_id"`
+	TransportDir  string `json:"transport_dir"`
+	JoinProtocol  string `json:"join_protocol"`
+	Role          string `json:"role"`
+	JoinedAt      int64  `json:"joined_at"`
+	Threshold     uint   `json:"threshold"`
+	Description   string `json:"description"`
+	// CreatorPubkey is the hex-encoded Ed25519 public key of the campfire creator.
+	// Used by the rekey handler to verify that only the creator can trigger a rekey.
+	// Empty string for legacy records where the creator pubkey was not recorded.
+	CreatorPubkey string `json:"creator_pubkey"`
 }
 
 // Open opens or creates the SQLite store at the given path.
@@ -112,6 +117,8 @@ func Open(path string) (*Store, error) {
 	db.Exec("ALTER TABLE messages ADD COLUMN instance TEXT NOT NULL DEFAULT ''") //nolint:errcheck
 	// Backward-compatible migration: add description column if missing.
 	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN description TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+	// Backward-compatible migration: add creator_pubkey column if missing.
+	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN creator_pubkey TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 	return &Store{db: db}, nil
 }
 
@@ -127,9 +134,9 @@ func (s *Store) AddMembership(m Membership) error {
 		threshold = 1
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description,
+		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description, m.CreatorPubkey,
 	)
 	if err != nil {
 		return fmt.Errorf("adding membership: %w", err)
@@ -149,11 +156,11 @@ func (s *Store) RemoveMembership(campfireID string) error {
 // GetMembership returns a single membership by campfire ID.
 func (s *Store) GetMembership(campfireID string) (*Membership, error) {
 	row := s.db.QueryRow(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey
 		 FROM campfire_memberships WHERE campfire_id = ?`, campfireID,
 	)
 	var m Membership
-	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description)
+	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -166,7 +173,7 @@ func (s *Store) GetMembership(campfireID string) (*Membership, error) {
 // ListMemberships returns all campfire memberships.
 func (s *Store) ListMemberships() ([]Membership, error) {
 	rows, err := s.db.Query(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey
 		 FROM campfire_memberships ORDER BY joined_at`,
 	)
 	if err != nil {
@@ -177,7 +184,7 @@ func (s *Store) ListMemberships() ([]Membership, error) {
 	var memberships []Membership
 	for rows.Next() {
 		var m Membership
-		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description); err != nil {
+		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey); err != nil {
 			return nil, fmt.Errorf("scanning membership: %w", err)
 		}
 		memberships = append(memberships, m)

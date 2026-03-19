@@ -8,25 +8,29 @@ package http_test
 // - C cannot deliver messages to B under the new campfire ID.
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	nethttp "net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
-	"os"
-	"path/filepath"
 )
 
 // setupCampfireState writes a CampfireState CBOR file to a temp directory.
@@ -54,15 +58,18 @@ func setupCampfireState(t *testing.T, priv []byte, pub ed25519.PublicKey, thresh
 }
 
 // addMembershipWithDir adds a campfire membership with a specific TransportDir.
-func addMembershipWithDir(t *testing.T, s *store.Store, campfireID, transportDir string, thresh uint) {
+// creatorPubkey is the hex-encoded Ed25519 public key of the campfire creator.
+// role should be "creator" or "member".
+func addMembershipWithDir(t *testing.T, s *store.Store, campfireID, transportDir string, thresh uint, role, creatorPubkey string) {
 	t.Helper()
 	err := s.AddMembership(store.Membership{
-		CampfireID:   campfireID,
-		TransportDir: transportDir,
-		JoinProtocol: "open",
-		Role:         "member",
-		JoinedAt:     time.Now().UnixNano(),
-		Threshold:    thresh,
+		CampfireID:    campfireID,
+		TransportDir:  transportDir,
+		JoinProtocol:  "open",
+		Role:          role,
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     thresh,
+		CreatorPubkey: creatorPubkey,
 	})
 	if err != nil {
 		t.Fatalf("adding membership: %v", err)
@@ -169,8 +176,8 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 
 	// B has the old campfire state on disk and in its store.
 	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
-	addMembershipWithDir(t, sA, oldCampfireID, t.TempDir(), 1)
-	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 1)
+	addMembershipWithDir(t, sA, oldCampfireID, t.TempDir(), 1, "creator", idA.PublicKeyHex())
+	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 1, "member", idA.PublicKeyHex())
 
 	// Add C's endpoint to B's peer endpoints (to verify eviction removes it).
 	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
@@ -390,8 +397,8 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 
 	// B's campfire state on disk (no private key for threshold>1).
 	stateDirB, _ := setupCampfireState(t, nil, oldGroupKey, 2)
-	addMembershipWithDir(t, sA, oldCampfireID, t.TempDir(), 2)
-	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 2)
+	addMembershipWithDir(t, sA, oldCampfireID, t.TempDir(), 2, "creator", idA.PublicKeyHex())
+	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 2, "member", idA.PublicKeyHex())
 
 	// Store old DKG shares.
 	oldShareA, _ := threshold.MarshalResult(1, oldDKGResults[1])
@@ -553,4 +560,170 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 	}
 
 	t.Logf("Rekey threshold=2 test passed: old=%s new=%s", oldCampfireID[:12], newCampfireID[:12])
+}
+
+// sendRekeyRaw sends a rekey request and returns the HTTP status code.
+// Used for security tests that need to check specific error codes.
+func sendRekeyRaw(t *testing.T, endpoint, oldCampfireID string, req cfhttp.RekeyRequest, id *identity.Identity) int {
+	t.Helper()
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("encoding rekey request: %v", err)
+	}
+	url := fmt.Sprintf("%s/campfire/%s/rekey", endpoint, oldCampfireID)
+	httpReq, err := nethttp.NewRequest(nethttp.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	// Sign with the identity's Ed25519 key.
+	sig := ed25519.Sign(id.PrivateKey, bodyBytes)
+	httpReq.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
+	httpReq.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	resp, err := nethttp.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// TestRekeyNonCreatorForbidden verifies that a non-creator member gets 403 when
+// attempting to send a rekey request.
+func TestRekeyNonCreatorForbidden(t *testing.T) {
+	// Generate campfire keypair.
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating campfire key: %v", err)
+	}
+	campfireID := fmt.Sprintf("%x", cfPub)
+
+	idA := tempIdentity(t) // creator (not the sender)
+	idB := tempIdentity(t) // non-creator member (the attacker)
+	idC := tempIdentity(t) // evicted
+
+	newPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating new campfire key: %v", err)
+	}
+	newCampfireID := fmt.Sprintf("%x", newPub)
+
+	sB := tempStore(t)
+	stateDirB, _ := setupCampfireState(t, cfPriv, cfPub, 1)
+	// B is a non-creator member; creator is A.
+	addMembershipWithDir(t, sB, campfireID, stateDirB, 1, "member", idA.PublicKeyHex())
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+38)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Build a rekey message signed by the campfire key (legitimately).
+	rekeyPayload, _ := json.Marshal(map[string]string{"old_key": campfireID, "new_key": newCampfireID})
+	rekeyMsg, err := message.NewMessage(cfPriv, cfPub, rekeyPayload, []string{"campfire:rekey"}, nil)
+	if err != nil {
+		t.Fatalf("creating rekey message: %v", err)
+	}
+	rekeyMsgCBOR, _ := cfencoding.Marshal(rekeyMsg)
+
+	// B (non-creator) tries to initiate phase 1 of rekey.
+	senderPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	senderPubHex := fmt.Sprintf("%x", senderPriv.PublicKey().Bytes())
+
+	req := cfhttp.RekeyRequest{
+		NewCampfireID:       newCampfireID,
+		SenderX25519Pub:     senderPubHex,
+		EvictedMemberPubkey: idC.PublicKeyHex(),
+		RekeyMessageCBOR:    rekeyMsgCBOR,
+	}
+	// B sends the request, not A — so senderHex != creatorPubkey.
+	statusCode := sendRekeyRaw(t, epB, campfireID, req, idB)
+	if statusCode != nethttp.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for non-creator rekey, got %d", statusCode)
+	}
+}
+
+// TestRekeyForgedSenderRejected verifies that a rekey message with a forged Sender field
+// (different from the campfire public key) is rejected, even though rekeyMsg.VerifySignature()
+// would pass (it uses the attacker-controlled Sender field).
+func TestRekeyForgedSenderRejected(t *testing.T) {
+	// Generate real campfire keypair.
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating campfire key: %v", err)
+	}
+	campfireID := fmt.Sprintf("%x", cfPub)
+
+	idA := tempIdentity(t) // creator (legitimate sender)
+
+	newPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating new campfire key: %v", err)
+	}
+	newCampfireID := fmt.Sprintf("%x", newPub)
+
+	sB := tempStore(t)
+	stateDirB, _ := setupCampfireState(t, cfPriv, cfPub, 1)
+	// B knows A is the creator.
+	addMembershipWithDir(t, sB, campfireID, stateDirB, 1, "member", idA.PublicKeyHex())
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+42)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Build a rekey message with a FORGED Sender field.
+	// The attacker uses their own key to sign, but sets Sender to the campfire public key.
+	// rekeyMsg.VerifySignature() would FAIL (it uses m.Sender = cfPub but signature is by idA).
+	// However, an attacker could set Sender = idA.PublicKey and sign with idA's key:
+	// then VerifySignature() passes, but the actual sender != campfire key.
+	// The handler must verify against the stored campfire pubkey, not rekeyMsg.Sender.
+	rekeyPayload, _ := json.Marshal(map[string]string{"old_key": campfireID, "new_key": newCampfireID})
+
+	// Attacker signs the rekey message with their own personal key (idA), NOT the campfire key.
+	// They set Sender = idA.PublicKey so that VerifySignature() passes (it checks m.Sender).
+	// This is the "forged Sender" attack: the signature is valid for the stated sender,
+	// but the stated sender is not the campfire public key.
+	forgingMsg, err := message.NewMessage(
+		idA.PrivateKey, idA.PublicKey, // signed by idA, not the campfire key
+		rekeyPayload, []string{"campfire:rekey"}, nil,
+	)
+	if err != nil {
+		t.Fatalf("creating forged rekey message: %v", err)
+	}
+	// Verify that VerifySignature() passes (confirming the attack scenario).
+	if !forgingMsg.VerifySignature() {
+		t.Fatal("forged message should pass VerifySignature() in the attack scenario")
+	}
+	forgingMsgCBOR, _ := cfencoding.Marshal(forgingMsg)
+
+	senderPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	senderPubHex := fmt.Sprintf("%x", senderPriv.PublicKey().Bytes())
+
+	req := cfhttp.RekeyRequest{
+		NewCampfireID:    newCampfireID,
+		SenderX25519Pub:  senderPubHex,
+		RekeyMessageCBOR: forgingMsgCBOR,
+	}
+	// A sends the request (A is the creator, so the creator check passes),
+	// but the rekey message is signed by idA's personal key, not the campfire key.
+	statusCode := sendRekeyRaw(t, epB, campfireID, req, idA)
+	if statusCode == nethttp.StatusOK {
+		t.Errorf("expected non-200 for forged rekey message signature, got %d", statusCode)
+	}
+	t.Logf("Forged sender rekey correctly rejected with status %d", statusCode)
 }
