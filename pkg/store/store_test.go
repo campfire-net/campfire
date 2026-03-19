@@ -991,6 +991,296 @@ func TestListMessages_AfterReceivedAt(t *testing.T) {
 
 // --- workspace-pik: ClaimPendingThresholdShare concurrent race ---
 
+// --- workspace-e18n: UpdateCampfireID unit tests ---
+
+// TestUpdateCampfireID_BasicRename verifies that UpdateCampfireID renames
+// memberships, messages, read_cursors, peer_endpoints, threshold_shares, and
+// pending_threshold_shares from old-id to new-id in a single atomic operation.
+func TestUpdateCampfireID_BasicRename(t *testing.T) {
+	s := testStore(t)
+	oldID := "cf-old-rename"
+	newID := "cf-new-rename"
+
+	// Seed membership for oldID.
+	if err := s.AddMembership(Membership{
+		CampfireID:   oldID,
+		TransportDir: "/tmp/campfire/" + oldID,
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1000,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	// Seed a message under oldID.
+	if _, err := s.AddMessage(MessageRecord{
+		ID: "msg-rename-1", CampfireID: oldID, Sender: "aabb",
+		Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
+		Timestamp: 1000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000,
+	}); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	// Seed a read cursor for oldID.
+	if err := s.SetReadCursor(oldID, 999); err != nil {
+		t.Fatalf("SetReadCursor: %v", err)
+	}
+
+	// Seed a peer endpoint for oldID.
+	if err := s.UpsertPeerEndpoint(PeerEndpoint{
+		CampfireID: oldID, MemberPubkey: "pubkey1", Endpoint: "http://peer1", ParticipantID: 1,
+	}); err != nil {
+		t.Fatalf("UpsertPeerEndpoint: %v", err)
+	}
+
+	// Seed a threshold share for oldID.
+	if err := s.UpsertThresholdShare(ThresholdShare{
+		CampfireID: oldID, ParticipantID: 1, SecretShare: []byte("secret"), PublicData: []byte("pub"),
+	}); err != nil {
+		t.Fatalf("UpsertThresholdShare: %v", err)
+	}
+
+	// Seed a pending threshold share for oldID.
+	if err := s.StorePendingThresholdShare(oldID, 2, []byte("pending-share")); err != nil {
+		t.Fatalf("StorePendingThresholdShare: %v", err)
+	}
+
+	// Perform the rename.
+	if err := s.UpdateCampfireID(oldID, newID); err != nil {
+		t.Fatalf("UpdateCampfireID: %v", err)
+	}
+
+	// Verify membership moved to newID.
+	m, err := s.GetMembership(newID)
+	if err != nil {
+		t.Fatalf("GetMembership(newID): %v", err)
+	}
+	if m == nil {
+		t.Fatal("membership should exist under newID after rename")
+	}
+	old, err := s.GetMembership(oldID)
+	if err != nil {
+		t.Fatalf("GetMembership(oldID): %v", err)
+	}
+	if old != nil {
+		t.Error("membership should no longer exist under oldID after rename")
+	}
+
+	// Verify messages moved to newID.
+	msgs, err := s.ListMessages(newID, 0)
+	if err != nil {
+		t.Fatalf("ListMessages(newID): %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].ID != "msg-rename-1" {
+		t.Errorf("expected 1 message under newID, got %d", len(msgs))
+	}
+	oldMsgs, err := s.ListMessages(oldID, 0)
+	if err != nil {
+		t.Fatalf("ListMessages(oldID): %v", err)
+	}
+	if len(oldMsgs) != 0 {
+		t.Errorf("expected 0 messages under oldID after rename, got %d", len(oldMsgs))
+	}
+
+	// Verify read cursor moved to newID.
+	cursor, err := s.GetReadCursor(newID)
+	if err != nil {
+		t.Fatalf("GetReadCursor(newID): %v", err)
+	}
+	if cursor != 999 {
+		t.Errorf("read cursor under newID = %d, want 999", cursor)
+	}
+	oldCursor, err := s.GetReadCursor(oldID)
+	if err != nil {
+		t.Fatalf("GetReadCursor(oldID): %v", err)
+	}
+	if oldCursor != 0 {
+		t.Errorf("read cursor under oldID should be 0 after rename, got %d", oldCursor)
+	}
+
+	// Verify peer endpoints moved to newID.
+	peers, err := s.ListPeerEndpoints(newID)
+	if err != nil {
+		t.Fatalf("ListPeerEndpoints(newID): %v", err)
+	}
+	if len(peers) != 1 || peers[0].MemberPubkey != "pubkey1" {
+		t.Errorf("expected 1 peer endpoint under newID, got %d", len(peers))
+	}
+	oldPeers, err := s.ListPeerEndpoints(oldID)
+	if err != nil {
+		t.Fatalf("ListPeerEndpoints(oldID): %v", err)
+	}
+	if len(oldPeers) != 0 {
+		t.Errorf("expected 0 peer endpoints under oldID after rename, got %d", len(oldPeers))
+	}
+
+	// Verify threshold share moved to newID.
+	share, err := s.GetThresholdShare(newID)
+	if err != nil {
+		t.Fatalf("GetThresholdShare(newID): %v", err)
+	}
+	if share == nil {
+		t.Fatal("threshold share should exist under newID after rename")
+	}
+	oldShare, err := s.GetThresholdShare(oldID)
+	if err != nil {
+		t.Fatalf("GetThresholdShare(oldID): %v", err)
+	}
+	if oldShare != nil {
+		t.Error("threshold share should no longer exist under oldID after rename")
+	}
+
+	// Verify pending threshold share moved to newID.
+	pid, data, err := s.ClaimPendingThresholdShare(newID)
+	if err != nil {
+		t.Fatalf("ClaimPendingThresholdShare(newID): %v", err)
+	}
+	if data == nil {
+		t.Fatal("pending threshold share should exist under newID after rename")
+	}
+	if pid != 2 {
+		t.Errorf("pending share participantID = %d, want 2", pid)
+	}
+}
+
+// TestUpdateCampfireID_NonExistentOldID verifies that UpdateCampfireID succeeds
+// (no error) when the oldID does not exist in any table. Zero rows are affected
+// but the operation is not an error — silently a no-op.
+func TestUpdateCampfireID_NonExistentOldID(t *testing.T) {
+	s := testStore(t)
+
+	// Call with IDs that don't exist in any table — must not error.
+	if err := s.UpdateCampfireID("ghost-old", "ghost-new"); err != nil {
+		t.Fatalf("UpdateCampfireID with non-existent oldID should succeed, got: %v", err)
+	}
+
+	// Confirm no membership was created for new-id either.
+	m, err := s.GetMembership("ghost-new")
+	if err != nil {
+		t.Fatalf("GetMembership: %v", err)
+	}
+	if m != nil {
+		t.Error("no membership should exist for ghost-new")
+	}
+}
+
+// TestUpdateCampfireID_ConflictRollback verifies that when newID already exists
+// in campfire_memberships, the transaction rolls back and oldID is unchanged.
+func TestUpdateCampfireID_ConflictRollback(t *testing.T) {
+	s := testStore(t)
+	oldID := "cf-conflict-old"
+	newID := "cf-conflict-new"
+
+	// Seed both old and new memberships so the rename causes a PK conflict.
+	for _, id := range []string{oldID, newID} {
+		if err := s.AddMembership(Membership{
+			CampfireID:   id,
+			TransportDir: "/tmp/campfire/" + id,
+			JoinProtocol: "open",
+			Role:         "creator",
+			JoinedAt:     1000,
+		}); err != nil {
+			t.Fatalf("AddMembership(%s): %v", id, err)
+		}
+	}
+
+	// Seed a message under oldID so we can verify it's untouched after rollback.
+	if _, err := s.AddMessage(MessageRecord{
+		ID: "msg-conflict-1", CampfireID: oldID, Sender: "aabb",
+		Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
+		Timestamp: 1000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000,
+	}); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	// UpdateCampfireID should fail — newID already exists in memberships.
+	err := s.UpdateCampfireID(oldID, newID)
+	if err == nil {
+		t.Fatal("UpdateCampfireID should return an error when newID already exists (UNIQUE conflict)")
+	}
+
+	// Verify oldID membership is still intact (transaction rolled back).
+	m, err2 := s.GetMembership(oldID)
+	if err2 != nil {
+		t.Fatalf("GetMembership(oldID) after failed rename: %v", err2)
+	}
+	if m == nil {
+		t.Error("oldID membership must still exist after rollback")
+	}
+
+	// Verify messages under oldID are unchanged (not partially renamed).
+	msgs, err3 := s.ListMessages(oldID, 0)
+	if err3 != nil {
+		t.Fatalf("ListMessages(oldID) after failed rename: %v", err3)
+	}
+	if len(msgs) != 1 || msgs[0].ID != "msg-conflict-1" {
+		t.Errorf("expected 1 message under oldID after rollback, got %d", len(msgs))
+	}
+}
+
+// TestUpdateCampfireID_PartialState verifies that tables without a matching row
+// are silently skipped — only populated tables are renamed.
+func TestUpdateCampfireID_PartialState(t *testing.T) {
+	s := testStore(t)
+	oldID := "cf-partial-old"
+	newID := "cf-partial-new"
+
+	// Only seed membership and a peer endpoint — leave messages, read_cursors,
+	// threshold_shares, and pending_threshold_shares empty for oldID.
+	if err := s.AddMembership(Membership{
+		CampfireID:   oldID,
+		TransportDir: "/tmp/campfire/" + oldID,
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1000,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+	if err := s.UpsertPeerEndpoint(PeerEndpoint{
+		CampfireID: oldID, MemberPubkey: "pk-partial", Endpoint: "http://peer", ParticipantID: 1,
+	}); err != nil {
+		t.Fatalf("UpsertPeerEndpoint: %v", err)
+	}
+
+	// Rename should succeed even though most tables have no rows for oldID.
+	if err := s.UpdateCampfireID(oldID, newID); err != nil {
+		t.Fatalf("UpdateCampfireID with partial state: %v", err)
+	}
+
+	// Membership moved.
+	m, err := s.GetMembership(newID)
+	if err != nil || m == nil {
+		t.Fatalf("membership should exist under newID: err=%v, m=%v", err, m)
+	}
+
+	// Peer endpoint moved.
+	peers, err := s.ListPeerEndpoints(newID)
+	if err != nil {
+		t.Fatalf("ListPeerEndpoints(newID): %v", err)
+	}
+	if len(peers) != 1 || peers[0].MemberPubkey != "pk-partial" {
+		t.Errorf("expected 1 peer endpoint under newID, got %d", len(peers))
+	}
+
+	// oldID has no membership.
+	old, err := s.GetMembership(oldID)
+	if err != nil {
+		t.Fatalf("GetMembership(oldID): %v", err)
+	}
+	if old != nil {
+		t.Error("oldID membership should be gone after rename")
+	}
+
+	// Tables not seeded for oldID should have no rows under newID either.
+	msgs, err := s.ListMessages(newID, 0)
+	if err != nil {
+		t.Fatalf("ListMessages(newID): %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 messages under newID (none seeded), got %d", len(msgs))
+	}
+}
+
 // TestClaimPendingThresholdShareConcurrent verifies that when two goroutines
 // race to claim the single pending share for a campfire, exactly one succeeds
 // (gets non-nil shareData) and the other gets nil or an error. The invariant
