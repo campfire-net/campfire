@@ -410,7 +410,24 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 		if event.Endpoint != "" {
 			h.transport.AddPeer(campfireID, event.Member, event.Endpoint)
 		}
-	case "leave", "evict":
+	case "evict":
+		// Eviction is a privileged operation: only the campfire creator may evict members.
+		// Fail closed: if we cannot retrieve the membership record (e.g. DB error), reject
+		// the evict to prevent any member from bypassing the creator check.
+		membership, err := h.store.GetMembership(campfireID)
+		if err != nil {
+			log.Printf("handleMembership: GetMembership error for campfire %s during evict: %v", campfireID, err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		// If CreatorPubkey is set, enforce that only the creator may evict.
+		// If CreatorPubkey is empty (legacy records), allow the evict for backward compatibility.
+		if membership != nil && membership.CreatorPubkey != "" && senderHex != membership.CreatorPubkey {
+			http.Error(w, "only the campfire creator may evict members", http.StatusForbidden)
+			return
+		}
+		h.transport.RemovePeer(campfireID, event.Member)
+	case "leave":
 		h.transport.RemovePeer(campfireID, event.Member)
 	default:
 		http.Error(w, "unknown event type", http.StatusBadRequest)
