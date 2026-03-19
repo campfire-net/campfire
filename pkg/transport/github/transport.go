@@ -1,7 +1,6 @@
 package github
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -232,26 +231,8 @@ func (t *Transport) Poll(campfireID string) ([]message.Message, error) {
 			continue
 		}
 
-		// Serialize slice fields to JSON for the store schema.
-		tagsJSON, _ := json.Marshal(msg.Tags)
-		antecedentsJSON, _ := json.Marshal(msg.Antecedents)
-		provenanceJSON, _ := json.Marshal(msg.Provenance)
-
 		// Store in SQLite.
-		rec := store.MessageRecord{
-			ID:          msg.ID,
-			CampfireID:  campfireID,
-			Sender:      fmt.Sprintf("%x", msg.Sender),
-			Payload:     msg.Payload,
-			Tags:        string(tagsJSON),
-			Antecedents: string(antecedentsJSON),
-			Timestamp:   msg.Timestamp,
-			Signature:   msg.Signature,
-			Provenance:  string(provenanceJSON),
-			ReceivedAt:  time.Now().UnixNano(),
-			Instance:    msg.Instance,
-		}
-		if _, err := t.store.AddMessage(rec); err != nil {
+		if _, err := t.store.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); err != nil {
 			continue
 		}
 

@@ -1,0 +1,153 @@
+package http
+
+import (
+	"encoding/json"
+	"io"
+	"log"
+	"net/http"
+
+	frostmessages "github.com/taurusgroup/frost-ed25519/pkg/messages"
+
+	"github.com/campfire-net/campfire/pkg/threshold"
+)
+
+// handleSign processes a FROST signing round message from the initiator.
+// POST /campfire/{id}/sign
+// Body: SignRoundRequest (JSON)
+// Returns: SignRoundResponse (JSON)
+// This endpoint is ephemeral — no messages are stored in history.
+func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID string) {
+	// Look up the threshold share provider.
+	if h.transport == nil {
+		http.Error(w, "threshold signing not supported", http.StatusNotImplemented)
+		return
+	}
+	h.transport.mu.RLock()
+	sp := h.transport.thresholdShareProvider
+	h.transport.mu.RUnlock()
+	if sp == nil {
+		http.Error(w, "threshold share provider not configured", http.StatusNotImplemented)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "cannot read body", http.StatusBadRequest)
+		return
+	}
+
+	// Verify sender signature.
+	senderHex := r.Header.Get("X-Campfire-Sender")
+	sigB64 := r.Header.Get("X-Campfire-Signature")
+	if senderHex == "" || sigB64 == "" {
+		http.Error(w, "missing signature headers", http.StatusUnauthorized)
+		return
+	}
+	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
+		log.Printf("handleSign: signature verification failed: %v", err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	var req SignRoundRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" {
+		http.Error(w, "missing session_id", http.StatusBadRequest)
+		return
+	}
+
+	// Load this node's DKG share for the campfire.
+	participantID, shareData, err := sp(campfireID)
+	if err != nil {
+		log.Printf("handleSign: failed to load threshold share for campfire %s: %v", campfireID, err)
+		http.Error(w, "threshold share not found", http.StatusNotFound)
+		return
+	}
+	_, dkgResult, err := threshold.UnmarshalResult(shareData)
+	if err != nil {
+		log.Printf("handleSign: failed to deserialize threshold share for campfire %s: %v", campfireID, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	var outRaw [][]byte
+
+	if req.Round == 1 {
+		// Round 1: create a new signing session and return this participant's commitments.
+		h.transport.mu.Lock()
+		ss, err := h.transport.getOrCreateSignSession(req.SessionID, req.SignerIDs, req.MessageToSign, dkgResult, participantID)
+		h.transport.mu.Unlock()
+		if err != nil {
+			log.Printf("handleSign: failed to create signing session %s for campfire %s: %v", req.SessionID, campfireID, err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		// Start generates this participant's round-1 commitment messages.
+		commitMsgs := ss.Start()
+
+		// Deliver inbound round-1 messages from the initiator.
+		for _, raw := range req.Messages {
+			var msg frostmessages.Message
+			if err := msg.UnmarshalBinary(raw); err != nil {
+				continue
+			}
+			ss.Deliver(&msg) //nolint:errcheck
+		}
+
+		// Return this participant's commitment messages (the initiator needs them).
+		for _, m := range commitMsgs {
+			b, err := m.MarshalBinary()
+			if err != nil {
+				continue
+			}
+			outRaw = append(outRaw, b)
+		}
+	} else {
+		// Round 2: look up the existing session, advance state, deliver inbound share messages.
+		h.transport.mu.RLock()
+		sessionState, ok := h.transport.signSessions[req.SessionID]
+		h.transport.mu.RUnlock()
+		if !ok {
+			http.Error(w, "signing session not found (round 2 without round 1?)", http.StatusBadRequest)
+			return
+		}
+		ss := sessionState.session
+
+		// Advance state machine to produce this participant's round-2 share messages.
+		sharesMsgs := ss.ProcessAll()
+
+		// Deliver inbound round-2 messages from the initiator.
+		for _, raw := range req.Messages {
+			var msg frostmessages.Message
+			if err := msg.UnmarshalBinary(raw); err != nil {
+				continue
+			}
+			ss.Deliver(&msg) //nolint:errcheck
+		}
+
+		// Advance again to process any newly deliverable state.
+		additionalMsgs := ss.ProcessAll()
+
+		// Return all outbound messages: own shares + any additional output.
+		allOut := append(sharesMsgs, additionalMsgs...)
+		for _, m := range allOut {
+			b, err := m.MarshalBinary()
+			if err != nil {
+				continue
+			}
+			outRaw = append(outRaw, b)
+		}
+
+		// Clean up after round 2.
+		h.transport.removeSignSession(req.SessionID)
+	}
+
+	resp := SignRoundResponse{Messages: outRaw}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
+}

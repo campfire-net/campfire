@@ -71,98 +71,54 @@ var joinCmd = &cobra.Command{
 }
 
 func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Store) error {
-	transport := fs.New(fs.DefaultBaseDir())
+	tr := fs.New(fs.DefaultBaseDir())
 
-	// Read campfire state to check join protocol
-	state, err := transport.ReadState(campfireID)
+	// Read campfire state to check join protocol.
+	state, err := tr.ReadState(campfireID)
 	if err != nil {
 		return fmt.Errorf("reading campfire state: %w", err)
 	}
 
-	// Check if already a member
-	members, err := transport.ListMembers(campfireID)
+	// Enforce invite-only before admission attempt.
+	// admitFSMemberIfNew handles open protocol; pre-admitted members bypass this check.
+	existingMembers, err := tr.ListMembers(campfireID)
 	if err != nil {
 		return fmt.Errorf("listing members: %w", err)
 	}
 	alreadyOnDisk := false
-	var existingJoinedAt int64
-	var existingRole string
-	for _, m := range members {
+	for _, m := range existingMembers {
 		if fmt.Sprintf("%x", m.PublicKey) == agentID.PublicKeyHex() {
 			alreadyOnDisk = true
-			existingJoinedAt = m.JoinedAt
-			existingRole = m.Role
 			break
 		}
 	}
-
-	now := time.Now().UnixNano()
-
-	if alreadyOnDisk {
-		// Pre-admitted (e.g., via DM or cf admit). Just register locally.
-		// Preserve the role that was set by the admitting member (workspace-4s4).
-		now = existingJoinedAt
-	} else {
-		// Need to be admitted first
+	if !alreadyOnDisk {
 		switch state.JoinProtocol {
 		case "open":
-			// Immediately admitted
+			// Immediately admitted via admitFSMemberIfNew below.
 		case "invite-only":
 			return fmt.Errorf("campfire %s is invite-only; ask a member to run 'cf admit %s %s'",
 				campfireID[:12], campfireID[:12], agentID.PublicKeyHex())
 		default:
 			return fmt.Errorf("unknown join protocol: %s", state.JoinProtocol)
 		}
-
-		// Write member record to transport directory
-		if err := transport.WriteMember(campfireID, campfire.MemberRecord{
-			PublicKey: agentID.PublicKey,
-			JoinedAt:  now,
-			Role:      campfire.RoleFull,
-		}); err != nil {
-			return fmt.Errorf("writing member record: %w", err)
-		}
-		existingRole = campfire.RoleFull
 	}
 
-	// Write campfire:member-joined system message (only if newly admitted)
-	if !alreadyOnDisk {
-		sysMsg, err := message.NewMessage(
-			state.PrivateKey, state.PublicKey,
-			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, agentID.PublicKeyHex(), now)),
-			[]string{"campfire:member-joined"},
-			nil,
-		)
-		if err != nil {
-			return fmt.Errorf("creating system message: %w", err)
-		}
-
-		updatedMembers, _ := transport.ListMembers(campfireID)
-		cf := campfireFromState(state, updatedMembers)
-		if err := sysMsg.AddHop(
-			state.PrivateKey, state.PublicKey,
-			cf.MembershipHash(), len(updatedMembers),
-			state.JoinProtocol, state.ReceptionRequirements,
-		); err != nil {
-			return fmt.Errorf("adding provenance hop: %w", err)
-		}
-
-		if err := transport.WriteMessage(campfireID, sysMsg); err != nil {
-			return fmt.Errorf("writing system message: %w", err)
-		}
+	now, role, _, err := admitFSMemberIfNew(tr, campfireID, agentID, state)
+	if err != nil {
+		return err
 	}
 
 	// Look up description from beacon (best-effort).
 	description := lookupBeaconDescription(campfireID)
 
 	// Record membership in local store.
-	// Use existingRole (read from transport MemberRecord when pre-admitted,
-	// or RoleFull for open-protocol joins) so admitted roles are preserved (workspace-4s4).
+	// Role is preserved from the admission record (workspace-4s4).
 	if err := s.AddMembership(store.Membership{
 		CampfireID:   campfireID,
-		TransportDir: transport.CampfireDir(campfireID),
+		TransportDir: tr.CampfireDir(campfireID),
 		JoinProtocol: state.JoinProtocol,
-		Role:         existingRole,
+		Role:         role,
 		JoinedAt:     now,
 		Description:  description,
 	}); err != nil {

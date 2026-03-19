@@ -47,14 +47,13 @@ func ResolveType(m store.Membership) Type {
 	return TypeFilesystem
 }
 
-// githubTransportPrefix is the prefix used in the TransportDir column to identify
-// GitHub-transport campfires. Must stay in sync with the cmd-layer constant.
-const githubTransportPrefix = "github:"
+// GitHubTransportPrefix is the prefix used in the TransportDir column to identify
+// GitHub-transport campfires.
+const GitHubTransportPrefix = "github:"
 
-// isGitHubTransportDir mirrors the cmd-layer isGitHubCampfire check.
-// GitHub campfires prefix their TransportDir with "github:".
+// isGitHubTransportDir checks whether a TransportDir indicates a GitHub-transport campfire.
 func isGitHubTransportDir(transportDir string) bool {
-	return strings.HasPrefix(transportDir, githubTransportPrefix)
+	return strings.HasPrefix(transportDir, GitHubTransportPrefix)
 }
 
 // isPeerHTTPTransportDir mirrors the cmd-layer isPeerHTTPCampfire check.

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/spf13/cobra"
 )
 
@@ -66,14 +67,7 @@ func IdentityPath() string {
 
 // BeaconDir returns the resolved beacon directory.
 func BeaconDir() string {
-	if env := os.Getenv("CF_BEACON_DIR"); env != "" {
-		return env
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "/tmp/campfire/beacons"
-	}
-	return filepath.Join(home, ".campfire", "beacons")
+	return beacon.DefaultBeaconDir()
 }
 
 // ProjectRoot walks up from cwd looking for a .campfire/root file.

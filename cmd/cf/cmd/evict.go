@@ -664,21 +664,7 @@ func storeRekeyMessage(s *store.Store, campfireID string, rekeyMsgCBOR []byte) e
 	if err := cfencoding.Unmarshal(rekeyMsgCBOR, &rekeyMsg); err != nil {
 		return fmt.Errorf("decoding rekey message: %w", err)
 	}
-	tagsJSON, _ := json.Marshal(rekeyMsg.Tags)
-	anteJSON, _ := json.Marshal(rekeyMsg.Antecedents)
-	provJSON, _ := json.Marshal(rekeyMsg.Provenance)
-	_, err := s.AddMessage(store.MessageRecord{
-		ID:          rekeyMsg.ID,
-		CampfireID:  campfireID,
-		Sender:      fmt.Sprintf("%x", rekeyMsg.Sender),
-		Payload:     rekeyMsg.Payload,
-		Tags:        string(tagsJSON),
-		Antecedents: string(anteJSON),
-		Timestamp:   rekeyMsg.Timestamp,
-		Signature:   rekeyMsg.Signature,
-		Provenance:  string(provJSON),
-		ReceivedAt:  store.NowNano(),
-	})
+	_, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, &rekeyMsg, store.NowNano()))
 	return err
 }
 

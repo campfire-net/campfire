@@ -69,6 +69,28 @@ func parseFieldSet(s string) (map[string]bool, error) {
 	return fs, nil
 }
 
+// printSingleMessage renders one message in the canonical human-readable format to w.
+// This is the shared formatting kernel used by printMessagesWithFields (default path)
+// and printNATMessages so the display logic lives in exactly one place.
+func printSingleMessage(w io.Writer, cfShort, ts, senderDisplay string, tags, antecedents []string, payload []byte) {
+	fmt.Fprintf(w, "[campfire:%s] %s %s\n", cfShort, ts, senderDisplay)
+	if len(tags) > 0 {
+		fmt.Fprintf(w, "  tags: %s\n", strings.Join(tags, ", "))
+	}
+	if len(antecedents) > 0 {
+		shortAnts := make([]string, len(antecedents))
+		for i, a := range antecedents {
+			if len(a) > 8 {
+				shortAnts[i] = a[:8]
+			} else {
+				shortAnts[i] = a
+			}
+		}
+		fmt.Fprintf(w, "  antecedents: %s\n", strings.Join(shortAnts, ", "))
+	}
+	fmt.Fprintf(w, "  %s\n\n", sanitizePayload(payload))
+}
+
 // printMessagesWithFields prints messages in human-readable format, filtering to
 // only the requested fields. When fields is nil, all fields are printed using the
 // original output format (backward compatible). When fields is non-nil, only the
@@ -100,7 +122,7 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, 
 			}
 			ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
 
-			// Status markers.
+			// Status markers (future/fulfilled) — appended to sender display.
 			var markers []string
 			if s != nil {
 				for _, t := range tags {
@@ -124,28 +146,11 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, 
 					}
 				}
 			}
-
-			statusStr := ""
 			if len(markers) > 0 {
-				statusStr = " [" + strings.Join(markers, ", ") + "]"
+				senderDisplay += " [" + strings.Join(markers, ", ") + "]"
 			}
 
-			fmt.Printf("[campfire:%s] %s %s%s\n", cfShort, ts, senderDisplay, statusStr)
-			if len(tags) > 0 {
-				fmt.Printf("  tags: %s\n", strings.Join(tags, ", "))
-			}
-			if len(antecedents) > 0 {
-				shortAnts := make([]string, len(antecedents))
-				for i, a := range antecedents {
-					if len(a) > 8 {
-						shortAnts[i] = a[:8]
-					} else {
-						shortAnts[i] = a
-					}
-				}
-				fmt.Printf("  antecedents: %s\n", strings.Join(shortAnts, ", "))
-			}
-			fmt.Printf("  %s\n\n", sanitizePayload(m.Payload))
+			printSingleMessage(os.Stdout, cfShort, ts, senderDisplay, tags, antecedents, m.Payload)
 		}
 		return
 	}
@@ -487,6 +492,215 @@ func sanitizePayload(payload []byte) string {
 	return string(out)
 }
 
+// campfireEntry pairs a campfire ID with its membership record for read operations.
+type campfireEntry struct {
+	id         string
+	membership *store.Membership
+}
+
+// resolveCampfireEntries resolves which campfires to read from and builds the
+// campfireEntry list. If args contains a campfire ID, only that campfire is used.
+// Otherwise all memberships are returned, auto-joining the project root if needed.
+func resolveCampfireEntries(args []string, agentID *identity.Identity, s *store.Store) ([]string, []campfireEntry, error) {
+	var campfireIDs []string
+	if len(args) > 0 {
+		resolved, err := resolveCampfireID(args[0], s)
+		if err != nil {
+			return nil, nil, err
+		}
+		campfireIDs = []string{resolved}
+	} else {
+		// No explicit campfire — auto-join the project root if not yet a member.
+		if rootID, _, ok := ProjectRoot(); ok {
+			m, err := s.GetMembership(rootID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("querying membership: %w", err)
+			}
+			if m == nil {
+				if err := autoJoinRootCampfire(rootID, agentID, s); err != nil {
+					return nil, nil, fmt.Errorf("auto-joining root campfire: %w", err)
+				}
+			}
+		}
+
+		memberships, err := s.ListMemberships()
+		if err != nil {
+			return nil, nil, fmt.Errorf("listing memberships: %w", err)
+		}
+		for _, m := range memberships {
+			campfireIDs = append(campfireIDs, m.CampfireID)
+		}
+	}
+
+	var entries []campfireEntry
+	for _, cfID := range campfireIDs {
+		m, err := s.GetMembership(cfID)
+		if err != nil || m == nil {
+			continue
+		}
+		entries = append(entries, campfireEntry{id: cfID, membership: m})
+	}
+	return campfireIDs, entries, nil
+}
+
+// runFollowMode runs the --follow polling loop: sync → query → print → sleep,
+// until a SIGINT/SIGTERM is received. Cursor advancement respects --peek and --all.
+func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s *store.Store, fieldSet map[string]bool) error {
+	// Determine poll interval — use the shortest interval across all campfires.
+	interval := 2 * time.Second
+	for _, e := range entries {
+		if i := followIntervalForTransport(*e.membership); i < interval {
+			interval = i
+		}
+	}
+
+	// Set up signal handling for clean exit.
+	stopCh := make(chan os.Signal, 1)
+	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(stopCh)
+
+	// Show description headers once.
+	shown := map[string]bool{}
+	for _, e := range entries {
+		if !shown[e.id] {
+			shown[e.id] = true
+			if e.membership.Description != "" {
+				fmt.Printf("# %s\n", e.membership.Description)
+			}
+		}
+	}
+
+	// Track cursors per campfire for detecting new messages.
+	cursors := map[string]int64{}
+	if !readAll {
+		for _, e := range entries {
+			c, _ := s.GetReadCursor(e.id)
+			cursors[e.id] = c
+		}
+	}
+
+	for {
+		// Check for stop signal (non-blocking).
+		select {
+		case <-stopCh:
+			return nil
+		default:
+		}
+
+		// Sync all campfires.
+		for _, e := range entries {
+			syncCampfire(e.id, e.membership, agentID, s)
+		}
+
+		// Query new messages since last cursor.
+		var newMessages []store.MessageRecord
+		for _, e := range entries {
+			msgs, err := s.ListMessages(e.id, cursors[e.id])
+			if err != nil {
+				continue
+			}
+			newMessages = append(newMessages, msgs...)
+		}
+
+		// Apply post-query filters for display.
+		// Cursor advances based on ALL new messages (pre-filter) so filtered-out
+		// messages don't re-appear on the next poll.
+		if len(newMessages) > 0 {
+			printMessagesWithFields(filterMessages(newMessages, readTagFilters, readSenderFilter), s, fieldSet)
+
+			if !readPeek {
+				for _, m := range newMessages {
+					if m.Timestamp > cursors[m.CampfireID] {
+						cursors[m.CampfireID] = m.Timestamp
+					}
+				}
+				for cfID, ts := range cursors {
+					s.SetReadCursor(cfID, ts) //nolint:errcheck
+				}
+			}
+		}
+
+		// Sleep with signal check.
+		select {
+		case <-stopCh:
+			return nil
+		case <-time.After(interval):
+		}
+	}
+}
+
+// runOneShotMode performs a single sync → query → print → cursor-advance cycle.
+// Compaction is respected unless --all is set. Cursor advancement is skipped for
+// --all and --peek modes.
+func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *identity.Identity, s *store.Store, fieldSet map[string]bool) error {
+	// Sync all campfires.
+	for _, e := range entries {
+		syncCampfire(e.id, e.membership, agentID, s)
+	}
+
+	// Fetch unfiltered messages first to compute pre-filter cursors, then fetch
+	// filtered messages for display. This preserves the invariant that cursor
+	// advancement accounts for ALL messages (so filtered-out messages don't
+	// reappear on the next read), while pushing tag/sender filtering into SQL.
+	preCursors := map[string]int64{}
+	sqlFilter := store.MessageFilter{
+		Tags:              readTagFilters,
+		Sender:            readSenderFilter,
+		RespectCompaction: !readAll,
+	}
+	var allMessages []store.MessageRecord
+	for _, cfID := range campfireIDs {
+		var afterTS int64
+		if !readAll {
+			afterTS, _ = s.GetReadCursor(cfID)
+		}
+		unfiltered, err := s.ListMessages(cfID, afterTS)
+		if err != nil {
+			return fmt.Errorf("listing messages: %w", err)
+		}
+		for _, m := range unfiltered {
+			if m.Timestamp > preCursors[m.CampfireID] {
+				preCursors[m.CampfireID] = m.Timestamp
+			}
+		}
+		filtered, err := s.ListMessages(cfID, afterTS, sqlFilter)
+		if err != nil {
+			return fmt.Errorf("listing messages (filtered): %w", err)
+		}
+		allMessages = append(allMessages, filtered...)
+	}
+
+	if jsonOutput {
+		if err := encodeMessagesJSONWithFields(allMessages, fieldSet, os.Stdout); err != nil {
+			return err
+		}
+	} else {
+		// Show description header for each campfire with a description.
+		shown := map[string]bool{}
+		for _, cfID := range campfireIDs {
+			if !shown[cfID] {
+				shown[cfID] = true
+				mem, _ := s.GetMembership(cfID)
+				if mem != nil && mem.Description != "" {
+					fmt.Printf("# %s\n", mem.Description)
+				}
+			}
+		}
+		if len(allMessages) == 0 {
+			fmt.Println("No new messages.")
+		}
+		printMessagesWithFields(allMessages, s, fieldSet)
+	}
+
+	// Update read cursors from pre-filter timestamps (unless --all or --peek).
+	if !readAll && !readPeek && len(preCursors) > 0 {
+		for cfID, ts := range preCursors {
+			s.SetReadCursor(cfID, ts) //nolint:errcheck
+		}
+	}
+	return nil
+}
+
 var readCmd = &cobra.Command{
 	Use:   "read [campfire-id]",
 	Short: "Read messages",
@@ -517,219 +731,15 @@ var readCmd = &cobra.Command{
 		}
 		defer s.Close()
 
-		// Determine which campfires to read from.
-		var campfireIDs []string
-		if len(args) > 0 {
-			resolved, err := resolveCampfireID(args[0], s)
-			if err != nil {
-				return err
-			}
-			campfireIDs = []string{resolved}
-		} else {
-			// No explicit campfire — auto-join the project root if not yet a member.
-			if rootID, _, ok := ProjectRoot(); ok {
-				m, err := s.GetMembership(rootID)
-				if err != nil {
-					return fmt.Errorf("querying membership: %w", err)
-				}
-				if m == nil {
-					if err := autoJoinRootCampfire(rootID, agentID, s); err != nil {
-						return fmt.Errorf("auto-joining root campfire: %w", err)
-					}
-				}
-			}
-
-			memberships, err := s.ListMemberships()
-			if err != nil {
-				return fmt.Errorf("listing memberships: %w", err)
-			}
-			for _, m := range memberships {
-				campfireIDs = append(campfireIDs, m.CampfireID)
-			}
+		campfireIDs, entries, err := resolveCampfireEntries(args, agentID, s)
+		if err != nil {
+			return err
 		}
 
-		// Build membership lookup for campfires.
-		type campfireEntry struct {
-			id         string
-			membership *store.Membership
-		}
-		var entries []campfireEntry
-		for _, cfID := range campfireIDs {
-			m, err := s.GetMembership(cfID)
-			if err != nil || m == nil {
-				continue
-			}
-			entries = append(entries, campfireEntry{id: cfID, membership: m})
-		}
-
-		// --follow: loop sync → query → print → sleep for ALL transports.
 		if readFollow {
-			// Determine poll interval from the first campfire's transport.
-			// If following multiple campfires, use the shortest interval.
-			interval := 2 * time.Second
-			for _, e := range entries {
-				i := followIntervalForTransport(*e.membership)
-				if i < interval {
-					interval = i
-				}
-			}
-
-			// Set up signal handling for clean exit.
-			stopCh := make(chan os.Signal, 1)
-			signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
-			defer signal.Stop(stopCh)
-
-			// Show description headers once.
-			shown := map[string]bool{}
-			for _, e := range entries {
-				if shown[e.id] {
-					continue
-				}
-				shown[e.id] = true
-				if e.membership.Description != "" {
-					fmt.Printf("# %s\n", e.membership.Description)
-				}
-			}
-
-			// Track cursors per campfire for detecting new messages.
-			cursors := map[string]int64{}
-			if !readAll {
-				for _, e := range entries {
-					c, _ := s.GetReadCursor(e.id)
-					cursors[e.id] = c
-				}
-			}
-
-			for {
-				// Check for stop signal (non-blocking).
-				select {
-				case <-stopCh:
-					return nil
-				default:
-				}
-
-				// Sync all campfires.
-				for _, e := range entries {
-					syncCampfire(e.id, e.membership, agentID, s)
-				}
-
-				// Query new messages since last cursor.
-				var newMessages []store.MessageRecord
-				for _, e := range entries {
-					afterTS := cursors[e.id]
-					msgs, err := s.ListMessages(e.id, afterTS)
-					if err != nil {
-						continue
-					}
-					newMessages = append(newMessages, msgs...)
-				}
-
-				// Apply post-query filters for display.
-				filteredMessages := filterMessages(newMessages, readTagFilters, readSenderFilter)
-
-				// Print and advance cursors.
-				// Note: cursor advances based on ALL new messages (pre-filter),
-				// so filtered-out messages don't re-appear on the next poll.
-				if len(newMessages) > 0 {
-					printMessagesWithFields(filteredMessages, s, fieldSet)
-
-					// Update cursors (unless --peek).
-					if !readPeek {
-						for _, m := range newMessages {
-							if m.Timestamp > cursors[m.CampfireID] {
-								cursors[m.CampfireID] = m.Timestamp
-							}
-						}
-						for cfID, ts := range cursors {
-							s.SetReadCursor(cfID, ts)
-						}
-					}
-				}
-
-				// Sleep with signal check.
-				select {
-				case <-stopCh:
-					return nil
-				case <-time.After(interval):
-				}
-			}
+			return runFollowMode(entries, agentID, s, fieldSet)
 		}
-
-		// One-shot mode: sync → query → print → exit.
-		for _, e := range entries {
-			syncCampfire(e.id, e.membership, agentID, s)
-		}
-
-		// Query messages.
-		// Fetch all (unfiltered) first to compute pre-filter cursors, then fetch
-		// filtered messages for display. This preserves the invariant that cursor
-		// advancement accounts for ALL messages (so filtered-out messages don't
-		// reappear on the next read), while pushing tag/sender filtering into SQL.
-		//
-		// Compaction: by default, respect compaction (exclude superseded messages).
-		// --all disables compaction filtering so all messages (including compacted) are shown.
-		preCursors := map[string]int64{}
-		sqlFilter := store.MessageFilter{
-			Tags:              readTagFilters,
-			Sender:            readSenderFilter,
-			RespectCompaction: !readAll,
-		}
-		var allMessages []store.MessageRecord
-		for _, cfID := range campfireIDs {
-			var afterTS int64
-			if !readAll {
-				afterTS, _ = s.GetReadCursor(cfID)
-			}
-			// Unfiltered fetch for cursor computation (no compaction, no tag/sender filter).
-			unfiltered, err := s.ListMessages(cfID, afterTS)
-			if err != nil {
-				return fmt.Errorf("listing messages: %w", err)
-			}
-			for _, m := range unfiltered {
-				if m.Timestamp > preCursors[m.CampfireID] {
-					preCursors[m.CampfireID] = m.Timestamp
-				}
-			}
-			// SQL-filtered fetch for display (with compaction awareness when !readAll).
-			filtered, err := s.ListMessages(cfID, afterTS, sqlFilter)
-			if err != nil {
-				return fmt.Errorf("listing messages (filtered): %w", err)
-			}
-			allMessages = append(allMessages, filtered...)
-		}
-
-		if jsonOutput {
-			if err := encodeMessagesJSONWithFields(allMessages, fieldSet, os.Stdout); err != nil {
-				return err
-			}
-		} else {
-			// Show description header for each campfire with a description.
-			shown := map[string]bool{}
-			for _, cfID := range campfireIDs {
-				if shown[cfID] {
-					continue
-				}
-				shown[cfID] = true
-				mem, _ := s.GetMembership(cfID)
-				if mem != nil && mem.Description != "" {
-					fmt.Printf("# %s\n", mem.Description)
-				}
-			}
-
-			if len(allMessages) == 0 {
-				fmt.Println("No new messages.")
-			}
-			printMessagesWithFields(allMessages, s, fieldSet)
-		}
-
-		// Update read cursors from pre-filter timestamps (unless --all or --peek).
-		if !readAll && !readPeek && len(preCursors) > 0 {
-			for cfID, ts := range preCursors {
-				s.SetReadCursor(cfID, ts)
-			}
-		}
-
-		return nil
+		return runOneShotMode(campfireIDs, entries, agentID, s, fieldSet)
 	},
 }
 
@@ -841,23 +851,7 @@ func printNATMessages(campfireID string, msgs []message.Message, w io.Writer, s 
 			senderDisplay += " (" + m.Instance + ")"
 		}
 		ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
-
-		fmt.Fprintf(w, "[campfire:%s] %s %s\n", cfShort, ts, senderDisplay)
-		if len(m.Tags) > 0 {
-			fmt.Fprintf(w, "  tags: %s\n", strings.Join(m.Tags, ", "))
-		}
-		if len(m.Antecedents) > 0 {
-			shortAnts := make([]string, len(m.Antecedents))
-			for i, a := range m.Antecedents {
-				if len(a) > 8 {
-					shortAnts[i] = a[:8]
-				} else {
-					shortAnts[i] = a
-				}
-			}
-			fmt.Fprintf(w, "  antecedents: %s\n", strings.Join(shortAnts, ", "))
-		}
-		fmt.Fprintf(w, "  %s\n\n", sanitizePayload(m.Payload))
+		printSingleMessage(w, cfShort, ts, senderDisplay, m.Tags, m.Antecedents, m.Payload)
 	}
 }
 

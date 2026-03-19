@@ -21,16 +21,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/campfire-net/campfire/pkg/transport"
 )
 
-// githubTransportPrefix is the prefix used in the TransportDir column to identify
-// GitHub-transport campfires. The remainder of the value is a JSON-encoded
-// githubTransportMeta struct.
-const githubTransportPrefix = "github:"
-
 // githubTransportMeta holds the metadata needed to interact with a GitHub-transport
-// campfire. It is stored as JSON in the TransportDir column (with the githubTransportPrefix
-// prefix) so the send/read commands can reconstruct the Transport without extra tables.
+// campfire. It is stored as JSON in the TransportDir column (with the
+// transport.GitHubTransportPrefix prefix) so the send/read commands can reconstruct
+// the Transport without extra tables.
 type githubTransportMeta struct {
 	Repo        string `json:"repo"`
 	IssueNumber int    `json:"issue_number"`
@@ -43,16 +41,16 @@ func encodeGitHubTransportDir(meta githubTransportMeta) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encoding github transport meta: %w", err)
 	}
-	return githubTransportPrefix + string(b), nil
+	return transport.GitHubTransportPrefix + string(b), nil
 }
 
 // parseGitHubTransportDir parses the TransportDir value for a GitHub-transport campfire.
 // Returns (meta, true) if the value is a GitHub transport dir, (zero, false) otherwise.
 func parseGitHubTransportDir(transportDir string) (githubTransportMeta, bool) {
-	if !strings.HasPrefix(transportDir, githubTransportPrefix) {
+	if !strings.HasPrefix(transportDir, transport.GitHubTransportPrefix) {
 		return githubTransportMeta{}, false
 	}
-	raw := strings.TrimPrefix(transportDir, githubTransportPrefix)
+	raw := strings.TrimPrefix(transportDir, transport.GitHubTransportPrefix)
 	var meta githubTransportMeta
 	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
 		return githubTransportMeta{}, false

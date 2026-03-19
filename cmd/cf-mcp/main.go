@@ -823,21 +823,7 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 			continue
 		}
 		for _, fsMsg := range fsMessages {
-			provJSON, _ := json.Marshal(fsMsg.Provenance)
-			tagsJSON, _ := json.Marshal(fsMsg.Tags)
-			antJSON, _ := json.Marshal(fsMsg.Antecedents)
-			st.AddMessage(store.MessageRecord{
-				ID:          fsMsg.ID,
-				CampfireID:  cfID,
-				Sender:      fmt.Sprintf("%x", fsMsg.Sender),
-				Payload:     fsMsg.Payload,
-				Tags:        string(tagsJSON),
-				Antecedents: string(antJSON),
-				Timestamp:   fsMsg.Timestamp,
-				Signature:   fsMsg.Signature,
-				Provenance:  string(provJSON),
-				ReceivedAt:  store.NowNano(),
-			})
+			st.AddMessage(store.MessageRecordFromMessage(cfID, &fsMsg, store.NowNano())) //nolint:errcheck
 		}
 	}
 
