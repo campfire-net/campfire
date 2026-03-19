@@ -1,7 +1,10 @@
 package http
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -9,6 +12,16 @@ import (
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/store"
+)
+
+// contextKey is the unexported type used for request-context values set by auth middleware.
+type contextKey int
+
+const (
+	// ctxSenderHex is the hex-encoded Ed25519 public key of the verified sender.
+	ctxSenderHex contextKey = iota
+	// ctxBody is the raw request body, already read by auth middleware.
+	ctxBody
 )
 
 // maxRequestBodySize is the maximum number of bytes accepted in any request body.
@@ -150,9 +163,84 @@ func (h *handler) checkMembership(w http.ResponseWriter, campfireID, senderHex s
 	return true
 }
 
+// authMiddleware verifies the Ed25519 request signature and campfire membership,
+// then stores the verified senderHex and (for POST/PUT methods) the body bytes
+// in the request context for downstream handlers to consume without re-reading.
+//
+// For GET/HEAD/DELETE (no body), the signature covers an empty byte slice.
+// For POST/PUT/PATCH, the body is read here and stored in context; handlers
+// must retrieve it via ctxBody rather than reading r.Body again.
+func (h *handler) authMiddleware(campfireID string, next func(w http.ResponseWriter, r *http.Request, campfireID, senderHex string, body []byte)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		senderHex, body, ok := h.readAndVerify(w, r)
+		if !ok {
+			return
+		}
+		if !h.checkMembership(w, campfireID, senderHex) {
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxSenderHex, senderHex)
+		ctx = context.WithValue(ctx, ctxBody, body)
+		next(w, r.WithContext(ctx), campfireID, senderHex, body)
+	}
+}
+
+// signatureOnlyMiddleware verifies the Ed25519 request signature but does NOT
+// check campfire membership. Used for handleJoin: the joiner is not yet a member.
+func (h *handler) signatureOnlyMiddleware(campfireID string, next func(w http.ResponseWriter, r *http.Request, campfireID, senderHex string, body []byte)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		senderHex, body, ok := h.readAndVerify(w, r)
+		if !ok {
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxSenderHex, senderHex)
+		ctx = context.WithValue(ctx, ctxBody, body)
+		next(w, r.WithContext(ctx), campfireID, senderHex, body)
+	}
+}
+
+// readAndVerify extracts and validates the X-Campfire-Sender / X-Campfire-Signature
+// headers, reads the body (for methods with a body), verifies the Ed25519 signature,
+// and returns (senderHex, body, true) on success or writes an HTTP error and
+// returns ("", nil, false) on failure.
+func (h *handler) readAndVerify(w http.ResponseWriter, r *http.Request) (senderHex string, body []byte, ok bool) {
+	senderHex = r.Header.Get("X-Campfire-Sender")
+	sigB64 := r.Header.Get("X-Campfire-Signature")
+	if senderHex == "" || sigB64 == "" {
+		http.Error(w, "missing signature headers", http.StatusUnauthorized)
+		return "", nil, false
+	}
+
+	// For request methods that carry a body, read it once here.
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+		var err error
+		body, err = io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "cannot read body", http.StatusBadRequest)
+			return "", nil, false
+		}
+	default:
+		body = []byte{}
+	}
+
+	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
+		log.Printf("auth: signature verification failed for %s %s: %v", r.Method, r.URL.Path, err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return "", nil, false
+	}
+	return senderHex, body, true
+}
+
 // route dispatches requests under /campfire/{id}/...
 // Endpoint implementations live in handler_message.go, handler_join.go,
 // handler_sign.go, and handler_rekey.go.
+//
+// Auth is applied here via middleware so individual handlers do not duplicate
+// the signature-verification + membership-check preamble:
+//   - authMiddleware: signature + membership (deliver, sync, poll, membership, sign, rekey)
+//   - signatureOnlyMiddleware: signature only (join — joiner is not yet a member)
 func (h *handler) route(w http.ResponseWriter, r *http.Request) {
 	// Path: /campfire/{id}/{action}
 	path := strings.TrimPrefix(r.URL.Path, "/campfire/")
@@ -166,19 +254,19 @@ func (h *handler) route(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case action == "deliver" && r.Method == http.MethodPost:
-		h.handleDeliver(w, r, campfireID)
+		h.authMiddleware(campfireID, h.handleDeliver)(w, r)
 	case action == "sync" && r.Method == http.MethodGet:
-		h.handleSync(w, r, campfireID)
+		h.authMiddleware(campfireID, h.handleSync)(w, r)
 	case action == "poll" && r.Method == http.MethodGet:
-		h.handlePoll(w, r, campfireID)
+		h.authMiddleware(campfireID, h.handlePoll)(w, r)
 	case action == "membership" && r.Method == http.MethodPost:
-		h.handleMembership(w, r, campfireID)
+		h.authMiddleware(campfireID, h.handleMembership)(w, r)
 	case action == "join" && r.Method == http.MethodPost:
-		h.handleJoin(w, r, campfireID)
+		h.signatureOnlyMiddleware(campfireID, h.handleJoin)(w, r)
 	case action == "sign" && r.Method == http.MethodPost:
-		h.handleSign(w, r, campfireID)
+		h.authMiddleware(campfireID, h.handleSign)(w, r)
 	case action == "rekey" && r.Method == http.MethodPost:
-		h.handleRekey(w, r, campfireID)
+		h.authMiddleware(campfireID, h.handleRekey)(w, r)
 	default:
 		http.NotFound(w, r)
 	}

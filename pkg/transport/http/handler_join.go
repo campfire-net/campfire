@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 
@@ -59,7 +58,8 @@ type JoinResponse struct {
 // POST /campfire/{id}/join
 // Body: JoinRequest (JSON)
 // Returns: JoinResponse (JSON) — includes encrypted campfire private key + peer list.
-func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID string) {
+// Auth (signature only, no membership check) is enforced by signatureOnlyMiddleware in route.
+func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID, senderHex string, body []byte) {
 	// Prefer transport's key provider (set via SetKeyProvider), fall back to handler's.
 	kp := h.keyProvider
 	if h.transport != nil {
@@ -71,26 +71,6 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 	}
 	if kp == nil {
 		http.Error(w, "join not supported on this node", http.StatusNotImplemented)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "cannot read body", http.StatusBadRequest)
-		return
-	}
-
-	// Verify joiner's Ed25519 signature over the request body.
-	senderHex := r.Header.Get("X-Campfire-Sender")
-	sigB64 := r.Header.Get("X-Campfire-Signature")
-	if senderHex == "" || sigB64 == "" {
-		http.Error(w, "missing signature headers", http.StatusUnauthorized)
-		return
-	}
-	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
-		log.Printf("handleJoin: signature verification failed: %v", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 

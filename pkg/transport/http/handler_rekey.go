@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -61,32 +60,8 @@ type RekeyResponse struct {
 //
 // Phase 1 (no encrypted payload): generate receiver ephemeral key, cache it, return pub key.
 // Phase 2 (with encrypted payload): look up cached key, derive shared secret, decrypt, update state.
-func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfireID string) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "cannot read body", http.StatusBadRequest)
-		return
-	}
-
-	// Verify sender signature.
-	senderHex := r.Header.Get("X-Campfire-Sender")
-	sigB64 := r.Header.Get("X-Campfire-Signature")
-	if senderHex == "" || sigB64 == "" {
-		http.Error(w, "missing signature headers", http.StatusUnauthorized)
-		return
-	}
-	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
-		log.Printf("handleRekey: signature verification failed: %v", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
-	}
-
-	// Membership check: only current members may initiate a rekey.
-	if !h.checkMembership(w, oldCampfireID, senderHex) {
-		return
-	}
-
+// Auth (signature + membership) is enforced by authMiddleware in route.
+func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfireID, senderHex string, body []byte) {
 	var req RekeyRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
