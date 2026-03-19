@@ -2,7 +2,6 @@ package http
 
 import (
 	"encoding/json"
-	"io"
 	"log"
 	"net/http"
 
@@ -16,7 +15,8 @@ import (
 // Body: SignRoundRequest (JSON)
 // Returns: SignRoundResponse (JSON)
 // This endpoint is ephemeral — no messages are stored in history.
-func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID string) {
+// Auth (signature + membership) is enforced by authMiddleware in route.
+func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID, senderHex string, body []byte) {
 	// Look up the threshold share provider.
 	if h.transport == nil {
 		http.Error(w, "threshold signing not supported", http.StatusNotImplemented)
@@ -27,31 +27,6 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 	h.transport.mu.RUnlock()
 	if sp == nil {
 		http.Error(w, "threshold share provider not configured", http.StatusNotImplemented)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "cannot read body", http.StatusBadRequest)
-		return
-	}
-
-	// Verify sender signature.
-	senderHex := r.Header.Get("X-Campfire-Sender")
-	sigB64 := r.Header.Get("X-Campfire-Signature")
-	if senderHex == "" || sigB64 == "" {
-		http.Error(w, "missing signature headers", http.StatusUnauthorized)
-		return
-	}
-	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
-		log.Printf("handleSign: signature verification failed: %v", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
-	}
-
-	// Membership check: only campfire members may participate in threshold signing.
-	if !h.checkMembership(w, campfireID, senderHex) {
 		return
 	}
 
