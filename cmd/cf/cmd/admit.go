@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
@@ -50,10 +52,22 @@ var admitCmd = &cobra.Command{
 			return fmt.Errorf("not a member of campfire %s", campfireID[:12])
 		}
 
-		transport := fs.New(fs.DefaultBaseDir())
+		transportType := transport.ResolveType(*m)
+		if transportType != transport.TypeFilesystem {
+			return fmt.Errorf("admission not yet supported for %s transport — use the transport's native member management", transportType)
+		}
+
+		// Derive the fs transport base dir from the membership's TransportDir.
+		// TransportDir is the campfire-specific subdirectory (e.g. /tmp/campfire/<id>),
+		// so the base dir is its parent. Fall back to the default when empty.
+		baseDir := fs.DefaultBaseDir()
+		if m.TransportDir != "" {
+			baseDir = filepath.Dir(m.TransportDir)
+		}
+		fsTransport := fs.New(baseDir)
 
 		// Check if already a member
-		members, err := transport.ListMembers(campfireID)
+		members, err := fsTransport.ListMembers(campfireID)
 		if err != nil {
 			return fmt.Errorf("listing members: %w", err)
 		}
@@ -63,7 +77,7 @@ var admitCmd = &cobra.Command{
 			}
 		}
 
-		state, err := transport.ReadState(campfireID)
+		state, err := fsTransport.ReadState(campfireID)
 		if err != nil {
 			return fmt.Errorf("reading campfire state: %w", err)
 		}
@@ -83,7 +97,7 @@ var admitCmd = &cobra.Command{
 		}
 
 		// Write member record
-		if err := transport.WriteMember(campfireID, campfire.MemberRecord{
+		if err := fsTransport.WriteMember(campfireID, campfire.MemberRecord{
 			PublicKey: memberKey,
 			JoinedAt:  now,
 			Role:      role,
@@ -102,7 +116,7 @@ var admitCmd = &cobra.Command{
 			return fmt.Errorf("creating system message: %w", err)
 		}
 
-		updatedMembers, _ := transport.ListMembers(campfireID)
+		updatedMembers, _ := fsTransport.ListMembers(campfireID)
 		cf := campfireFromState(state, updatedMembers)
 		if err := sysMsg.AddHop(
 			state.PrivateKey, state.PublicKey,
@@ -112,7 +126,7 @@ var admitCmd = &cobra.Command{
 			return fmt.Errorf("adding provenance hop: %w", err)
 		}
 
-		if err := transport.WriteMessage(campfireID, sysMsg); err != nil {
+		if err := fsTransport.WriteMessage(campfireID, sysMsg); err != nil {
 			return fmt.Errorf("writing system message: %w", err)
 		}
 
