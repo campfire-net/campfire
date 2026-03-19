@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/threshold"
 )
 
 // newTransportForTest creates a minimal Transport for unit tests.
@@ -238,6 +239,57 @@ func TestRemoveSignSession_Idempotent(t *testing.T) {
 	tr := newTransportForTest(t)
 	// Should not panic — map delete on a missing key is a no-op.
 	tr.removeSignSession("does-not-exist")
+}
+
+// TestGetOrCreateSignSession_Idempotent verifies that calling getOrCreateSignSession
+// twice with the same session_id returns the same *signingSessionState pointer.
+//
+// This guards against a regression where a second round-1 request for an in-progress
+// session would overwrite the existing state, losing committed FROST state and causing
+// the protocol to silently produce an invalid signature or fail on round 2.
+func TestGetOrCreateSignSession_Idempotent(t *testing.T) {
+	tr := newTransportForTest(t)
+
+	// Run DKG for 2 participants with threshold 2.
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+	myResult := dkgResults[1]
+
+	sessionID := "idempotent-session"
+	signerIDs := []uint32{1, 2}
+	message := []byte("idempotency test message")
+
+	// First call — should create a new session.
+	tr.mu.Lock()
+	first, err := tr.getOrCreateSignSession(sessionID, signerIDs, message, myResult, 1)
+	tr.mu.Unlock()
+	if err != nil {
+		t.Fatalf("first getOrCreateSignSession: %v", err)
+	}
+	if first == nil {
+		t.Fatal("first getOrCreateSignSession returned nil session state")
+	}
+
+	// Second call with the same session_id — must return the exact same pointer.
+	tr.mu.Lock()
+	second, err := tr.getOrCreateSignSession(sessionID, signerIDs, message, myResult, 1)
+	tr.mu.Unlock()
+	if err != nil {
+		t.Fatalf("second getOrCreateSignSession: %v", err)
+	}
+	if second != first {
+		t.Errorf("getOrCreateSignSession is not idempotent: second call returned a different *signingSessionState (%p != %p)", second, first)
+	}
+
+	// Confirm only one entry exists in the map.
+	tr.mu.RLock()
+	count := len(tr.signSessions)
+	tr.mu.RUnlock()
+	if count != 1 {
+		t.Errorf("expected 1 sign session in map after two calls with same id, got %d", count)
+	}
 }
 
 // TestPruneSignSessions_ConcurrentCreateAndPrune exercises the prune path under
