@@ -238,11 +238,16 @@ func (h *handler) handleSync(w http.ResponseWriter, r *http.Request, campfireID 
 // Behaviour:
 //  1. Auth check (401 on failure).
 //  2. Membership check (403 if sender not a member).
-//  3. Parse query params (400 on bad since; timeout default=30, cap=120).
+//  3. Parse query params (400 on bad since; timeout default=30, cap=50).
 //  4. Subscribe to PollBroker (503 if limit exceeded).
 //  5. Initial sync: if records exist → 200 with CBOR body + X-Campfire-Cursor.
 //  6. Block on channel or timeout.
 //  7. Post-wait sync: if records exist → 200; else → 204 + X-Campfire-Cursor=since.
+//
+// The timeout cap is 50s to stay safely below the server's WriteTimeout of 60s.
+// Go's net/http WriteTimeout is measured from request-header-read to response-complete,
+// so the handler's blocking period must leave enough budget for response writing.
+// Cap of 50s + ~5s response writing < 60s WriteTimeout.
 func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID string) {
 	// Null-broker guard.
 	if h.transport == nil || h.transport.pollBroker == nil {
@@ -303,8 +308,8 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID 
 		}
 		timeoutSec = t
 	}
-	if timeoutSec > 120 {
-		timeoutSec = 120
+	if timeoutSec > 50 {
+		timeoutSec = 50
 	}
 	if timeoutSec < 0 {
 		timeoutSec = 0

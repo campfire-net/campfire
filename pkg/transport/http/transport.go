@@ -86,8 +86,11 @@ func New(listenAddr string, s *store.Store) *Transport {
 	h := &handler{store: s, transport: t}
 	mux.HandleFunc("/campfire/", h.route)
 	t.server = &http.Server{
-		Addr:    listenAddr,
-		Handler: mux,
+		Addr:         listenAddr,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 60 * time.Second, // long-poll timeout cap is 50s, leaving 10s for writes
+		IdleTimeout:  120 * time.Second,
 	}
 	return t
 }
