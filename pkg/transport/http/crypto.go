@@ -51,23 +51,26 @@ func parseX25519PublicKey(raw []byte) (*ecdh.PublicKey, error) {
 	return ecdh.X25519().NewPublicKey(raw)
 }
 
-// aesGCMEncrypt encrypts plaintext with AES-256-GCM using key (must be 32 bytes).
+// AESGCMEncrypt encrypts plaintext with AES-256-GCM using key (must be 32 bytes).
 // Returns nonce || ciphertext.
-func aesGCMEncrypt(key, plaintext []byte) ([]byte, error) {
+//
+// Exported so callers outside the package (e.g., cmd/cf/cmd/evict.go) can use
+// the same encryption primitive without duplicating the logic.
+func AESGCMEncrypt(key, plaintext []byte) ([]byte, error) {
 	if len(key) != 32 {
-		return nil, fmt.Errorf("aesGCMEncrypt: key must be 32 bytes, got %d", len(key))
+		return nil, fmt.Errorf("AESGCMEncrypt: key must be 32 bytes, got %d", len(key))
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, fmt.Errorf("aesGCMEncrypt: creating cipher: %w", err)
+		return nil, fmt.Errorf("AESGCMEncrypt: creating cipher: %w", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("aesGCMEncrypt: creating GCM: %w", err)
+		return nil, fmt.Errorf("AESGCMEncrypt: creating GCM: %w", err)
 	}
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("aesGCMEncrypt: generating nonce: %w", err)
+		return nil, fmt.Errorf("AESGCMEncrypt: generating nonce: %w", err)
 	}
 	ct := gcm.Seal(nonce, nonce, plaintext, nil)
 	return ct, nil

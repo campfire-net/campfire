@@ -1,6 +1,6 @@
 package http
 
-// Internal (white-box) tests for aesGCMEncrypt, aesGCMDecrypt, hkdfSHA256,
+// Internal (white-box) tests for AESGCMEncrypt, aesGCMDecrypt, hkdfSHA256,
 // generateX25519Key, and parseX25519PublicKey.
 //
 // These are "package http" tests (no _test suffix on the package) so they can
@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-// --- aesGCMEncrypt / aesGCMDecrypt ---
+// --- AESGCMEncrypt / aesGCMDecrypt ---
 
 func TestAESGCMRoundTrip(t *testing.T) {
 	key := make([]byte, 32)
@@ -22,12 +22,12 @@ func TestAESGCMRoundTrip(t *testing.T) {
 	}
 	plaintext := []byte("hello, campfire!")
 
-	ct, err := aesGCMEncrypt(key, plaintext)
+	ct, err := AESGCMEncrypt(key, plaintext)
 	if err != nil {
-		t.Fatalf("aesGCMEncrypt: %v", err)
+		t.Fatalf("AESGCMEncrypt: %v", err)
 	}
 	if len(ct) == 0 {
-		t.Fatal("aesGCMEncrypt: returned empty ciphertext")
+		t.Fatal("AESGCMEncrypt: returned empty ciphertext")
 	}
 
 	pt, err := aesGCMDecrypt(key, ct)
@@ -43,9 +43,9 @@ func TestAESGCMEncryptEmptyPlaintext(t *testing.T) {
 	key := make([]byte, 32)
 	rand.Read(key) //nolint:errcheck
 
-	ct, err := aesGCMEncrypt(key, []byte{})
+	ct, err := AESGCMEncrypt(key, []byte{})
 	if err != nil {
-		t.Fatalf("aesGCMEncrypt: %v", err)
+		t.Fatalf("AESGCMEncrypt: %v", err)
 	}
 	pt, err := aesGCMDecrypt(key, ct)
 	if err != nil {
@@ -59,8 +59,8 @@ func TestAESGCMEncryptEmptyPlaintext(t *testing.T) {
 func TestAESGCMEncryptWrongKeyLength(t *testing.T) {
 	for _, keyLen := range []int{0, 16, 31, 33, 64} {
 		key := make([]byte, keyLen)
-		if _, err := aesGCMEncrypt(key, []byte("test")); err == nil {
-			t.Errorf("aesGCMEncrypt with %d-byte key: expected error, got nil", keyLen)
+		if _, err := AESGCMEncrypt(key, []byte("test")); err == nil {
+			t.Errorf("AESGCMEncrypt with %d-byte key: expected error, got nil", keyLen)
 		}
 	}
 }
@@ -91,9 +91,9 @@ func TestAESGCMDecryptTamperedCiphertext(t *testing.T) {
 	key := make([]byte, 32)
 	rand.Read(key) //nolint:errcheck
 
-	ct, err := aesGCMEncrypt(key, []byte("secret"))
+	ct, err := AESGCMEncrypt(key, []byte("secret"))
 	if err != nil {
-		t.Fatalf("aesGCMEncrypt: %v", err)
+		t.Fatalf("AESGCMEncrypt: %v", err)
 	}
 
 	// Flip the last byte of the ciphertext (auth tag area).
@@ -110,9 +110,9 @@ func TestAESGCMDecryptWrongKey(t *testing.T) {
 	rand.Read(key1) //nolint:errcheck
 	rand.Read(key2) //nolint:errcheck
 
-	ct, err := aesGCMEncrypt(key1, []byte("secret"))
+	ct, err := AESGCMEncrypt(key1, []byte("secret"))
 	if err != nil {
-		t.Fatalf("aesGCMEncrypt: %v", err)
+		t.Fatalf("AESGCMEncrypt: %v", err)
 	}
 	if _, err := aesGCMDecrypt(key2, ct); err == nil {
 		t.Fatal("aesGCMDecrypt with wrong key: expected error, got nil")
@@ -126,11 +126,11 @@ func TestAESGCMNonceIsRandom(t *testing.T) {
 	rand.Read(key) //nolint:errcheck
 	plaintext := []byte("same message")
 
-	ct1, err := aesGCMEncrypt(key, plaintext)
+	ct1, err := AESGCMEncrypt(key, plaintext)
 	if err != nil {
 		t.Fatalf("first encrypt: %v", err)
 	}
-	ct2, err := aesGCMEncrypt(key, plaintext)
+	ct2, err := AESGCMEncrypt(key, plaintext)
 	if err != nil {
 		t.Fatalf("second encrypt: %v", err)
 	}
@@ -286,9 +286,9 @@ func TestX25519ECDHWithHKDF(t *testing.T) {
 	}
 
 	plaintext := []byte("end-to-end campfire key exchange test")
-	ct, err := aesGCMEncrypt(keyA, plaintext)
+	ct, err := AESGCMEncrypt(keyA, plaintext)
 	if err != nil {
-		t.Fatalf("aesGCMEncrypt: %v", err)
+		t.Fatalf("AESGCMEncrypt: %v", err)
 	}
 	pt, err := aesGCMDecrypt(keyB, ct)
 	if err != nil {

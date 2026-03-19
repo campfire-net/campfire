@@ -91,8 +91,8 @@ func New(listenAddr string, s *store.Store) *Transport {
 	t.server = &http.Server{
 		Addr:         listenAddr,
 		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 60 * time.Second, // poll cap is 50s, leaving 10s for response writes
 		IdleTimeout:  120 * time.Second,
 	}
 	return t

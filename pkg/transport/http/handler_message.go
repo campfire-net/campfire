@@ -139,7 +139,7 @@ func (h *handler) handleSync(w http.ResponseWriter, r *http.Request, campfireID,
 // Behaviour:
 //  1. Auth check (401 on failure) — enforced by authMiddleware in route.
 //  2. Membership check (403 if sender not a member) — enforced by authMiddleware.
-//  3. Parse query params (400 on bad since; timeout default=30, cap=120).
+//  3. Parse query params (400 on bad since; timeout default=30, cap=50).
 //  4. Subscribe to PollBroker (503 if limit exceeded).
 //  5. Initial sync: if records exist → 200 with CBOR body + X-Campfire-Cursor.
 //  6. Block on channel or timeout.
@@ -172,8 +172,8 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID,
 		}
 		timeoutSec = t
 	}
-	if timeoutSec > 120 {
-		timeoutSec = 120
+	if timeoutSec > 50 {
+		timeoutSec = 50 // cap below server WriteTimeout (60s) to avoid killed connections
 	}
 	if timeoutSec < 0 {
 		timeoutSec = 0
@@ -282,9 +282,14 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 		h.transport.RemovePeer(campfireID, senderHex)
 	case "evict":
 		// Eviction is issued by the creator on behalf of another member.
-		// Only the creator may evict — verify against stored CreatorPubkey.
+		// Fail-closed: if we can't verify the creator, reject the eviction.
 		membership, err := h.store.GetMembership(campfireID)
-		if err == nil && membership != nil && membership.CreatorPubkey != "" && senderHex != membership.CreatorPubkey {
+		if err != nil {
+			log.Printf("handleMembership: GetMembership failed for campfire %s: %v", campfireID, err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if membership != nil && membership.CreatorPubkey != "" && senderHex != membership.CreatorPubkey {
 			http.Error(w, "only the campfire creator may evict members", http.StatusForbidden)
 			return
 		}

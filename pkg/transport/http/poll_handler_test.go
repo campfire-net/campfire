@@ -388,7 +388,7 @@ func TestHandlePollLimitExceeded(t *testing.T) {
 	}
 }
 
-// TestHandlePollInvalidTimeoutCapped: timeout > 120 is capped to 120.
+// TestHandlePollInvalidTimeoutCapped: timeout > 50 is capped to 50.
 // We verify by sending timeout=200 and checking the poll returns (eventually) without error.
 // (Mainly ensures the cap doesn't break anything.)
 func TestHandlePollInvalidTimeoutCapped(t *testing.T) {
@@ -403,10 +403,10 @@ func TestHandlePollInvalidTimeoutCapped(t *testing.T) {
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
-	// Store a message so the poll returns immediately (we don't want to wait 120s).
+	// Store a message so the poll returns immediately (we don't want to wait 50s).
 	storeMessageRecord(t, s, campfireID, id)
 
-	resp, err := doPoll(ep, campfireID, 0, 200, id) // 200 > cap of 120, but messages exist
+	resp, err := doPoll(ep, campfireID, 0, 200, id) // 200 > cap of 50, but messages exist
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
