@@ -71,6 +71,11 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		http.Error(w, "missing new_campfire_id", http.StatusBadRequest)
 		return
 	}
+	newPubKeyBytes, err := hex.DecodeString(req.NewCampfireID)
+	if err != nil || len(newPubKeyBytes) != ed25519.PublicKeySize {
+		http.Error(w, "new_campfire_id must be a valid Ed25519 public key hex", http.StatusBadRequest)
+		return
+	}
 	if req.SenderX25519Pub == "" {
 		http.Error(w, "missing sender_x25519_pub", http.StatusBadRequest)
 		return
@@ -93,30 +98,47 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 
 	// Verify rekey message signature against stored campfire public key (oldCampfireID),
 	// NOT the attacker-controlled rekeyMsg.Sender field.
+	// Reject on: CBOR parse failure, missing signature (threshold=1), invalid campfire ID,
+	// or signature mismatch. Only skip signature check for threshold>1 unsigned messages.
 	if len(req.RekeyMessageCBOR) > 0 {
 		var rekeyMsgForVerify message.Message
-		if cfencoding.Unmarshal(req.RekeyMessageCBOR, &rekeyMsgForVerify) == nil && len(rekeyMsgForVerify.Signature) > 0 {
-			campfirePubKeyBytes, hexErr := hex.DecodeString(oldCampfireID)
-			if hexErr == nil && len(campfirePubKeyBytes) == ed25519.PublicKeySize {
-				signInput := message.MessageSignInput{
-					ID:          rekeyMsgForVerify.ID,
-					Payload:     rekeyMsgForVerify.Payload,
-					Tags:        rekeyMsgForVerify.Tags,
-					Antecedents: rekeyMsgForVerify.Antecedents,
-					Timestamp:   rekeyMsgForVerify.Timestamp,
-				}
-				signBytes, marshalErr := cfencoding.Marshal(signInput)
-				if marshalErr != nil {
-					log.Printf("handleRekey: failed to marshal sign input for campfire %s: %v", oldCampfireID, marshalErr)
-					http.Error(w, "internal server error", http.StatusInternalServerError)
-					return
-				}
-				if !ed25519.Verify(ed25519.PublicKey(campfirePubKeyBytes), signBytes, rekeyMsgForVerify.Signature) {
-					log.Printf("handleRekey: rekey message signature invalid for campfire %s", oldCampfireID)
-					http.Error(w, "rekey message signature invalid", http.StatusUnauthorized)
-					return
-				}
+		if err := cfencoding.Unmarshal(req.RekeyMessageCBOR, &rekeyMsgForVerify); err != nil {
+			log.Printf("handleRekey: invalid rekey message CBOR for campfire %s: %v", oldCampfireID, err)
+			http.Error(w, "invalid rekey message", http.StatusBadRequest)
+			return
+		}
+		campfirePubKeyBytes, hexErr := hex.DecodeString(oldCampfireID)
+		if hexErr != nil || len(campfirePubKeyBytes) != ed25519.PublicKeySize {
+			log.Printf("handleRekey: campfire ID %s is not a valid Ed25519 public key", oldCampfireID)
+			http.Error(w, "invalid campfire ID", http.StatusBadRequest)
+			return
+		}
+		if len(rekeyMsgForVerify.Signature) > 0 {
+			// Signed message: verify against the stored campfire public key.
+			signInput := message.MessageSignInput{
+				ID:          rekeyMsgForVerify.ID,
+				Payload:     rekeyMsgForVerify.Payload,
+				Tags:        rekeyMsgForVerify.Tags,
+				Antecedents: rekeyMsgForVerify.Antecedents,
+				Timestamp:   rekeyMsgForVerify.Timestamp,
 			}
+			signBytes, marshalErr := cfencoding.Marshal(signInput)
+			if marshalErr != nil {
+				log.Printf("handleRekey: failed to marshal sign input for campfire %s: %v", oldCampfireID, marshalErr)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if !ed25519.Verify(ed25519.PublicKey(campfirePubKeyBytes), signBytes, rekeyMsgForVerify.Signature) {
+				log.Printf("handleRekey: rekey message signature invalid for campfire %s", oldCampfireID)
+				http.Error(w, "rekey message signature invalid", http.StatusUnauthorized)
+				return
+			}
+		} else if membership.Threshold <= 1 {
+			// Threshold=1 must have a signature — unsigned messages are only
+			// acceptable for threshold>1 where FROST quorum signing may fail.
+			log.Printf("handleRekey: unsigned rekey message for threshold=1 campfire %s", oldCampfireID)
+			http.Error(w, "rekey message must be signed", http.StatusBadRequest)
+			return
 		}
 	}
 
@@ -184,11 +206,7 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 	}
 
 	newCampfireID := req.NewCampfireID
-	newPubKeyBytes, err := hex.DecodeString(newCampfireID)
-	if err != nil {
-		http.Error(w, "invalid new_campfire_id hex", http.StatusBadRequest)
-		return
-	}
+	// newPubKeyBytes already validated at entry (ed25519.PublicKeySize check).
 
 	// Decrypt key material.
 	var newPrivKey []byte

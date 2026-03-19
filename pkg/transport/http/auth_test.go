@@ -551,9 +551,9 @@ func TestPollKnownPeerAllowed(t *testing.T) {
 // workspace-j4j: handleRekey — RekeyMessageCBOR must be signed by old campfire key
 // ---------------------------------------------------------------------------
 
-// TestRekeyRejectsUnsignedRekeyMessage verifies that a rekey with an
-// unsigned (or incorrectly signed) RekeyMessageCBOR message does NOT store
-// that message, while still completing the rekey itself.
+// TestRekeyRejectsUnsignedRekeyMessage verifies that a rekey with an unsigned
+// RekeyMessageCBOR is rejected outright for threshold=1 campfires (workspace-3s0g).
+// For threshold>1, unsigned messages are permitted (FROST quorum signing may fail).
 func TestRekeyRejectsUnsignedRekeyMessage(t *testing.T) {
 	oldCFPub, oldCFPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -641,15 +641,31 @@ func TestRekeyRejectsUnsignedRekeyMessage(t *testing.T) {
 	}
 	senderPubHex := fmt.Sprintf("%x", senderPrivKey.PublicKey().Bytes())
 
-	// --- Test 1: unsigned message is not stored ---
+	// --- Test 1: unsigned message is rejected for threshold=1 ---
 	phase1Req := cfhttp.RekeyRequest{
 		NewCampfireID:   newCampfireID,
 		SenderX25519Pub: senderPubHex,
 	}
 	phase1Req.RekeyMessageCBOR = unsignedCBOR
-	receiverPubHex, err := cfhttp.SendRekeyPhase1(epB, oldCampfireID, phase1Req, idA)
+	_, err = cfhttp.SendRekeyPhase1(epB, oldCampfireID, phase1Req, idA)
+	if err == nil {
+		t.Fatal("expected unsigned rekey to be rejected for threshold=1, but it succeeded")
+	}
+	t.Logf("unsigned rekey correctly rejected: %v", err)
+
+	// --- Test 2: signed message proceeds normally ---
+	// Need a fresh ECDH key since phase 1 may not have cached a session.
+	senderPrivKey2, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	senderPubHex2 := fmt.Sprintf("%x", senderPrivKey2.PublicKey().Bytes())
+
+	phase1Req2 := cfhttp.RekeyRequest{
+		NewCampfireID:   newCampfireID,
+		SenderX25519Pub: senderPubHex2,
+		RekeyMessageCBOR: signedCBOR,
+	}
+	receiverPubHex, err := cfhttp.SendRekeyPhase1(epB, oldCampfireID, phase1Req2, idA)
 	if err != nil {
-		t.Fatalf("rekey phase 1 (unsigned): %v", err)
+		t.Fatalf("rekey phase 1 (signed): %v", err)
 	}
 
 	// Phase 2: encrypt new private key.
@@ -658,7 +674,7 @@ func TestRekeyRejectsUnsignedRekeyMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing receiver pub: %v", err)
 	}
-	rawShared, err := senderPrivKey.ECDH(receiverPub)
+	rawShared, err := senderPrivKey2.ECDH(receiverPub)
 	if err != nil {
 		t.Fatalf("ECDH: %v", err)
 	}
@@ -671,28 +687,28 @@ func TestRekeyRejectsUnsignedRekeyMessage(t *testing.T) {
 
 	phase2Req := cfhttp.RekeyRequest{
 		NewCampfireID:    newCampfireID,
-		SenderX25519Pub:  senderPubHex,
+		SenderX25519Pub:  senderPubHex2,
 		EncryptedPrivKey: encKey,
-		RekeyMessageCBOR: unsignedCBOR,
+		RekeyMessageCBOR: signedCBOR,
 	}
 	if err := cfhttp.SendRekey(epB, oldCampfireID, phase2Req, idA); err != nil {
-		// After phase 1, B's campfire is renamed to newCampfireID. Phase 2 goes to oldCampfireID
-		// which may not exist in B's membership if UpdateCampfireID already ran from phase 1.
-		// Phase 1 doesn't do the rename, only phase 2 does — so this should succeed.
-		t.Fatalf("rekey phase 2 (unsigned msg): %v", err)
+		t.Fatalf("rekey phase 2 (signed msg): %v", err)
 	}
 
-	// The unsigned rekey message should NOT be in B's store.
+	// The signed rekey message should be in B's store.
 	msgs, err := sB.ListMessages(newCampfireID, 0)
 	if err != nil {
 		t.Fatalf("listing messages: %v", err)
 	}
+	foundSigned := false
 	for _, m := range msgs {
-		if m.ID == unsignedMsg.ID {
-			t.Error("unsigned rekey message was stored — should have been rejected")
+		if m.ID == signedMsg.ID {
+			foundSigned = true
 		}
 	}
-	_ = signedCBOR // used in documentation; verify it works in a signed-message test
+	if !foundSigned {
+		t.Error("signed rekey message should be stored after valid rekey")
+	}
 }
 
 // rekeyTestEncrypt32 encrypts plaintext with a 32-byte key using AES-256-GCM.
