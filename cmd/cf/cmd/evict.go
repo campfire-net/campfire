@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -603,14 +601,14 @@ func deliverRekey(
 	}
 
 	if len(newPrivKey) > 0 {
-		enc, err := evictAESGCMEncrypt(sharedSecret, newPrivKey)
+		enc, err := cfhttp.AESGCMEncrypt(sharedSecret, newPrivKey)
 		if err != nil {
 			return fmt.Errorf("encrypting new private key: %w", err)
 		}
 		phase2Req.EncryptedPrivKey = enc
 	}
 	if len(newShareData) > 0 {
-		enc, err := evictAESGCMEncrypt(sharedSecret, newShareData)
+		enc, err := cfhttp.AESGCMEncrypt(sharedSecret, newShareData)
 		if err != nil {
 			return fmt.Errorf("encrypting new share data: %w", err)
 		}
@@ -618,27 +616,6 @@ func deliverRekey(
 	}
 
 	return cfhttp.SendRekey(endpoint, oldCampfireID, phase2Req, agentID)
-}
-
-// evictAESGCMEncrypt encrypts plaintext with AES-256-GCM. key must be 32 bytes.
-// Returns nonce || ciphertext.
-func evictAESGCMEncrypt(key, plaintext []byte) ([]byte, error) {
-	if len(key) != 32 {
-		return nil, fmt.Errorf("key must be 32 bytes, got %d", len(key))
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
 }
 
 // storeRekeyMessage decodes and stores a CBOR-encoded rekey message in the local store.

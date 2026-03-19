@@ -173,7 +173,7 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 
 	// For threshold=1: encrypt and transmit the campfire private key.
 	if membership.Threshold == 1 && sharedSecret != nil {
-		encrypted, err := aesGCMEncrypt(sharedSecret, privKey)
+		encrypted, err := AESGCMEncrypt(sharedSecret, privKey)
 		if err != nil {
 			log.Printf("handleJoin: encryption failed for campfire %s: %v", campfireID, err)
 			http.Error(w, "encryption failed", http.StatusInternalServerError)
@@ -192,7 +192,7 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 			return
 		}
 		if shareData != nil {
-			encrypted, err := aesGCMEncrypt(sharedSecret, shareData)
+			encrypted, err := AESGCMEncrypt(sharedSecret, shareData)
 			if err != nil {
 				log.Printf("handleJoin: failed to encrypt threshold share for campfire %s: %v", campfireID, err)
 				http.Error(w, "encrypting threshold share failed", http.StatusInternalServerError)
