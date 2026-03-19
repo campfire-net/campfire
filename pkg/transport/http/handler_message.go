@@ -39,6 +39,11 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		return
 	}
 
+	// Membership check: sender must be a known member of this campfire.
+	if !h.checkMembership(w, campfireID, senderHex) {
+		return
+	}
+
 	// Decode message
 	var msg message.Message
 	if err := cfencoding.Unmarshal(body, &msg); err != nil {
@@ -74,6 +79,11 @@ func (h *handler) handleSync(w http.ResponseWriter, r *http.Request, campfireID 
 	if err := verifyRequestSignature(senderHex, sigB64, []byte{}); err != nil {
 		log.Printf("handleSync: signature verification failed: %v", err)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	// Membership check: sender must be a known member of this campfire.
+	if !h.checkMembership(w, campfireID, senderHex) {
 		return
 	}
 
@@ -149,21 +159,7 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID 
 	}
 
 	// Membership check: sender must be in peer_endpoints or be this node's self key.
-	selfPubKeyHex, _ := h.transport.SelfInfo()
-	isMember := senderHex == selfPubKeyHex
-	if !isMember {
-		peers, err := h.store.ListPeerEndpoints(campfireID)
-		if err == nil {
-			for _, p := range peers {
-				if p.MemberPubkey == senderHex {
-					isMember = true
-					break
-				}
-			}
-		}
-	}
-	if !isMember {
-		http.Error(w, "not a campfire member", http.StatusForbidden)
+	if !h.checkMembership(w, campfireID, senderHex) {
 		return
 	}
 
@@ -285,6 +281,11 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
 		log.Printf("handleMembership: signature verification failed: %v", err)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	// Membership check: sender must be a known member of this campfire.
+	if !h.checkMembership(w, campfireID, senderHex) {
 		return
 	}
 

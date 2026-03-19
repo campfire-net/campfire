@@ -172,6 +172,12 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 	addMembershipWithDir(t, sA, oldCampfireID, t.TempDir(), 1)
 	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 1)
 
+	// Add A (sender) to B's peer endpoints so rekey membership check passes.
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:   oldCampfireID,
+		MemberPubkey: idA.PublicKeyHex(),
+		Endpoint:     "http://127.0.0.1:9998",
+	})
 	// Add C's endpoint to B's peer endpoints (to verify eviction removes it).
 	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 		CampfireID:   oldCampfireID,
@@ -399,6 +405,13 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 	sA.UpsertThresholdShare(store.ThresholdShare{CampfireID: oldCampfireID, ParticipantID: 1, SecretShare: oldShareA}) //nolint:errcheck
 	sB.UpsertThresholdShare(store.ThresholdShare{CampfireID: oldCampfireID, ParticipantID: 2, SecretShare: oldShareB}) //nolint:errcheck
 
+	// Add A (sender) to B's peer endpoints so rekey membership check passes.
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:    oldCampfireID,
+		MemberPubkey:  idA.PublicKeyHex(),
+		Endpoint:      "http://127.0.0.1:9997",
+		ParticipantID: 1,
+	})
 	// Add C to B's peer endpoints.
 	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 		CampfireID:    oldCampfireID,

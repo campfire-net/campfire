@@ -114,6 +114,30 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 		return
 	}
 
+	// Enforce invite-only protocol: reject unadmitted joiners server-side.
+	// The joiner must already be in the peer list to be admitted.
+	// (Invite-only campfires require the creator to pre-add the joiner's pubkey.)
+	if membership.JoinProtocol == "invite-only" {
+		admitted := false
+		if peers, err := h.store.ListPeerEndpoints(campfireID); err == nil {
+			for _, p := range peers {
+				if p.MemberPubkey == senderHex {
+					admitted = true
+					break
+				}
+			}
+		}
+		// Also allow self (transport node) to admit itself.
+		selfPubHex, _ := h.transport.SelfInfo()
+		if senderHex == selfPubHex {
+			admitted = true
+		}
+		if !admitted {
+			http.Error(w, "campfire is invite-only", http.StatusForbidden)
+			return
+		}
+	}
+
 	// Build response.
 	resp := JoinResponse{
 		CampfirePubKey:        fmt.Sprintf("%x", pubKey),

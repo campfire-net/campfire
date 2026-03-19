@@ -89,6 +89,9 @@ func TestDeliverAndSync(t *testing.T) {
 	s2 := tempStore(t)
 	addMembership(t, s1, campfireID)
 	addMembership(t, s2, campfireID)
+	// Add both identities as members so membership checks pass.
+	addPeerEndpoint(t, s2, campfireID, id1.PublicKeyHex())
+	addPeerEndpoint(t, s2, campfireID, id2.PublicKeyHex())
 
 	base := portBase()
 	addr1 := fmt.Sprintf("127.0.0.1:%d", base+0)
@@ -124,6 +127,7 @@ func TestSyncSince(t *testing.T) {
 	id := tempIdentity(t)
 	s := tempStore(t)
 	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
 	addr := fmt.Sprintf("127.0.0.1:%d", base+2)
@@ -231,6 +235,9 @@ func TestDeliverToAll(t *testing.T) {
 	s2 := tempStore(t)
 	addMembership(t, s1, campfireID)
 	addMembership(t, s2, campfireID)
+	// Add id as a member on both stores so membership checks pass.
+	addPeerEndpoint(t, s1, campfireID, id.PublicKeyHex())
+	addPeerEndpoint(t, s2, campfireID, id.PublicKeyHex())
 
 	base := portBase()
 	addr1 := fmt.Sprintf("127.0.0.1:%d", base+5)
@@ -272,6 +279,8 @@ func TestMembershipNotification(t *testing.T) {
 	s2 := tempStore(t)
 	addMembership(t, s1, campfireID)
 	addMembership(t, s2, campfireID)
+	// id2 must be a member of s1's campfire to send membership notifications.
+	addPeerEndpoint(t, s1, campfireID, id2.PublicKeyHex())
 
 	base := portBase()
 	addr1 := fmt.Sprintf("127.0.0.1:%d", base+7)

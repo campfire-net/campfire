@@ -79,6 +79,11 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		return
 	}
 
+	// Membership check: only current members may initiate a rekey.
+	if !h.checkMembership(w, oldCampfireID, senderHex) {
+		return
+	}
+
 	var req RekeyRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -235,10 +240,12 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 		})
 	}
 
-	// Store the rekey system message.
+	// Store the rekey system message — but only after verifying it was signed by the OLD campfire key.
+	// The old campfire public key is encoded in the old campfire ID (hex Ed25519 public key).
 	if len(req.RekeyMessageCBOR) > 0 {
 		var rekeyMsg message.Message
-		if cfencoding.Unmarshal(req.RekeyMessageCBOR, &rekeyMsg) == nil {
+		if cfencoding.Unmarshal(req.RekeyMessageCBOR, &rekeyMsg) == nil &&
+			rekeyMsg.VerifySignature() {
 			h.store.AddMessage(store.MessageRecordFromMessage(newCampfireID, &rekeyMsg, store.NowNano())) //nolint:errcheck
 		}
 	}

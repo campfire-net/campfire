@@ -37,6 +37,9 @@ func TestSendReadP2PThreshold1(t *testing.T) {
 	sB := tempStore(t)
 	addMembership(t, sA, campfireID)
 	addMembership(t, sB, campfireID)
+	// Add both agents as members in B's store so membership checks pass.
+	addPeerEndpoint(t, sB, campfireID, idA.PublicKeyHex())
+	addPeerEndpoint(t, sB, campfireID, idB.PublicKeyHex())
 
 	base := portBase()
 	addrA := fmt.Sprintf("127.0.0.1:%d", base+20)
@@ -168,6 +171,9 @@ func TestSendReadP2PThreshold2(t *testing.T) {
 	addMembership(t, sA, campfireID)
 	addMembership(t, sB, campfireID)
 	addMembership(t, sC, campfireID)
+	// Add idA as a member on B's and C's stores so membership checks pass.
+	addPeerEndpoint(t, sB, campfireID, idA.PublicKeyHex())
+	addPeerEndpoint(t, sC, campfireID, idA.PublicKeyHex())
 
 	// Store DKG shares in each agent's store.
 	storeShare := func(s *store.Store, id string, pid uint32, shareData []byte) {
@@ -357,6 +363,8 @@ func TestSignEndpointRoundTrip(t *testing.T) {
 	sB := tempStore(t)
 	addMembership(t, sA, campfireID)
 	addMembership(t, sB, campfireID)
+	// Add idA as a member on B's store so membership checks pass.
+	addPeerEndpoint(t, sB, campfireID, idA.PublicKeyHex())
 
 	// Store DKG shares.
 	sA.UpsertThresholdShare(store.ThresholdShare{CampfireID: campfireID, ParticipantID: 1, SecretShare: shareA}) //nolint:errcheck

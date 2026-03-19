@@ -49,6 +49,11 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 		return
 	}
 
+	// Membership check: only campfire members may participate in threshold signing.
+	if !h.checkMembership(w, campfireID, senderHex) {
+		return
+	}
+
 	var req SignRoundRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)

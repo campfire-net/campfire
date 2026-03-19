@@ -26,6 +26,30 @@ type handler struct {
 	keyProvider CampfireKeyProvider
 }
 
+// checkMembership verifies that senderHex is a member of campfireID on this node.
+// Returns true if the sender is the local self key or appears in the stored peer list.
+// Returns false with a ready-to-send 403 if not a member.
+func (h *handler) checkMembership(w http.ResponseWriter, campfireID, senderHex string) (ok bool) {
+	selfPubKeyHex, _ := h.transport.SelfInfo()
+	isMember := senderHex == selfPubKeyHex
+	if !isMember {
+		peers, err := h.store.ListPeerEndpoints(campfireID)
+		if err == nil {
+			for _, p := range peers {
+				if p.MemberPubkey == senderHex {
+					isMember = true
+					break
+				}
+			}
+		}
+	}
+	if !isMember {
+		http.Error(w, "not a campfire member", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 // route dispatches requests under /campfire/{id}/...
 // Endpoint implementations live in handler_message.go, handler_join.go,
 // handler_sign.go, and handler_rekey.go.
