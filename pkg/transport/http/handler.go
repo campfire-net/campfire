@@ -586,8 +586,14 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 		}
 	}
 
-	// Persist the joiner's endpoint, including participant ID for threshold>1.
+	// Validate the joiner's endpoint against SSRF / DNS-rebinding attacks before
+	// persisting it. An empty endpoint is allowed (receive-only member).
 	if req.JoinerEndpoint != "" {
+		if err := validateJoinerEndpoint(req.JoinerEndpoint); err != nil {
+			log.Printf("handleJoin: rejected joiner endpoint %q for campfire %s: %v", req.JoinerEndpoint, campfireID, err)
+			http.Error(w, "invalid joiner endpoint", http.StatusBadRequest)
+			return
+		}
 		h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 			CampfireID:    campfireID,
 			MemberPubkey:  req.JoinerPubkey,

@@ -20,7 +20,26 @@ import (
 )
 
 
-var httpClient = &http.Client{Timeout: 30 * time.Second}
+// httpClient is the shared HTTP client for all outbound peer connections.
+// It uses newSSRFSafeTransport() to re-validate resolved IPs at connection time,
+// closing the DNS-rebinding TOCTOU window: a stored peer endpoint whose DNS TTL
+// expires and is flipped to a private address is blocked at the dialer level.
+//
+// In tests, override this variable with an http.Client that has no SSRF transport
+// if the test server listens on loopback:
+//
+//	cfhttp.OverrideHTTPClientForTest(http.DefaultClient)
+var httpClient = &http.Client{
+	Timeout:   30 * time.Second,
+	Transport: newSSRFSafeTransport(),
+}
+
+// OverrideHTTPClientForTest replaces the package-level HTTP client used by Deliver,
+// Sync, Poll, and other peer functions. Call this in tests that use loopback servers.
+// Must only be called from test code (package http_test or TestMain).
+func OverrideHTTPClientForTest(c *http.Client) {
+	httpClient = c
+}
 
 // Deliver POSTs a CBOR-encoded message to a peer endpoint.
 // Signs the request body with senderIdentity.
