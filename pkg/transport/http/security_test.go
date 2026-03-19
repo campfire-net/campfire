@@ -874,6 +874,284 @@ func TestDeliverInvalidMessageSigRejected(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// workspace-dq5g — server-side role enforcement in handleDeliver
+// ---------------------------------------------------------------------------
+
+// addPeerEndpointWithRole adds a peer to the store with a specific role.
+// Used to set up test scenarios for role enforcement.
+func addPeerEndpointWithRole(t *testing.T, s *store.Store, campfireID, pubKeyHex, role string) {
+	t.Helper()
+	err := s.UpsertPeerEndpoint(store.PeerEndpoint{
+		CampfireID:   campfireID,
+		MemberPubkey: pubKeyHex,
+		Endpoint:     "http://127.0.0.1:0",
+		Role:         role,
+	})
+	if err != nil {
+		t.Fatalf("adding peer endpoint with role %s: %v", role, err)
+	}
+}
+
+// buildSignedDeliverRequest creates a valid HTTP request to /campfire/{id}/deliver
+// with the message signed and attributed to id, and the HTTP request signed by id.
+func buildSignedDeliverRequest(t *testing.T, ep, campfireID string, id *identity.Identity, tags []string) *http.Request {
+	t.Helper()
+	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("test payload"), tags, nil)
+	if err != nil {
+		t.Fatalf("creating message: %v", err)
+	}
+	body, err := cfencoding.Marshal(msg)
+	if err != nil {
+		t.Fatalf("encoding message: %v", err)
+	}
+	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(id.Sign(body)))
+	return req
+}
+
+// TestDeliverObserverRejected verifies that a peer with role "observer" cannot
+// deliver any message — the server returns 403 Forbidden.
+func TestDeliverObserverRejected(t *testing.T) {
+	campfireID := "role-observer-deliver"
+	creator := tempIdentity(t)
+	observer := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpointWithRole(t, s, campfireID, observer.PublicKeyHex(), "observer")
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+100)
+	startTransportWithSelf(t, addr, s, creator)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	req := buildSignedDeliverRequest(t, ep, campfireID, observer, []string{"test"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for observer deliver, got %d", resp.StatusCode)
+	}
+}
+
+// TestDeliverObserverSystemMessageRejected verifies that an observer cannot deliver
+// campfire:* system messages.
+func TestDeliverObserverSystemMessageRejected(t *testing.T) {
+	campfireID := "role-observer-sys-deliver"
+	creator := tempIdentity(t)
+	observer := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpointWithRole(t, s, campfireID, observer.PublicKeyHex(), "observer")
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+101)
+	startTransportWithSelf(t, addr, s, creator)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	for _, tag := range []string{"campfire:compact", "campfire:rekey", "campfire:member-joined"} {
+		t.Run(tag, func(t *testing.T) {
+			req := buildSignedDeliverRequest(t, ep, campfireID, observer, []string{tag})
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("tag %q: expected 403 Forbidden for observer deliver, got %d", tag, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestDeliverWriterRegularMessageAllowed verifies that a "writer" peer CAN deliver
+// regular (non-campfire:*) messages.
+func TestDeliverWriterRegularMessageAllowed(t *testing.T) {
+	campfireID := "role-writer-regular"
+	creator := tempIdentity(t)
+	writer := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpointWithRole(t, s, campfireID, writer.PublicKeyHex(), "writer")
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+102)
+	startTransportWithSelf(t, addr, s, creator)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	req := buildSignedDeliverRequest(t, ep, campfireID, writer, []string{"test"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for writer delivering regular message, got %d", resp.StatusCode)
+	}
+}
+
+// TestDeliverWriterSystemMessageRejected verifies that a "writer" peer CANNOT deliver
+// campfire:* system messages — the server returns 403 Forbidden.
+func TestDeliverWriterSystemMessageRejected(t *testing.T) {
+	campfireID := "role-writer-sys"
+	creator := tempIdentity(t)
+	writer := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpointWithRole(t, s, campfireID, writer.PublicKeyHex(), "writer")
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+103)
+	startTransportWithSelf(t, addr, s, creator)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	for _, tag := range []string{"campfire:compact", "campfire:rekey", "campfire:member-joined"} {
+		t.Run(tag, func(t *testing.T) {
+			req := buildSignedDeliverRequest(t, ep, campfireID, writer, []string{tag})
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("tag %q: expected 403 Forbidden for writer delivering system message, got %d", tag, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestDeliverMemberRoleAllowed verifies that a "member" peer can deliver both
+// regular messages and campfire:* system messages.
+func TestDeliverMemberRoleAllowed(t *testing.T) {
+	campfireID := "role-member-deliver"
+	creator := tempIdentity(t)
+	member := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpointWithRole(t, s, campfireID, member.PublicKeyHex(), "member")
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+104)
+	startTransportWithSelf(t, addr, s, creator)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	for _, tags := range [][]string{{"test"}, {"campfire:compact"}, {"campfire:rekey"}} {
+		req := buildSignedDeliverRequest(t, ep, campfireID, member, tags)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("tags %v: expected 200 for member deliver, got %d", tags, resp.StatusCode)
+		}
+	}
+}
+
+// TestDeliverSelfAlwaysAllowed verifies that the self node (creator) can always
+// deliver messages regardless of what role is stored for it.
+func TestDeliverSelfAlwaysAllowed(t *testing.T) {
+	campfireID := "role-self-deliver"
+	creator := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	// Self node not in peer_endpoints — it's identified by selfPubKeyHex.
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+105)
+	startTransportWithSelf(t, addr, s, creator)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	// Self delivers both a regular message and a system message.
+	for _, tags := range [][]string{{"test"}, {"campfire:compact"}} {
+		req := buildSignedDeliverRequest(t, ep, campfireID, creator, tags)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("tags %v: expected 200 for self deliver, got %d", tags, resp.StatusCode)
+		}
+	}
+}
+
+// TestDeliverCreatorRoleAllowed verifies that a peer stored with role "creator"
+// can deliver both regular and campfire:* system messages.
+func TestDeliverCreatorRoleAllowed(t *testing.T) {
+	campfireID := "role-creator-deliver"
+	self := tempIdentity(t)
+	creator := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpointWithRole(t, s, campfireID, creator.PublicKeyHex(), "creator")
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+106)
+	startTransportWithSelf(t, addr, s, self)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	for _, tags := range [][]string{{"test"}, {"campfire:rekey"}} {
+		req := buildSignedDeliverRequest(t, ep, campfireID, creator, tags)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("tags %v: expected 200 for creator deliver, got %d", tags, resp.StatusCode)
+		}
+	}
+}
+
+// TestDeliverDefaultRoleAllowed verifies that a peer without a role stored
+// (backward compatibility: existing peer_endpoints rows with no role column)
+// defaults to "member" and is allowed to deliver.
+func TestDeliverDefaultRoleAllowed(t *testing.T) {
+	campfireID := "role-default-deliver"
+	self := tempIdentity(t)
+	peer := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	// Add peer without explicit role (defaults to "member").
+	addPeerEndpoint(t, s, campfireID, peer.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+107)
+	startTransportWithSelf(t, addr, s, self)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	req := buildSignedDeliverRequest(t, ep, campfireID, peer, []string{"test"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for default-role peer deliver, got %d", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

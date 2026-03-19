@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
@@ -41,6 +42,36 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		log.Printf("handleDeliver: sender mismatch for campfire %s: header=%s msg=%s", campfireID, senderHex, msg.SenderHex())
 		http.Error(w, "sender mismatch", http.StatusBadRequest)
 		return
+	}
+
+	// Server-side role enforcement.
+	// Self (the local node) is always allowed — it is the creator/admitting member.
+	// For peers, look up their stored role and enforce restrictions:
+	//   - observer: cannot deliver any messages.
+	//   - writer:   cannot deliver campfire:* system messages.
+	//   - member / creator: no restrictions.
+	selfPubKeyHex, _ := h.transport.SelfInfo()
+	if senderHex != selfPubKeyHex {
+		role, err := h.store.GetPeerRole(campfireID, senderHex)
+		if err != nil {
+			log.Printf("handleDeliver: failed to look up role for sender %s in campfire %s: %v", senderHex, campfireID, err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		switch role {
+		case "observer":
+			log.Printf("handleDeliver: observer %s attempted to deliver message to campfire %s", senderHex, campfireID)
+			http.Error(w, "observers cannot deliver messages", http.StatusForbidden)
+			return
+		case "writer":
+			for _, tag := range msg.Tags {
+				if strings.HasPrefix(tag, "campfire:") {
+					log.Printf("handleDeliver: writer %s attempted to deliver system message (tag %q) to campfire %s", senderHex, tag, campfireID)
+					http.Error(w, "writers cannot deliver campfire system messages", http.StatusForbidden)
+					return
+				}
+			}
+		}
 	}
 
 	// Store in local SQLite

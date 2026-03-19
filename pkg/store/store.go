@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS peer_endpoints (
     member_pubkey     TEXT NOT NULL,
     endpoint          TEXT NOT NULL,
     participant_id    INTEGER NOT NULL DEFAULT 0,
+    role              TEXT NOT NULL DEFAULT 'member',
     PRIMARY KEY (campfire_id, member_pubkey)
 );
 
@@ -134,6 +135,8 @@ func Open(path string) (*Store, error) {
 	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN description TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 	// Backward-compatible migration: add creator_pubkey column if missing.
 	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN creator_pubkey TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+	// Backward-compatible migration: add role column to peer_endpoints if missing.
+	db.Exec(`ALTER TABLE peer_endpoints ADD COLUMN role TEXT NOT NULL DEFAULT 'member'`) //nolint:errcheck
 	return &Store{
 		db:              db,
 		supersededCache: make(map[string]supersededCacheEntry),
@@ -623,17 +626,26 @@ type PeerEndpoint struct {
 	MemberPubkey  string `json:"member_pubkey"`
 	Endpoint      string `json:"endpoint"`
 	ParticipantID uint32 `json:"participant_id,omitempty"` // FROST participant ID (0 = unknown)
+	// Role is the member's role in the campfire: "creator", "member", "writer", or "observer".
+	// Defaults to "member" if not set. Used for server-side role enforcement in handleDeliver.
+	Role string `json:"role,omitempty"`
 }
 
 // UpsertPeerEndpoint inserts or replaces a peer endpoint record.
+// If Role is empty, it defaults to "member".
 func (s *Store) UpsertPeerEndpoint(e PeerEndpoint) error {
+	role := e.Role
+	if role == "" {
+		role = "member"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO peer_endpoints (campfire_id, member_pubkey, endpoint, participant_id)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO peer_endpoints (campfire_id, member_pubkey, endpoint, participant_id, role)
+		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(campfire_id, member_pubkey) DO UPDATE SET
 		     endpoint = excluded.endpoint,
-		     participant_id = CASE WHEN excluded.participant_id > 0 THEN excluded.participant_id ELSE peer_endpoints.participant_id END`,
-		e.CampfireID, e.MemberPubkey, e.Endpoint, e.ParticipantID,
+		     participant_id = CASE WHEN excluded.participant_id > 0 THEN excluded.participant_id ELSE peer_endpoints.participant_id END,
+		     role = CASE WHEN excluded.role != '' THEN excluded.role ELSE peer_endpoints.role END`,
+		e.CampfireID, e.MemberPubkey, e.Endpoint, e.ParticipantID, role,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting peer endpoint: %w", err)
@@ -656,7 +668,7 @@ func (s *Store) DeletePeerEndpoint(campfireID, memberPubkey string) error {
 // ListPeerEndpoints returns all known peer endpoints for a campfire.
 func (s *Store) ListPeerEndpoints(campfireID string) ([]PeerEndpoint, error) {
 	rows, err := s.db.Query(
-		`SELECT campfire_id, member_pubkey, endpoint, participant_id FROM peer_endpoints WHERE campfire_id = ?`,
+		`SELECT campfire_id, member_pubkey, endpoint, participant_id, role FROM peer_endpoints WHERE campfire_id = ?`,
 		campfireID,
 	)
 	if err != nil {
@@ -667,12 +679,35 @@ func (s *Store) ListPeerEndpoints(campfireID string) ([]PeerEndpoint, error) {
 	var endpoints []PeerEndpoint
 	for rows.Next() {
 		var e PeerEndpoint
-		if err := rows.Scan(&e.CampfireID, &e.MemberPubkey, &e.Endpoint, &e.ParticipantID); err != nil {
+		if err := rows.Scan(&e.CampfireID, &e.MemberPubkey, &e.Endpoint, &e.ParticipantID, &e.Role); err != nil {
 			return nil, fmt.Errorf("scanning peer endpoint: %w", err)
+		}
+		if e.Role == "" {
+			e.Role = "member"
 		}
 		endpoints = append(endpoints, e)
 	}
 	return endpoints, rows.Err()
+}
+
+// GetPeerRole returns the role of a specific member in a campfire.
+// Returns "member" if the peer is not found (backward-compatible default).
+func (s *Store) GetPeerRole(campfireID, memberPubkey string) (string, error) {
+	var role string
+	err := s.db.QueryRow(
+		`SELECT role FROM peer_endpoints WHERE campfire_id = ? AND member_pubkey = ?`,
+		campfireID, memberPubkey,
+	).Scan(&role)
+	if err == sql.ErrNoRows {
+		return "member", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("querying peer role: %w", err)
+	}
+	if role == "" {
+		return "member", nil
+	}
+	return role, nil
 }
 
 // ThresholdShare stores FROST DKG output for a campfire.
