@@ -30,6 +30,7 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID 
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "cannot read body", http.StatusBadRequest)

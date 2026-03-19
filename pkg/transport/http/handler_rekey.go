@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
@@ -60,6 +61,7 @@ type RekeyResponse struct {
 // Phase 1 (no encrypted payload): generate receiver ephemeral key, cache it, return pub key.
 // Phase 2 (with encrypted payload): look up cached key, derive shared secret, decrypt, update state.
 func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfireID string) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "cannot read body", http.StatusBadRequest)
@@ -190,7 +192,13 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 	}
 
 	// Update campfire state file.
-	stateFile := membership.TransportDir + "/" + oldCampfireID + ".cbor"
+	safeTransportDir, sanitizeErr := sanitizeTransportDir(membership.TransportDir)
+	if sanitizeErr != nil {
+		log.Printf("handleRekey: invalid transport dir for campfire %s: %v", oldCampfireID, sanitizeErr)
+		http.Error(w, "invalid transport dir", http.StatusInternalServerError)
+		return
+	}
+	stateFile := filepath.Join(safeTransportDir, oldCampfireID+".cbor")
 	stateData, readErr := os.ReadFile(stateFile)
 	if readErr == nil {
 		var oldState campfire.CampfireState
@@ -204,7 +212,7 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 			newState.PrivateKey = nil
 		}
 		if newStateData, marshalErr := cfencoding.Marshal(newState); marshalErr == nil {
-			newStateFile := membership.TransportDir + "/" + newCampfireID + ".cbor"
+			newStateFile := filepath.Join(safeTransportDir, newCampfireID+".cbor")
 			os.WriteFile(newStateFile, newStateData, 0600) //nolint:errcheck
 		}
 		os.Remove(stateFile) //nolint:errcheck

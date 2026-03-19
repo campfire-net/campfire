@@ -88,8 +88,11 @@ func New(listenAddr string, s *store.Store) *Transport {
 	h := &handler{store: s, transport: t}
 	mux.HandleFunc("/campfire/", h.route)
 	t.server = &http.Server{
-		Addr:    listenAddr,
-		Handler: mux,
+		Addr:         listenAddr,
+		Handler:      mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 	return t
 }
@@ -259,6 +262,12 @@ func (t *Transport) pruneRekeySessions() {
 			delete(t.rekeySessions, k)
 		}
 	}
+}
+
+// HTTPServer returns the underlying http.Server. Primarily useful for testing
+// that server timeouts and other fields are correctly configured.
+func (t *Transport) HTTPServer() *http.Server {
+	return t.server
 }
 
 // SetMaxPollersPerCampfire overrides the per-campfire long-poll concurrency limit.

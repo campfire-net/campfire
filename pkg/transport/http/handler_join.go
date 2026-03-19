@@ -74,6 +74,7 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "cannot read body", http.StatusBadRequest)
@@ -96,6 +97,13 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 	var req JoinRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate JoinerEndpoint to prevent SSRF: reject private IPs, non-http schemes, etc.
+	if err := validateJoinerEndpoint(req.JoinerEndpoint); err != nil {
+		log.Printf("handleJoin: invalid joiner endpoint %q: %v", req.JoinerEndpoint, err)
+		http.Error(w, "invalid joiner_endpoint", http.StatusBadRequest)
 		return
 	}
 

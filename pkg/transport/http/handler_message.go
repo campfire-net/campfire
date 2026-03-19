@@ -20,6 +20,7 @@ import (
 // handleDeliver receives a CBOR-encoded Message from a peer.
 // POST /campfire/{id}/deliver
 func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfireID string) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "cannot read body", http.StatusBadRequest)
@@ -265,6 +266,7 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID 
 // handleMembership receives a membership change notification.
 // POST /campfire/{id}/membership
 func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campfireID string) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "cannot read body", http.StatusBadRequest)
