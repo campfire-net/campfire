@@ -587,14 +587,16 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 	}
 
 	// Persist the joiner's endpoint, including participant ID for threshold>1.
+	// Use senderHex (verified from X-Campfire-Sender header, signature-checked)
+	// rather than req.JoinerPubkey (unverified body field) to prevent pubkey injection.
 	if req.JoinerEndpoint != "" {
 		h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 			CampfireID:    campfireID,
-			MemberPubkey:  req.JoinerPubkey,
+			MemberPubkey:  senderHex,
 			Endpoint:      req.JoinerEndpoint,
 			ParticipantID: joinerParticipantID,
 		})
-		h.transport.AddPeer(campfireID, req.JoinerPubkey, req.JoinerEndpoint)
+		h.transport.AddPeer(campfireID, senderHex, req.JoinerEndpoint)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
