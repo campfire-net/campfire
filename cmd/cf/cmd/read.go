@@ -793,32 +793,7 @@ func syncFromFilesystem(cfID string, transportDir string, s *store.Store) {
 		if !hopOK {
 			continue
 		}
-		provJSON, err := json.Marshal(fsMsg.Provenance)
-		if err != nil {
-			continue
-		}
-		tagsJSON, err := json.Marshal(fsMsg.Tags)
-		if err != nil {
-			continue
-		}
-		antJSON, err := json.Marshal(fsMsg.Antecedents)
-		if err != nil {
-			continue
-		}
-		senderHex := fmt.Sprintf("%x", fsMsg.Sender)
-		s.AddMessage(store.MessageRecord{ //nolint:errcheck
-			ID:          fsMsg.ID,
-			CampfireID:  cfID,
-			Sender:      senderHex,
-			Payload:     fsMsg.Payload,
-			Tags:        string(tagsJSON),
-			Antecedents: string(antJSON),
-			Timestamp:   fsMsg.Timestamp,
-			Signature:   fsMsg.Signature,
-			Provenance:  string(provJSON),
-			ReceivedAt:  store.NowNano(),
-			Instance:    fsMsg.Instance,
-		})
+		s.AddMessage(store.MessageRecordFromMessage(cfID, &fsMsg, store.NowNano())) //nolint:errcheck
 	}
 }
 
@@ -842,23 +817,7 @@ func syncFromHTTPPeers(cfID string, agentID *identity.Identity, s *store.Store) 
 			continue
 		}
 		for _, msg := range msgs {
-			tagsJSON, _ := json.Marshal(msg.Tags)
-			anteJSON, _ := json.Marshal(msg.Antecedents)
-			provJSON, _ := json.Marshal(msg.Provenance)
-			senderHex := fmt.Sprintf("%x", msg.Sender)
-			s.AddMessage(store.MessageRecord{ //nolint:errcheck
-				ID:          msg.ID,
-				CampfireID:  cfID,
-				Sender:      senderHex,
-				Payload:     msg.Payload,
-				Tags:        string(tagsJSON),
-				Antecedents: string(anteJSON),
-				Timestamp:   msg.Timestamp,
-				Signature:   msg.Signature,
-				Provenance:  string(provJSON),
-				ReceivedAt:  store.NowNano(),
-				Instance:    msg.Instance,
-			})
+			s.AddMessage(store.MessageRecordFromMessage(cfID, &msg, store.NowNano())) //nolint:errcheck
 		}
 	}
 }

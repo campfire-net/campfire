@@ -66,7 +66,7 @@ func sendFilesystemWithRoleCheck(campfireID, payload string, tags, antecedents [
 		return fmt.Errorf("querying membership: %w", err)
 	}
 	if m == nil {
-		return fmt.Errorf("not a member of campfire %s", campfireID[:minInt(12, len(campfireID))])
+		return fmt.Errorf("not a member of campfire %s", campfireID[:min(12, len(campfireID))])
 	}
 
 	if err := checkRoleCanSend(m.Role, tags); err != nil {

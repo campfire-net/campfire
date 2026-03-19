@@ -138,3 +138,65 @@ func TestPublicKeyHex(t *testing.T) {
 		t.Errorf("hex public key length = %d, want 64", len(hex))
 	}
 }
+
+// Tests for workspace-yzx: identity.Load invalid key sizes not tested.
+
+func TestLoadInvalidPublicKeySize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "identity.json")
+
+	// Write JSON with a short public key (not 32 bytes).
+	data := `{"public_key":"AAEC","private_key":"` + validPrivKeyBase64() + `","created_at":1}`
+	os.WriteFile(path, []byte(data), 0600)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Error("Load should fail when public key is not 32 bytes")
+	}
+}
+
+func TestLoadInvalidPrivateKeySize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "identity.json")
+
+	// Write JSON with a short private key (not 64 bytes).
+	data := `{"public_key":"` + validPubKeyBase64() + `","private_key":"AAEC","created_at":1}`
+	os.WriteFile(path, []byte(data), 0600)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Error("Load should fail when private key is not 64 bytes")
+	}
+}
+
+func TestLoadValidKeySizes(t *testing.T) {
+	id, err := Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "identity.json")
+	if err := id.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load should succeed with valid key sizes: %v", err)
+	}
+	if len(loaded.PublicKey) != 32 {
+		t.Errorf("loaded public key size = %d, want 32", len(loaded.PublicKey))
+	}
+	if len(loaded.PrivateKey) != 64 {
+		t.Errorf("loaded private key size = %d, want 64", len(loaded.PrivateKey))
+	}
+}
+
+// validPubKeyBase64 returns a base64-encoded 32-byte zeroed public key for test JSON.
+func validPubKeyBase64() string {
+	return "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+}
+
+// validPrivKeyBase64 returns a base64-encoded 64-byte zeroed private key for test JSON.
+func validPrivKeyBase64() string {
+	return "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}

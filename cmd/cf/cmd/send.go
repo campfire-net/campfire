@@ -353,22 +353,7 @@ func sendP2PHTTP(campfireID, payload string, tags, antecedents []string, instanc
 	}
 
 	// Store message locally.
-	tagsJSON, _ := json.Marshal(msg.Tags)
-	anteJSON, _ := json.Marshal(msg.Antecedents)
-	provJSON, _ := json.Marshal(msg.Provenance)
-	s.AddMessage(store.MessageRecord{ //nolint:errcheck
-		ID:          msg.ID,
-		CampfireID:  campfireID,
-		Sender:      agentID.PublicKeyHex(),
-		Payload:     msg.Payload,
-		Tags:        string(tagsJSON),
-		Antecedents: string(anteJSON),
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
-		Provenance:  string(provJSON),
-		ReceivedAt:  store.NowNano(),
-		Instance:    msg.Instance,
-	})
+	s.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())) //nolint:errcheck
 
 	return msg, nil
 }

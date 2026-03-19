@@ -214,22 +214,7 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 
 	// Store the compaction event in the local SQLite store so ListCompactionEvents can find it.
 	// (sendP2PHTTP already stores locally; sendFilesystem and sendGitHub do not — store here for all paths.)
-	tagsJSON, _ := json.Marshal(sentMsg.Tags)
-	anteJSON, _ := json.Marshal(sentMsg.Antecedents)
-	provJSON, _ := json.Marshal(sentMsg.Provenance)
-	s.AddMessage(store.MessageRecord{ //nolint:errcheck
-		ID:          sentMsg.ID,
-		CampfireID:  campfireID,
-		Sender:      agentID.PublicKeyHex(),
-		Payload:     sentMsg.Payload,
-		Tags:        string(tagsJSON),
-		Antecedents: string(anteJSON),
-		Timestamp:   sentMsg.Timestamp,
-		Signature:   sentMsg.Signature,
-		Provenance:  string(provJSON),
-		ReceivedAt:  store.NowNano(),
-		Instance:    sentMsg.Instance,
-	})
+	s.AddMessage(store.MessageRecordFromMessage(campfireID, sentMsg, store.NowNano())) //nolint:errcheck
 
 	return &compactResult{
 		supersededIDs:  supersededIDs,

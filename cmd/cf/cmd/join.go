@@ -388,13 +388,13 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) 
 			}
 		}
 		if !found {
-			return fmt.Errorf("campfire %s not found in %s beacons", campfireID[:min16(campfireID)], repo)
+			return fmt.Errorf("campfire %s not found in %s beacons", campfireID[:min(len(campfireID), 16)], repo)
 		}
 	}
 
 	// Check if already a member.
 	if existing, _ := s.GetMembership(campfireID); existing != nil {
-		return fmt.Errorf("already a member of campfire %s", campfireID[:min16(campfireID)])
+		return fmt.Errorf("already a member of campfire %s", campfireID[:min(len(campfireID), 16)])
 	}
 
 	cfg := ghtr.Config{
@@ -476,7 +476,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) 
 		return enc.Encode(out)
 	}
 
-	fmt.Printf("Joined campfire %s\n", campfireID[:min16(campfireID)])
+	fmt.Printf("Joined campfire %s\n", campfireID[:min(len(campfireID), 16)])
 	return nil
 }
 
@@ -522,12 +522,6 @@ func pollForKeyDelivery(tr *ghtr.Transport, campfireID string, agentID *identity
 	return nil, fmt.Errorf("key delivery not received after %d poll attempts", maxAttempts)
 }
 
-func min16(s string) int {
-	if len(s) < 16 {
-		return len(s)
-	}
-	return 16
-}
 
 // lookupBeaconDescription scans global and project beacon directories for a
 // beacon matching campfireID and returns its description. Returns "" on miss.

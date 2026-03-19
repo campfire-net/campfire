@@ -107,7 +107,7 @@ func DefaultBeaconDir() string {
 
 // Publish writes a beacon file to the beacon directory.
 func Publish(beaconDir string, b *Beacon) error {
-	if err := os.MkdirAll(beaconDir, 0755); err != nil {
+	if err := os.MkdirAll(beaconDir, 0700); err != nil {
 		return fmt.Errorf("creating beacon directory: %w", err)
 	}
 
@@ -124,7 +124,7 @@ func Publish(beaconDir string, b *Beacon) error {
 	rand.Read(randBytes[:])
 	tmp := fmt.Sprintf("%s.tmp.%x", path, randBytes)
 
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return fmt.Errorf("writing temp beacon: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -166,6 +166,9 @@ func Scan(beaconDir string) ([]Beacon, error) {
 		var b Beacon
 		if err := cfencoding.Unmarshal(data, &b); err != nil {
 			continue // skip corrupted files
+		}
+		if !b.Verify() {
+			continue // skip beacons with invalid signatures
 		}
 		beacons = append(beacons, b)
 	}

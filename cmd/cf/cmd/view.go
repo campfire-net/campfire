@@ -181,21 +181,7 @@ func runViewCreate(campfireIDArg, name string) error {
 
 	// Store locally for filesystem and GitHub transports (P2P HTTP stores in sendP2PHTTP).
 	if transportType != transport.TypePeerHTTP {
-		tagsJSON, _ := json.Marshal(msg.Tags)
-		anteJSON, _ := json.Marshal(msg.Antecedents)
-		provJSON, _ := json.Marshal(msg.Provenance)
-		if _, err := s.AddMessage(store.MessageRecord{
-			ID:          msg.ID,
-			CampfireID:  campfireID,
-			Sender:      agentID.PublicKeyHex(),
-			Payload:     msg.Payload,
-			Tags:        string(tagsJSON),
-			Antecedents: string(anteJSON),
-			Timestamp:   msg.Timestamp,
-			Signature:   msg.Signature,
-			Provenance:  string(provJSON),
-			ReceivedAt:  store.NowNano(),
-		}); err != nil {
+		if _, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); err != nil {
 			return fmt.Errorf("storing view message: %w", err)
 		}
 	}

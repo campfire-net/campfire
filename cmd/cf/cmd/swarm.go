@@ -11,7 +11,6 @@ var swarmCmd = &cobra.Command{
 
   cf swarm start    create a root campfire for this project
   cf swarm end      remove the root campfire anchor
-  cf swarm status   show swarm member activity
   cf swarm prompt   emit bootstrap prompt template`,
 }
 

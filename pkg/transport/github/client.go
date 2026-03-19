@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -276,10 +277,28 @@ func (c *githubClient) GetFile(repo, path string) ([]byte, error) {
 
 // PutFile creates or updates a file in the repository via the Contents API.
 // content is the raw bytes to store (will be base64-encoded before sending).
+// Retries once on HTTP 409 Conflict to handle TOCTOU races where another writer
+// created or updated the file between the GET-SHA and PUT operations.
 func (c *githubClient) PutFile(repo, path, message string, content []byte) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		err := c.putFileOnce(repo, path, message, content)
+		if err == nil {
+			return nil
+		}
+		// Retry once on conflict (TOCTOU: another writer updated the file between GET and PUT).
+		if attempt < 1 && strings.Contains(err.Error(), "HTTP 409") {
+			continue
+		}
+		return err
+	}
+	return nil
+}
+
+// putFileOnce performs a single GET-then-PUT attempt for PutFile.
+func (c *githubClient) putFileOnce(repo, path, message string, content []byte) error {
 	endpoint := fmt.Sprintf("%s/repos/%s/contents/%s", c.baseURL, repo, path)
 
-	// Check if file exists to get its SHA (required for updates)
+	// Check if file exists to get its SHA (required for updates).
 	var existingSHA string
 	getReq, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -291,7 +310,7 @@ func (c *githubClient) PutFile(repo, path, message string, content []byte) error
 	}
 	if getResp.StatusCode == http.StatusOK {
 		var fc githubFileContent
-		json.NewDecoder(getResp.Body).Decode(&fc)
+		json.NewDecoder(getResp.Body).Decode(&fc) //nolint:errcheck
 		existingSHA = fc.SHA
 	}
 	getResp.Body.Close()

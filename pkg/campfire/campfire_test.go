@@ -100,3 +100,26 @@ func TestState(t *testing.T) {
 		t.Errorf("state private key length = %d, want 64", len(state.PrivateKey))
 	}
 }
+
+// TestEffectiveRole verifies workspace-bvg: campfire.EffectiveRole returns correct roles.
+func TestEffectiveRole(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{RoleObserver, RoleObserver},
+		{RoleWriter, RoleWriter},
+		{RoleFull, RoleFull},
+		{"", RoleFull},        // empty defaults to full
+		{"creator", RoleFull}, // legacy role → full
+		{"member", RoleFull},  // legacy role → full
+		{"unknown", RoleFull}, // unknown → full
+	}
+
+	for _, tc := range tests {
+		got := EffectiveRole(tc.input)
+		if got != tc.want {
+			t.Errorf("EffectiveRole(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ type rekeySessionState struct {
 // Transport manages an HTTP server for P2P campfire communication.
 type Transport struct {
 	listenAddr string
+	tlsConfig  *TLSConfig
 	server     *http.Server
 	store      *store.Store
 
@@ -123,11 +125,29 @@ func (t *Transport) MyEndpoint(_ string) string {
 	return t.selfEndpoint
 }
 
+// SetTLSConfig enables TLS on the transport server. Must be called before Start().
+// When set, the server will use TLS with the provided certificate and key files.
+func (t *Transport) SetTLSConfig(cfg *TLSConfig) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.tlsConfig = cfg
+}
+
 // Start starts the HTTP listener. Returns immediately; listener runs in background.
+// If TLS is configured via SetTLSConfig, the listener will use TLS.
 func (t *Transport) Start() error {
-	ln, err := listenTCP(t.listenAddr)
-	if err != nil {
-		return fmt.Errorf("binding %s: %w", t.listenAddr, err)
+	var ln net.Listener
+	var err error
+	if t.tlsConfig != nil && t.tlsConfig.CertFile != "" && t.tlsConfig.KeyFile != "" {
+		ln, err = listenTLS(t.listenAddr, t.tlsConfig.CertFile, t.tlsConfig.KeyFile)
+		if err != nil {
+			return fmt.Errorf("binding TLS %s: %w", t.listenAddr, err)
+		}
+	} else {
+		ln, err = listenTCP(t.listenAddr)
+		if err != nil {
+			return fmt.Errorf("binding %s: %w", t.listenAddr, err)
+		}
 	}
 	go t.server.Serve(ln) //nolint:errcheck
 	return nil
