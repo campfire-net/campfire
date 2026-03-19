@@ -439,7 +439,19 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) 
 // pollForKeyDelivery polls the GitHub Issue for a campfire:key-delivery comment
 // addressed to us. Returns the decrypted campfire private key bytes.
 // Cap at 1000 comments per the design doc.
+//
+// Security: only messages whose Sender public key matches the campfireID are
+// accepted. campfireID is the hex-encoded Ed25519 public key of the campfire
+// (and its creator). Any other sender is silently skipped to prevent an
+// attacker with issue write access from injecting a malicious private key.
 func pollForKeyDelivery(tr *ghtr.Transport, campfireID string, agentID *identity.Identity) ([]byte, error) {
+	// Decode the campfire public key from the hex campfireID so we can compare
+	// it against msg.Sender for each key-delivery candidate.
+	campfirePubKeyBytes, err := hex.DecodeString(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid campfire ID (not hex): %w", err)
+	}
+
 	const maxAttempts = 20
 	for i := 0; i < maxAttempts; i++ {
 		msgs, err := tr.Poll(campfireID)
@@ -461,6 +473,14 @@ func pollForKeyDelivery(tr *ghtr.Transport, campfireID string, agentID *identity
 			if !isKeyDelivery {
 				continue
 			}
+
+			// Verify sender is the campfire creator. msg.Sender holds the raw
+			// Ed25519 public key bytes of the message author. Only the holder of
+			// the campfire private key (the creator) is authorised to deliver it.
+			if !bytesEqual(msg.Sender, campfirePubKeyBytes) {
+				continue
+			}
+
 			// The payload is hex-encoded encrypted key material.
 			ciphertext, err := hex.DecodeString(string(msg.Payload))
 			if err != nil {
@@ -476,6 +496,20 @@ func pollForKeyDelivery(tr *ghtr.Transport, campfireID string, agentID *identity
 		time.Sleep(100 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("key delivery not received after %d poll attempts", maxAttempts)
+}
+
+// bytesEqual returns true when a and b have the same length and identical bytes.
+// Uses a simple loop to avoid importing bytes package solely for this comparison.
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 
