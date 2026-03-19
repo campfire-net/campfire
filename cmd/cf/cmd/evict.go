@@ -219,12 +219,16 @@ func evictThreshold1(
 	if err := os.WriteFile(filepath.Join(stateDir, newCampfireID+".cbor"), newStateData, 0600); err != nil {
 		return fmt.Errorf("writing new campfire state: %w", err)
 	}
-	os.Remove(filepath.Join(stateDir, oldCampfireID+".cbor")) //nolint:errcheck
 
-	// Update store: rename campfire_id in all tables.
+	// Update store FIRST: rename campfire_id in all tables.
+	// If this fails, leave the old state file intact so the campfire remains recoverable.
 	if err := s.UpdateCampfireID(oldCampfireID, newCampfireID); err != nil {
 		return fmt.Errorf("updating campfire ID in store: %w", err)
 	}
+
+	// Only remove old state file after DB is committed — prevents inconsistency
+	// if the DB update fails (matches the fix applied to handleRekey).
+	os.Remove(filepath.Join(stateDir, oldCampfireID+".cbor")) //nolint:errcheck
 
 	// Remove evicted member from peer endpoints.
 	s.DeletePeerEndpoint(newCampfireID, evictedPubkeyHex) //nolint:errcheck
@@ -374,13 +378,17 @@ func evictThresholdN(
 	if err := os.WriteFile(filepath.Join(stateDir, actualNewCampfireID+".cbor"), newStateData, 0600); err != nil {
 		return "", fmt.Errorf("writing new campfire state: %w", err)
 	}
-	os.Remove(filepath.Join(stateDir, oldCampfireID+".cbor")) //nolint:errcheck
 
-	// Update store: rename campfire_id in all tables FIRST, before inserting
-	// the new threshold share (to avoid UNIQUE constraint conflicts on threshold_shares).
+	// Update store FIRST: rename campfire_id in all tables before inserting the new
+	// threshold share (avoids UNIQUE constraint conflicts on threshold_shares).
+	// If this fails, leave the old state file intact so the campfire remains recoverable.
 	if err := s.UpdateCampfireID(oldCampfireID, actualNewCampfireID); err != nil {
 		return "", fmt.Errorf("updating campfire ID in store: %w", err)
 	}
+
+	// Only remove old state file after DB is committed — prevents inconsistency
+	// if the DB update fails (matches the fix applied to handleRekey).
+	os.Remove(filepath.Join(stateDir, oldCampfireID+".cbor")) //nolint:errcheck
 
 	// Store creator's new DKG share (participant 1).
 	// Called after UpdateCampfireID so UpsertThresholdShare's ON CONFLICT UPDATE applies.
