@@ -95,16 +95,19 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID,
 			outRaw = append(outRaw, b)
 		}
 	} else {
-		// Round 2: look up the existing session under write lock to prevent concurrent pruning.
-		// We hold the write lock for the duration of the round-2 state mutation and cleanup
-		// so that pruneSignSessions cannot delete the session out from under us.
+		// Round 2: acquire the global write lock only long enough to extract the session
+		// pointer and prevent pruneSignSessions from racing. Release before any FROST crypto.
 		h.transport.mu.Lock()
 		sessionState, ok := h.transport.signSessions[req.SessionID]
+		h.transport.mu.Unlock()
 		if !ok {
-			h.transport.mu.Unlock()
 			http.Error(w, "signing session not found (round 2 without round 1?)", http.StatusBadRequest)
 			return
 		}
+
+		// Hold the per-session lock for the duration of FROST crypto operations so that
+		// concurrent requests on the same session do not race on the state machine.
+		sessionState.mu.Lock()
 		ss := sessionState.session
 
 		// Advance state machine: after all round-1 messages were delivered in round 1,
@@ -122,10 +125,10 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID,
 
 		// Advance again to process any newly deliverable state.
 		additionalMsgs := ss.ProcessAll()
+		sessionState.mu.Unlock()
 
-		// Clean up after round 2 (while still holding the write lock).
-		delete(h.transport.signSessions, req.SessionID)
-		h.transport.mu.Unlock()
+		// Re-acquire the global write lock briefly to remove the completed session.
+		h.transport.removeSignSession(req.SessionID)
 
 		// Return all outbound messages: own shares + any additional output.
 		allOut := append(sharesMsgs, additionalMsgs...)

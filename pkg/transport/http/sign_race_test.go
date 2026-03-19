@@ -7,6 +7,13 @@ package http_test
 //
 // This test was written to cover workspace-17qu.5: Start() and Deliver() in round 1
 // must be protected by a per-session lock to prevent goroutine-unsafe concurrent access.
+//
+// TestSignRound2DoesNotBlockPeers verifies that a round-2 request does not hold the
+// global transport write lock during FROST crypto operations. If the lock were held
+// for the full round-2 duration, concurrent AddPeer calls would deadlock under test.
+//
+// This test was written to cover workspace-uwf4: handleSign round 2 held the global
+// transport write lock across ProcessAll()/Deliver() — blocking all other handlers.
 
 import (
 	"fmt"
@@ -166,4 +173,109 @@ func TestSignRound1SingleRequest(t *testing.T) {
 	if len(bRound1Msgs) == 0 {
 		t.Fatal("expected round-1 commitments from B, got none")
 	}
+}
+
+// TestSignRound2DoesNotBlockPeers verifies that a round-2 sign request does not hold
+// the global transport write lock during FROST crypto operations. It does this by:
+//  1. Completing round 1 to establish a signing session on B.
+//  2. Launching a round-2 request in a goroutine.
+//  3. Concurrently calling AddPeer (which acquires the global write lock) and verifying
+//     it completes within a short deadline — not deadlocked behind round-2 FROST crypto.
+//
+// Run with: go test -race ./pkg/transport/http/... -run TestSignRound2DoesNotBlockPeers
+func TestSignRound2DoesNotBlockPeers(t *testing.T) {
+	campfireID := "sign-round2-no-block"
+
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+
+	shareB, err := threshold.MarshalResult(2, dkgResults[2])
+	if err != nil {
+		t.Fatalf("MarshalResult B: %v", err)
+	}
+
+	idA := tempIdentity(t)
+	sB := tempStore(t)
+	addMembership(t, sB, campfireID)
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idA.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+	sB.UpsertThresholdShare(store.ThresholdShare{CampfireID: campfireID, ParticipantID: 2, SecretShare: shareB})                        //nolint:errcheck
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+42)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
+		share, err := sB.GetThresholdShare(cfID)
+		if err != nil || share == nil {
+			return 0, nil, fmt.Errorf("no share for %s", cfID)
+		}
+		return share.ParticipantID, share.SecretShare, nil
+	})
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	signMsg := []byte("round2-no-block test message")
+	signerIDs := []uint32{1, 2}
+	sessionID := "round2-no-block-session"
+
+	// Build A's signing session and send round 1 to B.
+	ssA, err := threshold.NewSigningSession(dkgResults[1].SecretShare, dkgResults[1].Public, signMsg, signerIDs)
+	if err != nil {
+		t.Fatalf("NewSigningSession A: %v", err)
+	}
+	aRound1Msgs := ssA.Start()
+
+	bRound1Msgs, err := cfhttp.SendSignRound(epB, campfireID, sessionID, 1, signerIDs, signMsg, aRound1Msgs, idA)
+	if err != nil {
+		t.Fatalf("round-1 to B failed: %v", err)
+	}
+	for _, m := range bRound1Msgs {
+		if err := ssA.Deliver(m); err != nil {
+			t.Fatalf("A delivering B round-1 msg: %v", err)
+		}
+	}
+	aRound2Msgs := ssA.ProcessAll()
+
+	// Launch round 2 in a goroutine.
+	round2Done := make(chan error, 1)
+	go func() {
+		_, err := cfhttp.SendSignRound(epB, campfireID, sessionID, 2, nil, nil, aRound2Msgs, idA)
+		round2Done <- err
+	}()
+
+	// Concurrently call AddPeer, which must acquire the global write lock.
+	// If round-2 were holding the global lock during FROST crypto, this would
+	// deadlock (or take > 500ms). The deadline is intentionally tight.
+	peerDone := make(chan struct{}, 1)
+	go func() {
+		trB.AddPeer(campfireID, "deadbeef", "http://127.0.0.1:9999")
+		peerDone <- struct{}{}
+	}()
+
+	select {
+	case <-peerDone:
+		// AddPeer completed quickly — global lock was not held by round-2 FROST ops.
+	case <-time.After(500 * time.Millisecond):
+		t.Error("AddPeer blocked for >500ms: round-2 may still be holding the global write lock during FROST crypto")
+	}
+
+	// Wait for round 2 to finish too.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		select {
+		case <-round2Done:
+		case <-time.After(5 * time.Second):
+			t.Error("round-2 request timed out")
+		}
+	}()
+	wg.Wait()
 }
