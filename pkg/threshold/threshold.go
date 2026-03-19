@@ -447,6 +447,9 @@ type serializedResult struct {
 
 // MarshalResult serializes a DKGResult to JSON bytes for storage.
 func MarshalResult(participantID uint32, r *DKGResult) ([]byte, error) {
+	if r == nil {
+		return nil, fmt.Errorf("threshold: MarshalResult: nil DKGResult")
+	}
 	shareBytes, err := json.Marshal(r.SecretShare)
 	if err != nil {
 		return nil, fmt.Errorf("threshold: MarshalResult: serializing secret share: %w", err)
