@@ -263,11 +263,11 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 	if req.JoinerEndpoint != "" {
 		h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 			CampfireID:    campfireID,
-			MemberPubkey:  req.JoinerPubkey,
+			MemberPubkey:  senderHex,
 			Endpoint:      req.JoinerEndpoint,
 			ParticipantID: joinerParticipantID,
 		})
-		h.transport.AddPeer(campfireID, req.JoinerPubkey, req.JoinerEndpoint)
+		h.transport.AddPeer(campfireID, senderHex, req.JoinerEndpoint)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
