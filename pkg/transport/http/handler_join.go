@@ -181,7 +181,13 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID 
 			http.Error(w, "ECDH failed", http.StatusInternalServerError)
 			return
 		}
-		sharedSecret = shared
+		derivedKey, err := hkdfSHA256(shared, "campfire-join-v1")
+		if err != nil {
+			log.Printf("handleJoin: key derivation failed: %v", err)
+			http.Error(w, "key derivation failed", http.StatusInternalServerError)
+			return
+		}
+		sharedSecret = derivedKey
 		resp.ResponderX25519Pub = fmt.Sprintf("%x", respPub.Bytes())
 	}
 

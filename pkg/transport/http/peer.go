@@ -221,11 +221,15 @@ func Join(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint str
 		if err != nil {
 			return nil, fmt.Errorf("parsing responder X25519 key: %w", err)
 		}
-		shared, err := ephemPriv.ECDH(respPub)
+		rawShared, err := ephemPriv.ECDH(respPub)
 		if err != nil {
 			return nil, fmt.Errorf("ECDH: %w", err)
 		}
-		sharedSecret = shared
+		derivedKey, err := hkdfSHA256(rawShared, "campfire-join-v1")
+		if err != nil {
+			return nil, fmt.Errorf("deriving join key: %w", err)
+		}
+		sharedSecret = derivedKey
 	}
 
 	// Decrypt campfire private key (threshold=1).

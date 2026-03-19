@@ -658,14 +658,16 @@ func TestRekeyRejectsUnsignedRekeyMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing receiver pub: %v", err)
 	}
-	shared, err := senderPrivKey.ECDH(receiverPub)
+	rawShared, err := senderPrivKey.ECDH(receiverPub)
 	if err != nil {
 		t.Fatalf("ECDH: %v", err)
 	}
+	// Apply HKDF to match server-side key derivation.
+	derivedKey := testHKDFSHA256(rawShared, "campfire-rekey-v1")
 
 	// Generate a new private key to encrypt and send.
 	newPrivForTest, _, _ := ed25519.GenerateKey(nil)
-	encKey := rekeyTestEncrypt32(t, shared, newPrivForTest)
+	encKey := rekeyTestEncrypt32(t, derivedKey, newPrivForTest)
 
 	phase2Req := cfhttp.RekeyRequest{
 		NewCampfireID:    newCampfireID,

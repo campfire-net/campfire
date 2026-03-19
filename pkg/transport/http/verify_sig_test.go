@@ -99,10 +99,10 @@ func TestVerifyRequestSignatureWrongLengthKey(t *testing.T) {
 	sigB64 := signBody(priv, body)
 
 	for _, keyHex := range []string{
-		"",                   // empty key
-		hex.EncodeToString(make([]byte, 16)),  // 16 bytes (too short)
-		hex.EncodeToString(make([]byte, 33)),  // 33 bytes (too long)
-		hex.EncodeToString(make([]byte, 64)),  // 64 bytes (double-length)
+		"",                                       // empty key
+		hex.EncodeToString(make([]byte, 16)),     // 16 bytes (too short)
+		hex.EncodeToString(make([]byte, 33)),     // 33 bytes (too long)
+		hex.EncodeToString(make([]byte, 64)),     // 64 bytes (double-length)
 	} {
 		if err := verifyRequestSignature(keyHex, sigB64, body); err == nil {
 			t.Errorf("expected error for wrong-length key %q, got nil", keyHex)

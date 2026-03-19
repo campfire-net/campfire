@@ -123,12 +123,14 @@ func TestRekeyPathTraversalRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing receiver pub: %v", err)
 	}
-	shared, err := senderPriv.ECDH(receiverPub)
+	rawShared, err := senderPriv.ECDH(receiverPub)
 	if err != nil {
 		t.Fatalf("ECDH: %v", err)
 	}
+	// Apply HKDF to match server-side key derivation.
+	derivedKey := testHKDFSHA256(rawShared, "campfire-rekey-v1")
 	_, dummyPriv, _ := ed25519.GenerateKey(nil)
-	encPrivKey, err := rekeyTestEncrypt(shared, dummyPriv)
+	encPrivKey, err := rekeyTestEncrypt(derivedKey, dummyPriv)
 	if err != nil {
 		t.Fatalf("encrypting: %v", err)
 	}
@@ -239,9 +241,10 @@ func TestRekeyPathTraversalAbsoluteRelative(t *testing.T) {
 
 	receiverPubBytes := mustHexDecode(t, receiverPubHex)
 	receiverPub, _ := ecdh.X25519().NewPublicKey(receiverPubBytes)
-	shared, _ := senderPriv.ECDH(receiverPub)
+	rawShared, _ := senderPriv.ECDH(receiverPub)
+	derivedKey := testHKDFSHA256(rawShared, "campfire-rekey-v1")
 	_, dummyPriv, _ := ed25519.GenerateKey(nil)
-	encPrivKey, _ := rekeyTestEncrypt(shared, dummyPriv)
+	encPrivKey, _ := rekeyTestEncrypt(derivedKey, dummyPriv)
 
 	body, _ := json.Marshal(cfhttp.RekeyRequest{
 		NewCampfireID:    newCampfireID,
