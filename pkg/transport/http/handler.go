@@ -109,6 +109,9 @@ const requestTimestampWindow = 60 * time.Second
 //
 // Replay protection: the signature covers timestamp+nonce+body. The server rejects
 // requests with timestamps outside the ±60s window and nonces it has already seen.
+//
+// Precondition: h.transport must not be nil. The handler struct is unexported and
+// only constructed by New(), which always supplies a non-nil Transport.
 func (h *handler) readAndVerify(w http.ResponseWriter, r *http.Request) (senderHex string, body []byte, ok bool) {
 	senderHex = r.Header.Get("X-Campfire-Sender")
 	sigB64 := r.Header.Get("X-Campfire-Signature")
@@ -156,12 +159,11 @@ func (h *handler) readAndVerify(w http.ResponseWriter, r *http.Request) (senderH
 	}
 
 	// Check nonce uniqueness — reject replays.
-	if h.transport != nil {
-		if !h.transport.consumeNonce(nonce) {
-			log.Printf("auth: duplicate nonce %s for %s %s", nonce, r.Method, r.URL.Path)
-			http.Error(w, "duplicate request nonce", http.StatusUnauthorized)
-			return "", nil, false
-		}
+	// h.transport is guaranteed non-nil (see precondition above).
+	if !h.transport.consumeNonce(nonce) {
+		log.Printf("auth: duplicate nonce %s for %s %s", nonce, r.Method, r.URL.Path)
+		http.Error(w, "duplicate request nonce", http.StatusUnauthorized)
+		return "", nil, false
 	}
 
 	return senderHex, body, true
