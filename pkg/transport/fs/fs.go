@@ -170,9 +170,20 @@ func atomicWriteCBOR(path string, v interface{}) error {
 		return fmt.Errorf("encoding: %w", err)
 	}
 
-	// Generate random suffix for temp file
+	// Generate random suffix for temp file; fall back to timestamp if crypto/rand fails.
 	var randBytes [8]byte
-	rand.Read(randBytes[:])
+	if _, err := rand.Read(randBytes[:]); err != nil {
+		// Fallback: use nanosecond timestamp so concurrent writers still get distinct names.
+		ns := uint64(time.Now().UnixNano()) //nolint:gosec // fallback only
+		randBytes[0] = byte(ns >> 56)
+		randBytes[1] = byte(ns >> 48)
+		randBytes[2] = byte(ns >> 40)
+		randBytes[3] = byte(ns >> 32)
+		randBytes[4] = byte(ns >> 24)
+		randBytes[5] = byte(ns >> 16)
+		randBytes[6] = byte(ns >> 8)
+		randBytes[7] = byte(ns)
+	}
 	tmp := fmt.Sprintf("%s.tmp.%x", path, randBytes)
 
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
