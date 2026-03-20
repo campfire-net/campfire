@@ -2,8 +2,7 @@
 
 **Status:** Draft
 **Date:** 2026-03-15
-**Author:** Baron + Claude
-**Organization:** Third Division Labs
+**Author:** Third Division Labs
 
 ## Summary
 
@@ -514,14 +513,14 @@ Token is NOT stored in TransportConfig (which is stored in SQLite and may be sha
 
 ## 11. Open Questions
 
-1. **Comment deletion handling:** If a GitHub comment is deleted (by a human or a malicious actor with repo access), the message disappears from the stream. Should the poll loop detect gaps via message ID DAG and alert? Or is this out of scope for v1?
+1. **Comment deletion handling:** If a GitHub comment is deleted (by a human or a malicious actor with repo access), the message disappears from the stream. The poll loop does not currently detect gaps via message ID DAG. **Status: open.** Acceptable for v1 — deletion is detectable by signature verification failure on the receiving end, and the append-only campfire model means the local store retains its copy.
 
-2. **GitHub Enterprise:** The `base_url` config field handles different API endpoints. Does Campfire need to support GHES-specific auth flows (SAML SSO, required token scoping)?
+2. **GitHub Enterprise:** The `base_url` config field handles different API endpoints. GHES-specific auth flows (SAML SSO, required token scoping) are not implemented. **Status: deferred.** Base URL override covers the common case.
 
-3. **Webhook receiver:** Should `cf daemon` expose a webhook endpoint for GitHub `issue_comment` events? This eliminates polling but requires the agent to be reachable from GitHub's IP ranges — not always possible behind firewalls. Design it as an optional enhancement.
+3. **Webhook receiver:** Not implemented. Polling is the only delivery model. **Status: deferred.** Optional enhancement for production deployments needing sub-second latency.
 
-4. **Rate limit sharing across agents:** If 10 agents share a single GitHub user token (Option B above), their combined API calls hit a single 5000/hr quota. Should the transport include rate limit coordination (e.g., agents back off when quota is low)? Or is this a deployment concern?
+4. **Rate limit sharing across agents:** Not implemented. Each agent manages its own rate budget independently. A per-issue write throttle (750ms minimum interval) prevents secondary rate limit triggers for a single agent. **Status: deployment concern.** Recommendation: one fine-grained PAT per agent.
 
-5. **Comment edit vs new comment for message updates:** The protocol doesn't have message editing, so this is moot for the standard message flow. But system messages like `campfire:rekey` that supersede previous state — should they edit the original comment or post a new one? New comment is simpler and preserves audit trail.
+5. **Comment edit vs new comment for message updates:** **Resolved: new comments only.** System messages (rekey, member-joined, etc.) are posted as new comments, preserving the audit trail. No edit/update API is exposed.
 
-6. **Pagination:** Comments endpoint returns up to 100 per page. Campfires with >100 messages since last poll need multiple paginated requests. The `since` parameter helps bound this in active campfires, but a new member joining a campfire with long history needs to page through all comments on first sync. Cap initial sync at a configurable lookback window?
+6. **Pagination:** No configurable lookback window. Initial sync fetches all comments via timestamp-based `since` filter with `per_page=100`. **Status: open.** Acceptable for the expected use case (coordination campfires with hundreds of messages, not thousands).

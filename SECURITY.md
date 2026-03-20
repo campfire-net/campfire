@@ -44,4 +44,4 @@ We will credit reporters in the security advisory unless you prefer to remain an
 
 ## Supported Versions
 
-During the Draft v0.1 phase, only the latest release receives security fixes. Once the protocol reaches v1.0, a longer support window will be defined.
+During the Draft v0.2 phase, only the latest release receives security fixes. Once the protocol reaches v1.0, a longer support window will be defined.

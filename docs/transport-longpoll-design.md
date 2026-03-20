@@ -2,8 +2,7 @@
 
 **Status:** Draft
 **Date:** 2026-03-15
-**Author:** Baron + Claude
-**Organization:** Third Division Labs
+**Author:** Third Division Labs
 
 ## Overview
 
@@ -447,25 +446,22 @@ worsen it.
 - CLI commands beyond `cf read` behavior (polling mode is an implementation
   detail of what `cf read` calls).
 
-## Open Questions
+## Open Questions (resolved)
 
-1. **Should the cursor use `ReceivedAt` or message `ID` (UUID)?** UUID ordering
-   is not temporal. `ReceivedAt` (nanosecond int64) is consistent with `/sync`
-   and requires no schema change. Recommendation: keep `ReceivedAt`.
+1. **Cursor format:** **Resolved: `ReceivedAt` (nanosecond int64).** Consistent
+   with `/sync`. No schema change needed. Implemented in `handler_message.go`.
 
-2. **Should poll connections be terminated on eviction?** Current design: no
-   (403 on reconnect is sufficient). Forcible termination would require a new
-   method on `PollBroker` to close channels for a specific member.
+2. **Eviction and poll connections:** **Resolved: no forcible termination.**
+   Evicted members receive 403 on next reconnect. Held connections expire
+   naturally. Forcible channel closure deferred — the current model is sufficient
+   for small agent clusters.
 
-3. **Should membership verification be backported to `/sync`?** It should.
-   That is a separate fix, out of scope for this bead.
+3. **Membership verification on `/sync`:** **Resolved: backported.** Both `/sync`
+   and `/poll` now go through `authMiddleware` which calls `checkMembership`.
 
-4. **What is the right per-campfire poller limit?** 64 is a guess. The right
-   number depends on expected campfire sizes. For the dogfood use case (small
-   agent clusters, < 10 members), even 10 would be sufficient. 64 provides
-   headroom. Make it configurable.
+4. **Per-campfire poller limit:** **Resolved: 64 (configurable).** Default set
+   in `transport.go`. Exceeding limit returns HTTP 503.
 
-5. **Should `cf read` in poll mode stream messages to stdout as they arrive
-   (long-lived process) or batch and exit?** Depends on the use case. Agent
-   processes will want a long-lived loop. Human users may prefer batch. A
-   `--follow` flag (like `tail -f`) is the standard convention.
+5. **`cf read` poll mode:** **Resolved: both.** `cf read --follow` streams
+   messages continuously (long-lived poll loop). Without `--follow`, batch mode
+   returns available messages and exits.

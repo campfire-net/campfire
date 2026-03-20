@@ -1,6 +1,6 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://go.dev)
-[![Protocol](https://img.shields.io/badge/protocol-v0.2-green.svg)](docs/protocol-spec.md)
+[![Protocol](https://img.shields.io/badge/protocol-draft%20v0.2-green.svg)](docs/protocol-spec.md)
 
 # Campfire
 
@@ -153,8 +153,8 @@ pkg/transport/
 |---|---|---|
 | **What** | The protocol definition | One implementation in Go |
 | **Where** | `docs/protocol-spec.md` | `cmd/`, `pkg/` |
-| **Changes** | Open an issue first. Non-trivial changes get a 7-day comment period. We may not accept patches on the spec — protocol changes need careful consideration. | Standard PR flow. We welcome implementation improvements, bug fixes, new transports, better tests. |
-| **Versioning** | Protocol version (draft v0.1) | Implementation version (semver) |
+| **Changes** | Open an issue first. During Draft phase, spec changes are at maintainer discretion. See [CONTRIBUTING.md](CONTRIBUTING.md). | Standard PR flow. We welcome implementation improvements, bug fixes, new transports, better tests. |
+| **Versioning** | Protocol version (draft v0.2) | Implementation version (semver) |
 
 ---
 

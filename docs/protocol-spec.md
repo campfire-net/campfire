@@ -1,9 +1,8 @@
 # Campfire Protocol Specification
 
-**Status:** Draft
-**Date:** 2026-03-16
-**Author:** Baron + Claude
-**Organization:** Third Division Labs
+**Version:** Draft v0.2
+**Date:** 2026-03-20
+**Author:** Third Division Labs
 
 ## Overview
 
@@ -554,7 +553,7 @@ Beacons for P2P HTTP campfires include one or more member endpoints (not a relay
 
 ## Membership Roles
 
-Membership in a campfire carries one of three roles. Roles are a client-side access control mechanism. Transport-level enforcement is future work.
+Membership in a campfire carries one of three roles. Implementations MUST enforce role permissions before message delivery. Transport-level enforcement is OPTIONAL; client-side enforcement is REQUIRED.
 
 ### Role Definitions
 
@@ -572,7 +571,7 @@ Membership in a campfire carries one of three roles. Roles are a client-side acc
 
 ### EffectiveRole and Backward Compatibility
 
-The `EffectiveRole` function maps raw role strings to canonical values:
+Implementations MUST map raw role strings to canonical values:
 
 - `"observer"` → `observer`
 - `"writer"` → `writer`
@@ -583,7 +582,7 @@ Existing memberships with no role field or pre-role-system role values automatic
 
 ### Role Assignment
 
-Roles are set at join time (the joining member receives a role) or changed afterward by a `full` member using `cf member set-role`. A member cannot change their own role. Only `full` members can issue role changes.
+Roles are set at join time (the joining member receives a role) or changed afterward by a `full` member. A member cannot change their own role. Only `full` members can issue role changes.
 
 ### Role Change System Message
 
@@ -602,14 +601,13 @@ This message is signed by the campfire key (not the caller's member key), making
 
 ### Enforcement Model
 
-Role enforcement in P1 is **client-side only**. The client checks the membership record before sending. A future transport layer MAY enforce roles at the protocol boundary, rejecting messages from members whose roles do not permit the message type. Until then:
+Implementations MUST enforce role permissions before message delivery:
 
-- `cf send` checks the caller's effective role before attempting delivery
-- `cf compact` requires `full` role (campfire:compact is a system tag)
-- `cf view create` requires `full` role (campfire:view is a system tag)
-- `cf member set-role` requires `full` role on the caller
+- Observer roles MUST NOT be permitted to send any message
+- Writer roles MUST NOT be permitted to send messages with any `campfire:` tag
+- Only `full` role members may send `campfire:*` system messages, change member roles, or run compaction
 
-The enforcement is implemented in `checkRoleCanSend(role, tags)`: it calls `EffectiveRole` on the stored role, then rejects observer roles unconditionally and rejects writer roles when any tag in the message has the `campfire:` prefix.
+Transport-level enforcement (rejecting messages at the protocol boundary) is OPTIONAL. Client-side enforcement is the minimum requirement.
 
 ## Compaction
 
@@ -646,17 +644,17 @@ The `antecedents` of the compaction event contains the ID of the last superseded
 
 - Only `full` role members may send `campfire:compact` (it is a system tag)
 - Compaction events themselves are never superseded by other compaction events
-- `cf read` excludes superseded messages by default; `cf read --all` includes them
+- Implementations SHOULD exclude superseded messages from default read operations and provide a mechanism to include them
 - Multiple compaction events may coexist; their `supersedes` lists are union-ed
 - A compaction event supersedes a specific set of messages by ID — it does not invalidate messages sent after it
 
 ### campfire:compact and Reserved Tags
 
-`campfire:compact` is a reserved system tag. Messages with this tag must be signed by a member with `full` role. Transport-level enforcement of this constraint is future work; client-side enforcement is active.
+`campfire:compact` is a reserved system tag. Messages with this tag MUST be signed by a member with `full` role.
 
 ## Named Views
 
-A named view is a persistent predicate that filters and shapes message results. Views are defined by sending a `campfire:view` message into the campfire. Any member can materialize a view using `cf view read`. Views are query definitions stored as messages — they are not caches or pre-computed results.
+A named view is a persistent predicate that filters and shapes message results. Views are defined by sending a `campfire:view` message into the campfire. Any member can materialize a view by evaluating the predicate against the message store. Views are query definitions stored as messages — they are not caches or pre-computed results.
 
 ### campfire:view Event Structure
 
@@ -683,7 +681,7 @@ campfire:view payload {
 
 **`limit`.** Maximum number of messages to return after filtering and ordering. `0` means no limit.
 
-**`refresh`.** How and when the view's results are computed. Only `"on-read"` is supported in P1: the view is re-evaluated from scratch every time it is materialized. On-write pre-computation and periodic refresh are future work.
+**`refresh`.** How and when the view's results are computed. Implementations MUST support `"on-read"` (re-evaluate on each materialization). `"on-write"` (pre-compute on message arrival) and `"periodic:duration"` (re-evaluate on a schedule) are OPTIONAL.
 
 ### View Materialization Semantics
 
@@ -767,39 +765,6 @@ The evaluator enforces a maximum recursion depth of 64 nodes. Predicates exceedi
 ; Messages after a specific timestamp
 (gt (timestamp) (literal 1710000000000000000))
 ```
-
-## Field Projection (cf read --fields)
-
-`cf read` supports a `--fields` flag that limits which message fields appear in output. This is a client-side projection applied after message retrieval; it does not affect what is stored or transmitted.
-
-**Valid field names:** `id`, `sender`, `instance`, `payload`, `tags`, `timestamp`, `antecedents`, `signature`, `provenance`, `campfire_id`
-
-**Semantics:**
-
-- `--fields payload,tags` — include only the payload and tags fields in output
-- Multiple fields are comma-separated; whitespace around commas is ignored
-- Unknown field names are rejected with an error listing valid names
-- When `--fields` is omitted or empty, all fields are displayed (backward-compatible default)
-- The `instance` field appears only when non-empty, regardless of whether it is projected
-- In `--json` mode, `--fields` applies to the JSON output; the shape of the output object changes to include only the requested keys
-
-**Implementation note.** Field projection in `cf read` is a display concern, not a query concern. The store returns full `MessageRecord` objects; the projection is applied during rendering. This is distinct from named view projection, which operates as part of view materialization.
-
-## Tag-Filtered Reads
-
-`cf read` supports a `--tag` flag that filters messages by tag. Multiple `--tag` flags apply OR semantics: a message matches if it has any of the specified tags.
-
-**SQL-level filtering.** Tag filtering is pushed down to the SQLite query using `json_each`. The query uses:
-
-```sql
-EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) IN (?, ...))
-```
-
-This means tag filtering happens at the database level — only matching messages are loaded into memory. Tag matching is case-insensitive.
-
-**Cursor behavior.** When `--tag` filters are active, the read cursor advances based on all messages retrieved before filtering (pre-filter timestamps). This ensures filtered-out messages do not reappear on the next read. The filter is a display concern, not a cursor concern.
-
-**Interaction with named views.** Tag-filtered reads and named views are independent mechanisms. `cf read --tag foo` is an ad-hoc per-session filter. `cf view create` with `(tag "foo")` predicate creates a persistent, named, shareable filter. Use named views for filters that multiple agents need or that should survive across sessions.
 
 ## Reserved Tags: Extended Namespace
 

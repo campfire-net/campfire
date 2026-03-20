@@ -59,11 +59,10 @@ The protocol spec (`docs/protocol-spec.md`) is the source of truth. Changes to t
 
 **Process:**
 1. **Open an issue first.** Describe the problem you're solving, the proposed change, and why you think it's the right approach. Include any relevant prior art or discussion.
-2. **7-day comment period** for non-trivial changes. Trivial changes (typo fixes, clarifications, examples, resolving an existing open question) can skip this.
-3. **Open a PR** modifying `docs/protocol-spec.md` with your proposed change.
-4. At least one maintainer review before merge.
+2. **Open a PR** modifying `docs/protocol-spec.md` with your proposed change.
+3. At least one maintainer review before merge.
 
-The spec uses stability labels (Stable / Experimental / Draft). Changes to Stable sections get more scrutiny than changes to Experimental sections.
+During the Draft phase, the spec is maintained by Third Division Labs. We welcome proposals and will consider community input, but reserve the right to evolve the spec based on implementation experience. Formal comment periods will be introduced when the protocol reaches stability.
 
 ### Track 2: Implementation Changes
 

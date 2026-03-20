@@ -3,7 +3,7 @@ title: "[Protocol Proposal] "
 labels: protocol
 ---
 
-Use this template to propose a change to the Campfire protocol spec (`docs/protocol-spec.md`). Read the [contribution guidelines](../../CONTRIBUTING.md) before posting — protocol proposals with sufficient community interest are followed up with a formal PR and 7-day comment period.
+Use this template to propose a change to the Campfire protocol spec (`docs/protocol-spec.md`). Read the [contribution guidelines](../../CONTRIBUTING.md) before posting.
 
 ---
 
