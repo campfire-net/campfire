@@ -98,7 +98,6 @@ func setupRekeyTestServer(t *testing.T, port int, idSenderPubHex string) (ep, ca
 // error (400 decryption failure), demonstrating the overwrite effect.
 // The test then confirms a clean phase-2 with a fresh session succeeds.
 func TestRekeyPhase1ReplayOverwritesSession(t *testing.T) {
-	t.Skip("TODO: fix ECDH key agreement mismatch between test and handler — test was generated against pre-refactor code")
 	idA := tempIdentity(t) // sender / creator
 
 	base := portBase()
@@ -142,7 +141,10 @@ func TestRekeyPhase1ReplayOverwritesSession(t *testing.T) {
 
 	// --- Phase-2 using the STALE shared secret (derived from receiverPub1) ---
 	// The receiver now holds a freshly-generated key under senderPub1Hex.
-	// ECDH(senderPriv1, receiverPub1) → stale shared secret → decryption fails.
+	// ECDH(senderPriv1, receiverPub1) → stale raw shared secret → apply HKDF
+	// (matching server-side campfire-rekey-v1 derivation) → stale AES key.
+	// Decryption fails because the server derived its AES key from a DIFFERENT
+	// raw shared secret (ECDH with the newly-generated receiver key).
 	receiverPub1Bytes, err := hex.DecodeString(receiverPub1Hex)
 	if err != nil {
 		t.Fatalf("decoding first receiver pub: %v", err)
@@ -151,12 +153,14 @@ func TestRekeyPhase1ReplayOverwritesSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing first receiver pub: %v", err)
 	}
-	staleShared, err := senderPriv1.ECDH(receiverPub1)
+	staleRawShared, err := senderPriv1.ECDH(receiverPub1)
 	if err != nil {
 		t.Fatalf("ECDH with stale key: %v", err)
 	}
+	// Apply HKDF to match server-side key derivation (campfire-rekey-v1).
+	staleDerivedKey := testHKDFSHA256(staleRawShared, "campfire-rekey-v1")
 
-	encPrivStale, err := rekeyTestEncrypt(staleShared, newCFPriv)
+	encPrivStale, err := rekeyTestEncrypt(staleDerivedKey, newCFPriv)
 	if err != nil {
 		t.Fatalf("encrypting with stale secret: %v", err)
 	}
@@ -220,11 +224,13 @@ func TestRekeyPhase1ReplayOverwritesSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing fresh receiver pub: %v", err)
 	}
-	freshShared, err := senderPriv2.ECDH(freshRecvPub)
+	freshRawShared, err := senderPriv2.ECDH(freshRecvPub)
 	if err != nil {
 		t.Fatalf("ECDH with fresh receiver key: %v", err)
 	}
-	encPrivFresh, err := rekeyTestEncrypt(freshShared, newCFPriv)
+	// Apply HKDF to match server-side key derivation (campfire-rekey-v1).
+	freshDerivedKey := testHKDFSHA256(freshRawShared, "campfire-rekey-v1")
+	encPrivFresh, err := rekeyTestEncrypt(freshDerivedKey, newCFPriv)
 	if err != nil {
 		t.Fatalf("encrypting with fresh secret: %v", err)
 	}
