@@ -98,7 +98,7 @@ func newDeliverBody(t *testing.T, id *identity.Identity) []byte {
 // timestamp more than 60 seconds in the past is rejected with 401.
 func TestReplayProtectionStaleTimestampRejected(t *testing.T) {
 	base := portBase()
-	ep, campfireID, id := setupDeliverServer(t, base+200)
+	ep, campfireID, id := setupDeliverServer(t, base+260)
 
 	body := newDeliverBody(t, id)
 	staleTimestamp := strconv.FormatInt(time.Now().Add(-90*time.Second).Unix(), 10)
@@ -124,7 +124,7 @@ func TestReplayProtectionStaleTimestampRejected(t *testing.T) {
 // timestamp more than 60 seconds in the future is rejected with 401.
 func TestReplayProtectionFutureTimestampRejected(t *testing.T) {
 	base := portBase()
-	ep, campfireID, id := setupDeliverServer(t, base+201)
+	ep, campfireID, id := setupDeliverServer(t, base+261)
 
 	body := newDeliverBody(t, id)
 	futureTimestamp := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
@@ -151,7 +151,7 @@ func TestReplayProtectionFutureTimestampRejected(t *testing.T) {
 // was originally valid.
 func TestReplayProtectionNonceReplayRejected(t *testing.T) {
 	base := portBase()
-	ep, campfireID, id := setupDeliverServer(t, base+202)
+	ep, campfireID, id := setupDeliverServer(t, base+262)
 
 	// We need two different messages (different IDs) to avoid dedup at the store level,
 	// but the same nonce to test replay detection.
@@ -201,7 +201,7 @@ func TestReplayProtectionNonceReplayRejected(t *testing.T) {
 // X-Campfire-Nonce is rejected with 401.
 func TestReplayProtectionMissingNonceRejected(t *testing.T) {
 	base := portBase()
-	ep, campfireID, id := setupDeliverServer(t, base+203)
+	ep, campfireID, id := setupDeliverServer(t, base+263)
 
 	body := newDeliverBody(t, id)
 	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
@@ -223,7 +223,7 @@ func TestReplayProtectionMissingNonceRejected(t *testing.T) {
 // X-Campfire-Timestamp is rejected with 401.
 func TestReplayProtectionMissingTimestampRejected(t *testing.T) {
 	base := portBase()
-	ep, campfireID, id := setupDeliverServer(t, base+204)
+	ep, campfireID, id := setupDeliverServer(t, base+264)
 
 	body := newDeliverBody(t, id)
 	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
@@ -249,7 +249,7 @@ func TestReplayProtectionMissingTimestampRejected(t *testing.T) {
 // request with a valid timestamp and unique nonce is accepted (200).
 func TestReplayProtectionFreshRequestAccepted(t *testing.T) {
 	base := portBase()
-	ep, campfireID, id := setupDeliverServer(t, base+205)
+	ep, campfireID, id := setupDeliverServer(t, base+265)
 
 	if err := cfhttp.Deliver(ep, campfireID, newTestMessage(t, id), id); err != nil {
 		t.Fatalf("fresh request should be accepted: %v", err)
@@ -260,7 +260,7 @@ func TestReplayProtectionFreshRequestAccepted(t *testing.T) {
 // timestamp header value is rejected with 401.
 func TestReplayProtectionInvalidTimestampFormatRejected(t *testing.T) {
 	base := portBase()
-	ep, campfireID, id := setupDeliverServer(t, base+206)
+	ep, campfireID, id := setupDeliverServer(t, base+266)
 
 	body := newDeliverBody(t, id)
 	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)

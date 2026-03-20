@@ -97,9 +97,9 @@ func TestFROSTSign2of3OverHTTP(t *testing.T) {
 	addPeer(sB, idC.PublicKeyHex(), "http://127.0.0.1:3")
 
 	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+27)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+28)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+29)
+	addrA := fmt.Sprintf("127.0.0.1:%d", base+60)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+61)
+	addrC := fmt.Sprintf("127.0.0.1:%d", base+62)
 	epA := fmt.Sprintf("http://%s", addrA)
 	epB := fmt.Sprintf("http://%s", addrB)
 	epC := fmt.Sprintf("http://%s", addrC)
@@ -251,7 +251,7 @@ func TestHandleSignRound2WithoutRound1(t *testing.T) {
 	}
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+31)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+63)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)
@@ -341,7 +341,7 @@ func TestHandleSignArbitraryBytesRejected(t *testing.T) {
 	}
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+50)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+64)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)
@@ -435,7 +435,7 @@ func TestHandleSignValidMessageSignInputAccepted(t *testing.T) {
 	}
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+51)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+65)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)
@@ -512,7 +512,7 @@ func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
 	}
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+52)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+66)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)
@@ -604,7 +604,7 @@ func TestHandleSignNonMemberRejected(t *testing.T) {
 	}
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+54)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+67)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)
@@ -693,7 +693,7 @@ func TestHandleSignWrongCampfireRejected(t *testing.T) {
 	}
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+55)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+68)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)

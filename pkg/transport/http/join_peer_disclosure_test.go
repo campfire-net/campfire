@@ -129,7 +129,7 @@ func buildJoinRequestEphemeral(t *testing.T, ep, campfireID string, joiner *iden
 // private key (threshold=1) or DKG share (threshold>1), so the server must
 // reject the request outright rather than admitting a useless member.
 func TestJoinMissingEphemeralKeyRejected(t *testing.T) {
-	campfireID, ep, _, _, _, _ := setupOpenCampfireServer(t, 200)
+	campfireID, ep, _, _, _, _ := setupOpenCampfireServer(t, 280)
 
 	joiner, err := identity.Generate()
 	if err != nil {
@@ -154,7 +154,7 @@ func TestJoinMissingEphemeralKeyRejected(t *testing.T) {
 // TestJoinWithEphemeralKeySucceeds verifies that a join request with a valid
 // EphemeralX25519Pub is accepted (200 OK) and returns an encrypted private key.
 func TestJoinWithEphemeralKeySucceeds(t *testing.T) {
-	campfireID, ep, _, _, _, _ := setupOpenCampfireServer(t, 201)
+	campfireID, ep, _, _, _, _ := setupOpenCampfireServer(t, 281)
 
 	joiner, err := identity.Generate()
 	if err != nil {
@@ -202,7 +202,7 @@ func TestJoinWithEphemeralKeySucceeds(t *testing.T) {
 // in the join response — only the admitting node's own endpoint is returned.
 // This prevents unauthenticated enumeration of all campfire member IP addresses.
 func TestJoinPeerListRestrictedToAdmittingNode(t *testing.T) {
-	campfireID, ep, hostID, peerA, peerB, _ := setupOpenCampfireServer(t, 202)
+	campfireID, ep, hostID, peerA, peerB, _ := setupOpenCampfireServer(t, 282)
 
 	joiner, err := identity.Generate()
 	if err != nil {
@@ -295,7 +295,7 @@ func TestJoinPeerListEmptyWhenNoSelfInfo(t *testing.T) {
 	}
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+203)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+283)
 	ep := fmt.Sprintf("http://%s", addr)
 
 	tr := cfhttp.New(addr, sHost)

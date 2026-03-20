@@ -119,7 +119,7 @@ func TestHandlePollImmediateMessages(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+40)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+100)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -173,7 +173,7 @@ func TestHandlePollTimeout(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+41)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+101)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -214,7 +214,7 @@ func TestHandlePollWakeOnDeliver(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idSender.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+42)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+102)
 	startTransportWithSelf(t, addr, s, idPoller)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -278,7 +278,7 @@ func TestHandlePollUnauthorized(t *testing.T) {
 	addMembership(t, s, campfireID)
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+43)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+103)
 	startTransport(t, addr, s)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -305,7 +305,7 @@ func TestHandlePollNonMember(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+44)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+104)
 	// Use startTransportWithSelf so self key is idMember (not idStranger).
 	startTransportWithSelf(t, addr, s, idMember)
 	ep := fmt.Sprintf("http://%s", addr)
@@ -331,7 +331,7 @@ func TestHandlePollInvalidParams(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+45)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+105)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -359,7 +359,7 @@ func TestHandlePollLimitExceeded(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+46)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+106)
 	tr := cfhttp.New(addr, s)
 	tr.SetSelfInfo(id.PublicKeyHex(), fmt.Sprintf("http://%s", addr))
 	tr.SetMaxPollersPerCampfire(2)
@@ -423,7 +423,7 @@ func TestHandlePollInvalidTimeoutCapped(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+47)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+107)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -454,7 +454,7 @@ func TestHandlePollFiltersByReceivedAt(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+48)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+108)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -526,7 +526,7 @@ func TestHandlePollMembershipStoreError(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idCaller.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+48)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+112)
 	// Set self key to idSelf so idCaller is not the self key and must be
 	// looked up via ListPeerEndpoints.
 	startTransportWithSelf(t, addr, s, idSelf)
@@ -561,7 +561,7 @@ func TestHandlePollZeroTimeoutFloor(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+50)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+110)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -596,7 +596,7 @@ func TestHandlePollNegativeTimeoutFloor(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+51)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+111)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -631,7 +631,7 @@ func TestHandlePollNoPeerEndpoints(t *testing.T) {
 	// Intentionally do NOT call addPeerEndpoint — empty peer list.
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+49)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+109)
 	startTransportWithSelf(t, addr, s, idSelf)
 	ep := fmt.Sprintf("http://%s", addr)
 

@@ -23,7 +23,7 @@ func TestHandleSyncInvalidSince(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+110)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+380)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -56,7 +56,7 @@ func TestHandlePollInvalidTimeout(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+111)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+381)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -90,7 +90,7 @@ func TestHandlePollTimeoutCapReturnsNormally(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+112)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+382)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 

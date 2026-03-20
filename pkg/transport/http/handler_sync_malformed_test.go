@@ -71,7 +71,7 @@ func TestHandleSyncMalformedSenderSilentlyDropped(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+210)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+400)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -104,7 +104,7 @@ func TestHandleSyncValidRecordIncluded(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+211)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+401)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 

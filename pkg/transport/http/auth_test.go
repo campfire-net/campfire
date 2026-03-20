@@ -47,7 +47,7 @@ func TestDeliverNonMemberForbidden(t *testing.T) {
 	// idStranger is NOT added to peer endpoints.
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+50)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+140)
 	startTransportWithSelf(t, addr, s, idMember)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -80,7 +80,7 @@ func TestDeliverMemberAllowed(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+51)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+141)
 	startTransportWithSelf(t, addr, s, idMember)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -106,7 +106,7 @@ func TestSyncNonMemberForbidden(t *testing.T) {
 	// idStranger is NOT added to peer endpoints.
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+52)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+142)
 	startTransportWithSelf(t, addr, s, idMember)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -133,7 +133,7 @@ func TestSyncMemberAllowed(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+53)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+143)
 	startTransportWithSelf(t, addr, s, idMember)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -176,7 +176,7 @@ func TestJoinInviteOnlyForbidden(t *testing.T) {
 	// idStranger is NOT in peer endpoints.
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+54)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+144)
 	epAdmin := fmt.Sprintf("http://%s", addr)
 
 	tr := cfhttp.New(addr, s)
@@ -232,7 +232,7 @@ func TestJoinInviteOnlyAdmittedAllowed(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idAdmitted.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+55)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+145)
 	epAdmin := fmt.Sprintf("http://%s", addr)
 
 	tr := cfhttp.New(addr, s)
@@ -285,7 +285,7 @@ func TestJoinOpenAllowed(t *testing.T) {
 	}
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+56)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+146)
 	epAdmin := fmt.Sprintf("http://%s", addr)
 
 	tr := cfhttp.New(addr, s)
@@ -328,7 +328,7 @@ func TestMembershipNonMemberForbidden(t *testing.T) {
 	// idStranger NOT in peer endpoints.
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+57)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+147)
 	startTransportWithSelf(t, addr, s, idMember)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -362,7 +362,7 @@ func TestMembershipMemberAllowed(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+58)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+148)
 	startTransportWithSelf(t, addr, s, idMember)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -409,7 +409,7 @@ func TestSignNonMemberForbidden(t *testing.T) {
 	})
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+59)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+149)
 	tr := cfhttp.New(addr, s)
 	tr.SetSelfInfo(idMember.PublicKeyHex(), fmt.Sprintf("http://%s", addr))
 	tr.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
@@ -481,7 +481,7 @@ func TestRekeyNonMemberForbidden(t *testing.T) {
 	// idStranger NOT in peer endpoints.
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+60)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+150)
 	tr := cfhttp.New(addr, s)
 	tr.SetSelfInfo(idMember.PublicKeyHex(), fmt.Sprintf("http://%s", addr))
 	if err := tr.Start(); err != nil {
@@ -527,7 +527,7 @@ func TestPollKnownPeerAllowed(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idPeer.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+61)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+151)
 	// Self key is idSelf, not idPeer.
 	startTransportWithSelf(t, addr, s, idSelf)
 	ep := fmt.Sprintf("http://%s", addr)
@@ -599,7 +599,7 @@ func TestRekeyRejectsUnsignedRekeyMessage(t *testing.T) {
 	addPeerEndpoint(t, sB, oldCampfireID, idA.PublicKeyHex())
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+62)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+152)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)

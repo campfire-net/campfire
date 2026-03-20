@@ -101,7 +101,7 @@ func TestRekeyPhase1ReplayOverwritesSession(t *testing.T) {
 	idA := tempIdentity(t) // sender / creator
 
 	base := portBase()
-	ep, campfireID := setupRekeyTestServer(t, base+60, idA.PublicKeyHex())
+	ep, campfireID := setupRekeyTestServer(t, base+250, idA.PublicKeyHex())
 
 	// Generate a new campfire ID (any hex-encoded ed25519 pub, or just a 32-byte
 	// random hex for this version of the handler which doesn't validate format).
@@ -251,7 +251,7 @@ func TestRekeyPhase2WithoutPhase1Returns400(t *testing.T) {
 	idA := tempIdentity(t)
 
 	base := portBase()
-	ep, campfireID := setupRekeyTestServer(t, base+61, idA.PublicKeyHex())
+	ep, campfireID := setupRekeyTestServer(t, base+251, idA.PublicKeyHex())
 
 	newCFPub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {

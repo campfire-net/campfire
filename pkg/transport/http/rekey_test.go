@@ -206,7 +206,7 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 	})
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+30)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+220)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	// Start B's transport.
@@ -441,7 +441,7 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 	})
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+34)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+221)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	// Start B's transport with threshold share provider.
@@ -575,8 +575,8 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 	// rekey handler when it processed the phase-2 request above.
 	addMembershipWithDir(t, sA, newCampfireID, t.TempDir(), 2)
 
-	// Allocate A's transport address (B is already running at base+34).
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+37)
+	// Allocate A's transport address (B is already running at base+221).
+	addrA := fmt.Sprintf("127.0.0.1:%d", base+222)
 	epA := fmt.Sprintf("http://%s", addrA)
 
 	// Register peer endpoints under the new campfire ID so auth checks pass.
@@ -690,7 +690,7 @@ func TestRekeyNonCreatorForbidden(t *testing.T) {
 	})
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+40)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+223)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)
@@ -739,7 +739,7 @@ func TestRekeyForgedSenderRejected(t *testing.T) {
 	})
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+42)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+224)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)
@@ -847,7 +847,7 @@ func TestRekeyUnsignedMessageRejected(t *testing.T) {
 			})
 
 			base := portBase()
-			addrB := fmt.Sprintf("127.0.0.1:%d", base+48+int(tc.threshold))
+			addrB := fmt.Sprintf("127.0.0.1:%d", base+226+int(tc.threshold))
 			epB := fmt.Sprintf("http://%s", addrB)
 
 			trB := cfhttp.New(addrB, sB)
@@ -927,7 +927,7 @@ func TestRekeyDBFailureLeavesStateFileIntact(t *testing.T) {
 	})
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+46)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+225)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)
@@ -1066,7 +1066,7 @@ func TestRekeyPhase2CorruptCiphertextReturns400(t *testing.T) {
 	})
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+52)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+229)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)

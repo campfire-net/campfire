@@ -45,7 +45,7 @@ func TestEvictRejectedWhenStoreErrors(t *testing.T) {
 	addMembershipWithCreator(t, s, campfireID, idCreator.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+50)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+160)
 	startTransport(t, addr, s)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -89,7 +89,7 @@ func TestEvictAllowedWhenCreatorPubkeyEmpty(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idAny.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+51)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+161)
 	startTransport(t, addr, s)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -117,7 +117,7 @@ func TestEvictRejectedForNonCreator(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idNonCreator.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+52)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+162)
 	startTransport(t, addr, s)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -143,7 +143,7 @@ func TestEvictAllowedForCreator(t *testing.T) {
 	addMembershipWithCreator(t, s, campfireID, idCreator.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+53)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+163)
 	tr := cfhttp.New(addr, s)
 	tr.SetSelfInfo(idCreator.PublicKeyHex(), fmt.Sprintf("http://%s", addr))
 	if err := tr.Start(); err != nil {

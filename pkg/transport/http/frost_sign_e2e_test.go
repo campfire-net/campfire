@@ -78,8 +78,8 @@ func TestRunFROSTSignEndToEnd(t *testing.T) {
 	// Register each participant as a known peer on the other's store
 	// so the auth middleware's membership check passes.
 	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+35)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+36)
+	addrA := fmt.Sprintf("127.0.0.1:%d", base+40)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+41)
 	epA := fmt.Sprintf("http://%s", addrA)
 	epB := fmt.Sprintf("http://%s", addrB)
 

@@ -19,7 +19,7 @@ func TestPollReceivesMessages(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+50)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+120)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -50,7 +50,7 @@ func TestPollClientTimeout(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+51)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+121)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -84,7 +84,7 @@ func TestPollAuthFailure(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idServer.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+52)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+122)
 	startTransportWithSelf(t, addr, s, idServer)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -105,7 +105,7 @@ func TestPollCursorAdvances(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+53)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+123)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -145,7 +145,7 @@ func TestPollReturnsCorrectMessageContent(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+54)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+124)
 	startTransportWithSelf(t, addr, s, id)
 	ep := fmt.Sprintf("http://%s", addr)
 

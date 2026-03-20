@@ -107,7 +107,7 @@ func TestJoinPubkeyInjectionPrevented(t *testing.T) {
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
 
-	campfireID, ep, sHost := setupJoinServer(t, 90)
+	campfireID, ep, sHost := setupJoinServer(t, 300)
 
 	// keyA is the real signer identity.
 	keyA, err := identity.Generate()
@@ -165,7 +165,7 @@ func TestJoinMatchingPubkeyWorks(t *testing.T) {
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
 
-	campfireID, ep, sHost := setupJoinServer(t, 95)
+	campfireID, ep, sHost := setupJoinServer(t, 305)
 
 	// Normal joiner: signs with keyA and puts keyA in body.
 	keyA, err := identity.Generate()

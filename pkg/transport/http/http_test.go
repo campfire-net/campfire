@@ -75,6 +75,33 @@ func newTestMessage(t *testing.T, id *identity.Identity) *message.Message {
 }
 
 // portBase returns a per-process base port to avoid conflicts between parallel test runs.
+// Each test file is assigned a dedicated non-overlapping block of offsets. When adding a
+// new test, use the next free offset within the owning file's block. When adding a new
+// file, claim the next free block (increment by 20) and register it here.
+//
+// Port allocation table (offset blocks, each 20 wide):
+//
+//	  0 -  19: http_test.go               (used:  0-13)
+//	 20 -  39: send_read_test.go          (used: 20-26)
+//	 40 -  59: frost_sign_e2e_test.go     (used: 40-41)
+//	 60 -  79: handler_sign_test.go       (used: 60-68)
+//	 80 -  99: sign_race_test.go          (used: 80-82)
+//	100 - 119: poll_handler_test.go       (used: 100-112)
+//	120 - 139: poll_client_test.go        (used: 120-124)
+//	140 - 159: auth_test.go              (used: 140-152)
+//	160 - 179: evict_auth_test.go         (used: 160-163)
+//	180 - 219: security_test.go          (used: 180-202; 40-port block, extra tests)
+//	220 - 249: rekey_test.go             (used: 220-229; 226+threshold covers 227-228)
+//	250 - 259: rekey_replay_test.go      (used: 250-251)
+//	260 - 279: replay_protection_test.go  (used: 260-266)
+//	280 - 299: join_peer_disclosure_test.go (used: 280-283)
+//	300 - 319: join_pubkey_test.go        (used: 300, 305)
+//	320 - 339: (reserved)
+//	340 - 359: invite_only_join_test.go   (used: 340, 345, 350, 355)
+//	360 - 379: membership_event_test.go   (used: 360-362)
+//	380 - 399: handler_message_params_test.go (used: 380-382)
+//	400 - 419: handler_sync_malformed_test.go (used: 400-401)
+//	420 - 439: ssrf_test.go               (used: 420)
 func portBase() int {
 	return 19000 + (os.Getpid() % 500)
 }
@@ -438,7 +465,7 @@ func TestMembershipJoinIdentityInjectionRejected(t *testing.T) {
 	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: attacker.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+50)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+10)
 	ep := fmt.Sprintf("http://%s", addr)
 	startTransport(t, addr, s)
 
@@ -485,7 +512,7 @@ func TestMembershipJoinValidSender(t *testing.T) {
 	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: joiner.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+51)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+11)
 	ep := fmt.Sprintf("http://%s", addr)
 	tr := startTransport(t, addr, s)
 
@@ -523,7 +550,7 @@ func TestMembershipLeaveIdentityMismatchRejected(t *testing.T) {
 	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: attacker.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+52)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+12)
 	ep := fmt.Sprintf("http://%s", addr)
 	startTransport(t, addr, s)
 
@@ -570,7 +597,7 @@ func TestMembershipJoinSSRFEndpointRejected(t *testing.T) {
 	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: attacker.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+53)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+13)
 	ep := fmt.Sprintf("http://%s", addr)
 	startTransport(t, addr, s)
 

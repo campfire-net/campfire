@@ -69,7 +69,7 @@ func TestSignRound1ConcurrentRequests(t *testing.T) {
 	sB.UpsertThresholdShare(store.ThresholdShare{CampfireID: campfireID, ParticipantID: 2, SecretShare: shareB}) //nolint:errcheck
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+40)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+80)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	buildShareProvider := func(s *store.Store) cfhttp.ThresholdShareProvider {
@@ -154,7 +154,7 @@ func TestSignRound1SingleRequest(t *testing.T) {
 	sB.UpsertThresholdShare(store.ThresholdShare{CampfireID: campfireID, ParticipantID: 2, SecretShare: shareB}) //nolint:errcheck
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+41)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+81)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	buildShareProvider := func(s *store.Store) cfhttp.ThresholdShareProvider {
@@ -223,7 +223,7 @@ func TestSignRound2DoesNotBlockPeers(t *testing.T) {
 	sB.UpsertThresholdShare(store.ThresholdShare{CampfireID: campfireID, ParticipantID: 2, SecretShare: shareB})                        //nolint:errcheck
 
 	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+42)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+82)
 	epB := fmt.Sprintf("http://%s", addrB)
 
 	trB := cfhttp.New(addrB, sB)

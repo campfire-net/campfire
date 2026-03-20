@@ -25,7 +25,7 @@ func TestMembershipUnknownEventType(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+110)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+360)
 	startTransport(t, addr, s)
 	ep := fmt.Sprintf("http://%s", addr)
 
@@ -51,7 +51,7 @@ func TestMembershipJoinEmptyEndpointIgnored(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+111)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+361)
 	tr := cfhttp.New(addr, s)
 	if err := tr.Start(); err != nil {
 		t.Fatalf("start transport: %v", err)
@@ -92,7 +92,7 @@ func TestMembershipEvictRemovesPeer(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idSender.PublicKeyHex())
 
 	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+112)
+	addr := fmt.Sprintf("127.0.0.1:%d", base+362)
 	tr := cfhttp.New(addr, s)
 	if err := tr.Start(); err != nil {
 		t.Fatalf("start transport: %v", err)
