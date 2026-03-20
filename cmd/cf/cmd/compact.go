@@ -196,7 +196,8 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 	payloadStr := string(payloadJSON)
 
 	var sentMsg *message.Message
-	switch transport.ResolveType(*m) {
+	transportType := transport.ResolveType(*m)
+	switch transportType {
 	case transport.TypeGitHub:
 		sentMsg, err = sendGitHub(campfireID, payloadStr, compactTags, compactAntes, "compact", agentID, s, m)
 	case transport.TypePeerHTTP:
@@ -209,8 +210,10 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 	}
 
 	// Store the compaction event in the local SQLite store so ListCompactionEvents can find it.
-	// (sendP2PHTTP already stores locally; sendFilesystem and sendGitHub do not — store here for all paths.)
-	s.AddMessage(store.MessageRecordFromMessage(campfireID, sentMsg, store.NowNano())) //nolint:errcheck
+	// sendP2PHTTP already calls s.AddMessage internally; skip it here to avoid a duplicate insert.
+	if transportType != transport.TypePeerHTTP {
+		s.AddMessage(store.MessageRecordFromMessage(campfireID, sentMsg, store.NowNano())) //nolint:errcheck
+	}
 
 	return &compactResult{
 		supersededIDs:  supersededIDs,
