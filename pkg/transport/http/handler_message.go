@@ -175,8 +175,8 @@ func (h *handler) handlePoll(w http.ResponseWriter, r *http.Request, campfireID,
 	if timeoutSec > 50 {
 		timeoutSec = 50 // cap below server WriteTimeout (60s) to avoid killed connections
 	}
-	if timeoutSec < 0 {
-		timeoutSec = 0
+	if timeoutSec < 1 {
+		timeoutSec = 1 // enforce minimum 1s to prevent zero-duration busy-loop DoS
 	}
 
 	// Subscribe to PollBroker.

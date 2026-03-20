@@ -304,11 +304,16 @@ func (s *Store) GetMessage(id string) (*MessageRecord, error) {
 //
 // Security: the prefix is escaped before use in LIKE to prevent wildcard injection
 // via '%' or '_' characters in user-supplied input (workspace-4dr).
+//
+// The query uses LIMIT 2 so SQLite stops after fetching at most 2 rows — only
+// 2 are needed to detect ambiguity. When ambiguous, rows.Close() is called
+// explicitly before returning so the cursor is released immediately rather than
+// waiting for the GC to finalize the rows object (workspace-0eu).
 func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 	escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(prefix)
 	rows, err := s.db.Query(
 		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
-		 FROM messages WHERE id LIKE ? ESCAPE '\' ORDER BY id`,
+		 FROM messages WHERE id LIKE ? ESCAPE '\' ORDER BY id LIMIT 2`,
 		escaped+"%",
 	)
 	if err != nil {
@@ -324,6 +329,7 @@ func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 		}
 		matches = append(matches, m)
 		if len(matches) > 1 {
+			rows.Close() // release cursor immediately; defer is still safe to call on closed rows
 			return nil, fmt.Errorf("ambiguous message ID prefix %s, matches multiple messages", prefix)
 		}
 	}

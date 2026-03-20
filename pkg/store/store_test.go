@@ -457,6 +457,31 @@ func TestGetMessageByPrefix_Ambiguous(t *testing.T) {
 	}
 }
 
+// TestGetMessageByPrefix_AmbiguousThreeMatches verifies that a prefix matching
+// 3+ messages still returns an ambiguous error. The LIMIT 2 in the query means
+// SQLite reads at most 2 rows; the cursor must be released promptly (workspace-0eu).
+func TestGetMessageByPrefix_AmbiguousThreeMatches(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	for _, id := range []string{
+		"abc12345-aaaa-0000-0000-000000000000",
+		"abc12345-bbbb-0000-0000-000000000000",
+		"abc12345-cccc-0000-0000-000000000000",
+	} {
+		s.AddMessage(MessageRecord{
+			ID: id, CampfireID: "cf1", Sender: "s", Payload: []byte("p"),
+			Tags: "[]", Antecedents: "[]", Timestamp: 100, Signature: []byte("s"),
+			Provenance: "[]", ReceivedAt: 200,
+		})
+	}
+
+	_, err := s.GetMessageByPrefix("abc123")
+	if err == nil {
+		t.Fatal("expected ambiguous error for prefix matching 3 messages, got nil")
+	}
+}
+
 func TestGetMessageByPrefix_CrossCampfire(t *testing.T) {
 	s := testStore(t)
 	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})

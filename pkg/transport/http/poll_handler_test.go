@@ -549,6 +549,76 @@ func TestHandlePollMembershipStoreError(t *testing.T) {
 	}
 }
 
+// TestHandlePollZeroTimeoutFloor: timeout=0 must be clamped to 1s minimum, not
+// treated as a zero-duration busy-loop. The test verifies the response takes at
+// least 500ms (server blocks for ≥1s on an empty campfire), which rules out the
+// immediate-return behaviour of time.After(0). Regression test for workspace-2xs.
+func TestHandlePollZeroTimeoutFloor(t *testing.T) {
+	campfireID := "poll-zero-timeout"
+	id := tempIdentity(t)
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+50)
+	startTransportWithSelf(t, addr, s, id)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	since := time.Now().UnixNano()
+
+	start := time.Now()
+	resp, err := doPoll(ep, campfireID, since, 0, id) // timeout=0 should be floored to 1
+	if err != nil {
+		t.Fatalf("poll request: %v", err)
+	}
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+
+	// With timeout=0 clamped to 1s, an empty campfire should produce 204 after ~1s.
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 204, got %d: %s", resp.StatusCode, body)
+	}
+	// Must have waited at least 500ms — proves it didn't return instantly.
+	if elapsed < 500*time.Millisecond {
+		t.Errorf("poll returned in %v; expected ≥500ms (timeout=0 should be floored to 1s)", elapsed)
+	}
+}
+
+// TestHandlePollNegativeTimeoutFloor: timeout=-5 is also floored to 1s.
+// Regression test for workspace-2xs.
+func TestHandlePollNegativeTimeoutFloor(t *testing.T) {
+	campfireID := "poll-neg-timeout"
+	id := tempIdentity(t)
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+51)
+	startTransportWithSelf(t, addr, s, id)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	since := time.Now().UnixNano()
+
+	start := time.Now()
+	resp, err := doPoll(ep, campfireID, since, -5, id) // timeout=-5 should be floored to 1
+	if err != nil {
+		t.Fatalf("poll request: %v", err)
+	}
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 204, got %d: %s", resp.StatusCode, body)
+	}
+	if elapsed < 500*time.Millisecond {
+		t.Errorf("poll returned in %v; expected ≥500ms (timeout=-5 should be floored to 1s)", elapsed)
+	}
+}
+
 // TestHandlePollNoPeerEndpoints: sender is not the self key and the campfire
 // has no peer_endpoints rows. ListPeerEndpoints returns an empty list (no error).
 // The loop finds no match → isMember stays false → 403.
