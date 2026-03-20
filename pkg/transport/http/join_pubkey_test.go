@@ -105,6 +105,11 @@ func signJoinRequest(t *testing.T, ep, campfireID string, signerID *identity.Ide
 // but puts key B in the body's joiner_pubkey field, key A (senderHex) is stored
 // in the peer list — not key B.
 func TestJoinPubkeyInjectionPrevented(t *testing.T) {
+	// 203.0.113.0/24 is a documentation range now blocked by SSRF validation.
+	// This test focuses on pubkey injection, not SSRF; bypass endpoint validation.
+	cfhttp.OverrideValidateJoinerEndpointForTest()
+	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+
 	campfireID, ep, sHost := setupJoinServer(t, 90)
 
 	// keyA is the real signer identity.
@@ -158,6 +163,11 @@ func TestJoinPubkeyInjectionPrevented(t *testing.T) {
 // TestJoinMatchingPubkeyWorks verifies that a normal join (where JoinerPubkey
 // matches the actual sender key) still succeeds and stores the correct pubkey.
 func TestJoinMatchingPubkeyWorks(t *testing.T) {
+	// 203.0.113.0/24 is a documentation range now blocked by SSRF validation.
+	// This test focuses on pubkey matching, not SSRF; bypass endpoint validation.
+	cfhttp.OverrideValidateJoinerEndpointForTest()
+	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+
 	campfireID, ep, sHost := setupJoinServer(t, 95)
 
 	// Normal joiner: signs with keyA and puts keyA in body.

@@ -15,6 +15,7 @@ package http
 import (
 	"crypto/ecdh"
 	"crypto/rand"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -35,10 +36,12 @@ func newTransportForTest(t *testing.T) *Transport {
 	}
 	t.Cleanup(func() { s.Close() })
 	return &Transport{
-		store:         s,
-		peers:         make(map[string][]PeerInfo),
-		signSessions:  make(map[string]*signingSessionState),
-		rekeySessions: make(map[string]*rekeySessionState),
+		store:               s,
+		peers:               make(map[string][]PeerInfo),
+		signSessions:        make(map[string]*signingSessionState),
+		signSessionCampfire: make(map[string]string),
+		signSessionCounts:   make(map[string]int),
+		rekeySessions:       make(map[string]*rekeySessionState),
 		pollBroker: &PollBroker{
 			subs:           make(map[string][]chan struct{}),
 			limits:         make(map[string]int),
@@ -261,9 +264,11 @@ func TestGetOrCreateSignSession_Idempotent(t *testing.T) {
 	signerIDs := []uint32{1, 2}
 	message := []byte("idempotency test message")
 
+	campfireID := "test-campfire-idempotent"
+
 	// First call — should create a new session.
 	tr.mu.Lock()
-	first, err := tr.getOrCreateSignSession(sessionID, signerIDs, message, myResult, 1)
+	first, err := tr.getOrCreateSignSession(campfireID, sessionID, signerIDs, message, myResult, 1)
 	tr.mu.Unlock()
 	if err != nil {
 		t.Fatalf("first getOrCreateSignSession: %v", err)
@@ -274,7 +279,7 @@ func TestGetOrCreateSignSession_Idempotent(t *testing.T) {
 
 	// Second call with the same session_id — must return the exact same pointer.
 	tr.mu.Lock()
-	second, err := tr.getOrCreateSignSession(sessionID, signerIDs, message, myResult, 1)
+	second, err := tr.getOrCreateSignSession(campfireID, sessionID, signerIDs, message, myResult, 1)
 	tr.mu.Unlock()
 	if err != nil {
 		t.Fatalf("second getOrCreateSignSession: %v", err)
@@ -332,5 +337,133 @@ func TestPruneSignSessions_ConcurrentCreateAndPrune(t *testing.T) {
 		if s.createdAt.Before(cutoff) {
 			t.Errorf("session %q survived pruning but is older than 5 minutes (createdAt=%v)", id, s.createdAt)
 		}
+	}
+}
+
+// TestSignSessionPerCampfireCapEnforced verifies that getOrCreateSignSession rejects
+// new sessions once the per-campfire cap (maxSignSessionsPerCampfire) is reached,
+// while still accepting sessions for a different campfire.
+//
+// This guards against workspace-2uo: a verified member sending POST /campfire/{id}/sign
+// round=1 with unique session IDs to exhaust server memory.
+func TestSignSessionPerCampfireCapEnforced(t *testing.T) {
+	tr := newTransportForTest(t)
+
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+	myResult := dkgResults[1]
+	signerIDs := []uint32{1, 2}
+	msg := []byte("cap enforcement test")
+
+	campfireA := "campfire-cap-a"
+	campfireB := "campfire-cap-b"
+
+	// Fill campfireA up to the cap.
+	tr.mu.Lock()
+	for i := 0; i < maxSignSessionsPerCampfire; i++ {
+		sessionID := fmt.Sprintf("session-%d", i)
+		_, err := tr.getOrCreateSignSession(campfireA, sessionID, signerIDs, msg, myResult, 1)
+		if err != nil {
+			tr.mu.Unlock()
+			t.Fatalf("creating session %d: unexpected error: %v", i, err)
+		}
+	}
+	tr.mu.Unlock()
+
+	// One more session for campfireA must be rejected.
+	tr.mu.Lock()
+	_, err = tr.getOrCreateSignSession(campfireA, "session-overflow", signerIDs, msg, myResult, 1)
+	tr.mu.Unlock()
+	if err == nil {
+		t.Error("expected errSignSessionCapExceeded when cap is exceeded, got nil")
+	}
+	if err != errSignSessionCapExceeded {
+		t.Errorf("expected errSignSessionCapExceeded, got: %v", err)
+	}
+
+	// campfireB must still accept sessions — cap is per-campfire.
+	tr.mu.Lock()
+	_, err = tr.getOrCreateSignSession(campfireB, "session-b-0", signerIDs, msg, myResult, 1)
+	tr.mu.Unlock()
+	if err != nil {
+		t.Errorf("campfireB session rejected unexpectedly: %v", err)
+	}
+}
+
+// TestSignSessionCountDecrementedOnRemove verifies that removeSignSession decrements
+// the per-campfire count, allowing new sessions to be created after old ones complete.
+func TestSignSessionCountDecrementedOnRemove(t *testing.T) {
+	tr := newTransportForTest(t)
+
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+	myResult := dkgResults[1]
+	signerIDs := []uint32{1, 2}
+	msg := []byte("count decrement test")
+	campfireID := "campfire-count-decrement"
+
+	// Fill to cap.
+	tr.mu.Lock()
+	for i := 0; i < maxSignSessionsPerCampfire; i++ {
+		sessionID := fmt.Sprintf("decrement-session-%d", i)
+		if _, err := tr.getOrCreateSignSession(campfireID, sessionID, signerIDs, msg, myResult, 1); err != nil {
+			tr.mu.Unlock()
+			t.Fatalf("creating session %d: %v", i, err)
+		}
+	}
+	tr.mu.Unlock()
+
+	// Remove one session (simulates round-2 completion).
+	tr.removeSignSession("decrement-session-0")
+
+	// Now a new session must succeed.
+	tr.mu.Lock()
+	_, err = tr.getOrCreateSignSession(campfireID, "decrement-session-new", signerIDs, msg, myResult, 1)
+	tr.mu.Unlock()
+	if err != nil {
+		t.Errorf("expected new session to succeed after removal, got: %v", err)
+	}
+}
+
+// TestSignSessionCountDecrementedOnPrune verifies that pruneSignSessions decrements
+// the per-campfire count for expired sessions, freeing capacity.
+func TestSignSessionCountDecrementedOnPrune(t *testing.T) {
+	tr := newTransportForTest(t)
+
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+	myResult := dkgResults[1]
+	signerIDs := []uint32{1, 2}
+	msg := []byte("prune decrement test")
+	campfireID := "campfire-prune-decrement"
+
+	// Fill to cap using the API (so counts are tracked correctly).
+	tr.mu.Lock()
+	for i := 0; i < maxSignSessionsPerCampfire; i++ {
+		sessionID := fmt.Sprintf("prune-session-%d", i)
+		if _, err := tr.getOrCreateSignSession(campfireID, sessionID, signerIDs, msg, myResult, 1); err != nil {
+			tr.mu.Unlock()
+			t.Fatalf("creating session %d: %v", i, err)
+		}
+	}
+	// Age all sessions past the 5-minute cutoff.
+	for _, s := range tr.signSessions {
+		s.createdAt = time.Now().Add(-10 * time.Minute)
+	}
+	tr.pruneSignSessions()
+	tr.mu.Unlock()
+
+	// All sessions pruned — count should be zero. New session must succeed.
+	tr.mu.Lock()
+	_, err = tr.getOrCreateSignSession(campfireID, "prune-session-new", signerIDs, msg, myResult, 1)
+	tr.mu.Unlock()
+	if err != nil {
+		t.Errorf("expected new session after prune, got: %v", err)
 	}
 }

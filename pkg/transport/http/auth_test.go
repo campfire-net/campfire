@@ -356,6 +356,10 @@ func TestMembershipNonMemberForbidden(t *testing.T) {
 // notifications for themselves (200). After workspace-17qu.6, join events require
 // event.Member == sender to prevent identity injection.
 func TestMembershipMemberAllowed(t *testing.T) {
+	// Loopback endpoints are used in this integration test; bypass SSRF validation.
+	cfhttp.OverrideValidateJoinerEndpointForTest()
+	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+
 	campfireID := "membership-member"
 	idMember := tempIdentity(t)
 	s := tempStore(t)

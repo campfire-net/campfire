@@ -271,6 +271,10 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 			return
 		}
 		if event.Endpoint != "" {
+			if err := validateJoinerEndpoint(event.Endpoint); err != nil {
+				http.Error(w, "invalid endpoint: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 			h.transport.AddPeer(campfireID, senderHex, event.Endpoint)
 		}
 	case "leave":

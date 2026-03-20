@@ -59,6 +59,14 @@ type Transport struct {
 	// signSessions holds ephemeral co-signer signing sessions, keyed by session_id.
 	signSessions map[string]*signingSessionState
 
+	// signSessionCampfire maps session_id → campfireID so counts can be decremented
+	// when a session is removed or pruned.
+	signSessionCampfire map[string]string
+
+	// signSessionCounts tracks the number of active signing sessions per campfire.
+	// Used to enforce maxSignSessionsPerCampfire.
+	signSessionCounts map[string]int
+
 	// rekeySessions holds ephemeral X25519 keys for rekey phase-1 handshakes.
 	// Keyed by senderEphemeralPubHex. Pruned after 5 minutes.
 	rekeySessions map[string]*rekeySessionState
@@ -71,14 +79,23 @@ type Transport struct {
 // The returned bytes should be deserialized with threshold.UnmarshalResult.
 type ThresholdShareProvider func(campfireID string) (participantID uint32, shareData []byte, err error)
 
+// maxSignSessionsPerCampfire caps the number of concurrent FROST signing sessions
+// a single campfire may hold at one time. Requests beyond this limit are rejected
+// with HTTP 429. This mirrors the poll broker's maxPerCampfire guard and prevents
+// a verified-but-malicious member from exhausting server memory by flooding
+// POST /campfire/{id}/sign round=1 with unique session IDs.
+const maxSignSessionsPerCampfire = 32
+
 // New creates a Transport listening on listenAddr, using the given store.
 func New(listenAddr string, s *store.Store) *Transport {
 	t := &Transport{
-		listenAddr:    listenAddr,
-		store:         s,
-		peers:         make(map[string][]PeerInfo),
-		signSessions:  make(map[string]*signingSessionState),
-		rekeySessions: make(map[string]*rekeySessionState),
+		listenAddr:          listenAddr,
+		store:               s,
+		peers:               make(map[string][]PeerInfo),
+		signSessions:        make(map[string]*signingSessionState),
+		signSessionCampfire: make(map[string]string),
+		signSessionCounts:   make(map[string]int),
+		rekeySessions:       make(map[string]*rekeySessionState),
 		pollBroker: &PollBroker{
 			subs:           make(map[string][]chan struct{}),
 			limits:         make(map[string]int),
@@ -196,12 +213,21 @@ func (t *Transport) SetThresholdShareProvider(p ThresholdShareProvider) {
 	t.thresholdShareProvider = p
 }
 
+// errSignSessionCapExceeded is returned by getOrCreateSignSession when the
+// per-campfire cap on concurrent signing sessions has been reached.
+var errSignSessionCapExceeded = fmt.Errorf("too many concurrent sign sessions for campfire (max %d)", maxSignSessionsPerCampfire)
+
 // getOrCreateSignSession looks up an existing signing session or creates a new one.
 // Returns the signingSessionState so callers can acquire its per-session lock.
+// Returns errSignSessionCapExceeded if the per-campfire cap would be exceeded.
 // Must be called with t.mu held (write lock).
-func (t *Transport) getOrCreateSignSession(sessionID string, signerIDs []uint32, msg []byte, myShare *threshold.DKGResult, myParticipantID uint32) (*signingSessionState, error) {
+func (t *Transport) getOrCreateSignSession(campfireID, sessionID string, signerIDs []uint32, msg []byte, myShare *threshold.DKGResult, myParticipantID uint32) (*signingSessionState, error) {
 	if existing, ok := t.signSessions[sessionID]; ok {
 		return existing, nil
+	}
+	// Enforce per-campfire cap on concurrent signing sessions.
+	if t.signSessionCounts[campfireID] >= maxSignSessionsPerCampfire {
+		return nil, errSignSessionCapExceeded
 	}
 	ss, err := threshold.NewSigningSession(myShare.SecretShare, myShare.Public, msg, signerIDs)
 	if err != nil {
@@ -212,27 +238,43 @@ func (t *Transport) getOrCreateSignSession(sessionID string, signerIDs []uint32,
 		createdAt: time.Now(),
 	}
 	t.signSessions[sessionID] = state
+	t.signSessionCampfire[sessionID] = campfireID
+	t.signSessionCounts[campfireID]++
 	// Prune stale sessions older than 5 minutes.
 	t.pruneSignSessions()
 	return state, nil
 }
 
-// pruneSignSessions removes signing sessions older than 5 minutes.
+// pruneSignSessions removes signing sessions older than 5 minutes and decrements
+// their per-campfire counts.
 // Must be called with t.mu held (write lock).
 func (t *Transport) pruneSignSessions() {
 	cutoff := time.Now().Add(-5 * time.Minute)
 	for id, s := range t.signSessions {
 		if s.createdAt.Before(cutoff) {
 			delete(t.signSessions, id)
+			if cfID, ok := t.signSessionCampfire[id]; ok {
+				delete(t.signSessionCampfire, id)
+				if t.signSessionCounts[cfID] > 0 {
+					t.signSessionCounts[cfID]--
+				}
+			}
 		}
 	}
 }
 
-// removeSignSession removes a signing session after it completes.
+// removeSignSession removes a signing session after it completes and decrements
+// the per-campfire session count.
 func (t *Transport) removeSignSession(sessionID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.signSessions, sessionID)
+	if cfID, ok := t.signSessionCampfire[sessionID]; ok {
+		delete(t.signSessionCampfire, sessionID)
+		if t.signSessionCounts[cfID] > 0 {
+			t.signSessionCounts[cfID]--
+		}
+	}
 }
 
 // storeRekeySession stores a receiver-side ephemeral X25519 key for a rekey handshake.
