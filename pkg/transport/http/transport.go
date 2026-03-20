@@ -157,9 +157,13 @@ func (t *Transport) Start() error {
 	return nil
 }
 
-// Stop gracefully shuts down the HTTP server.
+// Stop gracefully shuts down the HTTP server with a 5-second timeout.
+// Using context.Background() would block indefinitely while long-poll connections
+// (up to 120s timeout) are active. A 5-second timeout ensures timely shutdown.
 func (t *Transport) Stop() error {
-	return t.server.Shutdown(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return t.server.Shutdown(ctx)
 }
 
 // AddPeer registers a peer for a campfire.
