@@ -303,23 +303,13 @@ func evictThresholdN(
 	rekeyMsgCBOR, err := buildAndSignRekeyMessage(agentID, s, oldCampfireID, oldCFState,
 		rekeyPayload, remainingPeers, thresh)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: threshold signing for rekey failed (%v), creating unsigned message\n", err)
-		// Fall back: create a message signed by the old campfire key.
-		// For threshold>1, oldCFState.PrivateKey is nil (no single private key).
-		// Use a placeholder — the rekey message payload is still valid.
-		unsignedMsg := &message.Message{
-			ID:          uuid.New().String(),
-			Sender:      ed25519.PublicKey(oldCFState.PublicKey),
-			Payload:     rekeyPayload,
-			Tags:        []string{"campfire:rekey"},
-			Antecedents: []string{},
-			Timestamp:   time.Now().UnixNano(),
-			Provenance:  []message.ProvenanceHop{},
-		}
-		rekeyMsgCBOR, err = cfencoding.Marshal(unsignedMsg)
-		if err != nil {
-			return "", fmt.Errorf("encoding fallback rekey message: %w", err)
-		}
+		// FROST quorum signing failed — no single private key exists for threshold>1.
+		// Send the eviction without a rekey audit message rather than sending an unsigned
+		// placeholder that would be rejected by peers (handler_rekey.go enforces signature
+		// verification for all thresholds). The eviction and key rotation still proceed;
+		// only the audit record is missing for this rekey event.
+		fmt.Fprintf(os.Stderr, "warning: threshold signing for rekey failed (%v); eviction proceeds without signed audit record\n", err)
+		rekeyMsgCBOR = nil
 	}
 
 	// Assign participant IDs to remaining peers.

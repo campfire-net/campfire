@@ -462,22 +462,10 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	// Build campfire:rekey message (unsigned for threshold>1 test simplicity).
-	rekeyPayload, _ := json.Marshal(map[string]string{
-		"old_key": oldCampfireID,
-		"new_key": newCampfireID,
-		"reason":  "eviction",
-	})
-	rekeyMsg := &message.Message{
-		ID:          "test-rekey-t2-id",
-		Sender:      ed25519.PublicKey(oldGroupKey),
-		Payload:     rekeyPayload,
-		Tags:        []string{"campfire:rekey"},
-		Antecedents: []string{},
-		Timestamp:   time.Now().UnixNano(),
-		Provenance:  []message.ProvenanceHop{},
-	}
-	rekeyMsgCBOR, _ := cfencoding.Marshal(rekeyMsg)
+	// For threshold>1, FROST signing requires a quorum — no single private key exists.
+	// The eviction proceeds without a rekey audit message (nil CBOR).
+	// This matches the fallback behavior in evictThresholdN when FROST signing fails.
+	var rekeyMsgCBOR []byte
 
 	// Serialize B's new FROST DKG share.
 	newShareBData, err := threshold.MarshalResult(2, newDKGResults[2])
@@ -742,6 +730,90 @@ func TestRekeyForgedSenderRejected(t *testing.T) {
 		t.Fatal("expected phase 2 to reject forged rekey message signature")
 	}
 	t.Logf("forged rekey signature correctly rejected: %v", err)
+}
+
+// TestRekeyUnsignedMessageRejected verifies that unsigned rekey messages are rejected
+// for all threshold values. An unsigned rekey message cannot serve as a verifiable
+// audit record; the handler must reject it regardless of threshold.
+// When FROST quorum signing fails (threshold>1), the sender should omit RekeyMessageCBOR
+// entirely (nil) rather than sending an unsigned placeholder.
+func TestRekeyUnsignedMessageRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		threshold uint
+	}{
+		{"threshold=1", 1},
+		{"threshold=2", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldCFPub, oldCFPriv, err := ed25519.GenerateKey(nil)
+			if err != nil {
+				t.Fatalf("generating campfire key: %v", err)
+			}
+			oldCampfireID := fmt.Sprintf("%x", oldCFPub)
+
+			newCFPub, _, err := ed25519.GenerateKey(nil)
+			if err != nil {
+				t.Fatalf("generating new campfire key: %v", err)
+			}
+			newCampfireID := fmt.Sprintf("%x", newCFPub)
+
+			idA := tempIdentity(t)
+			sB := tempStore(t)
+			stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, tc.threshold)
+			addMembershipWithDir(t, sB, oldCampfireID, stateDirB, tc.threshold)
+
+			sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+				CampfireID:   oldCampfireID,
+				MemberPubkey: idA.PublicKeyHex(),
+				Endpoint:     "http://127.0.0.1:9997",
+			})
+
+			base := portBase()
+			addrB := fmt.Sprintf("127.0.0.1:%d", base+48+int(tc.threshold))
+			epB := fmt.Sprintf("http://%s", addrB)
+
+			trB := cfhttp.New(addrB, sB)
+			trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+			if err := trB.Start(); err != nil {
+				t.Fatalf("starting transport: %v", err)
+			}
+			t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+			time.Sleep(20 * time.Millisecond)
+
+			// Build an unsigned rekey message (no Signature field).
+			rekeyPayload, _ := json.Marshal(map[string]string{
+				"old_key": oldCampfireID,
+				"new_key": newCampfireID,
+				"reason":  "eviction",
+			})
+			unsignedMsg := &message.Message{
+				ID:          "unsigned-rekey-test",
+				Sender:      ed25519.PublicKey(oldCFPub),
+				Payload:     rekeyPayload,
+				Tags:        []string{"campfire:rekey"},
+				Antecedents: []string{},
+				Timestamp:   time.Now().UnixNano(),
+				Provenance:  []message.ProvenanceHop{},
+				// Signature intentionally absent.
+			}
+			unsignedMsgCBOR, _ := cfencoding.Marshal(unsignedMsg)
+
+			senderPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
+			senderPubHex := fmt.Sprintf("%x", senderPriv.PublicKey().Bytes())
+
+			phase1Req := cfhttp.RekeyRequest{
+				NewCampfireID:    newCampfireID,
+				SenderX25519Pub:  senderPubHex,
+				RekeyMessageCBOR: unsignedMsgCBOR,
+			}
+			_, err = cfhttp.SendRekeyPhase1(epB, oldCampfireID, phase1Req, idA)
+			if err == nil {
+				t.Fatalf("expected unsigned rekey message to be rejected for %s", tc.name)
+			}
+			t.Logf("unsigned rekey correctly rejected for %s: %v", tc.name, err)
+		})
+	}
 }
 
 // TestRekeyDBFailureLeavesStateFileIntact verifies the atomicity guarantee:
