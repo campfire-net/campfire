@@ -1,6 +1,8 @@
 package http
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -87,6 +89,76 @@ func TestPollBrokerLimit(t *testing.T) {
 		t.Fatalf("Subscribe after deregister failed: %v", err)
 	}
 	defer dereg()
+}
+
+// TestPollBrokerConcurrentRace exercises Subscribe, Notify, and deregister
+// concurrently across multiple goroutines to catch data races. Run with -race.
+func TestPollBrokerConcurrentRace(t *testing.T) {
+	b := &PollBroker{
+		subs:           make(map[string][]chan struct{}),
+		limits:         make(map[string]int),
+		maxPerCampfire: 64,
+	}
+
+	const campfires = 3
+	const goroutinesPerCampfire = 8
+	const notifyRounds = 20
+
+	var wg sync.WaitGroup
+
+	// Subscriber goroutines: subscribe, wait for one signal (or timeout), then deregister.
+	for c := 0; c < campfires; c++ {
+		fireID := fmt.Sprintf("race-fire-%d", c)
+		for g := 0; g < goroutinesPerCampfire; g++ {
+			wg.Add(1)
+			go func(id string) {
+				defer wg.Done()
+				ch, dereg, err := b.Subscribe(id)
+				if err != nil {
+					// Limit hit under concurrency is acceptable — just return.
+					return
+				}
+				defer dereg()
+				// Call deregister a second time to verify sync.Once safety.
+				defer dereg()
+				select {
+				case <-ch:
+				case <-time.After(200 * time.Millisecond):
+				}
+			}(fireID)
+		}
+	}
+
+	// Notifier goroutine: repeatedly notify all campfires.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for r := 0; r < notifyRounds; r++ {
+			for c := 0; c < campfires; c++ {
+				b.Notify(fmt.Sprintf("race-fire-%d", c))
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
+func TestPollBrokerNotifyNoSubscribers(t *testing.T) {
+	b := newTestBroker()
+	// Notify on a campfire with no subscribers must not panic.
+	b.Notify("nonexistent-fire")
+}
+
+func TestPollBrokerDeregisterIdempotent(t *testing.T) {
+	b := newTestBroker()
+	_, dereg, err := b.Subscribe("fire-idem")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	// Calling deregister multiple times must not panic or corrupt state.
+	dereg()
+	dereg()
+	dereg()
 }
 
 func TestPollBrokerMultiCampfire(t *testing.T) {
