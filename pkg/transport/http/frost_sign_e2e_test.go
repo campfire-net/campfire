@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
@@ -120,7 +122,18 @@ func TestRunFROSTSignEndToEnd(t *testing.T) {
 		t.Fatalf("UnmarshalResult A: %v", err)
 	}
 
-	signMsg := []byte("RunFROSTSign end-to-end integration test")
+	// MessageToSign must be CBOR-encoded MessageSignInput or HopSignInput.
+	signInput := message.MessageSignInput{
+		ID:          "test-msg-runsign-e2e",
+		Payload:     []byte("RunFROSTSign end-to-end integration test"),
+		Tags:        []string{"test"},
+		Antecedents: []string{},
+		Timestamp:   time.Now().UnixNano(),
+	}
+	signMsg, err := cfencoding.Marshal(signInput)
+	if err != nil {
+		t.Fatalf("marshaling MessageSignInput: %v", err)
+	}
 	sessionID := "e2e-runsign-session"
 
 	// A calls RunFROSTSign targeting B as the sole co-signer.

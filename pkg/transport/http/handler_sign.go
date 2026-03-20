@@ -2,13 +2,48 @@ package http
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 
 	frostmessages "github.com/taurusgroup/frost-ed25519/pkg/messages"
 
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/threshold"
 )
+
+// validateMessageToSign checks that msg is a CBOR-encoded HopSignInput or
+// MessageSignInput. Both are the only payload types that the campfire protocol
+// legitimately threshold-signs. Arbitrary bytes are rejected to prevent
+// signing-oracle abuse by campfire members.
+//
+// Returns nil if msg is a valid HopSignInput (non-empty MessageID + non-empty
+// CampfireID) or a valid MessageSignInput (non-empty ID field). Returns an
+// error if msg cannot be decoded as either.
+func validateMessageToSign(msg []byte) error {
+	if len(msg) == 0 {
+		return fmt.Errorf("message_to_sign is empty")
+	}
+
+	// Try HopSignInput first: requires MessageID (field 1) and CampfireID (field 2).
+	var hop message.HopSignInput
+	if err := cfencoding.Unmarshal(msg, &hop); err == nil {
+		if hop.MessageID != "" && len(hop.CampfireID) > 0 {
+			return nil
+		}
+	}
+
+	// Try MessageSignInput: requires ID (field 1).
+	var msi message.MessageSignInput
+	if err := cfencoding.Unmarshal(msg, &msi); err == nil {
+		if msi.ID != "" {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("message_to_sign is not a valid HopSignInput or MessageSignInput")
+}
 
 // handleSign processes a FROST signing round message from the initiator.
 // POST /campfire/{id}/sign
@@ -38,6 +73,18 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID,
 	if req.SessionID == "" {
 		http.Error(w, "missing session_id", http.StatusBadRequest)
 		return
+	}
+
+	// Round 1 carries the MessageToSign that this node will co-sign. Validate
+	// it is a known canonical type (HopSignInput or MessageSignInput) before
+	// any FROST state is created. This prevents a campfire member from using
+	// this node as a signing oracle for arbitrary bytes.
+	if req.Round == 1 {
+		if err := validateMessageToSign(req.MessageToSign); err != nil {
+			log.Printf("handleSign: rejected invalid message_to_sign for campfire %s session %s: %v", campfireID, req.SessionID, err)
+			http.Error(w, "message_to_sign must be a CBOR-encoded HopSignInput or MessageSignInput", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Load this node's DKG share for the campfire.
