@@ -1,6 +1,7 @@
 package campfire
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -138,7 +139,7 @@ func (c *Campfire) AddMember(pubKey ed25519.PublicKey) {
 // RemoveMember removes a member by public key. Returns true if found.
 func (c *Campfire) RemoveMember(pubKey ed25519.PublicKey) bool {
 	for i, m := range c.Members {
-		if equal(m.PublicKey, pubKey) {
+		if bytes.Equal(m.PublicKey, pubKey) {
 			c.Members = append(c.Members[:i], c.Members[i+1:]...)
 			return true
 		}
@@ -149,7 +150,7 @@ func (c *Campfire) RemoveMember(pubKey ed25519.PublicKey) bool {
 // IsMember checks if a public key is a member.
 func (c *Campfire) IsMember(pubKey ed25519.PublicKey) bool {
 	for _, m := range c.Members {
-		if equal(m.PublicKey, pubKey) {
+		if bytes.Equal(m.PublicKey, pubKey) {
 			return true
 		}
 	}
@@ -191,14 +192,3 @@ func (c *Campfire) State() CampfireState {
 	}
 }
 
-func equal(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
