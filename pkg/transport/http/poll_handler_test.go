@@ -82,11 +82,11 @@ func storeMessageRecord(t *testing.T, s *store.Store, campfireID string, id *ide
 		CampfireID:  campfireID,
 		Sender:      id.PublicKeyHex(),
 		Payload:     msg.Payload,
-		Tags:        `["test"]`,
-		Antecedents: `[]`,
+		Tags:        []string{"test"},
+		Antecedents: nil,
 		Timestamp:   msg.Timestamp,
 		Signature:   msg.Signature,
-		Provenance:  `[]`,
+		Provenance:  nil,
 		ReceivedAt:  time.Now().UnixNano(),
 	}
 	if _, err := s.AddMessage(rec); err != nil {
@@ -471,11 +471,11 @@ func TestHandlePollFiltersByReceivedAt(t *testing.T) {
 		CampfireID:  campfireID,
 		Sender:      id.PublicKeyHex(),
 		Payload:     msg.Payload,
-		Tags:        `["test"]`,
-		Antecedents: `[]`,
+		Tags:        []string{"test"},
+		Antecedents: nil,
 		Timestamp:   now - int64(60*time.Second), // 60s in the past (sender clock skew)
 		Signature:   msg.Signature,
-		Provenance:  `[]`,
+		Provenance:  nil,
 		ReceivedAt:  now, // received by server just now
 	}
 	if _, err := s.AddMessage(skewedRec); err != nil {

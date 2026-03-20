@@ -12,7 +12,6 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -96,9 +95,7 @@ func buildJoinRequest(t *testing.T, ep, campfireID string, signerID *identity.Id
 		t.Fatalf("building request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	sig := signerID.Sign(body)
-	req.Header.Set("X-Campfire-Sender", signerID.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, signerID, body)
 	return req
 }
 
@@ -106,7 +103,7 @@ func buildJoinRequest(t *testing.T, ep, campfireID string, signerID *identity.Id
 // providing an endpoint is rejected (403) and leaves no record in peer_endpoints.
 // This is the baseline case: a fresh joiner never in the invite list.
 func TestInviteOnlyJoinRejectedNoStaleEndpoint(t *testing.T) {
-	campfireID, ep, sHost := setupInviteOnlyServer(t, 110)
+	campfireID, ep, sHost := setupInviteOnlyServer(t, 220)
 
 	uninvited, err := identity.Generate()
 	if err != nil {
@@ -152,7 +149,7 @@ func TestInviteOnlyJoinRejectedNoStaleEndpoint(t *testing.T) {
 // record gets updated, not duplicated) and verifies the stale cleanup indirectly
 // by confirming that the cleanup path is exercised without panics or errors.
 func TestInviteOnlyJoinStaleEndpointClearedOnRejection(t *testing.T) {
-	campfireID, ep, sHost := setupInviteOnlyServer(t, 115)
+	campfireID, ep, sHost := setupInviteOnlyServer(t, 225)
 
 	joiner, err := identity.Generate()
 	if err != nil {
@@ -205,7 +202,7 @@ func TestInviteOnlyJoinStaleEndpointClearedOnRejection(t *testing.T) {
 // TestInviteOnlyUninvitedJoinerRejectedWithEndpoint verifies that an uninvited
 // joiner providing a public endpoint gets a 403 and no endpoint is stored.
 func TestInviteOnlyUninvitedJoinerRejectedWithEndpoint(t *testing.T) {
-	campfireID, ep, sHost := setupInviteOnlyServer(t, 120)
+	campfireID, ep, sHost := setupInviteOnlyServer(t, 230)
 
 	uninvited, err := identity.Generate()
 	if err != nil {
@@ -240,7 +237,7 @@ func TestInviteOnlyUninvitedJoinerRejectedWithEndpoint(t *testing.T) {
 // attempts from an uninvited joiner do not leave stale endpoint records.
 // All requests must be rejected and no peer_endpoints record must remain.
 func TestInviteOnlyConcurrentRejectionNoStaleRecord(t *testing.T) {
-	campfireID, ep, sHost := setupInviteOnlyServer(t, 125)
+	campfireID, ep, sHost := setupInviteOnlyServer(t, 235)
 
 	joiner, err := identity.Generate()
 	if err != nil {

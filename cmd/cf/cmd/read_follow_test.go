@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -195,18 +194,15 @@ func TestFollowLoopConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tagsJSON, _ := json.Marshal(msg.Tags)
-	antJSON, _ := json.Marshal(msg.Antecedents)
-	provJSON, _ := json.Marshal(msg.Provenance)
 	s.AddMessage(store.MessageRecord{
 		ID:          msg.ID,
 		CampfireID:  campfireID,
 		Sender:      fmt.Sprintf("%x", msg.Sender),
 		Payload:     msg.Payload,
-		Tags:        string(tagsJSON),
-		Antecedents: string(antJSON),
+		Tags:        msg.Tags,
+		Antecedents: msg.Antecedents,
 		Timestamp:   msg.Timestamp,
-		Provenance:  string(provJSON),
+		Provenance:  msg.Provenance,
 		ReceivedAt:  store.NowNano(),
 	})
 

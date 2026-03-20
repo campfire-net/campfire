@@ -28,13 +28,13 @@ func TestCursorAdvancesOnPreFilterMessages(t *testing.T) {
 	// Add messages: one with "blocker" tag at t=1000, one with "status" at t=2000.
 	s.AddMessage(store.MessageRecord{
 		ID: "msg-blocker", CampfireID: cfID, Sender: "aabbcc",
-		Payload: []byte("blocked"), Tags: `["blocker"]`, Antecedents: `[]`,
-		Timestamp: 1000, Signature: []byte("sig"), Provenance: `[]`, ReceivedAt: 1000,
+		Payload: []byte("blocked"), Tags: []string{"blocker"}, Antecedents: nil,
+		Timestamp: 1000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 1000,
 	})
 	s.AddMessage(store.MessageRecord{
 		ID: "msg-status", CampfireID: cfID, Sender: "aabbcc",
-		Payload: []byte("status update"), Tags: `["status"]`, Antecedents: `[]`,
-		Timestamp: 2000, Signature: []byte("sig"), Provenance: `[]`, ReceivedAt: 2000,
+		Payload: []byte("status update"), Tags: []string{"status"}, Antecedents: nil,
+		Timestamp: 2000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 2000,
 	})
 
 	// Simulate reading with --tag blocker filter.

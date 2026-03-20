@@ -557,6 +557,9 @@ func TestMembershipLeaveIdentityMismatchRejected(t *testing.T) {
 // TestMembershipJoinSSRFEndpointRejected verifies that a join event containing
 // a private/internal endpoint (SSRF attempt) is rejected with 400.
 func TestMembershipJoinSSRFEndpointRejected(t *testing.T) {
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
+
 	campfireID := "test-campfire-ssrf-join"
 	attacker := tempIdentity(t)
 

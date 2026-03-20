@@ -142,8 +142,8 @@ func TestRunPull_FieldsProjectionJSON(t *testing.T) {
 	s.AddMembership(store.Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
 	s.AddMessage(store.MessageRecord{
 		ID: "pull-fields-0000-0000-0000-000000000000", CampfireID: "cf1",
-		Sender: "aabbccdd", Payload: []byte("pull fields test"), Tags: `["status"]`, Antecedents: "[]",
-		Timestamp: 1000000000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000000000,
+		Sender: "aabbccdd", Payload: []byte("pull fields test"), Tags: []string{"status"}, Antecedents: nil,
+		Timestamp: 1000000000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 2000000000,
 	})
 	s.Close()
 
@@ -201,8 +201,8 @@ func TestRunPull_FieldsProjectionHumanReadable(t *testing.T) {
 	s.AddMembership(store.Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
 	s.AddMessage(store.MessageRecord{
 		ID: "pull-hr-fields-0000-0000-0000-000000000000", CampfireID: "cf1",
-		Sender: "aabbccdd", Payload: []byte("human readable pull"), Tags: `["status"]`, Antecedents: "[]",
-		Timestamp: 1000000000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000000000,
+		Sender: "aabbccdd", Payload: []byte("human readable pull"), Tags: []string{"status"}, Antecedents: nil,
+		Timestamp: 1000000000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 2000000000,
 		Instance: "worker-pull",
 	})
 	s.Close()
@@ -245,8 +245,8 @@ func TestRunPull_AllFieldsByDefault(t *testing.T) {
 	s.AddMembership(store.Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
 	s.AddMessage(store.MessageRecord{
 		ID: "pull-allfields-0000-0000-0000-000000000000", CampfireID: "cf1",
-		Sender: "aabbccdd", Payload: []byte("all fields"), Tags: `["status"]`, Antecedents: "[]",
-		Timestamp: 1000000000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000000000,
+		Sender: "aabbccdd", Payload: []byte("all fields"), Tags: []string{"status"}, Antecedents: nil,
+		Timestamp: 1000000000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 2000000000,
 	})
 	s.Close()
 

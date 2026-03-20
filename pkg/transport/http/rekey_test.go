@@ -326,9 +326,7 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 	}
 	foundRekey := false
 	for _, m := range msgs {
-		for _, tag := range []byte(m.Tags) {
-			_ = tag
-		}
+		_ = m.Tags // tags already parsed as []string
 		var payload map[string]string
 		json.Unmarshal(m.Payload, &payload) //nolint:errcheck
 		if payload["old_key"] == oldCampfireID && payload["new_key"] == newCampfireID {

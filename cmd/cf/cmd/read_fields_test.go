@@ -13,18 +13,17 @@ import (
 
 // helper to build a minimal MessageRecord for field projection tests.
 func makeFieldsTestRecord(id, cfID, sender, instance, payload string, tags []string, timestamp int64) store.MessageRecord {
-	tagsJSON, _ := json.Marshal(tags)
 	return store.MessageRecord{
 		ID:          id,
 		CampfireID:  cfID,
 		Sender:      sender,
 		Instance:    instance,
 		Payload:     []byte(payload),
-		Tags:        string(tagsJSON),
-		Antecedents: "[]",
+		Tags:        tags,
+		Antecedents: nil,
 		Timestamp:   timestamp,
 		Signature:   []byte("sig"),
-		Provenance:  "[]",
+		Provenance:  nil,
 		ReceivedAt:  timestamp + 1000,
 	}
 }

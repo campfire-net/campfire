@@ -441,7 +441,7 @@ func TestViewRead_ViewNotFound(t *testing.T) {
 
 func TestBuildMessageContext(t *testing.T) {
 	rec := store.MessageRecord{
-		Tags:      `["memory:standing","note"]`,
+		Tags:      []string{"memory:standing", "note"},
 		Sender:    "abcdef1234567890",
 		Timestamp: 12345,
 		Payload:   []byte(`{"confidence": 0.8, "category": "identity"}`),
@@ -466,7 +466,7 @@ func TestBuildMessageContext(t *testing.T) {
 
 func TestBuildMessageContext_NonJSONPayload(t *testing.T) {
 	rec := store.MessageRecord{
-		Tags:    `[]`,
+		Tags:    nil,
 		Payload: []byte("plain text message"),
 	}
 	ctx := buildMessageContext(rec)

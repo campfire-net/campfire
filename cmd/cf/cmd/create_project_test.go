@@ -189,11 +189,17 @@ func TestCreateFilesystem_ProjectMode_AnnouncementSent(t *testing.T) {
 	}
 
 	// Check for campfire:sub-created tag and sub-campfire short ID in payload.
-	// MessageRecord.Tags is a JSON string (e.g. `["campfire:sub-created"]`).
 	subShortID := subCF.PublicKeyHex()[:12]
 	found := false
 	for _, m := range msgs {
-		if strings.Contains(m.Tags, "campfire:sub-created") && strings.Contains(string(m.Payload), subShortID) {
+		hasTag := false
+		for _, t := range m.Tags {
+			if t == "campfire:sub-created" {
+				hasTag = true
+				break
+			}
+		}
+		if hasTag && strings.Contains(string(m.Payload), subShortID) {
 			found = true
 			break
 		}

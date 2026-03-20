@@ -43,11 +43,11 @@ func buildMalformedSenderRecord(t *testing.T, s *store.Store, campfireID string)
 		CampfireID:  campfireID,
 		Sender:      "notvalidhex!", // odd-length / non-hex: hex.DecodeString will fail
 		Payload:     msg.Payload,
-		Tags:        `["test"]`,
-		Antecedents: `[]`,
+		Tags:        []string{"test"},
+		Antecedents: nil,
 		Timestamp:   msg.Timestamp,
 		Signature:   msg.Signature,
-		Provenance:  `[]`,
+		Provenance:  nil,
 		ReceivedAt:  time.Now().UnixNano(),
 	}
 	if _, err := s.AddMessage(rec); err != nil {

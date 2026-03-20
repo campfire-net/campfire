@@ -8,8 +8,8 @@ import (
 
 func TestFilterMessages_NoFilters(t *testing.T) {
 	msgs := []store.MessageRecord{
-		{ID: "a1", Sender: "aabbcc", Tags: `["status"]`},
-		{ID: "a2", Sender: "ddeeff", Tags: `["blocker"]`},
+		{ID: "a1", Sender: "aabbcc", Tags: []string{"status"}},
+		{ID: "a2", Sender: "ddeeff", Tags: []string{"blocker"}},
 	}
 	result := filterMessages(msgs, nil, "")
 	if len(result) != 2 {
@@ -19,9 +19,9 @@ func TestFilterMessages_NoFilters(t *testing.T) {
 
 func TestFilterMessages_SingleTag(t *testing.T) {
 	msgs := []store.MessageRecord{
-		{ID: "a1", Sender: "aabbcc", Tags: `["status"]`},
-		{ID: "a2", Sender: "ddeeff", Tags: `["blocker"]`},
-		{ID: "a3", Sender: "112233", Tags: `["status","finding"]`},
+		{ID: "a1", Sender: "aabbcc", Tags: []string{"status"}},
+		{ID: "a2", Sender: "ddeeff", Tags: []string{"blocker"}},
+		{ID: "a3", Sender: "112233", Tags: []string{"status", "finding"}},
 	}
 	result := filterMessages(msgs, []string{"blocker"}, "")
 	if len(result) != 1 {
@@ -34,10 +34,10 @@ func TestFilterMessages_SingleTag(t *testing.T) {
 
 func TestFilterMessages_MultipleTags_OR(t *testing.T) {
 	msgs := []store.MessageRecord{
-		{ID: "a1", Sender: "aabbcc", Tags: `["status"]`},
-		{ID: "a2", Sender: "ddeeff", Tags: `["blocker"]`},
-		{ID: "a3", Sender: "112233", Tags: `["finding"]`},
-		{ID: "a4", Sender: "445566", Tags: `["decision"]`},
+		{ID: "a1", Sender: "aabbcc", Tags: []string{"status"}},
+		{ID: "a2", Sender: "ddeeff", Tags: []string{"blocker"}},
+		{ID: "a3", Sender: "112233", Tags: []string{"finding"}},
+		{ID: "a4", Sender: "445566", Tags: []string{"decision"}},
 	}
 	result := filterMessages(msgs, []string{"blocker", "finding"}, "")
 	if len(result) != 2 {
@@ -50,9 +50,9 @@ func TestFilterMessages_MultipleTags_OR(t *testing.T) {
 
 func TestFilterMessages_SenderPrefix(t *testing.T) {
 	msgs := []store.MessageRecord{
-		{ID: "a1", Sender: "aabbcc112233", Tags: `["status"]`},
-		{ID: "a2", Sender: "ddeeff445566", Tags: `["blocker"]`},
-		{ID: "a3", Sender: "aabbcc778899", Tags: `["finding"]`},
+		{ID: "a1", Sender: "aabbcc112233", Tags: []string{"status"}},
+		{ID: "a2", Sender: "ddeeff445566", Tags: []string{"blocker"}},
+		{ID: "a3", Sender: "aabbcc778899", Tags: []string{"finding"}},
 	}
 	result := filterMessages(msgs, nil, "aabbcc")
 	if len(result) != 2 {
@@ -65,8 +65,8 @@ func TestFilterMessages_SenderPrefix(t *testing.T) {
 
 func TestFilterMessages_SenderPrefixCaseInsensitive(t *testing.T) {
 	msgs := []store.MessageRecord{
-		{ID: "a1", Sender: "AABBCC112233", Tags: `["status"]`},
-		{ID: "a2", Sender: "ddeeff445566", Tags: `["blocker"]`},
+		{ID: "a1", Sender: "AABBCC112233", Tags: []string{"status"}},
+		{ID: "a2", Sender: "ddeeff445566", Tags: []string{"blocker"}},
 	}
 	result := filterMessages(msgs, nil, "aabbcc")
 	if len(result) != 1 {
@@ -79,9 +79,9 @@ func TestFilterMessages_SenderPrefixCaseInsensitive(t *testing.T) {
 
 func TestFilterMessages_TagAndSenderCombined(t *testing.T) {
 	msgs := []store.MessageRecord{
-		{ID: "a1", Sender: "aabbcc112233", Tags: `["blocker"]`},
-		{ID: "a2", Sender: "ddeeff445566", Tags: `["blocker"]`},
-		{ID: "a3", Sender: "aabbcc778899", Tags: `["status"]`},
+		{ID: "a1", Sender: "aabbcc112233", Tags: []string{"blocker"}},
+		{ID: "a2", Sender: "ddeeff445566", Tags: []string{"blocker"}},
+		{ID: "a3", Sender: "aabbcc778899", Tags: []string{"status"}},
 	}
 	result := filterMessages(msgs, []string{"blocker"}, "aabbcc")
 	if len(result) != 1 {
@@ -94,7 +94,7 @@ func TestFilterMessages_TagAndSenderCombined(t *testing.T) {
 
 func TestFilterMessages_NoMatch(t *testing.T) {
 	msgs := []store.MessageRecord{
-		{ID: "a1", Sender: "aabbcc", Tags: `["status"]`},
+		{ID: "a1", Sender: "aabbcc", Tags: []string{"status"}},
 	}
 	result := filterMessages(msgs, []string{"blocker"}, "")
 	if len(result) != 0 {
@@ -104,8 +104,8 @@ func TestFilterMessages_NoMatch(t *testing.T) {
 
 func TestFilterMessages_EmptyTags(t *testing.T) {
 	msgs := []store.MessageRecord{
-		{ID: "a1", Sender: "aabbcc", Tags: `[]`},
-		{ID: "a2", Sender: "ddeeff", Tags: `["blocker"]`},
+		{ID: "a1", Sender: "aabbcc", Tags: nil},
+		{ID: "a2", Sender: "ddeeff", Tags: []string{"blocker"}},
 	}
 	result := filterMessages(msgs, []string{"blocker"}, "")
 	if len(result) != 1 {
@@ -115,8 +115,8 @@ func TestFilterMessages_EmptyTags(t *testing.T) {
 
 func TestFilterMessages_NullTags(t *testing.T) {
 	msgs := []store.MessageRecord{
-		{ID: "a1", Sender: "aabbcc", Tags: ``},
-		{ID: "a2", Sender: "ddeeff", Tags: `["blocker"]`},
+		{ID: "a1", Sender: "aabbcc", Tags: nil},
+		{ID: "a2", Sender: "ddeeff", Tags: []string{"blocker"}},
 	}
 	result := filterMessages(msgs, []string{"blocker"}, "")
 	if len(result) != 1 {

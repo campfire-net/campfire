@@ -20,8 +20,8 @@ func TestRunPull_ExactID(t *testing.T) {
 	s.AddMembership(store.Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
 	s.AddMessage(store.MessageRecord{
 		ID: "msg-abc123-0000-0000-0000-000000000000", CampfireID: "cf1",
-		Sender: "sender1", Payload: []byte("hello world"), Tags: `["status"]`, Antecedents: "[]",
-		Timestamp: 1000000000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000000000,
+		Sender: "sender1", Payload: []byte("hello world"), Tags: []string{"status"}, Antecedents: nil,
+		Timestamp: 1000000000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 2000000000,
 	})
 
 	// Set read cursor so we can verify pull doesn't advance it.
@@ -54,8 +54,8 @@ func TestRunPull_PrefixID(t *testing.T) {
 	s.AddMembership(store.Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
 	s.AddMessage(store.MessageRecord{
 		ID: "msg-abc123-0000-0000-0000-000000000000", CampfireID: "cf1",
-		Sender: "sender1", Payload: []byte("hello world"), Tags: `["status"]`, Antecedents: "[]",
-		Timestamp: 1000000000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000000000,
+		Sender: "sender1", Payload: []byte("hello world"), Tags: []string{"status"}, Antecedents: nil,
+		Timestamp: 1000000000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 2000000000,
 	})
 	s.Close()
 
@@ -77,13 +77,13 @@ func TestRunPull_MultipleIDs(t *testing.T) {
 	s.AddMembership(store.Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
 	s.AddMessage(store.MessageRecord{
 		ID: "msg-aaa-0000", CampfireID: "cf1",
-		Sender: "s1", Payload: []byte("first"), Tags: "[]", Antecedents: "[]",
-		Timestamp: 1000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000,
+		Sender: "s1", Payload: []byte("first"), Tags: nil, Antecedents: nil,
+		Timestamp: 1000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 2000,
 	})
 	s.AddMessage(store.MessageRecord{
 		ID: "msg-bbb-0000", CampfireID: "cf1",
-		Sender: "s1", Payload: []byte("second"), Tags: "[]", Antecedents: "[]",
-		Timestamp: 2000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 3000,
+		Sender: "s1", Payload: []byte("second"), Tags: nil, Antecedents: nil,
+		Timestamp: 2000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 3000,
 	})
 	s.Close()
 

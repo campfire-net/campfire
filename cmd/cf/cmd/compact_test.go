@@ -79,19 +79,16 @@ func seedMessages(t *testing.T, n int, agentID *identity.Identity, s *store.Stor
 		ids = append(ids, msg.ID)
 
 		// Store locally.
-		tagsJSON, _ := json.Marshal(msg.Tags)
-		anteJSON, _ := json.Marshal(msg.Antecedents)
-		provJSON, _ := json.Marshal(msg.Provenance)
 		s.AddMessage(store.MessageRecord{ //nolint:errcheck
 			ID:          msg.ID,
 			CampfireID:  campfireID,
 			Sender:      agentID.PublicKeyHex(),
 			Payload:     msg.Payload,
-			Tags:        string(tagsJSON),
-			Antecedents: string(anteJSON),
+			Tags:        msg.Tags,
+			Antecedents: msg.Antecedents,
 			Timestamp:   msg.Timestamp,
 			Signature:   msg.Signature,
-			Provenance:  string(provJSON),
+			Provenance:  msg.Provenance,
 			ReceivedAt:  store.NowNano(),
 		})
 		// Small delay to ensure distinct timestamps.
@@ -140,8 +137,7 @@ func TestCompactCreatesCompactionEvent(t *testing.T) {
 	}
 
 	// Verify the compaction event has the campfire:compact tag.
-	var tags []string
-	json.Unmarshal([]byte(events[0].Tags), &tags) //nolint:errcheck
+	tags := events[0].Tags
 	found := false
 	for _, tag := range tags {
 		if tag == "campfire:compact" {
@@ -154,8 +150,7 @@ func TestCompactCreatesCompactionEvent(t *testing.T) {
 	}
 
 	// Verify antecedents contains the last superseded message.
-	var antecedents []string
-	json.Unmarshal([]byte(events[0].Antecedents), &antecedents) //nolint:errcheck
+	antecedents := events[0].Antecedents
 	if len(antecedents) != 1 {
 		t.Fatalf("antecedents count = %d, want 1", len(antecedents))
 	}

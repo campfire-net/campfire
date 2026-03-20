@@ -112,11 +112,11 @@ func storeTestMessage(t *testing.T, s *store.Store, campfireID string, id *ident
 		CampfireID:  campfireID,
 		Sender:      id.PublicKeyHex(),
 		Payload:     msg.Payload,
-		Tags:        `["test"]`,
-		Antecedents: `[]`,
+		Tags:        []string{"test"},
+		Antecedents: nil,
 		Timestamp:   msg.Timestamp,
 		Signature:   msg.Signature,
-		Provenance:  `[]`,
+		Provenance:  nil,
 		ReceivedAt:  time.Now().UnixNano(),
 	}
 	if _, err := s.AddMessage(rec); err != nil {

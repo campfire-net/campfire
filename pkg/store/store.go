@@ -352,15 +352,15 @@ type rawMessageRecord struct {
 // MessageRecord. Malformed JSON in any field is treated as an empty slice.
 func (r rawMessageRecord) toMessageRecord() MessageRecord {
 	var tags []string
-	if err := json.Unmarshal([]byte(r.Tags), &tags); err != nil {
+	if err := json.Unmarshal([]byte(r.Tags), &tags); err != nil || tags == nil {
 		tags = []string{}
 	}
 	var antecedents []string
-	if err := json.Unmarshal([]byte(r.Antecedents), &antecedents); err != nil {
+	if err := json.Unmarshal([]byte(r.Antecedents), &antecedents); err != nil || antecedents == nil {
 		antecedents = []string{}
 	}
 	var provenance []message.ProvenanceHop
-	if err := json.Unmarshal([]byte(r.Provenance), &provenance); err != nil {
+	if err := json.Unmarshal([]byte(r.Provenance), &provenance); err != nil || provenance == nil {
 		provenance = []message.ProvenanceHop{}
 	}
 	return MessageRecord{
@@ -390,6 +390,15 @@ func scanMessageRecord(scan func(dest ...any) error) (MessageRecord, error) {
 
 // AddMessage inserts a message if not already present. Returns true if inserted.
 func (s *Store) AddMessage(m MessageRecord) (bool, error) {
+	if m.Tags == nil {
+		m.Tags = []string{}
+	}
+	if m.Antecedents == nil {
+		m.Antecedents = []string{}
+	}
+	if m.Provenance == nil {
+		m.Provenance = []message.ProvenanceHop{}
+	}
 	tagsJSON, _ := json.Marshal(m.Tags)
 	anteJSON, _ := json.Marshal(m.Antecedents)
 	provJSON, _ := json.Marshal(m.Provenance)
