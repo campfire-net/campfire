@@ -87,7 +87,7 @@ type Transport struct {
 	signSessionCounts map[string]int
 
 	// rekeySessions holds ephemeral X25519 keys for rekey phase-1 handshakes.
-	// Keyed by senderEphemeralPubHex. Pruned after 5 minutes.
+	// Keyed by senderEphemeralPubHex. Pruned after sessionPruneWindow.
 	rekeySessions map[string]*rekeySessionState
 
 	// pollBroker fans out new-message notifications to active long-poll goroutines.
@@ -108,6 +108,11 @@ type ThresholdShareProvider func(campfireID string) (participantID uint32, share
 // a verified-but-malicious member from exhausting server memory by flooding
 // POST /campfire/{id}/sign round=1 with unique session IDs.
 const maxSignSessionsPerCampfire = 32
+
+// sessionPruneWindow is the maximum age of an idle signing or rekey session before
+// it is pruned. Five minutes gives peers ample time to complete a FROST round or
+// rekey handshake under normal network conditions while bounding unbounded state growth.
+const sessionPruneWindow = 5 * time.Minute
 
 // New creates a Transport listening on listenAddr, using the given store.
 func New(listenAddr string, s *store.Store) *Transport {
@@ -296,16 +301,16 @@ func (t *Transport) getOrCreateSignSession(campfireID, sessionID string, signerI
 	t.signSessions[sessionID] = state
 	t.signSessionCampfire[sessionID] = campfireID
 	t.signSessionCounts[campfireID]++
-	// Prune stale sessions older than 5 minutes.
+	// Prune stale sessions older than sessionPruneWindow.
 	t.pruneSignSessions()
 	return state, nil
 }
 
-// pruneSignSessions removes signing sessions older than 5 minutes and decrements
+// pruneSignSessions removes signing sessions older than sessionPruneWindow and decrements
 // their per-campfire counts.
 // Must be called with t.mu held (write lock).
 func (t *Transport) pruneSignSessions() {
-	cutoff := time.Now().Add(-5 * time.Minute)
+	cutoff := time.Now().Add(-sessionPruneWindow)
 	for id, s := range t.signSessions {
 		if s.createdAt.Before(cutoff) {
 			delete(t.signSessions, id)
@@ -365,10 +370,10 @@ func (t *Transport) claimRekeySession(campfireID, senderEdPubKey, senderX25519Pu
 	return s.myPrivKey
 }
 
-// pruneRekeySessions removes rekey sessions older than 5 minutes.
+// pruneRekeySessions removes rekey sessions older than sessionPruneWindow.
 // Must be called with t.mu write-locked.
 func (t *Transport) pruneRekeySessions() {
-	cutoff := time.Now().Add(-5 * time.Minute)
+	cutoff := time.Now().Add(-sessionPruneWindow)
 	for k, s := range t.rekeySessions {
 		if s.createdAt.Before(cutoff) {
 			delete(t.rekeySessions, k)
