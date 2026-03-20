@@ -302,7 +302,7 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		if membership != nil && membership.CreatorPubkey != "" && senderHex != membership.CreatorPubkey {
+		if membership == nil || membership.CreatorPubkey == "" || senderHex != membership.CreatorPubkey {
 			http.Error(w, "only the campfire creator may evict members", http.StatusForbidden)
 			return
 		}

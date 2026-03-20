@@ -89,8 +89,8 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 	}
 
 	// Creator-only check: only the campfire creator may trigger a rekey.
-	// For legacy records where CreatorPubkey is empty, skip to preserve backward compat.
-	if membership.CreatorPubkey != "" && senderHex != membership.CreatorPubkey {
+	// Fail-closed: if CreatorPubkey is empty (legacy record), reject the operation — we cannot verify the creator.
+	if membership.CreatorPubkey == "" || senderHex != membership.CreatorPubkey {
 		log.Printf("handleRekey: sender %s is not creator %s for campfire %s", senderHex, membership.CreatorPubkey, oldCampfireID)
 		http.Error(w, "only the campfire creator may trigger a rekey", http.StatusForbidden)
 		return

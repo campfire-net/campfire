@@ -1175,3 +1175,65 @@ func TestRekeyPhase2CorruptCiphertextReturns400(t *testing.T) {
 		t.Error("new membership must NOT be created when phase-2 decryption fails")
 	}
 }
+
+// TestRekeyRejectedWhenCreatorPubkeyEmpty verifies fail-closed: if the membership record
+// has an empty CreatorPubkey (legacy campfire), rekey must be REJECTED because we cannot
+// verify the creator identity.
+func TestRekeyRejectedWhenCreatorPubkeyEmpty(t *testing.T) {
+	oldCFPub, oldCFPriv, _ := ed25519.GenerateKey(nil)
+	oldCampfireID := fmt.Sprintf("%x", oldCFPub)
+
+	idAny := tempIdentity(t)
+
+	sB := tempStore(t)
+	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
+
+	// Legacy record: no CreatorPubkey set.
+	err := sB.AddMembership(store.Membership{
+		CampfireID:   oldCampfireID,
+		TransportDir: stateDirB,
+		JoinProtocol: "open",
+		Role:         "member",
+		JoinedAt:     time.Now().UnixNano(),
+		Threshold:    1,
+		// CreatorPubkey intentionally omitted (empty = legacy).
+	})
+	if err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	// Add idAny to peer endpoints so auth middleware passes.
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:   oldCampfireID,
+		MemberPubkey: idAny.PublicKeyHex(),
+		Endpoint:     "http://127.0.0.1:9997",
+	})
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+230)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idAny.PublicKeyHex(), epB)
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	senderPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	senderPubHex := fmt.Sprintf("%x", senderPriv.PublicKey().Bytes())
+
+	newCFPub, _, _ := ed25519.GenerateKey(nil)
+	newCampfireID := fmt.Sprintf("%x", newCFPub)
+
+	phase1Req := cfhttp.RekeyRequest{
+		NewCampfireID:   newCampfireID,
+		SenderX25519Pub: senderPubHex,
+	}
+	_, err = cfhttp.SendRekeyPhase1(epB, oldCampfireID, phase1Req, idAny)
+	if err == nil {
+		t.Fatal("expected rekey phase-1 to be rejected when CreatorPubkey is empty (fail-closed)")
+	}
+	t.Logf("rekey with empty CreatorPubkey correctly rejected: %v", err)
+}

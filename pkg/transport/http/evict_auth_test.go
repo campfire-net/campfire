@@ -1,9 +1,9 @@
 package http_test
 
 // Tests for handleMembership evict auth — fail-closed creator check.
-// Three cases per the bead spec:
+// Four cases:
 //  1. GetMembership returns an error (DB closed) → evict must be REJECTED (fail closed).
-//  2. CreatorPubkey is empty (legacy record) → evict by any member is allowed (backward compat).
+//  2. CreatorPubkey is empty (legacy record) → evict REJECTED (fail-closed; cannot verify creator).
 //  3. Non-creator with a set CreatorPubkey → evict rejected with 403.
 //  4. Creator with a set CreatorPubkey → evict allowed (happy path).
 
@@ -64,9 +64,10 @@ func TestEvictRejectedWhenStoreErrors(t *testing.T) {
 	}
 }
 
-// TestEvictAllowedWhenCreatorPubkeyEmpty verifies backward-compat: if the membership
-// record has an empty CreatorPubkey (legacy campfire), any authenticated member may evict.
-func TestEvictAllowedWhenCreatorPubkeyEmpty(t *testing.T) {
+// TestEvictRejectedWhenCreatorPubkeyEmpty verifies fail-closed: if the membership
+// record has an empty CreatorPubkey (legacy campfire), eviction must be REJECTED
+// because we cannot verify the creator identity.
+func TestEvictRejectedWhenCreatorPubkeyEmpty(t *testing.T) {
 	campfireID := "test-evict-legacy"
 	idAny := tempIdentity(t)
 	idVictim := tempIdentity(t)
@@ -98,8 +99,9 @@ func TestEvictAllowedWhenCreatorPubkeyEmpty(t *testing.T) {
 		Member: idVictim.PublicKeyHex(),
 	}
 
-	if err := cfhttp.NotifyMembership(ep, campfireID, evictEvent, idAny); err != nil {
-		t.Errorf("evict with empty CreatorPubkey should succeed (backward compat), got error: %v", err)
+	// Fail-closed: empty CreatorPubkey means we cannot verify — evict must be rejected.
+	if err := cfhttp.NotifyMembership(ep, campfireID, evictEvent, idAny); err == nil {
+		t.Error("evict with empty CreatorPubkey must be rejected (fail-closed), got nil error")
 	}
 }
 
