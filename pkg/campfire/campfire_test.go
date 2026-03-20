@@ -134,6 +134,11 @@ func TestToCampfire(t *testing.T) {
 	if len(cf.ReceptionRequirements) != len(state.ReceptionRequirements) {
 		t.Errorf("ReceptionRequirements len = %d, want %d", len(cf.ReceptionRequirements), len(state.ReceptionRequirements))
 	}
+	for i := range cf.ReceptionRequirements {
+		if cf.ReceptionRequirements[i] != state.ReceptionRequirements[i] {
+			t.Errorf("ReceptionRequirements[%d] = %q, want %q", i, cf.ReceptionRequirements[i], state.ReceptionRequirements[i])
+		}
+	}
 	if cf.CreatedAt != state.CreatedAt {
 		t.Errorf("CreatedAt = %d, want %d", cf.CreatedAt, state.CreatedAt)
 	}
