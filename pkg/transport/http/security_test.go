@@ -57,12 +57,13 @@ func TestRekeyPathTraversalRejected(t *testing.T) {
 	// Insert a membership with a TransportDir that contains path traversal.
 	maliciousDir := "/tmp/safe/../../../etc"
 	err = sB.AddMembership(store.Membership{
-		CampfireID:   oldCampfireID,
-		TransportDir: maliciousDir,
-		JoinProtocol: "open",
-		Role:         "member",
-		JoinedAt:     time.Now().UnixNano(),
-		Threshold:    1,
+		CampfireID:    oldCampfireID,
+		TransportDir:  maliciousDir,
+		JoinProtocol:  "open",
+		Role:          "member",
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		CreatorPubkey: idA.PublicKeyHex(),
 	})
 	if err != nil {
 		t.Fatalf("adding membership: %v", err)
@@ -190,12 +191,13 @@ func TestRekeyPathTraversalAbsoluteRelative(t *testing.T) {
 	// Relative path — not absolute.
 	relativeDir := "relative/path/dir"
 	err = sB.AddMembership(store.Membership{
-		CampfireID:   oldCampfireID,
-		TransportDir: relativeDir,
-		JoinProtocol: "open",
-		Role:         "member",
-		JoinedAt:     time.Now().UnixNano(),
-		Threshold:    1,
+		CampfireID:    oldCampfireID,
+		TransportDir:  relativeDir,
+		JoinProtocol:  "open",
+		Role:          "member",
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		CreatorPubkey: idA.PublicKeyHex(),
 	})
 	if err != nil {
 		t.Fatalf("adding membership: %v", err)
