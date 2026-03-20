@@ -98,9 +98,9 @@ func setupOpenCampfireServer(t *testing.T, portOffset int) (campfireID, ep strin
 	return campfireID, ep, hostID, peerA, peerB, sHost
 }
 
-// buildJoinRequest constructs a POST /campfire/{id}/join request signed by joiner.
+// buildDisclosureJoinRequest constructs a POST /campfire/{id}/join request signed by joiner.
 // If ephemeralPub is empty, the field is omitted from the body.
-func buildJoinRequest(t *testing.T, ep, campfireID string, joiner *identity.Identity, ephemeralPub string) *http.Request {
+func buildDisclosureJoinRequest(t *testing.T, ep, campfireID string, joiner *identity.Identity, ephemeralPub string) *http.Request {
 	t.Helper()
 
 	body, _ := json.Marshal(cfhttp.JoinRequest{
@@ -137,7 +137,7 @@ func TestJoinMissingEphemeralKeyRejected(t *testing.T) {
 	}
 
 	// Send a join request with empty EphemeralX25519Pub.
-	req := buildJoinRequest(t, ep, campfireID, joiner, "")
+	req := buildDisclosureJoinRequest(t, ep, campfireID, joiner, "")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -164,7 +164,7 @@ func TestJoinWithEphemeralKeySucceeds(t *testing.T) {
 	ephemPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	ephemPubHex := fmt.Sprintf("%x", ephemPriv.PublicKey().Bytes())
 
-	req := buildJoinRequest(t, ep, campfireID, joiner, ephemPubHex)
+	req := buildDisclosureJoinRequest(t, ep, campfireID, joiner, ephemPubHex)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("join HTTP error: %v", err)
@@ -212,7 +212,7 @@ func TestJoinPeerListRestrictedToAdmittingNode(t *testing.T) {
 	ephemPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	ephemPubHex := fmt.Sprintf("%x", ephemPriv.PublicKey().Bytes())
 
-	req := buildJoinRequest(t, ep, campfireID, joiner, ephemPubHex)
+	req := buildDisclosureJoinRequest(t, ep, campfireID, joiner, ephemPubHex)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("join HTTP error: %v", err)
@@ -319,7 +319,7 @@ func TestJoinPeerListEmptyWhenNoSelfInfo(t *testing.T) {
 	ephemPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	ephemPubHex := fmt.Sprintf("%x", ephemPriv.PublicKey().Bytes())
 
-	req := buildJoinRequest(t, ep, campfireID, joiner, ephemPubHex)
+	req := buildDisclosureJoinRequest(t, ep, campfireID, joiner, ephemPubHex)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("join HTTP error: %v", err)
