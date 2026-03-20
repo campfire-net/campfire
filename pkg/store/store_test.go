@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -1770,5 +1771,189 @@ func TestHasMessage_Present(t *testing.T) {
 	}
 	if !found {
 		t.Error("HasMessage() = false for existing message, want true")
+	}
+}
+
+// --- workspace-g88: UpdateCampfireID unit tests ---
+
+// countRows returns the number of rows in table where col equals id.
+// The store's db field is accessible because these tests are in the same package.
+func countRows(t *testing.T, s *Store, table, col, id string) int {
+	t.Helper()
+	var n int
+	q := "SELECT COUNT(*) FROM " + table + " WHERE " + col + " = ?"
+	if err := s.db.QueryRow(q, id).Scan(&n); err != nil {
+		t.Fatalf("countRows(%s): %v", table, err)
+	}
+	return n
+}
+
+// TestUpdateCampfireID_MessagesRenamed verifies that messages sent before a
+// rekey (under oldID) become accessible under newID after UpdateCampfireID and
+// are no longer accessible under oldID. This is the primary regression test for
+// the messages table coverage gap identified in workspace-g88.
+func TestUpdateCampfireID_MessagesRenamed(t *testing.T) {
+	s := testStore(t)
+	oldID := "cf-g88-msgs-old"
+	newID := "cf-g88-msgs-new"
+
+	// Only seed membership for oldID — UpdateCampfireID renames it to newID.
+	if err := s.AddMembership(Membership{
+		CampfireID:   oldID,
+		TransportDir: "/tmp/campfire/" + oldID,
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1000,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	// Seed two messages before the rekey.
+	for i, id := range []string{"g88-msg-alpha", "g88-msg-beta"} {
+		if _, err := s.AddMessage(MessageRecord{
+			ID: id, CampfireID: oldID, Sender: "alice",
+			Payload: []byte("payload"), Tags: "[]", Antecedents: "[]",
+			Timestamp: int64(1000 + i), Signature: []byte("sig"),
+			Provenance: "[]", ReceivedAt: int64(2000 + i),
+		}); err != nil {
+			t.Fatalf("AddMessage(%s): %v", id, err)
+		}
+	}
+
+	// Verify messages exist under oldID before rename.
+	if got := countRows(t, s, "messages", "campfire_id", oldID); got != 2 {
+		t.Fatalf("pre-rekey: expected 2 messages under oldID, got %d", got)
+	}
+
+	if err := s.UpdateCampfireID(oldID, newID); err != nil {
+		t.Fatalf("UpdateCampfireID: %v", err)
+	}
+
+	// No messages should remain under oldID.
+	if got := countRows(t, s, "messages", "campfire_id", oldID); got != 0 {
+		t.Errorf("messages: %d row(s) still under oldID after rename", got)
+	}
+
+	// Both messages should now be accessible under newID.
+	msgs, err := s.ListMessages(newID, 0)
+	if err != nil {
+		t.Fatalf("ListMessages(%s): %v", newID, err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("expected 2 messages under newID, got %d", len(msgs))
+	}
+
+	// Membership itself was renamed.
+	m, err := s.GetMembership(newID)
+	if err != nil || m == nil {
+		t.Fatalf("membership should exist under newID: err=%v, m=%v", err, m)
+	}
+	if old, _ := s.GetMembership(oldID); old != nil {
+		t.Error("membership should no longer exist under oldID")
+	}
+}
+
+// TestUpdateCampfireID_FiltersRenamed verifies that the filters table is also
+// renamed by UpdateCampfireID. The filters table has no public accessor methods
+// so we insert and verify via the store's db field (same package, accessible).
+func TestUpdateCampfireID_FiltersRenamed(t *testing.T) {
+	s := testStore(t)
+	oldID := "cf-g88-filters-old"
+	newID := "cf-g88-filters-new"
+
+	if err := s.AddMembership(Membership{
+		CampfireID:   oldID,
+		TransportDir: "/tmp/campfire/" + oldID,
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1000,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	// Insert a filter row directly (no public API).
+	if _, err := s.db.Exec(
+		`INSERT INTO filters (campfire_id, direction, pass_through, suppress) VALUES (?, 'inbound', '[]', '[]')`,
+		oldID,
+	); err != nil {
+		t.Fatalf("insert filter: %v", err)
+	}
+
+	if got := countRows(t, s, "filters", "campfire_id", oldID); got != 1 {
+		t.Fatalf("pre-rekey: expected 1 filter under oldID, got %d", got)
+	}
+
+	if err := s.UpdateCampfireID(oldID, newID); err != nil {
+		t.Fatalf("UpdateCampfireID: %v", err)
+	}
+
+	if got := countRows(t, s, "filters", "campfire_id", oldID); got != 0 {
+		t.Errorf("filters: %d row(s) still under oldID after rename", got)
+	}
+	if got := countRows(t, s, "filters", "campfire_id", newID); got != 1 {
+		t.Errorf("filters: expected 1 row under newID, got %d", got)
+	}
+}
+
+// TestUpdateCampfireID_ConcurrentSafe verifies that concurrent calls with the
+// same oldID leave the store in a consistent state — all records end up under
+// newID, no rows remain under oldID, and no data is duplicated or lost.
+// SQLite serializes writers so exactly one goroutine performs the work; the
+// rest either observe a no-op (0 rows matched) or receive a BUSY/LOCKED error.
+// In either case the invariant holds: messages are not corrupted.
+func TestUpdateCampfireID_ConcurrentSafe(t *testing.T) {
+	s := testStore(t)
+	oldID := "cf-g88-conc-old"
+	newID := "cf-g88-conc-new"
+
+	if err := s.AddMembership(Membership{
+		CampfireID:   oldID,
+		TransportDir: "/tmp/campfire/" + oldID,
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1000,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	// Seed several messages under oldID.
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("g88-conc-msg-%d", i)
+		if _, err := s.AddMessage(MessageRecord{
+			ID: id, CampfireID: oldID, Sender: "alice",
+			Payload: []byte("data"), Tags: "[]", Antecedents: "[]",
+			Timestamp: int64(1000 + i), Signature: []byte("sig"),
+			Provenance: "[]", ReceivedAt: int64(2000 + i),
+		}); err != nil {
+			t.Fatalf("AddMessage(%s): %v", id, err)
+		}
+	}
+
+	const goroutines = 5
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			// Errors are acceptable (BUSY, LOCKED, or UNIQUE conflict on a second
+			// successful rename where 0 rows match) — what must not happen is
+			// partial writes leaving messages split across both IDs.
+			_ = s.UpdateCampfireID(oldID, newID) //nolint:errcheck
+		}()
+	}
+	wg.Wait()
+
+	// Post-condition: no messages under oldID, all messages under newID.
+	oldCount := countRows(t, s, "messages", "campfire_id", oldID)
+	newCount := countRows(t, s, "messages", "campfire_id", newID)
+
+	if oldCount+newCount != 3 {
+		t.Errorf("total message count changed: oldCount=%d newCount=%d want sum=3", oldCount, newCount)
+	}
+	if oldCount != 0 {
+		t.Errorf("messages: %d row(s) still under oldID after concurrent rekey", oldCount)
+	}
+	if newCount != 3 {
+		t.Errorf("messages: expected 3 rows under newID, got %d", newCount)
 	}
 }
