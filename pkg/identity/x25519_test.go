@@ -276,3 +276,56 @@ func TestEncryptDifferentPlaintexts(t *testing.T) {
 		t.Error("two encryptions of the same plaintext should produce different ciphertexts (ephemeral key)")
 	}
 }
+
+// TestDecryptCiphertextTooShort verifies that a ciphertext of exactly 59 bytes
+// (one byte below the 60-byte minimum: 32 ephemeral pub + 12 nonce + 16 GCM tag)
+// is rejected with an error mentioning "ciphertext too short".
+func TestDecryptCiphertextTooShort(t *testing.T) {
+	_, edPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating Ed25519 key: %v", err)
+	}
+
+	// 59 bytes is one short of the required 60 (32+12+16).
+	short := make([]byte, 59)
+
+	_, err = DecryptWithEd25519Key(edPriv, short)
+	if err == nil {
+		t.Fatal("expected error for 59-byte ciphertext, got nil")
+	}
+	if err.Error() != "ciphertext too short" {
+		t.Errorf("expected \"ciphertext too short\", got %q", err.Error())
+	}
+}
+
+// TestEd25519ToX25519PubZeroKey verifies that a 32-byte all-zeros input
+// (the identity point in Ed25519 coordinates) either returns an error or
+// produces a result — the conversion must not panic.  A zero y-coordinate
+// maps to u = (1+0)/(1-0) = 1, which is a low-order point, so the function
+// should succeed (no division by zero) but callers should not rely on the
+// result being a safe public key.
+func TestEd25519ToX25519PubZeroKey(t *testing.T) {
+	zeroKey := make([]byte, 32) // all zeros
+
+	result, err := Ed25519ToX25519Pub(zeroKey)
+	if err != nil {
+		// An error is an acceptable response for a degenerate key.
+		return
+	}
+	// If it succeeds, it must return a 32-byte slice.
+	if len(result) != 32 {
+		t.Errorf("Ed25519ToX25519Pub(zero): got %d bytes, want 32", len(result))
+	}
+}
+
+// TestEd25519ToX25519PrivWrongLength verifies that Ed25519ToX25519Priv rejects
+// inputs that are not 64 bytes.  Go's Ed25519 private keys are 64 bytes
+// (32-byte seed || 32-byte public key); a 32-byte input is an invalid length.
+func TestEd25519ToX25519PrivWrongLength(t *testing.T) {
+	wrongLen := make([]byte, 32) // 32 bytes, not 64
+
+	_, err := Ed25519ToX25519Priv(wrongLen)
+	if err == nil {
+		t.Fatal("expected error for 32-byte Ed25519 private key input, got nil")
+	}
+}
