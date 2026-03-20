@@ -28,6 +28,8 @@ import (
 var (
 	joinVia             string
 	joinListen          string
+	joinTLSCert         string
+	joinTLSKey          string
 	joinGitHubRepo      string
 	joinGitHubTokenEnv  string
 	joinGitHubBaseURL   string
@@ -141,10 +143,15 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Stor
 }
 
 func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store) error {
+	if (joinTLSCert == "") != (joinTLSKey == "") {
+		return fmt.Errorf("--tls-cert and --tls-key must both be provided or both omitted")
+	}
+	useTLS := joinTLSCert != ""
+
 	// Resolve joiner's own endpoint if --listen is provided.
 	myEndpoint := ""
 	if joinListen != "" {
-		myEndpoint = resolveEndpoint(joinListen)
+		myEndpoint = resolveEndpoint(joinListen, useTLS)
 	}
 
 	// Send join request to the via endpoint.
@@ -223,6 +230,9 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store) 
 	// If joiner has an endpoint, start the HTTP listener and notify peers.
 	if myEndpoint != "" {
 		tr := cfhttp.New(joinListen, s)
+		if useTLS {
+			tr.SetTLSConfig(&cfhttp.TLSConfig{CertFile: joinTLSCert, KeyFile: joinTLSKey})
+		}
 		tr.SetSelfInfo(agentID.PublicKeyHex(), myEndpoint)
 		tr.SetKeyProvider(buildKeyProvider(CFHome()))
 		tr.SetThresholdShareProvider(buildThresholdShareProvider(s))
@@ -531,6 +541,8 @@ func projectBeaconDir() string {
 func init() {
 	joinCmd.Flags().StringVar(&joinVia, "via", "", "peer HTTP endpoint to join through (enables p2p-http transport)")
 	joinCmd.Flags().StringVar(&joinListen, "listen", "", "HTTP listen address for p2p-http transport (e.g. :9002)")
+	joinCmd.Flags().StringVar(&joinTLSCert, "tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint advertisement")
+	joinCmd.Flags().StringVar(&joinTLSKey, "tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
 	// GitHub transport flags.
 	joinCmd.Flags().StringVar(&joinGitHubRepo, "github-repo", "", "coordination repository for GitHub beacon discovery (owner/repo)")
 	joinCmd.Flags().StringVar(&joinGitHubTokenEnv, "github-token-env", "", "name of env var containing GitHub token (default: GITHUB_TOKEN)")

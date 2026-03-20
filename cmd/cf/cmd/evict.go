@@ -24,8 +24,10 @@ import (
 )
 
 var (
-	evictReason string
-	evictListen string
+	evictReason    string
+	evictListen    string
+	evictTLSCert   string
+	evictTLSKey    string
 )
 
 var evictCmd = &cobra.Command{
@@ -635,7 +637,8 @@ func updateBeacon(oldCampfireID string, newPubKey ed25519.PublicKey, newPrivKey 
 	// Find self endpoint for new beacon.
 	selfEndpoint := ""
 	if evictListen != "" {
-		selfEndpoint = resolveEndpoint(evictListen)
+		useTLS := evictTLSCert != ""
+		selfEndpoint = resolveEndpoint(evictListen, useTLS)
 	}
 
 	var transportConfig beacon.TransportConfig
@@ -668,5 +671,7 @@ func updateBeacon(oldCampfireID string, newPubKey ed25519.PublicKey, newPrivKey 
 func init() {
 	evictCmd.Flags().StringVar(&evictReason, "reason", "", "reason for eviction")
 	evictCmd.Flags().StringVar(&evictListen, "listen", "", "HTTP listen address for beacon update (optional)")
+	evictCmd.Flags().StringVar(&evictTLSCert, "tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint in updated beacon")
+	evictCmd.Flags().StringVar(&evictTLSKey, "tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
 	rootCmd.AddCommand(evictCmd)
 }

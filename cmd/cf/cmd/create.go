@@ -26,6 +26,8 @@ var (
 	createThreshold    uint
 	createTransport    string
 	createListen       string
+	createTLSCert      string
+	createTLSKey       string
 	createParticipants uint
 
 	// GitHub transport flags.
@@ -174,6 +176,10 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 	if listenAddr == "" {
 		return fmt.Errorf("--listen is required for p2p-http transport (e.g. --listen :9001)")
 	}
+	if (createTLSCert == "") != (createTLSKey == "") {
+		return fmt.Errorf("--tls-cert and --tls-key must both be provided or both omitted")
+	}
+	useTLS := createTLSCert != ""
 
 	campfireID := cf.PublicKeyHex()
 
@@ -238,7 +244,7 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 	}
 
 	// Resolve endpoint URL from listen address.
-	endpoint := resolveEndpoint(listenAddr)
+	endpoint := resolveEndpoint(listenAddr, useTLS)
 
 	// Record membership in local store.
 	if err := s.AddMembership(store.Membership{
@@ -269,6 +275,9 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 
 	// Start HTTP listener.
 	tr := cfhttp.New(listenAddr, s)
+	if useTLS {
+		tr.SetTLSConfig(&cfhttp.TLSConfig{CertFile: createTLSCert, KeyFile: createTLSKey})
+	}
 	tr.SetSelfInfo(agentID.PublicKeyHex(), endpoint)
 	tr.SetKeyProvider(buildKeyProvider(CFHome()))
 	tr.SetThresholdShareProvider(buildThresholdShareProvider(s))
@@ -415,12 +424,17 @@ func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.St
 	return nil
 }
 
-// resolveEndpoint turns a listen address like ":9001" into "http://localhost:9001".
-func resolveEndpoint(listenAddr string) string {
-	if len(listenAddr) > 0 && listenAddr[0] == ':' {
-		return "http://localhost" + listenAddr
+// resolveEndpoint turns a listen address like ":9001" into an HTTP or HTTPS URL.
+// When useTLS is true, the scheme is "https"; otherwise "http".
+func resolveEndpoint(listenAddr string, useTLS bool) string {
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
 	}
-	return "http://" + listenAddr
+	if len(listenAddr) > 0 && listenAddr[0] == ':' {
+		return scheme + "://localhost" + listenAddr
+	}
+	return scheme + "://" + listenAddr
 }
 
 // buildKeyProvider returns a CampfireKeyProvider that reads campfire state
@@ -468,6 +482,8 @@ func init() {
 	createCmd.Flags().UintVar(&createThreshold, "threshold", 1, "signature threshold (1=any member, >1=FROST multi-party, Phase 2)")
 	createCmd.Flags().StringVar(&createTransport, "transport", "filesystem", "transport type: filesystem, p2p-http, github")
 	createCmd.Flags().StringVar(&createListen, "listen", "", "HTTP listen address for p2p-http transport (e.g. :9001)")
+	createCmd.Flags().StringVar(&createTLSCert, "tls-cert", "", "TLS certificate file (PEM) for p2p-http transport; enables https:// endpoint")
+	createCmd.Flags().StringVar(&createTLSKey, "tls-key", "", "TLS private key file (PEM) for p2p-http transport; must be paired with --tls-cert")
 	createCmd.Flags().UintVar(&createParticipants, "participants", 0, "total number of DKG participants for threshold>1 (default: equals threshold)")
 	// GitHub transport flags.
 	createCmd.Flags().StringVar(&createGitHubRepo, "github-repo", "", "coordination repository for GitHub transport (owner/repo)")
