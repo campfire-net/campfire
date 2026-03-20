@@ -27,7 +27,9 @@ import (
 	"testing"
 	"time"
 
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
@@ -139,8 +141,18 @@ func TestFROSTSign2of3OverHTTP(t *testing.T) {
 
 	time.Sleep(20 * time.Millisecond)
 
-	// The bytes to sign.
-	signMsg := []byte("2-of-3 FROST signing over HTTP")
+	// The bytes to sign: must be a CBOR-encoded MessageSignInput or HopSignInput.
+	signInput := message.MessageSignInput{
+		ID:          "test-msg-2of3-e2e",
+		Payload:     []byte("2-of-3 FROST signing over HTTP"),
+		Tags:        []string{"test"},
+		Antecedents: []string{},
+		Timestamp:   time.Now().UnixNano(),
+	}
+	signMsg, err := cfencoding.Marshal(signInput)
+	if err != nil {
+		t.Fatalf("marshaling MessageSignInput: %v", err)
+	}
 
 	// Signing session uses participants 1 (A, initiator) and 2 (B, co-signer).
 	signerIDs := []uint32{1, 2}
@@ -291,6 +303,266 @@ func TestHandleSignRound2WithoutRound1(t *testing.T) {
 	// Verify the error message mentions session not found.
 	respBody, _ := io.ReadAll(resp.Body)
 	_ = respBody // already consumed above after status check
+}
+
+// ---------------------------------------------------------------------------
+// workspace-epwh — handleSign signing oracle: arbitrary MessageToSign rejected
+// ---------------------------------------------------------------------------
+
+// TestHandleSignArbitraryBytesRejected verifies that a round-1 sign request
+// with arbitrary (non-CBOR) MessageToSign bytes is rejected with HTTP 400.
+// This prevents a campfire member from using this node as a signing oracle
+// for data that is not a canonical HopSignInput or MessageSignInput.
+func TestHandleSignArbitraryBytesRejected(t *testing.T) {
+	campfireID := "sign-oracle-arb"
+
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+
+	shareB, err := threshold.MarshalResult(2, dkgResults[2])
+	if err != nil {
+		t.Fatalf("MarshalResult B: %v", err)
+	}
+
+	idA := tempIdentity(t)
+	sB := tempStore(t)
+	addMembership(t, sB, campfireID)
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idA.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+
+	if err := sB.UpsertThresholdShare(store.ThresholdShare{
+		CampfireID:    campfireID,
+		ParticipantID: 2,
+		SecretShare:   shareB,
+	}); err != nil {
+		t.Fatalf("storing share B: %v", err)
+	}
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+50)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
+		share, err := sB.GetThresholdShare(cfID)
+		if err != nil || share == nil {
+			return 0, nil, fmt.Errorf("no share for %s", cfID)
+		}
+		return share.ParticipantID, share.SecretShare, nil
+	})
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Attempt to sign arbitrary bytes — must be rejected.
+	arbitraryPayloads := []struct {
+		name string
+		data []byte
+	}{
+		{"raw ASCII", []byte("arbitrary data that is not CBOR-encoded")},
+		{"empty", []byte{}},
+		{"valid JSON not CBOR", []byte(`{"id":"test","payload":"data"}`)},
+		{"random bytes", []byte{0x01, 0x02, 0x03, 0x04, 0x05}},
+	}
+
+	for _, tc := range arbitraryPayloads {
+		t.Run(tc.name, func(t *testing.T) {
+			req := cfhttp.SignRoundRequest{
+				SessionID:     "oracle-test-" + tc.name,
+				Round:         1,
+				SignerIDs:     []uint32{1, 2},
+				MessageToSign: tc.data,
+				Messages:      [][]byte{},
+			}
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshaling request: %v", err)
+			}
+
+			url := fmt.Sprintf("%s/campfire/%s/sign", epB, campfireID)
+			httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("building request: %v", err)
+			}
+			httpReq.Header.Set("Content-Type", "application/json")
+			signHTTPRequest(httpReq, idA, body)
+
+			resp, err := http.DefaultClient.Do(httpReq)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			defer resp.Body.Close() //nolint:errcheck
+
+			if resp.StatusCode != http.StatusBadRequest {
+				b, _ := io.ReadAll(resp.Body)
+				t.Errorf("payload %q: expected 400 Bad Request, got %d: %s", tc.name, resp.StatusCode, string(b))
+			}
+		})
+	}
+}
+
+// TestHandleSignValidMessageSignInputAccepted verifies that a round-1 sign request
+// with a CBOR-encoded MessageSignInput is accepted (round proceeds normally).
+func TestHandleSignValidMessageSignInputAccepted(t *testing.T) {
+	campfireID := "sign-oracle-valid-msi"
+
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+
+	shareB, err := threshold.MarshalResult(2, dkgResults[2])
+	if err != nil {
+		t.Fatalf("MarshalResult B: %v", err)
+	}
+
+	idA := tempIdentity(t)
+	sB := tempStore(t)
+	addMembership(t, sB, campfireID)
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idA.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+
+	if err := sB.UpsertThresholdShare(store.ThresholdShare{
+		CampfireID:    campfireID,
+		ParticipantID: 2,
+		SecretShare:   shareB,
+	}); err != nil {
+		t.Fatalf("storing share B: %v", err)
+	}
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+51)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
+		share, err := sB.GetThresholdShare(cfID)
+		if err != nil || share == nil {
+			return 0, nil, fmt.Errorf("no share for %s", cfID)
+		}
+		return share.ParticipantID, share.SecretShare, nil
+	})
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Build a valid CBOR-encoded MessageSignInput.
+	signInput := message.MessageSignInput{
+		ID:          "oracle-valid-msi-msg",
+		Payload:     []byte("legitimate message payload"),
+		Tags:        []string{"test"},
+		Antecedents: []string{},
+		Timestamp:   time.Now().UnixNano(),
+	}
+	signMsg, err := cfencoding.Marshal(signInput)
+	if err != nil {
+		t.Fatalf("marshaling MessageSignInput: %v", err)
+	}
+
+	signerIDs := []uint32{1, 2}
+	ssA, err := threshold.NewSigningSession(dkgResults[1].SecretShare, dkgResults[1].Public, signMsg, signerIDs)
+	if err != nil {
+		t.Fatalf("NewSigningSession A: %v", err)
+	}
+	aRound1Msgs := ssA.Start()
+
+	// Round 1 should succeed — valid MessageSignInput.
+	bMsgs, err := cfhttp.SendSignRound(epB, campfireID, "oracle-valid-msi-session", 1, signerIDs, signMsg, aRound1Msgs, idA)
+	if err != nil {
+		t.Fatalf("round-1 with valid MessageSignInput failed: %v", err)
+	}
+	if len(bMsgs) == 0 {
+		t.Error("expected round-1 commitment messages from B, got none")
+	}
+}
+
+// TestHandleSignValidHopSignInputAccepted verifies that a round-1 sign request
+// with a CBOR-encoded HopSignInput is accepted (the other legitimate sign type).
+func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
+	campfireID := "sign-oracle-valid-hop"
+
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+
+	shareB, err := threshold.MarshalResult(2, dkgResults[2])
+	if err != nil {
+		t.Fatalf("MarshalResult B: %v", err)
+	}
+
+	idA := tempIdentity(t)
+	sB := tempStore(t)
+	addMembership(t, sB, campfireID)
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idA.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+
+	if err := sB.UpsertThresholdShare(store.ThresholdShare{
+		CampfireID:    campfireID,
+		ParticipantID: 2,
+		SecretShare:   shareB,
+	}); err != nil {
+		t.Fatalf("storing share B: %v", err)
+	}
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+52)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
+		share, err := sB.GetThresholdShare(cfID)
+		if err != nil || share == nil {
+			return 0, nil, fmt.Errorf("no share for %s", cfID)
+		}
+		return share.ParticipantID, share.SecretShare, nil
+	})
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Build a valid CBOR-encoded HopSignInput.
+	campfirePub := make([]byte, 32) // 32-byte mock campfire public key
+	for i := range campfirePub {
+		campfirePub[i] = byte(i + 1)
+	}
+	hopInput := message.HopSignInput{
+		MessageID:             "oracle-valid-hop-msg-id",
+		CampfireID:            campfirePub,
+		MembershipHash:        campfirePub,
+		MemberCount:           3,
+		JoinProtocol:          "open",
+		ReceptionRequirements: []string{},
+		Timestamp:             time.Now().UnixNano(),
+	}
+	signMsg, err := cfencoding.Marshal(hopInput)
+	if err != nil {
+		t.Fatalf("marshaling HopSignInput: %v", err)
+	}
+
+	signerIDs := []uint32{1, 2}
+	ssA, err := threshold.NewSigningSession(dkgResults[1].SecretShare, dkgResults[1].Public, signMsg, signerIDs)
+	if err != nil {
+		t.Fatalf("NewSigningSession A: %v", err)
+	}
+	aRound1Msgs := ssA.Start()
+
+	// Round 1 should succeed — valid HopSignInput.
+	bMsgs, err := cfhttp.SendSignRound(epB, campfireID, "oracle-valid-hop-session", 1, signerIDs, signMsg, aRound1Msgs, idA)
+	if err != nil {
+		t.Fatalf("round-1 with valid HopSignInput failed: %v", err)
+	}
+	if len(bMsgs) == 0 {
+		t.Error("expected round-1 commitment messages from B, got none")
+	}
 }
 
 // signHTTPRequest adds Ed25519 auth headers to an HTTP request using the

@@ -21,10 +21,30 @@ import (
 	"testing"
 	"time"
 
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
+
+// makeCBORSignMsg returns a CBOR-encoded MessageSignInput for use in signing tests.
+// handleSign validates that MessageToSign is a canonical campfire sign input type.
+func makeCBORSignMsg(t *testing.T, id string, payload []byte) []byte {
+	t.Helper()
+	si := message.MessageSignInput{
+		ID:          id,
+		Payload:     payload,
+		Tags:        []string{"test"},
+		Antecedents: []string{},
+		Timestamp:   time.Now().UnixNano(),
+	}
+	b, err := cfencoding.Marshal(si)
+	if err != nil {
+		t.Fatalf("marshaling MessageSignInput: %v", err)
+	}
+	return b
+}
 
 // TestSignRound1ConcurrentRequests launches 3 goroutines that each send a round-1
 // sign request for the same session_id to the same transport. The -race detector
@@ -71,7 +91,7 @@ func TestSignRound1ConcurrentRequests(t *testing.T) {
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	signMsg := []byte("concurrent round-1 race test message")
+	signMsg := makeCBORSignMsg(t, "race-test-msg-1", []byte("concurrent round-1 race test message"))
 	signerIDs := []uint32{1, 2}
 	sessionID := "race-test-session-1"
 
@@ -156,7 +176,7 @@ func TestSignRound1SingleRequest(t *testing.T) {
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	signMsg := []byte("single round-1 correctness test")
+	signMsg := makeCBORSignMsg(t, "single-test-msg-1", []byte("single round-1 correctness test"))
 	signerIDs := []uint32{1, 2}
 	sessionID := "single-test-session-1"
 
@@ -221,7 +241,7 @@ func TestSignRound2DoesNotBlockPeers(t *testing.T) {
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	signMsg := []byte("round2-no-block test message")
+	signMsg := makeCBORSignMsg(t, "round2-no-block-msg", []byte("round2-no-block test message"))
 	signerIDs := []uint32{1, 2}
 	sessionID := "round2-no-block-session"
 

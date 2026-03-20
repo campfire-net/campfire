@@ -403,8 +403,18 @@ func TestSignEndpointRoundTrip(t *testing.T) {
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	// The message to threshold-sign.
-	signMsg := []byte("test message for threshold signing over HTTP")
+	// The message to threshold-sign: must be CBOR-encoded MessageSignInput or HopSignInput.
+	signInput := message.MessageSignInput{
+		ID:          "sign-roundtrip-msg",
+		Payload:     []byte("test message for threshold signing over HTTP"),
+		Tags:        []string{"test"},
+		Antecedents: []string{},
+		Timestamp:   time.Now().UnixNano(),
+	}
+	signMsg, err := cfencoding.Marshal(signInput)
+	if err != nil {
+		t.Fatalf("marshaling MessageSignInput: %v", err)
+	}
 
 	signerIDs := []uint32{1, 2}
 	sessionID := "test-session-roundtrip"
