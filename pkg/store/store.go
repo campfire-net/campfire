@@ -777,9 +777,11 @@ func (s *Store) maxCompactionTimestamp(campfireID string) (int64, error) {
 // cache entry with maxTS=T1 (the old timestamp), while the actual max is T2 > T1. The
 // stale entry would be evicted on the next call (maxTS query returns T2 ≠ T1), but
 // ListMessages calls in that window could return superseded messages that should be
-// filtered. The fix: re-query maxCompactionTimestamp inside the write lock before
-// storing. If the timestamp advanced, skip caching — the invalidation already happened
-// and the next call will rebuild with the correct maxTS.
+// filtered. The fix: re-query maxCompactionTimestamp BEFORE acquiring the write lock,
+// then use double-checked locking (re-check cache absence inside the lock) to avoid
+// holding sync.RWMutex across any DB I/O. If the timestamp advanced, skip caching —
+// the invalidation already happened and the next call will rebuild with the correct
+// maxTS. If the cache entry was already populated by a concurrent goroutine, leave it.
 func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error) {
 	if campfireID != "" {
 		maxTS, err := s.maxCompactionTimestamp(campfireID)
@@ -818,24 +820,29 @@ func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error)
 			}
 		}
 
-		// TOCTOU fix (workspace-pm9m.5.8): re-query maxTS inside the write lock
-		// before storing the cache entry. Between step (1) above and here, AddMessage
-		// may have inserted a new compaction event and deleted the cache entry. If we
-		// stored maxTS=T1 now, the next reader would observe maxTS=T2 from the DB,
-		// causing an immediate cache miss and rebuild — but the brief window where
-		// ListMessages could return the stale T1 result is the bug. Instead, re-read
-		// maxTS under the write lock: if it advanced, skip caching (the entry is
-		// already invalidated and the next call will rebuild with the correct maxTS).
-		s.supersededMu.Lock()
+		// Double-checked locking (workspace-vja4): query currentMaxTS before acquiring
+		// the write lock to avoid holding sync.RWMutex across DB I/O. Between the
+		// rebuild above and here, AddMessage may have inserted a new compaction event
+		// and deleted the cache entry. The two-step check handles this:
+		//   (a) Re-query maxTS outside the lock: if it advanced, skip caching —
+		//       the entry would be immediately stale and the next call will rebuild.
+		//   (b) Inside the write lock, re-check that the cache entry is still absent
+		//       (double-checked locking). If another goroutine already populated it,
+		//       we leave their entry in place and avoid a redundant overwrite.
 		currentMaxTS, tsErr := s.maxCompactionTimestamp(campfireID)
+		s.supersededMu.Lock()
 		if tsErr == nil && currentMaxTS == maxTS {
-			s.supersededCache[campfireID] = supersededCacheEntry{
-				maxCompactionTS: maxTS,
-				superseded:      superseded,
+			// Only store if the entry is still absent — a concurrent goroutine may
+			// have already populated it between our rebuild and this lock acquisition.
+			if _, exists := s.supersededCache[campfireID]; !exists {
+				s.supersededCache[campfireID] = supersededCacheEntry{
+					maxCompactionTS: maxTS,
+					superseded:      superseded,
+				}
 			}
 		}
-		// If tsErr != nil or currentMaxTS != maxTS, skip caching — the entry would
-		// be immediately stale or the DB is unavailable. The next call will retry.
+		// If tsErr != nil or currentMaxTS != maxTS, skip caching — the entry is
+		// stale or the DB is unavailable. The next call will retry.
 		s.supersededMu.Unlock()
 		// Return a copy so callers cannot mutate the cached map.
 		cp := make(map[string]bool, len(superseded))
