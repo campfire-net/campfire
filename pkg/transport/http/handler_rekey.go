@@ -98,8 +98,11 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 
 	// Verify rekey message signature against stored campfire public key (oldCampfireID),
 	// NOT the attacker-controlled rekeyMsg.Sender field.
-	// Reject on: CBOR parse failure, missing signature (threshold=1), invalid campfire ID,
-	// or signature mismatch. Only skip signature check for threshold>1 unsigned messages.
+	// Reject on: CBOR parse failure, missing signature, invalid campfire ID, or signature mismatch.
+	// Unsigned rekey messages are rejected for all thresholds to preserve audit integrity —
+	// a rekey without a verifiable signature cannot be stored as a trustworthy audit record.
+	// When FROST quorum signing fails (threshold>1), the sender should omit RekeyMessageCBOR
+	// entirely rather than sending an unsigned placeholder.
 	if len(req.RekeyMessageCBOR) > 0 {
 		var rekeyMsgForVerify message.Message
 		if err := cfencoding.Unmarshal(req.RekeyMessageCBOR, &rekeyMsgForVerify); err != nil {
@@ -113,31 +116,30 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 			http.Error(w, "invalid campfire ID", http.StatusBadRequest)
 			return
 		}
-		if len(rekeyMsgForVerify.Signature) > 0 {
-			// Signed message: verify against the stored campfire public key.
-			signInput := message.MessageSignInput{
-				ID:          rekeyMsgForVerify.ID,
-				Payload:     rekeyMsgForVerify.Payload,
-				Tags:        rekeyMsgForVerify.Tags,
-				Antecedents: rekeyMsgForVerify.Antecedents,
-				Timestamp:   rekeyMsgForVerify.Timestamp,
-			}
-			signBytes, marshalErr := cfencoding.Marshal(signInput)
-			if marshalErr != nil {
-				log.Printf("handleRekey: failed to marshal sign input for campfire %s: %v", oldCampfireID, marshalErr)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-				return
-			}
-			if !ed25519.Verify(ed25519.PublicKey(campfirePubKeyBytes), signBytes, rekeyMsgForVerify.Signature) {
-				log.Printf("handleRekey: rekey message signature invalid for campfire %s", oldCampfireID)
-				http.Error(w, "rekey message signature invalid", http.StatusUnauthorized)
-				return
-			}
-		} else if membership.Threshold <= 1 {
-			// Threshold=1 must have a signature — unsigned messages are only
-			// acceptable for threshold>1 where FROST quorum signing may fail.
-			log.Printf("handleRekey: unsigned rekey message for threshold=1 campfire %s", oldCampfireID)
+		if len(rekeyMsgForVerify.Signature) == 0 {
+			// All rekey messages must be signed regardless of threshold.
+			// Unsigned messages cannot serve as verifiable audit records.
+			log.Printf("handleRekey: unsigned rekey message rejected for campfire %s (threshold=%d)", oldCampfireID, membership.Threshold)
 			http.Error(w, "rekey message must be signed", http.StatusBadRequest)
+			return
+		}
+		// Signed message: verify against the stored campfire public key.
+		signInput := message.MessageSignInput{
+			ID:          rekeyMsgForVerify.ID,
+			Payload:     rekeyMsgForVerify.Payload,
+			Tags:        rekeyMsgForVerify.Tags,
+			Antecedents: rekeyMsgForVerify.Antecedents,
+			Timestamp:   rekeyMsgForVerify.Timestamp,
+		}
+		signBytes, marshalErr := cfencoding.Marshal(signInput)
+		if marshalErr != nil {
+			log.Printf("handleRekey: failed to marshal sign input for campfire %s: %v", oldCampfireID, marshalErr)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !ed25519.Verify(ed25519.PublicKey(campfirePubKeyBytes), signBytes, rekeyMsgForVerify.Signature) {
+			log.Printf("handleRekey: rekey message signature invalid for campfire %s", oldCampfireID)
+			http.Error(w, "rekey message signature invalid", http.StatusUnauthorized)
 			return
 		}
 	}
