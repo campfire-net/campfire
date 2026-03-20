@@ -1,10 +1,6 @@
 package transport
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
-
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
@@ -31,20 +27,37 @@ func (t Type) String() string {
 	}
 }
 
-// ResolveType infers the transport type from a membership record.
+// ResolveType returns the transport type for a membership record.
 //
-// Detection order:
-//  1. GitHub  — TransportDir begins with "github:" (JSON-encoded github transport meta)
-//  2. PeerHTTP — a <campfire-id>.cbor state file exists in TransportDir (p2p HTTP state)
-//  3. Filesystem — everything else (local /tmp/campfire layout)
+// When the membership has an explicit TransportType field (populated by
+// store.AddMembership and backfilled by store.Open migration), that value is
+// used directly — no filesystem I/O occurs.
+//
+// For legacy rows that somehow still have an empty TransportType (should not
+// happen after migration, but defended against for safety), the function falls
+// back to the string-prefix heuristic on TransportDir. The p2p-http cbor-file
+// probe is NOT performed in the fallback — those rows will resolve as
+// "filesystem" rather than making a disk call on every hot-path invocation.
+// The correct fix for any such row is to re-run store.Open (migration backfill).
 func ResolveType(m store.Membership) Type {
-	if isGitHubTransportDir(m.TransportDir) {
+	switch m.TransportType {
+	case "github":
 		return TypeGitHub
-	}
-	if isPeerHTTPTransportDir(m.TransportDir, m.CampfireID) {
+	case "p2p-http":
 		return TypePeerHTTP
+	case "filesystem":
+		return TypeFilesystem
+	default:
+		// Fallback for legacy rows with empty TransportType. Use the cheap
+		// string-prefix check only (no filesystem I/O). If the prefix matches
+		// github, return GitHub; otherwise return Filesystem. p2p-http rows
+		// should have been backfilled by store.Open migration; logging a safe
+		// fallback here avoids the hot-path os.Stat call entirely.
+		if isGitHubTransportDir(m.TransportDir) {
+			return TypeGitHub
+		}
+		return TypeFilesystem
 	}
-	return TypeFilesystem
 }
 
 // GitHubTransportPrefix is the prefix used in the TransportDir column to identify
@@ -53,16 +66,6 @@ const GitHubTransportPrefix = "github:"
 
 // isGitHubTransportDir checks whether a TransportDir indicates a GitHub-transport campfire.
 func isGitHubTransportDir(transportDir string) bool {
-	return strings.HasPrefix(transportDir, GitHubTransportPrefix)
-}
-
-// isPeerHTTPTransportDir mirrors the cmd-layer isPeerHTTPCampfire check.
-// A p2p-HTTP campfire stores a <campfire-id>.cbor file in the transport directory.
-func isPeerHTTPTransportDir(transportDir, campfireID string) bool {
-	if transportDir == "" || campfireID == "" {
-		return false
-	}
-	statePath := filepath.Join(transportDir, campfireID+".cbor")
-	_, err := os.Stat(statePath)
-	return err == nil
+	return len(transportDir) >= len(GitHubTransportPrefix) &&
+		transportDir[:len(GitHubTransportPrefix)] == GitHubTransportPrefix
 }

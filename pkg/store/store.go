@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS campfire_memberships (
     joined_at       INTEGER NOT NULL,
     threshold       INTEGER NOT NULL DEFAULT 1,
     description     TEXT NOT NULL DEFAULT '',
-    creator_pubkey  TEXT NOT NULL DEFAULT ''
+    creator_pubkey  TEXT NOT NULL DEFAULT '',
+    transport_type  TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -114,6 +115,71 @@ type Membership struct {
 	Threshold     uint   `json:"threshold"`
 	Description   string `json:"description"`
 	CreatorPubkey string `json:"creator_pubkey"`
+	// TransportType is the explicit transport type for this membership.
+	// Valid values: "filesystem", "github", "p2p-http", "".
+	// Empty string means the type was inferred from TransportDir by
+	// inferTransportType() at insert time (backward-compatible for legacy rows).
+	// transport.ResolveType uses this field directly when non-empty.
+	TransportType string `json:"transport_type,omitempty"`
+}
+
+// inferTransportType applies the legacy heuristic to determine a transport type
+// string from a campfire ID and transport directory. This is used at insert time
+// (AddMembership) and during migration backfill so that ResolveType never needs
+// to make a filesystem call on the hot path.
+func inferTransportType(campfireID, transportDir string) string {
+	if strings.HasPrefix(transportDir, "github:") {
+		return "github"
+	}
+	if transportDir != "" && campfireID != "" {
+		statePath := filepath.Join(transportDir, campfireID+".cbor")
+		if _, err := os.Stat(statePath); err == nil {
+			return "p2p-http"
+		}
+	}
+	return "filesystem"
+}
+
+// backfillTransportTypes sets transport_type for rows where it is currently empty.
+// This runs once per Open() call after the column migration. The p2p-http
+// detection makes a filesystem call here (migration time) rather than on every
+// ResolveType invocation, eliminating repeated hot-path I/O.
+func backfillTransportTypes(db *sql.DB) error {
+	rows, err := db.Query(
+		`SELECT campfire_id, transport_dir FROM campfire_memberships WHERE transport_type = ''`,
+	)
+	if err != nil {
+		return fmt.Errorf("querying rows for transport_type backfill: %w", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		campfireID   string
+		transportDir string
+	}
+	var pending []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.campfireID, &r.transportDir); err != nil {
+			return fmt.Errorf("scanning membership for backfill: %w", err)
+		}
+		pending = append(pending, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	for _, r := range pending {
+		tt := inferTransportType(r.campfireID, r.transportDir)
+		if _, err := db.Exec(
+			`UPDATE campfire_memberships SET transport_type = ? WHERE campfire_id = ? AND transport_type = ''`,
+			tt, r.campfireID,
+		); err != nil {
+			return fmt.Errorf("updating transport_type for %s: %w", r.campfireID, err)
+		}
+	}
+	return nil
 }
 
 // Open opens or creates the SQLite store at the given path.
@@ -137,6 +203,16 @@ func Open(path string) (*Store, error) {
 	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN creator_pubkey TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 	// Backward-compatible migration: add role column to peer_endpoints if missing.
 	db.Exec(`ALTER TABLE peer_endpoints ADD COLUMN role TEXT NOT NULL DEFAULT 'member'`) //nolint:errcheck
+	// Backward-compatible migration: add transport_type column if missing.
+	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN transport_type TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+	// Backfill transport_type for legacy rows where it is empty.
+	// Uses inferTransportType() which mirrors the old transport.ResolveType heuristic.
+	// This runs the filesystem probe (for p2p-http detection) once at migration time
+	// rather than on every ResolveType call, eliminating hot-path I/O.
+	if err := backfillTransportTypes(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfilling transport types: %w", err)
+	}
 	return &Store{
 		db:              db,
 		supersededCache: make(map[string]supersededCacheEntry),
@@ -149,15 +225,20 @@ func (s *Store) Close() error {
 }
 
 // AddMembership records that this agent is a member of a campfire.
+// If TransportType is empty, it is inferred from TransportDir using inferTransportType.
 func (s *Store) AddMembership(m Membership) error {
 	threshold := m.Threshold
 	if threshold == 0 {
 		threshold = 1
 	}
+	tt := m.TransportType
+	if tt == "" {
+		tt = inferTransportType(m.CampfireID, m.TransportDir)
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description, m.CreatorPubkey,
+		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description, m.CreatorPubkey, tt,
 	)
 	if err != nil {
 		return fmt.Errorf("adding membership: %w", err)
@@ -193,11 +274,11 @@ func (s *Store) RemoveMembership(campfireID string) error {
 // GetMembership returns a single membership by campfire ID.
 func (s *Store) GetMembership(campfireID string) (*Membership, error) {
 	row := s.db.QueryRow(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type
 		 FROM campfire_memberships WHERE campfire_id = ?`, campfireID,
 	)
 	var m Membership
-	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey)
+	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey, &m.TransportType)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -210,7 +291,7 @@ func (s *Store) GetMembership(campfireID string) (*Membership, error) {
 // ListMemberships returns all campfire memberships.
 func (s *Store) ListMemberships() ([]Membership, error) {
 	rows, err := s.db.Query(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type
 		 FROM campfire_memberships ORDER BY joined_at`,
 	)
 	if err != nil {
@@ -221,7 +302,7 @@ func (s *Store) ListMemberships() ([]Membership, error) {
 	var memberships []Membership
 	for rows.Next() {
 		var m Membership
-		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey); err != nil {
+		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey, &m.TransportType); err != nil {
 			return nil, fmt.Errorf("scanning membership: %w", err)
 		}
 		memberships = append(memberships, m)
