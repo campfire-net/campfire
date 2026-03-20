@@ -39,6 +39,7 @@ type natPollConfig struct {
 // tagFilters uses OR semantics: a message matches if it has ANY of the specified tags.
 // senderFilter matches on a hex prefix of the sender bytes (case-insensitive).
 // Empty values mean no filtering.
+// Filtering is delegated to the shared matchesSender and matchesTags helpers in filter.go.
 func filterNATMessages(msgs []message.Message, tagFilters []string, senderFilter string) []message.Message {
 	if len(tagFilters) == 0 && senderFilter == "" {
 		return msgs
@@ -53,20 +54,11 @@ func filterNATMessages(msgs []message.Message, tagFilters []string, senderFilter
 	var result []message.Message
 	for _, m := range msgs {
 		senderHex := fmt.Sprintf("%x", m.Sender)
-		if senderPrefix != "" && !strings.HasPrefix(strings.ToLower(senderHex), senderPrefix) {
+		if !matchesSender(senderHex, senderPrefix) {
 			continue
 		}
-		if len(tagSet) > 0 {
-			matched := false
-			for _, tg := range m.Tags {
-				if tagSet[strings.ToLower(tg)] {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
+		if len(tagSet) > 0 && !matchesTags(m.Tags, tagSet) {
+			continue
 		}
 		result = append(result, m)
 	}
