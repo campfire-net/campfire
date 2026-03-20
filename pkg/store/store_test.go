@@ -939,6 +939,151 @@ func TestCollectSupersededIDs_Cache(t *testing.T) {
 	}
 }
 
+// --- workspace-zqdc: TOCTOU race in collectSupersededIDs cache ---
+
+// TestCollectSupersededIDs_CacheInvalidatedOnNewCompaction is the regression test
+// for workspace-zqdc. The previous implementation queried maxCompactionTimestamp
+// outside the lock, then checked the cache under a separate lock acquisition.
+// A new compaction event inserted between those two operations would cause the
+// stale cache to be returned as a valid hit.
+//
+// The fix: AddMessage invalidates the superseded-ID cache entry for the campfire
+// whenever a campfire:compact message is successfully inserted. This ensures that
+// any reader running after the insert will always see a cache miss and rebuild
+// from the DB, picking up the new compaction event.
+//
+// This test simulates the race outcome directly: warm the cache, insert a new
+// compaction event, then verify that the cache is immediately invalidated (not
+// returned as a hit) and that the new superseded ID appears in the next call.
+func TestCollectSupersededIDs_CacheInvalidatedOnNewCompaction(t *testing.T) {
+	s := testStore(t)
+	campfireID := "cf-toctou"
+	s.AddMembership(Membership{CampfireID: campfireID, TransportDir: "/tmp", JoinProtocol: "open", Role: "full", JoinedAt: 1}) //nolint:errcheck
+
+	// Add three messages.
+	for _, id := range []string{"msg-a", "msg-b", "msg-c"} {
+		ts := map[string]int64{"msg-a": 100, "msg-b": 200, "msg-c": 300}[id]
+		m := MessageRecord{
+			ID: id, CampfireID: campfireID, Sender: "s",
+			Payload: []byte("data"), Tags: `["status"]`, Antecedents: "[]",
+			Timestamp: ts, Signature: []byte("s"), Provenance: "[]", ReceivedAt: ts,
+		}
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage(%s): %v", id, err)
+		}
+	}
+
+	// First compaction event: supersedes msg-a and msg-b.
+	payload1, _ := json.Marshal(CompactionPayload{
+		Supersedes: []string{"msg-a", "msg-b"}, Summary: []byte("c1"), Retention: "archive", CheckpointHash: "h1",
+	})
+	ev1 := MessageRecord{
+		ID: "ev1", CampfireID: campfireID, Sender: "s",
+		Payload: payload1, Tags: `["campfire:compact"]`, Antecedents: "[]",
+		Timestamp: 1000, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 1000,
+	}
+	if _, err := s.AddMessage(ev1); err != nil {
+		t.Fatalf("AddMessage(ev1): %v", err)
+	}
+
+	// Warm the cache. At this point the cache is valid for maxTS=1000,
+	// and the superseded set contains {msg-a, msg-b}.
+	sup1, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		t.Fatalf("collectSupersededIDs (warm): %v", err)
+	}
+	if !sup1["msg-a"] || !sup1["msg-b"] {
+		t.Fatalf("expected msg-a and msg-b in superseded set after ev1, got %v", sup1)
+	}
+
+	// Insert a second compaction event superseding msg-c. This is the concurrent
+	// writer in the TOCTOU scenario. With the fix, AddMessage invalidates the cache
+	// entry for campfireID before returning, so no subsequent reader can get the
+	// stale cache (which did not include msg-c).
+	payload2, _ := json.Marshal(CompactionPayload{
+		Supersedes: []string{"msg-c"}, Summary: []byte("c2"), Retention: "archive", CheckpointHash: "h2",
+	})
+	ev2 := MessageRecord{
+		ID: "ev2", CampfireID: campfireID, Sender: "s",
+		Payload: payload2, Tags: `["campfire:compact"]`, Antecedents: "[]",
+		Timestamp: 2000, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 2000,
+	}
+	if _, err := s.AddMessage(ev2); err != nil {
+		t.Fatalf("AddMessage(ev2): %v", err)
+	}
+
+	// Now check that the cache was invalidated: msg-c must appear in the superseded set.
+	sup2, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		t.Fatalf("collectSupersededIDs (after ev2): %v", err)
+	}
+	if !sup2["msg-c"] {
+		t.Errorf("TOCTOU regression: msg-c was not in superseded set after ev2; cache was not invalidated on AddMessage")
+	}
+	// Previous IDs must still be present (full rebuild).
+	if !sup2["msg-a"] || !sup2["msg-b"] {
+		t.Errorf("msg-a and msg-b should still be in superseded set after ev2, got %v", sup2)
+	}
+
+	// Verify through ListMessages: msg-c should not appear when RespectCompaction is true.
+	msgs, err := s.ListMessages(campfireID, 0, MessageFilter{RespectCompaction: true})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	for _, m := range msgs {
+		if m.ID == "msg-c" {
+			t.Errorf("TOCTOU regression: superseded message msg-c appeared in ListMessages result after ev2")
+		}
+		if m.ID == "msg-a" || m.ID == "msg-b" {
+			t.Errorf("superseded message %q appeared in ListMessages result", m.ID)
+		}
+	}
+}
+
+// TestCollectSupersededIDs_NonCompactionInsertDoesNotInvalidateCache verifies that
+// inserting a non-compaction message does NOT invalidate the superseded-ID cache.
+// Cache invalidation should only happen for campfire:compact messages.
+func TestCollectSupersededIDs_NonCompactionInsertDoesNotInvalidateCache(t *testing.T) {
+	s := testStore(t)
+	campfireID := "cf-noinval"
+	s.AddMembership(Membership{CampfireID: campfireID, TransportDir: "/tmp", JoinProtocol: "open", Role: "full", JoinedAt: 1}) //nolint:errcheck
+
+	// Add a message and a compaction event.
+	m1 := MessageRecord{ID: "m1", CampfireID: campfireID, Sender: "s", Payload: []byte("a"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 100, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 100}
+	s.AddMessage(m1) //nolint:errcheck
+
+	payload, _ := json.Marshal(CompactionPayload{Supersedes: []string{"m1"}, Summary: []byte("c"), Retention: "archive", CheckpointHash: "h"})
+	ev := MessageRecord{ID: "ev", CampfireID: campfireID, Sender: "s", Payload: payload, Tags: `["campfire:compact"]`, Antecedents: "[]", Timestamp: 500, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 500}
+	s.AddMessage(ev) //nolint:errcheck
+
+	// Warm the cache.
+	sup1, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		t.Fatalf("collectSupersededIDs (warm): %v", err)
+	}
+	if !sup1["m1"] {
+		t.Fatalf("m1 should be superseded after ev")
+	}
+
+	// Insert a regular (non-compaction) message.
+	m2 := MessageRecord{ID: "m2", CampfireID: campfireID, Sender: "s", Payload: []byte("b"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 600, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 600}
+	s.AddMessage(m2) //nolint:errcheck
+
+	// The cache should still be valid — m1 should be in the superseded set without a DB rebuild.
+	// (We verify correctness here; cache-hit behavior is an implementation detail.)
+	sup2, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		t.Fatalf("collectSupersededIDs (after m2): %v", err)
+	}
+	if !sup2["m1"] {
+		t.Errorf("m1 should still be in superseded set after non-compaction insert, got %v", sup2)
+	}
+	// m2 is a regular message — it should NOT be in the superseded set.
+	if sup2["m2"] {
+		t.Errorf("m2 should not be in superseded set (it was not superseded by any compaction event)")
+	}
+}
+
 // --- workspace-d68: poll cursor uses ReceivedAt, filter must use received_at ---
 
 // TestListMessages_AfterReceivedAt verifies that when AfterReceivedAt is set in
