@@ -10,6 +10,7 @@ import (
 
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 )
 
@@ -18,10 +19,20 @@ import (
 // legitimately threshold-signs. Arbitrary bytes are rejected to prevent
 // signing-oracle abuse by campfire members.
 //
+// For HopSignInput, ms is used to cross-reference the MessageID against the
+// local message store. HopSignInput co-signs provenance for a message that
+// this node must have already received; a fabricated MessageID (not in store)
+// is rejected to prevent provenance fraud. Pass ms=nil to skip the store check
+// (only for tests that set up the transport before inserting the message).
+//
+// For MessageSignInput, no store check is performed: the initiator is
+// threshold-signing a new message that does not exist in the store yet.
+//
 // Returns nil if msg is a valid HopSignInput (non-empty MessageID + non-empty
-// CampfireID) or a valid MessageSignInput (non-empty ID field). Returns an
-// error if msg cannot be decoded as either.
-func validateMessageToSign(msg []byte) error {
+// CampfireID, and MessageID present in ms) or a valid MessageSignInput
+// (non-empty ID field). Returns an error if msg cannot be decoded as either,
+// or if the HopSignInput.MessageID is not found locally.
+func validateMessageToSign(msg []byte, ms store.MessageStore) error {
 	if len(msg) == 0 {
 		return fmt.Errorf("message_to_sign is empty")
 	}
@@ -30,6 +41,18 @@ func validateMessageToSign(msg []byte) error {
 	var hop message.HopSignInput
 	if err := cfencoding.Unmarshal(msg, &hop); err == nil {
 		if hop.MessageID != "" && len(hop.CampfireID) > 0 {
+			// Cross-reference MessageID against local store to prevent provenance
+			// fraud via fabricated IDs. HopSignInput co-signs a provenance hop for
+			// a message this node must already hold.
+			if ms != nil {
+				exists, err := ms.HasMessage(hop.MessageID)
+				if err != nil {
+					return fmt.Errorf("message_to_sign: store lookup failed: %w", err)
+				}
+				if !exists {
+					return fmt.Errorf("message_to_sign: HopSignInput.MessageID %q not found in local store", hop.MessageID)
+				}
+			}
 			return nil
 		}
 	}
@@ -80,7 +103,7 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID,
 	// any FROST state is created. This prevents a campfire member from using
 	// this node as a signing oracle for arbitrary bytes.
 	if req.Round == 1 {
-		if err := validateMessageToSign(req.MessageToSign); err != nil {
+		if err := validateMessageToSign(req.MessageToSign, h.store); err != nil {
 			log.Printf("handleSign: rejected invalid message_to_sign for campfire %s session %s: %v", campfireID, req.SessionID, err)
 			http.Error(w, "message_to_sign must be a CBOR-encoded HopSignInput or MessageSignInput", http.StatusBadRequest)
 			return

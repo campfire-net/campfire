@@ -484,9 +484,11 @@ func TestHandleSignValidMessageSignInputAccepted(t *testing.T) {
 }
 
 // TestHandleSignValidHopSignInputAccepted verifies that a round-1 sign request
-// with a CBOR-encoded HopSignInput is accepted (the other legitimate sign type).
+// with a CBOR-encoded HopSignInput is accepted when the MessageID exists in the
+// local store (the other legitimate sign type).
 func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
 	campfireID := "sign-oracle-valid-hop"
+	messageID := "oracle-valid-hop-msg-id"
 
 	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
 	if err != nil {
@@ -502,6 +504,20 @@ func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
 	sB := tempStore(t)
 	addMembership(t, sB, campfireID)
 	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idA.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+
+	// Insert the message into sB's store so the HopSignInput.MessageID lookup succeeds.
+	// Signature must be non-nil (NOT NULL constraint in schema).
+	if _, err := sB.AddMessage(store.MessageRecord{
+		ID:         messageID,
+		CampfireID: campfireID,
+		Sender:     idA.PublicKeyHex(),
+		Payload:    []byte("test hop payload"),
+		Signature:  make([]byte, 64),
+		Timestamp:  time.Now().UnixNano(),
+		ReceivedAt: time.Now().UnixNano(),
+	}); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
 
 	if err := sB.UpsertThresholdShare(store.ThresholdShare{
 		CampfireID:    campfireID,
@@ -530,13 +546,13 @@ func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	// Build a valid CBOR-encoded HopSignInput.
+	// Build a valid CBOR-encoded HopSignInput with the MessageID that exists in store.
 	campfirePub := make([]byte, 32) // 32-byte mock campfire public key
 	for i := range campfirePub {
 		campfirePub[i] = byte(i + 1)
 	}
 	hopInput := message.HopSignInput{
-		MessageID:             "oracle-valid-hop-msg-id",
+		MessageID:             messageID,
 		CampfireID:            campfirePub,
 		MembershipHash:        campfirePub,
 		MemberCount:           3,
@@ -556,13 +572,125 @@ func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
 	}
 	aRound1Msgs := ssA.Start()
 
-	// Round 1 should succeed — valid HopSignInput.
+	// Round 1 should succeed — valid HopSignInput with MessageID present in store.
 	bMsgs, err := cfhttp.SendSignRound(epB, campfireID, "oracle-valid-hop-session", 1, signerIDs, signMsg, aRound1Msgs, idA)
 	if err != nil {
 		t.Fatalf("round-1 with valid HopSignInput failed: %v", err)
 	}
 	if len(bMsgs) == 0 {
 		t.Error("expected round-1 commitment messages from B, got none")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// workspace-qrcl — HopSignInput MessageID store cross-reference
+// ---------------------------------------------------------------------------
+
+// TestHandleSignFabricatedHopMessageIDRejected verifies that a round-1 sign
+// request with a HopSignInput whose MessageID does NOT exist in the local
+// message store is rejected with HTTP 400.
+//
+// This closes the provenance-fraud attack surface: a campfire member cannot
+// request a co-signature for a HopSignInput referencing a fabricated MessageID
+// that was never received by this node.
+func TestHandleSignFabricatedHopMessageIDRejected(t *testing.T) {
+	campfireID := "sign-fabricated-hop"
+
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+
+	shareB, err := threshold.MarshalResult(2, dkgResults[2])
+	if err != nil {
+		t.Fatalf("MarshalResult B: %v", err)
+	}
+
+	idA := tempIdentity(t)
+	sB := tempStore(t)
+	addMembership(t, sB, campfireID)
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idA.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+	// Deliberately do NOT insert any message — MessageID will be absent from store.
+
+	if err := sB.UpsertThresholdShare(store.ThresholdShare{
+		CampfireID:    campfireID,
+		ParticipantID: 2,
+		SecretShare:   shareB,
+	}); err != nil {
+		t.Fatalf("storing share B: %v", err)
+	}
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+69)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
+		share, err := sB.GetThresholdShare(cfID)
+		if err != nil || share == nil {
+			return 0, nil, fmt.Errorf("no share for %s", cfID)
+		}
+		return share.ParticipantID, share.SecretShare, nil
+	})
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	campfirePub := make([]byte, 32)
+	for i := range campfirePub {
+		campfirePub[i] = byte(i + 1)
+	}
+	// Fabricated MessageID — not stored in sB.
+	hopInput := message.HopSignInput{
+		MessageID:             "fabricated-msg-id-not-in-store",
+		CampfireID:            campfirePub,
+		MembershipHash:        campfirePub,
+		MemberCount:           3,
+		JoinProtocol:          "open",
+		ReceptionRequirements: []string{},
+		Timestamp:             time.Now().UnixNano(),
+	}
+	signMsg, err := cfencoding.Marshal(hopInput)
+	if err != nil {
+		t.Fatalf("marshaling HopSignInput: %v", err)
+	}
+
+	req := cfhttp.SignRoundRequest{
+		SessionID:     "fabricated-hop-session",
+		Round:         1,
+		SignerIDs:     []uint32{1, 2},
+		MessageToSign: signMsg,
+		Messages:      [][]byte{},
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshaling request: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/sign", epB, campfireID)
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	signHTTPRequest(httpReq, idA, body)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for fabricated HopSignInput.MessageID, got %d: %s", resp.StatusCode, string(respBody))
+	}
+	if !bytes.Contains(respBody, []byte("message_to_sign")) {
+		t.Errorf("expected error to mention message_to_sign, got: %s", string(respBody))
 	}
 }
 
