@@ -161,6 +161,79 @@ func TestUnmarshalResultEmptyBytes(t *testing.T) {
 	}
 }
 
+// --- workspace-7yb: threshold edge cases ---
+
+// TestDKG2of2 verifies that a 2-participant DKG completes successfully and
+// both participants can sign (full-threshold, minimum participants). This is
+// the most common production case: a 2-of-2 shared key where both parties
+// must cooperate to sign.
+func TestDKG2of2(t *testing.T) {
+	participantIDs := []uint32{1, 2}
+	results, err := threshold.RunDKG(participantIDs, 2)
+	if err != nil {
+		t.Fatalf("RunDKG(2-of-2) failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	// Both participants must agree on the group public key.
+	key1 := results[1].GroupPublicKey()
+	key2 := results[2].GroupPublicKey()
+	if string(key1) != string(key2) {
+		t.Fatal("2-of-2: participants disagree on group public key")
+	}
+
+	message := []byte("campfire 2-of-2 signing test")
+	sig, err := threshold.Sign(results, []uint32{1, 2}, message)
+	if err != nil {
+		t.Fatalf("Sign(2-of-2) failed: %v", err)
+	}
+	if len(sig) != 64 {
+		t.Fatalf("expected 64-byte signature, got %d bytes", len(sig))
+	}
+	if !ed25519.Verify(key1, message, sig) {
+		t.Fatal("ed25519.Verify returned false for 2-of-2 threshold signature")
+	}
+}
+
+// TestNewDKGParticipantZeroThreshold verifies that NewDKGParticipant returns
+// a clear error when threshold=0. Zero threshold is nonsensical (no signers
+// required) and is explicitly rejected before reaching the FROST library.
+func TestNewDKGParticipantZeroThreshold(t *testing.T) {
+	_, err := threshold.NewDKGParticipant(1, []uint32{1, 2, 3}, 0)
+	if err == nil {
+		t.Fatal("expected error for threshold=0, got nil")
+	}
+}
+
+// TestRunDKGZeroThreshold verifies that RunDKG propagates the threshold=0
+// error from NewDKGParticipant and fails cleanly.
+func TestRunDKGZeroThreshold(t *testing.T) {
+	_, err := threshold.RunDKG([]uint32{1, 2, 3}, 0)
+	if err == nil {
+		t.Fatal("expected error for threshold=0, got nil")
+	}
+}
+
+// TestSignSignerNotInDKG verifies that Sign returns an error when a signerID
+// is not present in the DKG result set. The Sign function must detect this
+// before attempting to construct a signing session with an unknown participant.
+func TestSignSignerNotInDKG(t *testing.T) {
+	participantIDs := []uint32{1, 2, 3}
+	results, err := threshold.RunDKG(participantIDs, 2)
+	if err != nil {
+		t.Fatalf("RunDKG failed: %v", err)
+	}
+
+	// Participant 99 was never part of the DKG.
+	_, err = threshold.Sign(results, []uint32{1, 99}, []byte("test message"))
+	if err == nil {
+		t.Fatal("expected error when signer 99 is not in DKG result set, got nil")
+	}
+	t.Logf("Sign with unknown signer correctly returned error: %v", err)
+}
+
 // TestDKGMultipleMessages verifies DKG works with non-sequential IDs.
 func TestDKGNonSequentialIDs(t *testing.T) {
 	participantIDs := []uint32{10, 20, 42}
