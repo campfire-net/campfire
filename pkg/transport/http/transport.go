@@ -277,10 +277,20 @@ func (t *Transport) removeSignSession(sessionID string) {
 	}
 }
 
+// rekeySessionKey returns the composite map key used to scope a rekey session.
+// Scoping by (campfireID, senderEdPubKey, senderX25519Pub) prevents an attacker
+// from overwriting a legitimate session by sending a phase-1 request with the same
+// SenderX25519Pub but a different identity or for a different campfire.
+func rekeySessionKey(campfireID, senderEdPubKey, senderX25519Pub string) string {
+	return campfireID + ":" + senderEdPubKey + ":" + senderX25519Pub
+}
+
 // storeRekeySession stores a receiver-side ephemeral X25519 key for a rekey handshake.
-// Keyed by senderEphemeralPubHex. Must be called with t.mu write-locked.
-func (t *Transport) storeRekeySession(senderEphemeralPubHex string, myPriv *ecdh.PrivateKey) {
-	t.rekeySessions[senderEphemeralPubHex] = &rekeySessionState{
+// Keyed by (campfireID, senderEdPubKey, senderX25519Pub) to prevent cross-session collisions.
+// Must be called with t.mu write-locked.
+func (t *Transport) storeRekeySession(campfireID, senderEdPubKey, senderX25519Pub string, myPriv *ecdh.PrivateKey) {
+	key := rekeySessionKey(campfireID, senderEdPubKey, senderX25519Pub)
+	t.rekeySessions[key] = &rekeySessionState{
 		myPrivKey: myPriv,
 		createdAt: time.Now(),
 	}
@@ -289,12 +299,13 @@ func (t *Transport) storeRekeySession(senderEphemeralPubHex string, myPriv *ecdh
 
 // claimRekeySession retrieves and removes a stored rekey session.
 // Returns nil if not found. Must be called with t.mu write-locked.
-func (t *Transport) claimRekeySession(senderEphemeralPubHex string) *ecdh.PrivateKey {
-	s, ok := t.rekeySessions[senderEphemeralPubHex]
+func (t *Transport) claimRekeySession(campfireID, senderEdPubKey, senderX25519Pub string) *ecdh.PrivateKey {
+	key := rekeySessionKey(campfireID, senderEdPubKey, senderX25519Pub)
+	s, ok := t.rekeySessions[key]
 	if !ok {
 		return nil
 	}
-	delete(t.rekeySessions, senderEphemeralPubHex)
+	delete(t.rekeySessions, key)
 	return s.myPrivKey
 }
 
