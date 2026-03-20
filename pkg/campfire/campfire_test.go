@@ -102,6 +102,77 @@ func TestState(t *testing.T) {
 	}
 }
 
+// TestToCampfire verifies that CampfireState.ToCampfire correctly reconstructs
+// a live Campfire from on-disk state and a provided member list.
+func TestToCampfire(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	state := &CampfireState{
+		PublicKey:             pub,
+		PrivateKey:            priv,
+		JoinProtocol:          "invite-only",
+		ReceptionRequirements: []string{"breaking-change", "status-update"},
+		CreatedAt:             1234567890,
+		Threshold:             2,
+	}
+
+	memberPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	members := []MemberRecord{
+		{PublicKey: memberPub, JoinedAt: 9999},
+	}
+
+	cf := state.ToCampfire(members)
+
+	if !bytes.Equal(cf.PublicKey, state.PublicKey) {
+		t.Error("PublicKey not copied from state")
+	}
+	if !bytes.Equal(cf.PrivateKey, state.PrivateKey) {
+		t.Error("PrivateKey not copied from state")
+	}
+	if cf.JoinProtocol != state.JoinProtocol {
+		t.Errorf("JoinProtocol = %q, want %q", cf.JoinProtocol, state.JoinProtocol)
+	}
+	if len(cf.ReceptionRequirements) != len(state.ReceptionRequirements) {
+		t.Errorf("ReceptionRequirements len = %d, want %d", len(cf.ReceptionRequirements), len(state.ReceptionRequirements))
+	}
+	if cf.CreatedAt != state.CreatedAt {
+		t.Errorf("CreatedAt = %d, want %d", cf.CreatedAt, state.CreatedAt)
+	}
+	if cf.Threshold != state.Threshold {
+		t.Errorf("Threshold = %d, want %d", cf.Threshold, state.Threshold)
+	}
+	if len(cf.Members) != 1 {
+		t.Fatalf("Members len = %d, want 1", len(cf.Members))
+	}
+	if !bytes.Equal(cf.Members[0].PublicKey, memberPub) {
+		t.Error("Members[0].PublicKey does not match provided member")
+	}
+
+	// nil members produces empty Members slice (not nil)
+	cfNoMembers := state.ToCampfire(nil)
+	if len(cfNoMembers.Members) != 0 {
+		t.Errorf("nil members: Members len = %d, want 0", len(cfNoMembers.Members))
+	}
+
+	// empty members list also produces empty Members slice
+	cfEmptyMembers := state.ToCampfire([]MemberRecord{})
+	if len(cfEmptyMembers.Members) != 0 {
+		t.Errorf("empty members: Members len = %d, want 0", len(cfEmptyMembers.Members))
+	}
+
+	// read-only state (no private key) produces Campfire with nil PrivateKey
+	readOnlyState := &CampfireState{
+		PublicKey:             pub,
+		JoinProtocol:          "open",
+		ReceptionRequirements: []string{"status-update"},
+		CreatedAt:             1234567890,
+		Threshold:             1,
+	}
+	cfReadOnly := readOnlyState.ToCampfire(nil)
+	if cfReadOnly.PrivateKey != nil {
+		t.Error("read-only state: PrivateKey should be nil")
+	}
+}
+
 // TestEffectiveRole verifies workspace-bvg: campfire.EffectiveRole returns correct roles.
 func TestEffectiveRole(t *testing.T) {
 	tests := []struct {
