@@ -471,7 +471,12 @@ func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error)
 		entry, ok := s.supersededCache[campfireID]
 		s.supersededMu.RUnlock()
 		if ok && entry.maxCompactionTS == maxTS {
-			return entry.superseded, nil
+			// Return a copy so callers cannot mutate the cached map.
+			cp := make(map[string]bool, len(entry.superseded))
+			for k, v := range entry.superseded {
+				cp[k] = v
+			}
+			return cp, nil
 		}
 
 		// Cache miss: rebuild superseded set.
@@ -496,7 +501,12 @@ func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error)
 			superseded:      superseded,
 		}
 		s.supersededMu.Unlock()
-		return superseded, nil
+		// Return a copy so callers cannot mutate the cached map.
+		cp := make(map[string]bool, len(superseded))
+		for k, v := range superseded {
+			cp[k] = v
+		}
+		return cp, nil
 	}
 
 	// Cross-campfire path: no caching.

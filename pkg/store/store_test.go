@@ -893,6 +893,49 @@ func TestCollectSupersededIDs_Cache(t *testing.T) {
 	}
 }
 
+// --- workspace-7q7: supersededCache returns a copy, not a shared map reference ---
+
+// TestCollectSupersededIDs_CacheReturnsCopy verifies that mutating the map
+// returned from a cache hit does not corrupt the cached entry for subsequent callers.
+func TestCollectSupersededIDs_CacheReturnsCopy(t *testing.T) {
+	s := testStore(t)
+	campfireID := "cf-copy"
+	s.AddMembership(Membership{CampfireID: campfireID, TransportDir: "/tmp", JoinProtocol: "open", Role: "full", JoinedAt: 1}) //nolint:errcheck
+
+	// Add a regular message and a compaction event superseding it.
+	m1 := MessageRecord{ID: "msg1", CampfireID: campfireID, Sender: "s", Payload: []byte("a"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 100, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 100}
+	s.AddMessage(m1) //nolint:errcheck
+	payload, _ := json.Marshal(CompactionPayload{Supersedes: []string{"msg1"}, Summary: []byte("compact"), Retention: "archive", CheckpointHash: "abc"})
+	ev := MessageRecord{ID: "ev1", CampfireID: campfireID, Sender: "s", Payload: payload, Tags: `["campfire:compact"]`, Antecedents: `["msg1"]`, Timestamp: 200, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 200}
+	s.AddMessage(ev) //nolint:errcheck
+
+	// First call populates the cache.
+	sup1, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		t.Fatalf("first collectSupersededIDs: %v", err)
+	}
+	if !sup1["msg1"] {
+		t.Fatalf("expected msg1 in superseded set, got %v", sup1)
+	}
+
+	// Mutate the returned map — simulating a caller that modifies it.
+	sup1["injected-id"] = true
+	delete(sup1, "msg1")
+
+	// Second call must return a fresh copy of the cached entry, unaffected by
+	// the mutation above.
+	sup2, err := s.collectSupersededIDs(campfireID)
+	if err != nil {
+		t.Fatalf("second collectSupersededIDs: %v", err)
+	}
+	if !sup2["msg1"] {
+		t.Errorf("cache was corrupted: msg1 missing from second call after caller mutated first result")
+	}
+	if sup2["injected-id"] {
+		t.Errorf("cache was corrupted: injected-id present in second call after caller mutated first result")
+	}
+}
+
 // --- workspace-d68: poll cursor uses ReceivedAt, filter must use received_at ---
 
 // TestListMessages_AfterReceivedAt verifies that when AfterReceivedAt is set in
