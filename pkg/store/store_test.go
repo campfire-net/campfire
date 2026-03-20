@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"encoding/json"
 	"path/filepath"
 	"sync"
@@ -1770,5 +1771,172 @@ func TestHasMessage_Present(t *testing.T) {
 	}
 	if !found {
 		t.Error("HasMessage() = false for existing message, want true")
+	}
+}
+
+// --- workspace-9ga: explicit transport_type field ---
+
+// TestAddMembership_TransportTypeInferred verifies that AddMembership populates
+// the transport_type field from TransportDir when TransportType is empty.
+func TestAddMembership_TransportTypeInferred(t *testing.T) {
+	s := testStore(t)
+	dir := t.TempDir()
+	campfireID := "deadbeef01"
+
+	// Create a .cbor file to simulate a p2p-http campfire.
+	cborPath := dir + "/" + campfireID + ".cbor"
+	if err := os.WriteFile(cborPath, []byte("dummy"), 0644); err != nil {
+		t.Fatalf("creating cbor file: %v", err)
+	}
+
+	// Insert without explicit TransportType — should be inferred as "p2p-http".
+	if err := s.AddMembership(Membership{
+		CampfireID:   campfireID,
+		TransportDir: dir,
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1,
+	}); err != nil {
+		t.Fatalf("AddMembership() error: %v", err)
+	}
+
+	m, err := s.GetMembership(campfireID)
+	if err != nil {
+		t.Fatalf("GetMembership() error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("expected membership")
+	}
+	if m.TransportType != "p2p-http" {
+		t.Errorf("TransportType = %q, want %q", m.TransportType, "p2p-http")
+	}
+}
+
+// TestAddMembership_TransportTypeGitHub verifies GitHub transport detection.
+func TestAddMembership_TransportTypeGitHub(t *testing.T) {
+	s := testStore(t)
+
+	if err := s.AddMembership(Membership{
+		CampfireID:   "ghcampfire01",
+		TransportDir: `github:{"repo":"org/repo","issue_number":1}`,
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1,
+	}); err != nil {
+		t.Fatalf("AddMembership() error: %v", err)
+	}
+
+	m, err := s.GetMembership("ghcampfire01")
+	if err != nil {
+		t.Fatalf("GetMembership() error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("expected membership")
+	}
+	if m.TransportType != "github" {
+		t.Errorf("TransportType = %q, want %q", m.TransportType, "github")
+	}
+}
+
+// TestAddMembership_TransportTypeFilesystem verifies filesystem fallback.
+func TestAddMembership_TransportTypeFilesystem(t *testing.T) {
+	s := testStore(t)
+
+	if err := s.AddMembership(Membership{
+		CampfireID:   "fscampfire01",
+		TransportDir: "/tmp/campfire/fscampfire01",
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1,
+	}); err != nil {
+		t.Fatalf("AddMembership() error: %v", err)
+	}
+
+	m, err := s.GetMembership("fscampfire01")
+	if err != nil {
+		t.Fatalf("GetMembership() error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("expected membership")
+	}
+	if m.TransportType != "filesystem" {
+		t.Errorf("TransportType = %q, want %q", m.TransportType, "filesystem")
+	}
+}
+
+// TestAddMembership_ExplicitTransportType verifies that an explicitly provided
+// TransportType overrides the heuristic.
+func TestAddMembership_ExplicitTransportType(t *testing.T) {
+	s := testStore(t)
+
+	// TransportDir looks like filesystem but we explicitly say p2p-http.
+	if err := s.AddMembership(Membership{
+		CampfireID:    "explicit01",
+		TransportDir:  "/tmp/campfire/explicit01",
+		JoinProtocol:  "open",
+		Role:          "creator",
+		JoinedAt:      1,
+		TransportType: "p2p-http",
+	}); err != nil {
+		t.Fatalf("AddMembership() error: %v", err)
+	}
+
+	m, err := s.GetMembership("explicit01")
+	if err != nil {
+		t.Fatalf("GetMembership() error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("expected membership")
+	}
+	if m.TransportType != "p2p-http" {
+		t.Errorf("TransportType = %q, want %q", m.TransportType, "p2p-http")
+	}
+}
+
+// TestMigration_BackfillTransportType verifies that reopening a store with
+// legacy rows (transport_type = '') backfills the correct values.
+func TestMigration_BackfillTransportType(t *testing.T) {
+	path := t.TempDir() + "/store.db"
+
+	// Open the store once to create the schema with the transport_type column.
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error: %v", err)
+	}
+
+	// Manually insert a row with transport_type = '' to simulate a legacy row.
+	dir := t.TempDir()
+	campfireID := "legacyhttp"
+	cborPath := dir + "/" + campfireID + ".cbor"
+	if err := os.WriteFile(cborPath, []byte("x"), 0644); err != nil {
+		t.Fatalf("creating cbor file: %v", err)
+	}
+	// Force empty transport_type by bypassing AddMembership.
+	_, dbErr := s1.db.Exec(
+		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type)
+		 VALUES (?, ?, 'open', 'creator', 1, 1, '', '', '')`,
+		campfireID, dir,
+	)
+	if dbErr != nil {
+		t.Fatalf("direct insert error: %v", dbErr)
+	}
+	s1.Close()
+
+	// Reopen: migration backfill should set transport_type = 'p2p-http'.
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open() error: %v", err)
+	}
+	defer s2.Close()
+
+	m, err := s2.GetMembership(campfireID)
+	if err != nil {
+		t.Fatalf("GetMembership() error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("expected membership after backfill")
+	}
+	if m.TransportType != "p2p-http" {
+		t.Errorf("after backfill: TransportType = %q, want %q", m.TransportType, "p2p-http")
 	}
 }
