@@ -166,18 +166,7 @@ func toolResultJSON(v interface{}) (map[string]interface{}, error) {
 
 // campfireFromState reconstructs a Campfire for membership hash computation.
 func campfireFromState(state *campfire.CampfireState, members []campfire.MemberRecord) *campfire.Campfire {
-	cf := &campfire.Campfire{
-		JoinProtocol:          state.JoinProtocol,
-		ReceptionRequirements: state.ReceptionRequirements,
-		CreatedAt:             state.CreatedAt,
-	}
-	for _, m := range members {
-		cf.Members = append(cf.Members, campfire.Member{
-			PublicKey: m.PublicKey,
-			JoinedAt:  m.JoinedAt,
-		})
-	}
-	return cf
+	return state.ToCampfire(members)
 }
 
 // ---------------------------------------------------------------------------

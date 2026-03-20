@@ -54,6 +54,11 @@ type Member struct {
 
 // CampfireState is the on-disk representation in the transport directory.
 // Includes the campfire's private key (filesystem transport trust model).
+//
+// NOTE: CampfireState intentionally does not carry Members. The filesystem
+// transport stores each member as a separate MemberRecord file alongside the
+// campfire state. Callers that need the full in-memory Campfire (including
+// members) should call CampfireState.ToCampfire(members).
 type CampfireState struct {
 	PublicKey             []byte   `cbor:"1,keyasint" json:"public_key"`
 	PrivateKey            []byte   `cbor:"2,keyasint" json:"private_key"`
@@ -63,12 +68,26 @@ type CampfireState struct {
 	Threshold             uint     `cbor:"6,keyasint" json:"threshold"`
 }
 
-// MemberRecord is the on-disk representation of a member in the transport directory.
-type MemberRecord struct {
-	PublicKey []byte `cbor:"1,keyasint" json:"public_key"`
-	JoinedAt  int64  `cbor:"2,keyasint" json:"joined_at"`
-	Role      string `cbor:"3,keyasint,omitempty" json:"role,omitempty"`
+// ToCampfire reconstructs a live Campfire from this on-disk state and the
+// provided member list. When the private key is absent (read-only / remote
+// campfire states), Campfire.PrivateKey will be nil.
+func (s *CampfireState) ToCampfire(members []MemberRecord) *Campfire {
+	cf := &Campfire{
+		PublicKey:             s.PublicKey,
+		PrivateKey:            s.PrivateKey,
+		JoinProtocol:          s.JoinProtocol,
+		ReceptionRequirements: s.ReceptionRequirements,
+		CreatedAt:             s.CreatedAt,
+		Threshold:             s.Threshold,
+	}
+	cf.Members = append(cf.Members, members...)
+	return cf
 }
+
+// MemberRecord is the on-disk representation of a member in the transport
+// directory. It has the same fields as Member; use MemberRecord(m) and
+// Member(r) to convert between the two without copying.
+type MemberRecord = Member
 
 // New creates a new campfire with the given parameters.
 // threshold=1 means any single member can sign provenance hops (default behavior).
