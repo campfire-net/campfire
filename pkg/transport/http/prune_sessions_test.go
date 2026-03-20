@@ -265,6 +265,8 @@ func TestGetOrCreateSignSession_Idempotent(t *testing.T) {
 	signerIDs := []uint32{1, 2}
 	message := []byte("idempotency test message")
 
+	campfireID := "test-campfire-idempotent"
+
 	// First call — should create a new session.
 	tr.mu.Lock()
 	first, err := tr.getOrCreateSignSession(campfireID, sessionID, signerIDs, message, myResult, 1)

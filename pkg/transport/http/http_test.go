@@ -272,6 +272,10 @@ func TestDeliverToAll(t *testing.T) {
 
 // TestMembershipNotification verifies join/leave events update the peer list.
 func TestMembershipNotification(t *testing.T) {
+	// Loopback endpoints are used in this integration test; bypass SSRF validation.
+	cfhttp.OverrideValidateJoinerEndpointForTest()
+	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+
 	campfireID := "test-campfire-membership"
 	id1 := tempIdentity(t)
 	id2 := tempIdentity(t)
@@ -470,6 +474,10 @@ func TestMembershipJoinIdentityInjectionRejected(t *testing.T) {
 
 // TestMembershipJoinValidSender verifies a well-formed join event is accepted.
 func TestMembershipJoinValidSender(t *testing.T) {
+	// Loopback endpoints are used in this integration test; bypass SSRF validation.
+	cfhttp.OverrideValidateJoinerEndpointForTest()
+	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+
 	campfireID := "test-campfire-valid-join"
 	joiner := tempIdentity(t)
 
@@ -547,5 +555,53 @@ func TestMembershipLeaveIdentityMismatchRejected(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for leave with mismatched member, got %d", resp.StatusCode)
+	}
+}
+
+// TestMembershipJoinSSRFEndpointRejected verifies that a join event containing
+// a private/internal endpoint (SSRF attempt) is rejected with 400.
+func TestMembershipJoinSSRFEndpointRejected(t *testing.T) {
+	campfireID := "test-campfire-ssrf-join"
+	attacker := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	// Attacker is a legitimate member — auth check passes; only endpoint validation
+	// should reject the request.
+	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: attacker.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+53)
+	ep := fmt.Sprintf("http://%s", addr)
+	startTransport(t, addr, s)
+
+	// Attacker announces itself with a private metadata-service endpoint.
+	body, err := json.Marshal(cfhttp.MembershipEvent{
+		Event:    "join",
+		Member:   attacker.PublicKeyHex(),
+		Endpoint: "http://169.254.169.254/latest/meta-data/",
+	})
+	if err != nil {
+		t.Fatalf("marshaling event: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/membership", ep, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	sig := attacker.Sign(body)
+	req.Header.Set("X-Campfire-Sender", attacker.PublicKeyHex())
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for SSRF endpoint in join event, got %d", resp.StatusCode)
 	}
 }
