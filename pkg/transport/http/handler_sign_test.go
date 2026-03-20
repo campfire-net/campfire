@@ -294,14 +294,16 @@ func TestHandleSignRound2WithoutRound1(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusBadRequest {
-		b, _ := io.ReadAll(resp.Body)
-		t.Errorf("expected 400 Bad Request, got %d: %s", resp.StatusCode, string(b))
+		t.Errorf("expected 400 Bad Request, got %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	// Verify the error message mentions session not found.
-	respBody, _ := io.ReadAll(resp.Body)
-	_ = respBody // already consumed above after status check
+	if !bytes.Contains(respBody, []byte("signing session not found")) {
+		t.Errorf("expected error body to contain %q, got: %s", "signing session not found", string(respBody))
+	}
 }
 
 // ---------------------------------------------------------------------------
