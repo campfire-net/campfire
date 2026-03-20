@@ -86,6 +86,17 @@ func resolveGitHubToken(tokenEnvName, cfHome string) (string, error) {
 	if data, err := os.ReadFile(credFile); err == nil {
 		tok := strings.TrimSpace(string(data))
 		if tok != "" {
+			// Warn if the credential file is readable by group or others.
+			// A world-readable token file allows any local process to steal
+			// the GitHub PAT. Best practice matches identity.Save() which
+			// always writes with 0600.
+			if info, statErr := os.Stat(credFile); statErr == nil {
+				if perm := info.Mode().Perm(); perm&^os.FileMode(0600) != 0 {
+					fmt.Fprintf(os.Stderr,
+						"warning: %s has permissions %04o; recommend 0600 to prevent token exposure (run: chmod 0600 %s)\n",
+						credFile, perm, credFile)
+				}
+			}
 			return tok, nil
 		}
 	}
