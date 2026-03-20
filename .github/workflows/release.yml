@@ -30,7 +30,8 @@ jobs:
       - name: Build binaries
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          LDFLAGS="-s -w -X main.version=${VERSION}"
+          LDFLAGS_CF="-s -w -X github.com/campfire-net/campfire/cmd/cf/cmd.Version=${VERSION}"
+          LDFLAGS_MCP="-s -w"
           OUTDIR="dist"
           mkdir -p "${OUTDIR}"
 
@@ -51,6 +52,11 @@ jobs:
               BIN="${CMD}"
               if [ "${OS}" = "windows" ]; then
                 BIN="${CMD}.exe"
+              fi
+
+              LDFLAGS="${LDFLAGS_CF}"
+              if [ "${CMD}" = "cf-mcp" ]; then
+                LDFLAGS="${LDFLAGS_MCP}"
               fi
 
               GOOS="${OS}" GOARCH="${ARCH}" go build \
@@ -93,15 +99,73 @@ jobs:
           # Get commits since the previous tag
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           if [ -n "${PREV_TAG}" ]; then
-            NOTES=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges)
+            COMMITS=$(git log "${PREV_TAG}..HEAD" --pretty=format:"%s" --no-merges)
           else
-            NOTES=$(git log --pretty=format:"- %s" --no-merges)
+            COMMITS=$(git log --pretty=format:"%s" --no-merges)
           fi
-          # Write to file to handle multiline safely
+
+          # Categorize commits by conventional-commit prefix
+          FEATURES=""
+          FIXES=""
+          REFACTORS=""
+          TESTS=""
+          DOCS=""
+          PERF=""
+          OTHER=""
+
+          while IFS= read -r line; do
+            [ -z "${line}" ] && continue
+            case "${line}" in
+              feat*)    FEATURES="${FEATURES}- ${line}"$'\n' ;;
+              fix*)     FIXES="${FIXES}- ${line}"$'\n' ;;
+              refactor*) REFACTORS="${REFACTORS}- ${line}"$'\n' ;;
+              test*)    TESTS="${TESTS}- ${line}"$'\n' ;;
+              docs*)    DOCS="${DOCS}- ${line}"$'\n' ;;
+              perf*)    PERF="${PERF}- ${line}"$'\n' ;;
+              chore*|beads*|Attest*|Upgrade*|Merge*) ;; # skip noise
+              *)        OTHER="${OTHER}- ${line}"$'\n' ;;
+            esac
+          done <<< "${COMMITS}"
+
           {
-            echo "## Changes"
+            if [ -n "${FEATURES}" ]; then
+              echo "### Features"
+              echo ""
+              echo "${FEATURES}"
+            fi
+            if [ -n "${FIXES}" ]; then
+              echo "### Fixes"
+              echo ""
+              echo "${FIXES}"
+            fi
+            if [ -n "${PERF}" ]; then
+              echo "### Performance"
+              echo ""
+              echo "${PERF}"
+            fi
+            if [ -n "${REFACTORS}" ]; then
+              echo "### Refactoring"
+              echo ""
+              echo "${REFACTORS}"
+            fi
+            if [ -n "${TESTS}" ]; then
+              echo "### Tests"
+              echo ""
+              echo "${TESTS}"
+            fi
+            if [ -n "${DOCS}" ]; then
+              echo "### Documentation"
+              echo ""
+              echo "${DOCS}"
+            fi
+            if [ -n "${OTHER}" ]; then
+              echo "### Other"
+              echo ""
+              echo "${OTHER}"
+            fi
+            echo "---"
             echo ""
-            echo "${NOTES}"
+            echo "**Full changelog**: [\`${PREV_TAG}...${GITHUB_REF_NAME}\`](https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${GITHUB_REF_NAME})"
           } > /tmp/release_notes.md
 
       - name: Create GitHub Release

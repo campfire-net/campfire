@@ -10,6 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is set at build time via -ldflags "-X ...cmd.Version=v1.2.3".
+// Falls back to "dev" when built without ldflags (e.g. `go run`).
+var Version = "dev"
+
 var (
 	jsonOutput bool
 	cfHome     string
@@ -37,6 +41,7 @@ var rootCmd = &cobra.Command{
   cf inspect <msg-id>  verify provenance chain
 
   Start: cf init && cf create --description "what this campfire is for"`,
+	Version: Version,
 }
 
 func init() {
