@@ -1772,3 +1772,149 @@ func TestHasMessage_Present(t *testing.T) {
 		t.Error("HasMessage() = false for existing message, want true")
 	}
 }
+
+// --- workspace-ao9: interface boundary verification ---
+
+// TestStoreImplementsMembershipStore verifies that *Store satisfies MembershipStore.
+func TestStoreImplementsMembershipStore(t *testing.T) {
+	var _ MembershipStore = (*Store)(nil)
+}
+
+// TestStoreImplementsMessageStore verifies that *Store satisfies MessageStore.
+func TestStoreImplementsMessageStore(t *testing.T) {
+	var _ MessageStore = (*Store)(nil)
+}
+
+// TestStoreImplementsPeerStore verifies that *Store satisfies PeerStore.
+func TestStoreImplementsPeerStore(t *testing.T) {
+	var _ PeerStore = (*Store)(nil)
+}
+
+// TestStoreImplementsThresholdStore verifies that *Store satisfies ThresholdStore.
+func TestStoreImplementsThresholdStore(t *testing.T) {
+	var _ ThresholdStore = (*Store)(nil)
+}
+
+// TestMembershipStoreInterface exercises MembershipStore methods via the interface,
+// confirming that callers typed to the narrow interface can use all operations.
+func TestMembershipStoreInterface(t *testing.T) {
+	s := testStore(t)
+	var ms MembershipStore = s
+
+	m := Membership{
+		CampfireID: "iface-cf1", TransportDir: "/tmp", JoinProtocol: "open",
+		Role: "member", JoinedAt: 1,
+	}
+	if err := ms.AddMembership(m); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+	got, err := ms.GetMembership("iface-cf1")
+	if err != nil || got == nil {
+		t.Fatalf("GetMembership: err=%v got=%v", err, got)
+	}
+	if got.Role != "member" {
+		t.Errorf("role = %q, want member", got.Role)
+	}
+	if err := ms.UpdateMembershipRole("iface-cf1", "observer"); err != nil {
+		t.Fatalf("UpdateMembershipRole: %v", err)
+	}
+	got, _ = ms.GetMembership("iface-cf1")
+	if got.Role != "observer" {
+		t.Errorf("role after update = %q, want observer", got.Role)
+	}
+	all, err := ms.ListMemberships()
+	if err != nil {
+		t.Fatalf("ListMemberships: %v", err)
+	}
+	found := false
+	for _, x := range all {
+		if x.CampfireID == "iface-cf1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("ListMemberships did not return iface-cf1")
+	}
+	if err := ms.RemoveMembership("iface-cf1"); err != nil {
+		t.Fatalf("RemoveMembership: %v", err)
+	}
+	got, _ = ms.GetMembership("iface-cf1")
+	if got != nil {
+		t.Error("GetMembership returned non-nil after removal")
+	}
+}
+
+// TestPeerStoreInterface exercises PeerStore methods via the narrow interface.
+func TestPeerStoreInterface(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "peer-cf", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1}) //nolint:errcheck
+	var ps PeerStore = s
+
+	ep := PeerEndpoint{
+		CampfireID:   "peer-cf",
+		MemberPubkey: "pubkey-abc",
+		Endpoint:     "http://peer.example.com",
+		Role:         "creator",
+	}
+	if err := ps.UpsertPeerEndpoint(ep); err != nil {
+		t.Fatalf("UpsertPeerEndpoint: %v", err)
+	}
+	role, err := ps.GetPeerRole("peer-cf", "pubkey-abc")
+	if err != nil {
+		t.Fatalf("GetPeerRole: %v", err)
+	}
+	if role != "creator" {
+		t.Errorf("role = %q, want creator", role)
+	}
+	eps, err := ps.ListPeerEndpoints("peer-cf")
+	if err != nil || len(eps) != 1 {
+		t.Fatalf("ListPeerEndpoints: err=%v len=%d", err, len(eps))
+	}
+	if err := ps.DeletePeerEndpoint("peer-cf", "pubkey-abc"); err != nil {
+		t.Fatalf("DeletePeerEndpoint: %v", err)
+	}
+	eps, _ = ps.ListPeerEndpoints("peer-cf")
+	if len(eps) != 0 {
+		t.Errorf("expected 0 endpoints after delete, got %d", len(eps))
+	}
+}
+
+// TestThresholdStoreInterface exercises ThresholdStore methods via the narrow interface.
+func TestThresholdStoreInterface(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "thr-cf", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1}) //nolint:errcheck
+	var ts ThresholdStore = s
+
+	share := ThresholdShare{
+		CampfireID:    "thr-cf",
+		ParticipantID: 1,
+		SecretShare:   []byte("secret"),
+		PublicData:    []byte("public"),
+	}
+	if err := ts.UpsertThresholdShare(share); err != nil {
+		t.Fatalf("UpsertThresholdShare: %v", err)
+	}
+	got, err := ts.GetThresholdShare("thr-cf")
+	if err != nil || got == nil {
+		t.Fatalf("GetThresholdShare: err=%v got=%v", err, got)
+	}
+	if got.ParticipantID != 1 {
+		t.Errorf("participant_id = %d, want 1", got.ParticipantID)
+	}
+
+	if err := ts.StorePendingThresholdShare("thr-cf", 2, []byte("pending")); err != nil {
+		t.Fatalf("StorePendingThresholdShare: %v", err)
+	}
+	pid, data, err := ts.ClaimPendingThresholdShare("thr-cf")
+	if err != nil {
+		t.Fatalf("ClaimPendingThresholdShare: %v", err)
+	}
+	if pid != 2 || string(data) != "pending" {
+		t.Errorf("claimed share pid=%d data=%q, want pid=2 data=pending", pid, data)
+	}
+	// Second claim should return nil (no more pending).
+	pid2, data2, err := ts.ClaimPendingThresholdShare("thr-cf")
+	if err != nil || pid2 != 0 || data2 != nil {
+		t.Errorf("second claim: pid=%d data=%v err=%v, want (0,nil,nil)", pid2, data2, err)
+	}
+}
