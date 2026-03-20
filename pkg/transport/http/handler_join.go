@@ -17,7 +17,8 @@ type JoinRequest struct {
 	// JoinerEndpoint is the HTTP endpoint URL where the joiner listens (may be empty).
 	JoinerEndpoint string `json:"joiner_endpoint"`
 	// EphemeralX25519Pub is the joiner's ephemeral X25519 public key (hex) for key exchange.
-	// The admitting member uses this to derive a shared secret and encrypt the campfire private key.
+	// Required. The admitting member uses this to derive a shared secret and encrypt the
+	// campfire private key (threshold=1) or DKG share (threshold>1).
 	EphemeralX25519Pub string `json:"ephemeral_x25519_pub"`
 }
 
@@ -45,7 +46,10 @@ type JoinResponse struct {
 	ReceptionRequirements []string `json:"reception_requirements"`
 	// Threshold is the campfire's signing threshold.
 	Threshold uint `json:"threshold"`
-	// Peers is the list of known peer endpoints (including the admitting member).
+	// Peers contains only the admitting member's own endpoint.
+	// The full peer list is not returned here to prevent unauthenticated
+	// enumeration of all campfire member addresses. Additional peers are
+	// discovered via membership events and sync after admission.
 	Peers []PeerEntry `json:"peers"`
 	// ThresholdShareData is the joiner's FROST DKG share (threshold>1).
 	// Serialized with threshold.MarshalResult. Encrypted with AES-256-GCM via ECDH.
@@ -56,8 +60,10 @@ type JoinResponse struct {
 
 // handleJoin processes a join request from a new member.
 // POST /campfire/{id}/join
-// Body: JoinRequest (JSON)
-// Returns: JoinResponse (JSON) — includes encrypted campfire private key + peer list.
+// Body: JoinRequest (JSON) — EphemeralX25519Pub is required.
+// Returns: JoinResponse (JSON) — includes encrypted campfire private key and the
+// admitting node's own endpoint. The full peer list is NOT returned here; the joiner
+// discovers other members via membership events and sync after admission.
 // Auth (signature only, no membership check) is enforced by signatureOnlyMiddleware in route.
 func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID, senderHex string, body []byte) {
 	// Prefer transport's key provider (set via SetKeyProvider), fall back to handler's.
@@ -102,6 +108,19 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 		return
 	}
 
+	// For threshold=1 campfires: require EphemeralX25519Pub so the private key
+	// can be securely delivered. A join without an ephemeral key provides no key
+	// material — the joiner cannot participate — so we reject early rather than
+	// admitting a member who has no way to decrypt campfire messages.
+	// For threshold>1, the ephemeral key is also required for share delivery.
+	// Rejecting here prevents harvesting the peer list without a valid ECDH
+	// exchange (the peer list is disclosed only when key material is also exchanged).
+	if req.EphemeralX25519Pub == "" {
+		log.Printf("handleJoin: campfire %s: join request missing ephemeral X25519 public key from %s", campfireID, senderHex[:min(8, len(senderHex))])
+		http.Error(w, "ephemeral_x25519_pub is required", http.StatusBadRequest)
+		return
+	}
+
 	// Enforce invite-only protocol: reject unadmitted joiners server-side.
 	// The joiner must already be in the peer list to be admitted.
 	// (Invite-only campfires require the creator to pre-add the joiner's pubkey.)
@@ -134,45 +153,42 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 		Threshold:             membership.Threshold,
 	}
 
-	// Derive shared secret for key material encryption (used for both threshold=1 and threshold>1).
-	var sharedSecret []byte
-	if req.EphemeralX25519Pub != "" {
-		joinerX25519PubHex, err := hex.DecodeString(req.EphemeralX25519Pub)
-		if err != nil {
-			http.Error(w, "invalid ephemeral X25519 public key", http.StatusBadRequest)
-			return
-		}
-		joinerX25519, err := parseX25519PublicKey(joinerX25519PubHex)
-		if err != nil {
-			log.Printf("handleJoin: failed to parse joiner X25519 key: %v", err)
-			http.Error(w, "invalid ephemeral X25519 public key", http.StatusBadRequest)
-			return
-		}
-		respPriv, err := generateX25519Key()
-		if err != nil {
-			log.Printf("handleJoin: key generation failed: %v", err)
-			http.Error(w, "key generation failed", http.StatusInternalServerError)
-			return
-		}
-		respPub := respPriv.PublicKey()
-		shared, err := respPriv.ECDH(joinerX25519)
-		if err != nil {
-			log.Printf("handleJoin: ECDH failed: %v", err)
-			http.Error(w, "ECDH failed", http.StatusInternalServerError)
-			return
-		}
-		derivedKey, err := HkdfSHA256(shared, "campfire-join-v1")
-		if err != nil {
-			log.Printf("handleJoin: key derivation failed: %v", err)
-			http.Error(w, "key derivation failed", http.StatusInternalServerError)
-			return
-		}
-		sharedSecret = derivedKey
-		resp.ResponderX25519Pub = fmt.Sprintf("%x", respPub.Bytes())
+	// Derive shared secret for key material encryption.
+	// EphemeralX25519Pub is guaranteed non-empty at this point (checked above).
+	joinerX25519PubHex, err := hex.DecodeString(req.EphemeralX25519Pub)
+	if err != nil {
+		http.Error(w, "invalid ephemeral X25519 public key", http.StatusBadRequest)
+		return
 	}
+	joinerX25519, err := parseX25519PublicKey(joinerX25519PubHex)
+	if err != nil {
+		log.Printf("handleJoin: failed to parse joiner X25519 key: %v", err)
+		http.Error(w, "invalid ephemeral X25519 public key", http.StatusBadRequest)
+		return
+	}
+	respPriv, err := generateX25519Key()
+	if err != nil {
+		log.Printf("handleJoin: key generation failed: %v", err)
+		http.Error(w, "key generation failed", http.StatusInternalServerError)
+		return
+	}
+	respPub := respPriv.PublicKey()
+	shared, err := respPriv.ECDH(joinerX25519)
+	if err != nil {
+		log.Printf("handleJoin: ECDH failed: %v", err)
+		http.Error(w, "ECDH failed", http.StatusInternalServerError)
+		return
+	}
+	sharedSecret, err := HkdfSHA256(shared, "campfire-join-v1")
+	if err != nil {
+		log.Printf("handleJoin: key derivation failed: %v", err)
+		http.Error(w, "key derivation failed", http.StatusInternalServerError)
+		return
+	}
+	resp.ResponderX25519Pub = fmt.Sprintf("%x", respPub.Bytes())
 
 	// For threshold=1: encrypt and transmit the campfire private key.
-	if membership.Threshold == 1 && sharedSecret != nil {
+	if membership.Threshold == 1 {
 		encrypted, err := AESGCMEncrypt(sharedSecret, privKey)
 		if err != nil {
 			log.Printf("handleJoin: encryption failed for campfire %s: %v", campfireID, err)
@@ -184,7 +200,7 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 
 	// For threshold>1: distribute a pending DKG share to this joiner.
 	var joinerParticipantID uint32
-	if membership.Threshold > 1 && sharedSecret != nil {
+	if membership.Threshold > 1 {
 		pid, shareData, err := h.store.ClaimPendingThresholdShare(campfireID)
 		if err != nil {
 			log.Printf("handleJoin: failed to claim threshold share for campfire %s: %v", campfireID, err)
@@ -204,39 +220,28 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 		}
 	}
 
-	// Add peer endpoints from persistent store (includes participant IDs).
-	storedPeers, _ := h.store.ListPeerEndpoints(campfireID)
-	for _, p := range storedPeers {
-		resp.Peers = append(resp.Peers, PeerEntry{
-			PubKeyHex:     p.MemberPubkey,
-			Endpoint:      p.Endpoint,
-			ParticipantID: p.ParticipantID,
-		})
-	}
-
-	// Also add the admitting member's own endpoint if known.
+	// Disclose only the admitting node's own endpoint in the join response.
+	// The full peer list (all member endpoints/IPs) is not returned here to
+	// prevent unauthenticated enumeration of all campfire member addresses.
+	// After the joiner is admitted (their endpoint is persisted below), they
+	// can discover other members via the membership notification fanout and
+	// normal message sync — both of which require campfire membership.
+	//
+	// For invite-only campfires, the joiner was already pre-registered in the
+	// peer list, so they receive only the admitting node's endpoint as well.
+	// Additional peer discovery happens via membership events post-admission.
 	selfPubHex, selfEndpoint := h.transport.SelfInfo()
 	if selfEndpoint != "" && selfPubHex != "" {
-		// Avoid duplicate if already stored.
-		found := false
-		for _, p := range resp.Peers {
-			if p.PubKeyHex == selfPubHex {
-				found = true
-				break
-			}
+		// Admitting member is participant 1 for threshold>1, 0 for threshold=1.
+		selfPID := uint32(1)
+		if membership.Threshold <= 1 {
+			selfPID = 0
 		}
-		if !found {
-			// Admitting member is participant 1.
-			selfPID := uint32(1)
-			if membership.Threshold <= 1 {
-				selfPID = 0
-			}
-			resp.Peers = append(resp.Peers, PeerEntry{
-				PubKeyHex:     selfPubHex,
-				Endpoint:      selfEndpoint,
-				ParticipantID: selfPID,
-			})
-		}
+		resp.Peers = append(resp.Peers, PeerEntry{
+			PubKeyHex:     selfPubHex,
+			Endpoint:      selfEndpoint,
+			ParticipantID: selfPID,
+		})
 	}
 
 	// Persist the joiner's endpoint, including participant ID for threshold>1.
