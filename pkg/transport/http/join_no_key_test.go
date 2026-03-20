@@ -14,6 +14,14 @@ package http_test
 //      (i.e. the server chose not to deliver key material). The client must
 //      return a JoinResult with CampfirePrivKey == nil and no error — not a
 //      decryption failure or a panic.
+//
+// NOTE on property (b): TestJoinClientHandlesNoKeyInResponse is a CLIENT ROBUSTNESS
+// test, not a current-protocol flow test. The current server (handleJoin) cannot
+// produce this response: it always requires EphemeralX25519Pub and always delivers
+// key material on 200. The test uses a mock server to simulate a server response
+// the real server does not produce. Its purpose is to guard the defensive "no key
+// material" branch in Join() against silent removal during refactoring. If that
+// branch is intentionally removed from Join(), delete this test at the same time.
 
 import (
 	"encoding/json"
@@ -26,14 +34,19 @@ import (
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
-// TestJoinClientHandlesNoKeyInResponse verifies that the Join() client function
-// handles a server response that provides CampfirePubKey + Peers but omits
-// both ResponderX25519Pub and EncryptedPrivKey.
+// TestJoinClientHandlesNoKeyInResponse is a CLIENT ROBUSTNESS test.
 //
-// This simulates a future server variant (e.g. metadata-only join) or a
-// network fault that strips key material. The client must not panic or return
-// an error in this case — it should surface the absence via CampfirePrivKey==nil
-// so callers can detect it and decide how to proceed.
+// It verifies that the Join() client function handles a server response that
+// provides CampfirePubKey + Peers but omits both ResponderX25519Pub and
+// EncryptedPrivKey. This server response cannot be produced by the current
+// handleJoin implementation (which always rejects requests missing
+// EphemeralX25519Pub with 400, and always sends key material on 200).
+//
+// The test uses a mock HTTP server to simulate this hypothetical response.
+// Its purpose is a forward-compatibility regression guard: if the defensive
+// "no key material" branch in Join() (peer.go) is removed or broken, this
+// test will catch it. The client must not panic or return an error — it must
+// surface the absence via CampfirePrivKey==nil so callers can detect it.
 func TestJoinClientHandlesNoKeyInResponse(t *testing.T) {
 	joiner, err := identity.Generate()
 	if err != nil {
