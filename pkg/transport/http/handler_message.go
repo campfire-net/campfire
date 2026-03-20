@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
@@ -49,21 +50,28 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 	// For peers, look up their stored role and enforce restrictions:
 	//   - observer: cannot deliver any messages.
 	//   - writer:   cannot deliver campfire:* system messages.
-	//   - member / creator: no restrictions.
+	//   - full (and backward-compat aliases "member", "creator", ""): no restrictions.
+	//
+	// campfire.EffectiveRole normalizes legacy/unknown values ("member", "creator",
+	// empty string) to campfire.RoleFull so the switch only needs to handle the
+	// three canonical roles. Without this normalization a peer whose role was stored
+	// as "member" (the pre-enforcement default) would fall through the switch without
+	// restriction — correct behaviour, but relying on implicit fallthrough rather than
+	// explicit semantics.
 	selfPubKeyHex, _ := h.transport.SelfInfo()
 	if senderHex != selfPubKeyHex {
-		role, err := h.store.GetPeerRole(campfireID, senderHex)
+		rawRole, err := h.store.GetPeerRole(campfireID, senderHex)
 		if err != nil {
 			log.Printf("handleDeliver: failed to look up role for sender %s in campfire %s: %v", senderHex, campfireID, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		switch role {
-		case "observer":
+		switch campfire.EffectiveRole(rawRole) {
+		case campfire.RoleObserver:
 			log.Printf("handleDeliver: observer %s attempted to deliver message to campfire %s", senderHex, campfireID)
 			http.Error(w, "observers cannot deliver messages", http.StatusForbidden)
 			return
-		case "writer":
+		case campfire.RoleWriter:
 			for _, tag := range msg.Tags {
 				if strings.HasPrefix(tag, "campfire:") {
 					log.Printf("handleDeliver: writer %s attempted to deliver system message (tag %q) to campfire %s", senderHex, tag, campfireID)
@@ -72,6 +80,7 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 				}
 			}
 		}
+		// campfire.RoleFull and any other normalized value: no restrictions.
 	}
 
 	// Store in local SQLite
