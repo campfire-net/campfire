@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/message"
 	_ "modernc.org/sqlite"
 )
 
@@ -311,28 +312,91 @@ func (s *Store) ListMemberships() ([]Membership, error) {
 }
 
 // MessageRecord is a stored message.
+// Tags, Antecedents, and Provenance are typed Go values; JSON serialization
+// to/from SQLite TEXT columns is handled at the store boundary (marshal on
+// write, unmarshal on read) so callers never deal with raw JSON strings.
 type MessageRecord struct {
-	ID          string `json:"id"`
-	CampfireID  string `json:"campfire_id"`
-	Sender      string `json:"sender"`
-	Payload     []byte `json:"payload"`
-	Tags        string `json:"tags"`        // JSON array
-	Antecedents string `json:"antecedents"` // JSON array
-	Timestamp   int64  `json:"timestamp"`
-	Signature   []byte `json:"signature"`
-	Provenance  string `json:"provenance"` // JSON array
-	ReceivedAt  int64  `json:"received_at"`
+	ID          string                  `json:"id"`
+	CampfireID  string                  `json:"campfire_id"`
+	Sender      string                  `json:"sender"`
+	Payload     []byte                  `json:"payload"`
+	Tags        []string                `json:"tags"`
+	Antecedents []string                `json:"antecedents"`
+	Timestamp   int64                   `json:"timestamp"`
+	Signature   []byte                  `json:"signature"`
+	Provenance  []message.ProvenanceHop `json:"provenance"`
+	ReceivedAt  int64                   `json:"received_at"`
 	// Instance is tainted (sender-asserted, not verified) metadata identifying
 	// the sender's role or instance name. Empty string for backward compatibility.
 	Instance string `json:"instance,omitempty"`
 }
 
+// rawMessageRecord is used for scanning SQL rows where Tags, Antecedents, and
+// Provenance are stored as JSON text. scanMessageRecord converts it to a clean
+// MessageRecord at the store boundary.
+type rawMessageRecord struct {
+	ID          string
+	CampfireID  string
+	Sender      string
+	Payload     []byte
+	Tags        string
+	Antecedents string
+	Timestamp   int64
+	Signature   []byte
+	Provenance  string
+	ReceivedAt  int64
+	Instance    string
+}
+
+// toMessageRecord deserializes JSON fields from rawMessageRecord into a typed
+// MessageRecord. Malformed JSON in any field is treated as an empty slice.
+func (r rawMessageRecord) toMessageRecord() MessageRecord {
+	var tags []string
+	if err := json.Unmarshal([]byte(r.Tags), &tags); err != nil {
+		tags = []string{}
+	}
+	var antecedents []string
+	if err := json.Unmarshal([]byte(r.Antecedents), &antecedents); err != nil {
+		antecedents = []string{}
+	}
+	var provenance []message.ProvenanceHop
+	if err := json.Unmarshal([]byte(r.Provenance), &provenance); err != nil {
+		provenance = []message.ProvenanceHop{}
+	}
+	return MessageRecord{
+		ID:          r.ID,
+		CampfireID:  r.CampfireID,
+		Sender:      r.Sender,
+		Payload:     r.Payload,
+		Tags:        tags,
+		Antecedents: antecedents,
+		Timestamp:   r.Timestamp,
+		Signature:   r.Signature,
+		Provenance:  provenance,
+		ReceivedAt:  r.ReceivedAt,
+		Instance:    r.Instance,
+	}
+}
+
+// scanMessageRecord scans the next row into a MessageRecord, deserializing
+// JSON text columns at the store boundary.
+func scanMessageRecord(scan func(dest ...any) error) (MessageRecord, error) {
+	var r rawMessageRecord
+	if err := scan(&r.ID, &r.CampfireID, &r.Sender, &r.Payload, &r.Tags, &r.Antecedents, &r.Timestamp, &r.Signature, &r.Provenance, &r.ReceivedAt, &r.Instance); err != nil {
+		return MessageRecord{}, err
+	}
+	return r.toMessageRecord(), nil
+}
+
 // AddMessage inserts a message if not already present. Returns true if inserted.
 func (s *Store) AddMessage(m MessageRecord) (bool, error) {
+	tagsJSON, _ := json.Marshal(m.Tags)
+	anteJSON, _ := json.Marshal(m.Antecedents)
+	provJSON, _ := json.Marshal(m.Provenance)
 	result, err := s.db.Exec(
 		`INSERT OR IGNORE INTO messages (id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.CampfireID, m.Sender, m.Payload, m.Tags, m.Antecedents, m.Timestamp, m.Signature, m.Provenance, m.ReceivedAt, m.Instance,
+		m.ID, m.CampfireID, m.Sender, m.Payload, string(tagsJSON), string(anteJSON), m.Timestamp, m.Signature, string(provJSON), m.ReceivedAt, m.Instance,
 	)
 	if err != nil {
 		return false, fmt.Errorf("adding message: %w", err)
@@ -369,8 +433,7 @@ func (s *Store) GetMessage(id string) (*MessageRecord, error) {
 		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 		 FROM messages WHERE id = ?`, id,
 	)
-	var m MessageRecord
-	err := row.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance)
+	m, err := scanMessageRecord(row.Scan)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -404,8 +467,8 @@ func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 
 	var matches []MessageRecord
 	for rows.Next() {
-		var m MessageRecord
-		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
+		m, err := scanMessageRecord(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}
 		matches = append(matches, m)
@@ -499,8 +562,8 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...
 
 	var msgs []MessageRecord
 	for rows.Next() {
-		var m MessageRecord
-		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
+		m, err := scanMessageRecord(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}
 		msgs = append(msgs, m)
@@ -681,8 +744,8 @@ func (s *Store) ListCompactionEvents(campfireID string) ([]MessageRecord, error)
 
 	var msgs []MessageRecord
 	for rows.Next() {
-		var m MessageRecord
-		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
+		m, err := scanMessageRecord(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scanning compaction event: %w", err)
 		}
 		msgs = append(msgs, m)
@@ -735,8 +798,8 @@ func (s *Store) ListReferencingMessages(messageID string) ([]MessageRecord, erro
 
 	var msgs []MessageRecord
 	for rows.Next() {
-		var m MessageRecord
-		if err := rows.Scan(&m.ID, &m.CampfireID, &m.Sender, &m.Payload, &m.Tags, &m.Antecedents, &m.Timestamp, &m.Signature, &m.Provenance, &m.ReceivedAt, &m.Instance); err != nil {
+		m, err := scanMessageRecord(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}
 		msgs = append(msgs, m)
@@ -970,16 +1033,11 @@ func NowNano() int64 {
 	return time.Now().UnixNano()
 }
 
-// HasTag reports whether a JSON-encoded tags array contains the given tag as an
-// exact element match. It parses the JSON array and compares each element
-// verbatim, preventing false positives from substring matches (e.g.
+// HasTag reports whether a tags slice contains the given tag as an exact
+// element match. Prevents false positives from substring matches (e.g.
 // "xycampfire:compact" would not match a query for "campfire:compact").
 // (Security fix for workspace-pyw.)
-func HasTag(tagsJSON, tag string) bool {
-	var tags []string
-	if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
-		return false
-	}
+func HasTag(tags []string, tag string) bool {
 	for _, t := range tags {
 		if t == tag {
 			return true
@@ -989,7 +1047,7 @@ func HasTag(tagsJSON, tag string) bool {
 }
 
 // isCompactionEvent returns true if the message record carries the
-// "campfire:compact" tag as an exact element in its tags JSON array.
+// "campfire:compact" tag as an exact element.
 // Uses HasTag rather than strings.Contains to avoid false positives from
 // tags that happen to contain the substring (e.g. "xycampfire:compact").
 func isCompactionEvent(rec MessageRecord) bool {

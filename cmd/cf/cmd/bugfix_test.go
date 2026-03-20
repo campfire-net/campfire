@@ -86,9 +86,7 @@ func TestViewRead_RespectsCompaction(t *testing.T) {
 	// Count "note"-tagged messages in the compaction-filtered result.
 	noteMsgs := 0
 	for _, m := range allMsgs {
-		var tags []string
-		json.Unmarshal([]byte(m.Tags), &tags)
-		for _, tg := range tags {
+		for _, tg := range m.Tags {
 			if tg == "note" {
 				noteMsgs++
 			}
@@ -123,21 +121,7 @@ func addTestMessageRaw(t *testing.T, s *store.Store, agentID *identity.Identity,
 	}
 	msg.Timestamp = timestamp
 
-	tagsJSON, _ := json.Marshal(msg.Tags)
-	anteJSON, _ := json.Marshal(msg.Antecedents)
-	provJSON, _ := json.Marshal(msg.Provenance)
-	if _, err := s.AddMessage(store.MessageRecord{
-		ID:          msg.ID,
-		CampfireID:  campfireID,
-		Sender:      agentID.PublicKeyHex(),
-		Payload:     msg.Payload,
-		Tags:        string(tagsJSON),
-		Antecedents: string(anteJSON),
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
-		Provenance:  string(provJSON),
-		ReceivedAt:  store.NowNano(),
-	}); err != nil {
+	if _, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); err != nil {
 		t.Fatalf("adding message: %v", err)
 	}
 	return msg.ID
@@ -473,19 +457,7 @@ func storeNATTestMessageWithTags(t *testing.T, s *store.Store, campfireID string
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
-	tagsJSON, _ := json.Marshal(msg.Tags)
-	rec := store.MessageRecord{
-		ID:          msg.ID,
-		CampfireID:  campfireID,
-		Sender:      id.PublicKeyHex(),
-		Payload:     msg.Payload,
-		Tags:        string(tagsJSON),
-		Antecedents: `[]`,
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
-		Provenance:  `[]`,
-		ReceivedAt:  time.Now().UnixNano(),
-	}
+	rec := store.MessageRecordFromMessage(campfireID, msg, time.Now().UnixNano())
 	if _, err := s.AddMessage(rec); err != nil {
 		t.Fatalf("storing message: %v", err)
 	}

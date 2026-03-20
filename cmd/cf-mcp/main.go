@@ -842,24 +842,29 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 	}
 
 	type jsonMsg struct {
-		ID          string          `json:"id"`
-		CampfireID  string          `json:"campfire_id"`
-		Sender      string          `json:"sender"`
-		Instance    string          `json:"instance,omitempty"`
-		Payload     string          `json:"payload"`
-		Tags        []string        `json:"tags"`
-		Antecedents []string        `json:"antecedents"`
-		Timestamp   int64           `json:"timestamp"`
-		Provenance  json.RawMessage `json:"provenance"`
+		ID          string                  `json:"id"`
+		CampfireID  string                  `json:"campfire_id"`
+		Sender      string                  `json:"sender"`
+		Instance    string                  `json:"instance,omitempty"`
+		Payload     string                  `json:"payload"`
+		Tags        []string                `json:"tags"`
+		Antecedents []string                `json:"antecedents"`
+		Timestamp   int64                   `json:"timestamp"`
+		Provenance  []message.ProvenanceHop `json:"provenance"`
 	}
 	var out []jsonMsg
 	for _, m := range allMessages {
-		var tags []string
-		json.Unmarshal([]byte(m.Tags), &tags)
-		var ants []string
-		json.Unmarshal([]byte(m.Antecedents), &ants)
+		tags := m.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		ants := m.Antecedents
 		if ants == nil {
 			ants = []string{}
+		}
+		prov := m.Provenance
+		if prov == nil {
+			prov = []message.ProvenanceHop{}
 		}
 		out = append(out, jsonMsg{
 			ID:          m.ID,
@@ -870,7 +875,7 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 			Tags:        tags,
 			Antecedents: ants,
 			Timestamp:   m.Timestamp,
-			Provenance:  json.RawMessage(m.Provenance),
+			Provenance:  prov,
 		})
 	}
 	if out == nil {
@@ -914,11 +919,10 @@ func (s *server) handleInspect(id interface{}, params map[string]interface{}) js
 		return errResponse(id, -32000, fmt.Sprintf("message %s not found (run campfire_read first to sync)", messageID))
 	}
 
-	var provenance []message.ProvenanceHop
-	json.Unmarshal([]byte(msg.Provenance), &provenance)
-
-	var antecedents []string
-	json.Unmarshal([]byte(msg.Antecedents), &antecedents)
+	// Tags, Antecedents, and Provenance are typed Go values on MessageRecord
+	// (JSON deserialization happens at the store boundary), so no unmarshal needed.
+	provenance := msg.Provenance
+	antecedents := msg.Antecedents
 	if antecedents == nil {
 		antecedents = []string{}
 	}
@@ -934,8 +938,10 @@ func (s *server) handleInspect(id interface{}, params map[string]interface{}) js
 
 	msgSigValid := message.VerifyMessageSignature(messageID, msg.Payload, msg.Tags, msg.Antecedents, msg.Timestamp, msg.Sender, msg.Signature)
 
-	var tags []string
-	json.Unmarshal([]byte(msg.Tags), &tags)
+	tags := msg.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 
 	type hopJSON struct {
 		CampfireID            string   `json:"campfire_id"`

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/store"
@@ -37,10 +36,9 @@ func filterMessages(msgs []store.MessageRecord, tagFilters []string, senderFilte
 	return result
 }
 
-// matchesTags returns true if the message's JSON-encoded tags contain any tag in the set.
-func matchesTags(tagsJSON string, tagSet map[string]bool) bool {
-	var tags []string
-	json.Unmarshal([]byte(tagsJSON), &tags) //nolint:errcheck
+// matchesTags returns true if the tags slice contains any tag in the set.
+// Tags are now typed []string on MessageRecord (JSON deserialization happens at the store boundary).
+func matchesTags(tags []string, tagSet map[string]bool) bool {
 	for _, t := range tags {
 		if tagSet[strings.ToLower(t)] {
 			return true

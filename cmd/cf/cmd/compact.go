@@ -222,7 +222,7 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 
 // isCompactionMsg returns true if the message has the campfire:compact tag.
 // Used to exclude existing compaction events from the set of messages to supersede.
-// Uses HasTag (exact JSON element match) rather than strings.Contains to avoid false
+// Uses HasTag (exact element match) rather than strings.Contains to avoid false
 // positives from tags like "xycampfire:compact". Unified with isCompactionEvent
 // in store.go. (Fix for workspace-27q / workspace-2i1.)
 func isCompactionMsg(m store.MessageRecord) bool {

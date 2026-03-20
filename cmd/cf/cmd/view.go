@@ -397,15 +397,13 @@ func findAllViews(s *store.Store, campfireID string) ([]viewInfo, error) {
 
 // buildMessageContext creates a predicate.MessageContext from a store.MessageRecord.
 func buildMessageContext(m store.MessageRecord) *predicate.MessageContext {
-	var tags []string
-	json.Unmarshal([]byte(m.Tags), &tags) //nolint:errcheck
-
+	// Tags are now a typed []string on MessageRecord (JSON deserialized at store boundary).
 	// Try to parse payload as JSON for field access.
 	var payload map[string]any
 	json.Unmarshal(m.Payload, &payload) //nolint:errcheck
 
 	return &predicate.MessageContext{
-		Tags:      tags,
+		Tags:      m.Tags,
 		Sender:    m.Sender,
 		Timestamp: m.Timestamp,
 		Payload:   payload,
@@ -417,24 +415,29 @@ func outputViewJSON(msgs []store.MessageRecord, projection []string) error {
 	if len(projection) == 0 {
 		// Full message output.
 		type jsonMsg struct {
-			ID          string          `json:"id"`
-			CampfireID  string          `json:"campfire_id"`
-			Sender      string          `json:"sender"`
-			Instance    string          `json:"instance,omitempty"`
-			Payload     string          `json:"payload"`
-			Tags        []string        `json:"tags"`
-			Antecedents []string        `json:"antecedents"`
-			Timestamp   int64           `json:"timestamp"`
-			Provenance  json.RawMessage `json:"provenance"`
+			ID                  string                  `json:"id"`
+			CampfireID          string                  `json:"campfire_id"`
+			Sender              string                  `json:"sender"`
+			Instance            string                  `json:"instance,omitempty"`
+			Payload             string                  `json:"payload"`
+			Tags                []string                `json:"tags"`
+			Antecedents         []string                `json:"antecedents"`
+			Timestamp           int64                   `json:"timestamp"`
+			Provenance          []message.ProvenanceHop `json:"provenance"`
 		}
 		var out []jsonMsg
 		for _, m := range msgs {
-			var tags []string
-			json.Unmarshal([]byte(m.Tags), &tags) //nolint:errcheck
-			var antecedents []string
-			json.Unmarshal([]byte(m.Antecedents), &antecedents) //nolint:errcheck
+			tags := m.Tags
+			if tags == nil {
+				tags = []string{}
+			}
+			antecedents := m.Antecedents
 			if antecedents == nil {
 				antecedents = []string{}
+			}
+			provenance := m.Provenance
+			if provenance == nil {
+				provenance = []message.ProvenanceHop{}
 			}
 			out = append(out, jsonMsg{
 				ID:          m.ID,
@@ -445,7 +448,7 @@ func outputViewJSON(msgs []store.MessageRecord, projection []string) error {
 				Tags:        tags,
 				Antecedents: antecedents,
 				Timestamp:   m.Timestamp,
-				Provenance:  json.RawMessage(m.Provenance),
+				Provenance:  provenance,
 			})
 		}
 		if out == nil {
@@ -481,20 +484,16 @@ func outputViewJSON(msgs []store.MessageRecord, projection []string) error {
 			entry["payload"] = string(m.Payload)
 		}
 		if projSet["tags"] {
-			var tags []string
-			json.Unmarshal([]byte(m.Tags), &tags) //nolint:errcheck
-			entry["tags"] = tags
+			entry["tags"] = m.Tags
 		}
 		if projSet["antecedents"] {
-			var antecedents []string
-			json.Unmarshal([]byte(m.Antecedents), &antecedents) //nolint:errcheck
-			entry["antecedents"] = antecedents
+			entry["antecedents"] = m.Antecedents
 		}
 		if projSet["timestamp"] {
 			entry["timestamp"] = m.Timestamp
 		}
 		if projSet["provenance"] {
-			entry["provenance"] = json.RawMessage(m.Provenance)
+			entry["provenance"] = m.Provenance
 		}
 		out = append(out, entry)
 	}
@@ -521,7 +520,7 @@ func outputViewProjected(msgs []store.MessageRecord, projection []string) error 
 				}
 				parts = append(parts, fmt.Sprintf("sender=%s", short))
 			case "tags":
-				parts = append(parts, fmt.Sprintf("tags=%s", m.Tags))
+				parts = append(parts, fmt.Sprintf("tags=%s", strings.Join(m.Tags, ",")))
 			case "payload":
 				parts = append(parts, fmt.Sprintf("payload=%s", string(m.Payload)))
 			case "timestamp":

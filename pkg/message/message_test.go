@@ -215,20 +215,18 @@ func TestVerifyMessageSignatureFromStored(t *testing.T) {
 	msg, _ := NewMessage(priv, pub, []byte("hello"), []string{"test", "foo"}, []string{"ant-1"})
 
 	senderHex := msg.SenderHex()
-	tagsJSON := `["test","foo"]`
-	antJSON := `["ant-1"]`
 
-	if !VerifyMessageSignature(msg.ID, msg.Payload, tagsJSON, antJSON, msg.Timestamp, senderHex, msg.Signature) {
+	if !VerifyMessageSignature(msg.ID, msg.Payload, []string{"test", "foo"}, []string{"ant-1"}, msg.Timestamp, senderHex, msg.Signature) {
 		t.Error("stored-form signature should verify")
 	}
 
 	// Tamper payload
-	if VerifyMessageSignature(msg.ID, []byte("wrong"), tagsJSON, antJSON, msg.Timestamp, senderHex, msg.Signature) {
+	if VerifyMessageSignature(msg.ID, []byte("wrong"), []string{"test", "foo"}, []string{"ant-1"}, msg.Timestamp, senderHex, msg.Signature) {
 		t.Error("tampered stored-form should not verify")
 	}
 
 	// Tamper antecedents
-	if VerifyMessageSignature(msg.ID, msg.Payload, tagsJSON, `["ant-2"]`, msg.Timestamp, senderHex, msg.Signature) {
+	if VerifyMessageSignature(msg.ID, msg.Payload, []string{"test", "foo"}, []string{"ant-2"}, msg.Timestamp, senderHex, msg.Signature) {
 		t.Error("tampered antecedents stored-form should not verify")
 	}
 }
