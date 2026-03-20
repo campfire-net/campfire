@@ -96,11 +96,9 @@ func formatDAGLine(msg store.MessageRecord) string {
 	}
 
 	// Tags.
-	var tags []string
-	json.Unmarshal([]byte(msg.Tags), &tags) //nolint:errcheck
 	tagStr := ""
-	if len(tags) > 0 {
-		tagStr = " [" + strings.Join(tags, ",") + "]"
+	if len(msg.Tags) > 0 {
+		tagStr = " [" + strings.Join(msg.Tags, ",") + "]"
 	}
 
 	// Sender.
@@ -114,12 +112,10 @@ func formatDAGLine(msg store.MessageRecord) string {
 	}
 
 	// Antecedents.
-	var antecedents []string
-	json.Unmarshal([]byte(msg.Antecedents), &antecedents) //nolint:errcheck
 	antStr := "(root)"
-	if len(antecedents) > 0 {
-		shortAnts := make([]string, len(antecedents))
-		for i, a := range antecedents {
+	if len(msg.Antecedents) > 0 {
+		shortAnts := make([]string, len(msg.Antecedents))
+		for i, a := range msg.Antecedents {
 			if len(a) > 6 {
 				shortAnts[i] = a[:6]
 			} else {
@@ -155,14 +151,12 @@ func formatDAGJSON(msgs []store.MessageRecord, w io.Writer) {
 
 	entries := make([]dagEntry, 0, len(msgs))
 	for _, msg := range msgs {
-		var tags []string
-		json.Unmarshal([]byte(msg.Tags), &tags) //nolint:errcheck
+		tags := msg.Tags
 		if tags == nil {
 			tags = []string{}
 		}
 
-		var antecedents []string
-		json.Unmarshal([]byte(msg.Antecedents), &antecedents) //nolint:errcheck
+		antecedents := msg.Antecedents
 		if antecedents == nil {
 			antecedents = []string{}
 		}

@@ -12,7 +12,7 @@ import (
 
 // TestHasTag_ExactMatch verifies that HasTag matches the exact tag string.
 func TestHasTag_ExactMatch(t *testing.T) {
-	if !HasTag(`["campfire:compact"]`, "campfire:compact") {
+	if !HasTag([]string{"campfire:compact"}, "campfire:compact") {
 		t.Error("HasTag should match exact tag")
 	}
 }
@@ -20,21 +20,21 @@ func TestHasTag_ExactMatch(t *testing.T) {
 // TestHasTag_NoFalsePositive is the security regression test for workspace-pyw.
 // "xycampfire:compact" must NOT match a query for "campfire:compact".
 func TestHasTag_NoFalsePositive(t *testing.T) {
-	if HasTag(`["xycampfire:compact"]`, "campfire:compact") {
+	if HasTag([]string{"xycampfire:compact"}, "campfire:compact") {
 		t.Error("HasTag must not match a tag that merely contains the substring")
 	}
 }
 
 // TestHasTag_MultipleTagsNoFalsePositive verifies multi-element arrays.
 func TestHasTag_MultipleTagsNoFalsePositive(t *testing.T) {
-	if HasTag(`["status","xycampfire:compact","other"]`, "campfire:compact") {
+	if HasTag([]string{"status", "xycampfire:compact", "other"}, "campfire:compact") {
 		t.Error("HasTag must not match on substring in multi-tag array")
 	}
 }
 
 // TestIsCompactionEvent verifies that isCompactionEvent only fires on exact tag.
 func TestIsCompactionEvent_Exact(t *testing.T) {
-	rec := MessageRecord{Tags: `["campfire:compact"]`}
+	rec := MessageRecord{Tags: []string{"campfire:compact"}}
 	if !isCompactionEvent(rec) {
 		t.Error("isCompactionEvent should return true for exact campfire:compact tag")
 	}
@@ -42,7 +42,7 @@ func TestIsCompactionEvent_Exact(t *testing.T) {
 
 // TestIsCompactionEvent_NoFalsePositive is the security regression test for workspace-pyw.
 func TestIsCompactionEvent_NoFalsePositive(t *testing.T) {
-	rec := MessageRecord{Tags: `["xycampfire:compact"]`}
+	rec := MessageRecord{Tags: []string{"xycampfire:compact"}}
 	if isCompactionEvent(rec) {
 		t.Error("isCompactionEvent must not fire for a tag that only contains campfire:compact as a substring")
 	}
@@ -60,9 +60,9 @@ func TestListReferencingMessages_WildcardID(t *testing.T) {
 	normalID := "aabbccdd-0000-0000-0000-000000000001"
 	msgA := MessageRecord{
 		ID: "msg-a", CampfireID: "cf1", Sender: "s",
-		Payload: []byte("a"), Tags: "[]",
-		Antecedents: `["` + normalID + `"]`,
-		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+		Payload: []byte("a"), Tags: []string{},
+		Antecedents: []string{normalID},
+		Timestamp: 100, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 200,
 	}
 	s.AddMessage(msgA) //nolint:errcheck
 
@@ -70,9 +70,9 @@ func TestListReferencingMessages_WildcardID(t *testing.T) {
 	otherID := "aabbccdd-0000-0000-0000-000000000002"
 	msgB := MessageRecord{
 		ID: "msg-b", CampfireID: "cf1", Sender: "s",
-		Payload: []byte("b"), Tags: "[]",
-		Antecedents: `["` + otherID + `"]`,
-		Timestamp: 101, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 201,
+		Payload: []byte("b"), Tags: []string{},
+		Antecedents: []string{otherID},
+		Timestamp: 101, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 201,
 	}
 	s.AddMessage(msgB) //nolint:errcheck
 
@@ -95,18 +95,18 @@ func TestListReferencingMessages_ExactMatch(t *testing.T) {
 	targetID := "target-id-0000-0000-0000-000000000001"
 	msgA := MessageRecord{
 		ID: "msg-ref", CampfireID: "cf1", Sender: "s",
-		Payload: []byte("references target"), Tags: "[]",
-		Antecedents: `["` + targetID + `"]`,
-		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+		Payload: []byte("references target"), Tags: []string{},
+		Antecedents: []string{targetID},
+		Timestamp: 100, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 200,
 	}
 	s.AddMessage(msgA) //nolint:errcheck
 
 	// Unrelated message.
 	msgB := MessageRecord{
 		ID: "msg-unrelated", CampfireID: "cf1", Sender: "s",
-		Payload: []byte("unrelated"), Tags: "[]",
-		Antecedents: `[]`,
-		Timestamp: 101, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 201,
+		Payload: []byte("unrelated"), Tags: []string{},
+		Antecedents: []string{},
+		Timestamp: 101, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 201,
 	}
 	s.AddMessage(msgB) //nolint:errcheck
 
@@ -219,11 +219,11 @@ func TestMessageInstanceField(t *testing.T) {
 		CampfireID:  "cf1",
 		Sender:      "aabbcc",
 		Payload:     []byte("hello"),
-		Tags:        `["test"]`,
-		Antecedents: `[]`,
+		Tags:        []string{"test"},
+		Antecedents: []string{},
 		Timestamp:   1000,
 		Signature:   []byte("sig"),
-		Provenance:  `[]`,
+		Provenance:  nil,
 		ReceivedAt:  2000,
 		Instance:    "strategist",
 	}
@@ -274,11 +274,11 @@ func TestMessageInstanceFieldBackwardCompat(t *testing.T) {
 		CampfireID:  "cf1",
 		Sender:      "aabbcc",
 		Payload:     []byte("hello"),
-		Tags:        `["test"]`,
-		Antecedents: `[]`,
+		Tags:        []string{"test"},
+		Antecedents: []string{},
 		Timestamp:   1000,
 		Signature:   []byte("sig"),
-		Provenance:  `[]`,
+		Provenance:  nil,
 		ReceivedAt:  2000,
 	}
 	_, err := s.AddMessage(rec)
@@ -384,8 +384,8 @@ func TestGetMessageByPrefix_ExactMatch(t *testing.T) {
 
 	msg := MessageRecord{
 		ID: "abc12345-6789-0000-0000-000000000000", CampfireID: "cf1",
-		Sender: "sender1", Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
-		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+		Sender: "sender1", Payload: []byte("hello"), Tags: []string{}, Antecedents: []string{},
+		Timestamp: 100, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 200,
 	}
 	s.AddMessage(msg)
 
@@ -407,8 +407,8 @@ func TestGetMessageByPrefix_PrefixMatch(t *testing.T) {
 
 	msg := MessageRecord{
 		ID: "abc12345-6789-0000-0000-000000000000", CampfireID: "cf1",
-		Sender: "sender1", Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
-		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+		Sender: "sender1", Payload: []byte("hello"), Tags: []string{}, Antecedents: []string{},
+		Timestamp: 100, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 200,
 	}
 	s.AddMessage(msg)
 
@@ -446,8 +446,8 @@ func TestGetMessageByPrefix_Ambiguous(t *testing.T) {
 	} {
 		s.AddMessage(MessageRecord{
 			ID: id, CampfireID: "cf1", Sender: "s", Payload: []byte("p"),
-			Tags: "[]", Antecedents: "[]", Timestamp: 100, Signature: []byte("s"),
-			Provenance: "[]", ReceivedAt: 200,
+			Tags: []string{}, Antecedents: []string{}, Timestamp: 100, Signature: []byte("s"),
+			Provenance: nil, ReceivedAt: 200,
 		})
 	}
 
@@ -464,8 +464,8 @@ func TestGetMessageByPrefix_CrossCampfire(t *testing.T) {
 
 	msg := MessageRecord{
 		ID: "xyz99999-0000-0000-0000-000000000000", CampfireID: "cf2",
-		Sender: "sender2", Payload: []byte("from cf2"), Tags: "[]", Antecedents: "[]",
-		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+		Sender: "sender2", Payload: []byte("from cf2"), Tags: []string{}, Antecedents: []string{},
+		Timestamp: 100, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 200,
 	}
 	s.AddMessage(msg)
 
@@ -489,8 +489,8 @@ func TestGetMessageByPrefix_PercentWildcardInjection(t *testing.T) {
 
 	msg := MessageRecord{
 		ID: "abc12345-6789-0000-0000-000000000000", CampfireID: "cf1",
-		Sender: "sender1", Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
-		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+		Sender: "sender1", Payload: []byte("hello"), Tags: []string{}, Antecedents: []string{},
+		Timestamp: 100, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 200,
 	}
 	s.AddMessage(msg)
 
@@ -512,8 +512,8 @@ func TestGetMessageByPrefix_UnderscoreWildcardInjection(t *testing.T) {
 
 	msg := MessageRecord{
 		ID: "abc12345-6789-0000-0000-000000000000", CampfireID: "cf1",
-		Sender: "sender1", Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
-		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+		Sender: "sender1", Payload: []byte("hello"), Tags: []string{}, Antecedents: []string{},
+		Timestamp: 100, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 200,
 	}
 	s.AddMessage(msg)
 
@@ -534,10 +534,10 @@ func setupFilterTestStore(t *testing.T) (*Store, string) {
 	cfID := "filter-cf"
 	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
 	msgs := []MessageRecord{
-		{ID: "m1", CampfireID: cfID, Sender: "aabbccdd", Payload: []byte("p1"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 1, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 10},
-		{ID: "m2", CampfireID: cfID, Sender: "aabbccdd", Payload: []byte("p2"), Tags: `["blocker"]`, Antecedents: "[]", Timestamp: 2, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 20},
-		{ID: "m3", CampfireID: cfID, Sender: "11223344", Payload: []byte("p3"), Tags: `["status","finding"]`, Antecedents: "[]", Timestamp: 3, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 30},
-		{ID: "m4", CampfireID: cfID, Sender: "11223344", Payload: []byte("p4"), Tags: `[]`, Antecedents: "[]", Timestamp: 4, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 40},
+		{ID: "m1", CampfireID: cfID, Sender: "aabbccdd", Payload: []byte("p1"), Tags: []string{"status"}, Antecedents: []string{}, Timestamp: 1, Signature: []byte("s"), Provenance: nil, ReceivedAt: 10},
+		{ID: "m2", CampfireID: cfID, Sender: "aabbccdd", Payload: []byte("p2"), Tags: []string{"blocker"}, Antecedents: []string{}, Timestamp: 2, Signature: []byte("s"), Provenance: nil, ReceivedAt: 20},
+		{ID: "m3", CampfireID: cfID, Sender: "11223344", Payload: []byte("p3"), Tags: []string{"status", "finding"}, Antecedents: []string{}, Timestamp: 3, Signature: []byte("s"), Provenance: nil, ReceivedAt: 30},
+		{ID: "m4", CampfireID: cfID, Sender: "11223344", Payload: []byte("p4"), Tags: []string{}, Antecedents: []string{}, Timestamp: 4, Signature: []byte("s"), Provenance: nil, ReceivedAt: 40},
 	}
 	for _, m := range msgs {
 		if _, err := s.AddMessage(m); err != nil {
@@ -677,9 +677,9 @@ func setupCompactionTestStore(t *testing.T) (*Store, string, []string, string) {
 	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
 
 	msgs := []MessageRecord{
-		{ID: "c1", CampfireID: cfID, Sender: "aa", Payload: []byte("old1"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 1, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 10},
-		{ID: "c2", CampfireID: cfID, Sender: "aa", Payload: []byte("old2"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 2, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 20},
-		{ID: "c3", CampfireID: cfID, Sender: "bb", Payload: []byte("new1"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 3, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 30},
+		{ID: "c1", CampfireID: cfID, Sender: "aa", Payload: []byte("old1"), Tags: []string{"status"}, Antecedents: []string{}, Timestamp: 1, Signature: []byte("s"), Provenance: nil, ReceivedAt: 10},
+		{ID: "c2", CampfireID: cfID, Sender: "aa", Payload: []byte("old2"), Tags: []string{"status"}, Antecedents: []string{}, Timestamp: 2, Signature: []byte("s"), Provenance: nil, ReceivedAt: 20},
+		{ID: "c3", CampfireID: cfID, Sender: "bb", Payload: []byte("new1"), Tags: []string{"status"}, Antecedents: []string{}, Timestamp: 3, Signature: []byte("s"), Provenance: nil, ReceivedAt: 30},
 	}
 	for _, m := range msgs {
 		if _, err := s.AddMessage(m); err != nil {
@@ -705,11 +705,11 @@ func setupCompactionTestStore(t *testing.T) (*Store, string, []string, string) {
 		CampfireID:  cfID,
 		Sender:      "aa",
 		Payload:     payloadJSON,
-		Tags:        `["campfire:compact"]`,
-		Antecedents: `["c2"]`,
+		Tags:        []string{"campfire:compact"},
+		Antecedents: []string{"c2"},
 		Timestamp:   4,
 		Signature:   []byte("s"),
-		Provenance:  "[]",
+		Provenance:  nil,
 		ReceivedAt:  40,
 	}
 	if _, err := s.AddMessage(compactionMsg); err != nil {
@@ -809,8 +809,8 @@ func TestListMessages_RespectCompaction_MultipleEvents(t *testing.T) {
 	for i, id := range []string{"m1", "m2", "m3", "m4", "m5"} {
 		s.AddMessage(MessageRecord{
 			ID: id, CampfireID: cfID, Sender: "aa",
-			Payload: []byte("p"), Tags: `["status"]`, Antecedents: "[]",
-			Timestamp: int64(i + 1), Signature: []byte("s"), Provenance: "[]", ReceivedAt: int64(i + 10),
+			Payload: []byte("p"), Tags: []string{"status"}, Antecedents: []string{},
+			Timestamp: int64(i + 1), Signature: []byte("s"), Provenance: nil, ReceivedAt: int64(i + 10),
 		})
 	}
 
@@ -826,8 +826,8 @@ func TestListMessages_RespectCompaction_MultipleEvents(t *testing.T) {
 		p, _ := json.Marshal(CompactionPayload{Supersedes: ev.supersede, Retention: "archive", CheckpointHash: "hash"})
 		s.AddMessage(MessageRecord{
 			ID: ev.id, CampfireID: cfID, Sender: "aa",
-			Payload: p, Tags: `["campfire:compact"]`, Antecedents: "[]",
-			Timestamp: ev.ts, Signature: []byte("s"), Provenance: "[]", ReceivedAt: ev.ts + 100,
+			Payload: p, Tags: []string{"campfire:compact"}, Antecedents: []string{},
+			Timestamp: ev.ts, Signature: []byte("s"), Provenance: nil, ReceivedAt: ev.ts + 100,
 		})
 	}
 
@@ -861,21 +861,21 @@ func TestListMessages_RespectCompaction_MultipleEvents(t *testing.T) {
 // for workspace-27q parity.
 func TestIsCompactionEvent_SubstringFalsePositive(t *testing.T) {
 	cases := []struct {
-		tags    string
+		tags    []string
 		wantHit bool
 	}{
-		{`["campfire:compact"]`, true},
-		{`["xycampfire:compact"]`, false},
-		{`["campfire:compact-v2"]`, false},
-		{`["campfire:compact","status"]`, true},
-		{`["status","campfire:compact"]`, true},
-		{`[]`, false},
+		{[]string{"campfire:compact"}, true},
+		{[]string{"xycampfire:compact"}, false},
+		{[]string{"campfire:compact-v2"}, false},
+		{[]string{"campfire:compact", "status"}, true},
+		{[]string{"status", "campfire:compact"}, true},
+		{[]string{}, false},
 	}
 	for _, tc := range cases {
 		rec := MessageRecord{Tags: tc.tags}
 		got := isCompactionEvent(rec)
 		if got != tc.wantHit {
-			t.Errorf("isCompactionEvent(%q) = %v, want %v", tc.tags, got, tc.wantHit)
+			t.Errorf("isCompactionEvent(%v) = %v, want %v", tc.tags, got, tc.wantHit)
 		}
 	}
 }
@@ -891,14 +891,14 @@ func TestCollectSupersededIDs_Cache(t *testing.T) {
 	s.AddMembership(Membership{CampfireID: campfireID, TransportDir: "/tmp", JoinProtocol: "open", Role: "full", JoinedAt: 1}) //nolint:errcheck
 
 	// Add two regular messages.
-	m1 := MessageRecord{ID: "msg1", CampfireID: campfireID, Sender: "s", Payload: []byte("a"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 100, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 100}
-	m2 := MessageRecord{ID: "msg2", CampfireID: campfireID, Sender: "s", Payload: []byte("b"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 200, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 200}
+	m1 := MessageRecord{ID: "msg1", CampfireID: campfireID, Sender: "s", Payload: []byte("a"), Tags: []string{"status"}, Antecedents: []string{}, Timestamp: 100, Signature: []byte("s"), Provenance: nil, ReceivedAt: 100}
+	m2 := MessageRecord{ID: "msg2", CampfireID: campfireID, Sender: "s", Payload: []byte("b"), Tags: []string{"status"}, Antecedents: []string{}, Timestamp: 200, Signature: []byte("s"), Provenance: nil, ReceivedAt: 200}
 	s.AddMessage(m1) //nolint:errcheck
 	s.AddMessage(m2) //nolint:errcheck
 
 	// Add a compaction event superseding msg1 and msg2.
 	payload, _ := json.Marshal(CompactionPayload{Supersedes: []string{"msg1", "msg2"}, Summary: []byte("compact"), Retention: "archive", CheckpointHash: "abc"})
-	ev := MessageRecord{ID: "ev1", CampfireID: campfireID, Sender: "s", Payload: payload, Tags: `["campfire:compact"]`, Antecedents: `["msg2"]`, Timestamp: 300, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 300}
+	ev := MessageRecord{ID: "ev1", CampfireID: campfireID, Sender: "s", Payload: payload, Tags: []string{"campfire:compact"}, Antecedents: []string{"msg2"}, Timestamp: 300, Signature: []byte("s"), Provenance: nil, ReceivedAt: 300}
 	s.AddMessage(ev) //nolint:errcheck
 
 	// First call: cache miss, populates cache.
@@ -926,7 +926,7 @@ func TestCollectSupersededIDs_Cache(t *testing.T) {
 
 	// Add a new compaction event: the cache must be invalidated (new max timestamp).
 	payload2, _ := json.Marshal(CompactionPayload{Supersedes: []string{"msg3"}, Summary: []byte("compact2"), Retention: "archive", CheckpointHash: "def"})
-	ev2 := MessageRecord{ID: "ev2", CampfireID: campfireID, Sender: "s", Payload: payload2, Tags: `["campfire:compact"]`, Antecedents: `["ev1"]`, Timestamp: 400, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 400}
+	ev2 := MessageRecord{ID: "ev2", CampfireID: campfireID, Sender: "s", Payload: payload2, Tags: []string{"campfire:compact"}, Antecedents: []string{"ev1"}, Timestamp: 400, Signature: []byte("s"), Provenance: nil, ReceivedAt: 400}
 	s.AddMessage(ev2) //nolint:errcheck
 
 	sup3, err := s.collectSupersededIDs(campfireID)
@@ -965,8 +965,8 @@ func TestCollectSupersededIDs_CacheInvalidatedOnNewCompaction(t *testing.T) {
 		ts := map[string]int64{"msg-a": 100, "msg-b": 200, "msg-c": 300}[id]
 		m := MessageRecord{
 			ID: id, CampfireID: campfireID, Sender: "s",
-			Payload: []byte("data"), Tags: `["status"]`, Antecedents: "[]",
-			Timestamp: ts, Signature: []byte("s"), Provenance: "[]", ReceivedAt: ts,
+			Payload: []byte("data"), Tags: []string{"status"}, Antecedents: []string{},
+			Timestamp: ts, Signature: []byte("s"), Provenance: nil, ReceivedAt: ts,
 		}
 		if _, err := s.AddMessage(m); err != nil {
 			t.Fatalf("AddMessage(%s): %v", id, err)
@@ -979,8 +979,8 @@ func TestCollectSupersededIDs_CacheInvalidatedOnNewCompaction(t *testing.T) {
 	})
 	ev1 := MessageRecord{
 		ID: "ev1", CampfireID: campfireID, Sender: "s",
-		Payload: payload1, Tags: `["campfire:compact"]`, Antecedents: "[]",
-		Timestamp: 1000, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 1000,
+		Payload: payload1, Tags: []string{"campfire:compact"}, Antecedents: []string{},
+		Timestamp: 1000, Signature: []byte("s"), Provenance: nil, ReceivedAt: 1000,
 	}
 	if _, err := s.AddMessage(ev1); err != nil {
 		t.Fatalf("AddMessage(ev1): %v", err)
@@ -1005,8 +1005,8 @@ func TestCollectSupersededIDs_CacheInvalidatedOnNewCompaction(t *testing.T) {
 	})
 	ev2 := MessageRecord{
 		ID: "ev2", CampfireID: campfireID, Sender: "s",
-		Payload: payload2, Tags: `["campfire:compact"]`, Antecedents: "[]",
-		Timestamp: 2000, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 2000,
+		Payload: payload2, Tags: []string{"campfire:compact"}, Antecedents: []string{},
+		Timestamp: 2000, Signature: []byte("s"), Provenance: nil, ReceivedAt: 2000,
 	}
 	if _, err := s.AddMessage(ev2); err != nil {
 		t.Fatalf("AddMessage(ev2): %v", err)
@@ -1049,11 +1049,11 @@ func TestCollectSupersededIDs_NonCompactionInsertDoesNotInvalidateCache(t *testi
 	s.AddMembership(Membership{CampfireID: campfireID, TransportDir: "/tmp", JoinProtocol: "open", Role: "full", JoinedAt: 1}) //nolint:errcheck
 
 	// Add a message and a compaction event.
-	m1 := MessageRecord{ID: "m1", CampfireID: campfireID, Sender: "s", Payload: []byte("a"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 100, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 100}
+	m1 := MessageRecord{ID: "m1", CampfireID: campfireID, Sender: "s", Payload: []byte("a"), Tags: []string{"status"}, Antecedents: []string{}, Timestamp: 100, Signature: []byte("s"), Provenance: nil, ReceivedAt: 100}
 	s.AddMessage(m1) //nolint:errcheck
 
 	payload, _ := json.Marshal(CompactionPayload{Supersedes: []string{"m1"}, Summary: []byte("c"), Retention: "archive", CheckpointHash: "h"})
-	ev := MessageRecord{ID: "ev", CampfireID: campfireID, Sender: "s", Payload: payload, Tags: `["campfire:compact"]`, Antecedents: "[]", Timestamp: 500, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 500}
+	ev := MessageRecord{ID: "ev", CampfireID: campfireID, Sender: "s", Payload: payload, Tags: []string{"campfire:compact"}, Antecedents: []string{}, Timestamp: 500, Signature: []byte("s"), Provenance: nil, ReceivedAt: 500}
 	s.AddMessage(ev) //nolint:errcheck
 
 	// Warm the cache.
@@ -1066,7 +1066,7 @@ func TestCollectSupersededIDs_NonCompactionInsertDoesNotInvalidateCache(t *testi
 	}
 
 	// Insert a regular (non-compaction) message.
-	m2 := MessageRecord{ID: "m2", CampfireID: campfireID, Sender: "s", Payload: []byte("b"), Tags: `["status"]`, Antecedents: "[]", Timestamp: 600, Signature: []byte("s"), Provenance: "[]", ReceivedAt: 600}
+	m2 := MessageRecord{ID: "m2", CampfireID: campfireID, Sender: "s", Payload: []byte("b"), Tags: []string{"status"}, Antecedents: []string{}, Timestamp: 600, Signature: []byte("s"), Provenance: nil, ReceivedAt: 600}
 	s.AddMessage(m2) //nolint:errcheck
 
 	// The cache should still be valid — m1 should be in the superseded set without a DB rebuild.
@@ -1103,20 +1103,20 @@ func TestListMessages_AfterReceivedAt(t *testing.T) {
 	pastTimestamp := now - int64(60*time.Second)
 	msgSkewed := MessageRecord{
 		ID: "skewed", CampfireID: campfireID, Sender: "s",
-		Payload: []byte("skewed"), Tags: `["status"]`, Antecedents: "[]",
+		Payload: []byte("skewed"), Tags: []string{"status"}, Antecedents: []string{},
 		Timestamp:  pastTimestamp, // sender's clock is 60s behind
 		Signature:  []byte("s"),
-		Provenance: "[]",
+		Provenance: nil,
 		ReceivedAt: now, // received now by the server
 	}
 
 	// Message with a normal Timestamp and ReceivedAt.
 	msgNormal := MessageRecord{
 		ID: "normal", CampfireID: campfireID, Sender: "s",
-		Payload: []byte("normal"), Tags: `["status"]`, Antecedents: "[]",
+		Payload: []byte("normal"), Tags: []string{"status"}, Antecedents: []string{},
 		Timestamp:  now,
 		Signature:  []byte("s"),
-		Provenance: "[]",
+		Provenance: nil,
 		ReceivedAt: now + int64(time.Millisecond),
 	}
 
@@ -1206,8 +1206,8 @@ func TestUpdateCampfireID_BasicRename(t *testing.T) {
 	// Seed a message under oldID.
 	if _, err := s.AddMessage(MessageRecord{
 		ID: "msg-rename-1", CampfireID: oldID, Sender: "aabb",
-		Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
-		Timestamp: 1000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000,
+		Payload: []byte("hello"), Tags: []string{}, Antecedents: []string{},
+		Timestamp: 1000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 2000,
 	}); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
@@ -1378,8 +1378,8 @@ func TestUpdateCampfireID_ConflictRollback(t *testing.T) {
 	// Seed a message under oldID so we can verify it's untouched after rollback.
 	if _, err := s.AddMessage(MessageRecord{
 		ID: "msg-conflict-1", CampfireID: oldID, Sender: "aabb",
-		Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
-		Timestamp: 1000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000,
+		Payload: []byte("hello"), Tags: []string{}, Antecedents: []string{},
+		Timestamp: 1000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 2000,
 	}); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
@@ -1756,9 +1756,9 @@ func TestHasMessage_Present(t *testing.T) {
 
 	msg := MessageRecord{
 		ID: "msg-present", CampfireID: "cf-hasmsg", Sender: "s",
-		Payload: []byte("hello"), Tags: "[]",
-		Antecedents: "[]",
-		Timestamp: 1000, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 2000,
+		Payload: []byte("hello"), Tags: []string{},
+		Antecedents: []string{},
+		Timestamp: 1000, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 2000,
 	}
 	if _, err := s.AddMessage(msg); err != nil {
 		t.Fatalf("AddMessage() error: %v", err)

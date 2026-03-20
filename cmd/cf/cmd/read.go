@@ -103,11 +103,6 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, 
 	// Default path: nil fields means all fields, use the original output format exactly.
 	if fields == nil {
 		for _, m := range allMessages {
-			var tags []string
-			json.Unmarshal([]byte(m.Tags), &tags)
-			var antecedents []string
-			json.Unmarshal([]byte(m.Antecedents), &antecedents)
-
 			cfShort := m.CampfireID
 			if len(cfShort) > 6 {
 				cfShort = cfShort[:6]
@@ -125,14 +120,12 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, 
 			// Status markers (future/fulfilled) — appended to sender display.
 			var markers []string
 			if s != nil {
-				for _, t := range tags {
+				for _, t := range m.Tags {
 					if t == "future" {
 						refs, _ := s.ListReferencingMessages(m.ID)
 						fulfilled := false
 						for _, ref := range refs {
-							var refTags []string
-							json.Unmarshal([]byte(ref.Tags), &refTags)
-							for _, rt := range refTags {
+							for _, rt := range ref.Tags {
 								if rt == "fulfills" {
 									fulfilled = true
 								}
@@ -150,18 +143,13 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, 
 				senderDisplay += " [" + strings.Join(markers, ", ") + "]"
 			}
 
-			printSingleMessage(os.Stdout, cfShort, ts, senderDisplay, tags, antecedents, m.Payload)
+			printSingleMessage(os.Stdout, cfShort, ts, senderDisplay, m.Tags, m.Antecedents, m.Payload)
 		}
 		return
 	}
 
 	// Projection path: only emit the requested fields.
 	for _, m := range allMessages {
-		var tags []string
-		json.Unmarshal([]byte(m.Tags), &tags)
-		var antecedents []string
-		json.Unmarshal([]byte(m.Antecedents), &antecedents)
-
 		// Header line — always printed so output is parseable, but only includes
 		// requested header-level fields.
 		cfShort := m.CampfireID
@@ -202,12 +190,12 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, 
 			}
 			fmt.Printf("  id: %s\n", idDisplay)
 		}
-		if fields["tags"] && len(tags) > 0 {
-			fmt.Printf("  tags: %s\n", strings.Join(tags, ", "))
+		if fields["tags"] && len(m.Tags) > 0 {
+			fmt.Printf("  tags: %s\n", strings.Join(m.Tags, ", "))
 		}
-		if fields["antecedents"] && len(antecedents) > 0 {
-			shortAnts := make([]string, len(antecedents))
-			for i, a := range antecedents {
+		if fields["antecedents"] && len(m.Antecedents) > 0 {
+			shortAnts := make([]string, len(m.Antecedents))
+			for i, a := range m.Antecedents {
 				if len(a) > 8 {
 					shortAnts[i] = a[:8]
 				} else {
@@ -230,14 +218,6 @@ func encodeMessagesJSONWithFields(allMessages []store.MessageRecord, fields map[
 
 	var out []map[string]interface{}
 	for _, m := range allMessages {
-		var tags []string
-		json.Unmarshal([]byte(m.Tags), &tags)
-		var antecedents []string
-		json.Unmarshal([]byte(m.Antecedents), &antecedents)
-		if antecedents == nil {
-			antecedents = []string{}
-		}
-
 		obj := make(map[string]interface{})
 		if all || fields["id"] {
 			obj["id"] = m.ID
@@ -257,19 +237,24 @@ func encodeMessagesJSONWithFields(allMessages []store.MessageRecord, fields map[
 			obj["payload"] = string(m.Payload)
 		}
 		if all || fields["tags"] {
+			tags := m.Tags
 			if tags == nil {
 				tags = []string{}
 			}
 			obj["tags"] = tags
 		}
 		if all || fields["antecedents"] {
+			antecedents := m.Antecedents
+			if antecedents == nil {
+				antecedents = []string{}
+			}
 			obj["antecedents"] = antecedents
 		}
 		if all || fields["timestamp"] {
 			obj["timestamp"] = m.Timestamp
 		}
 		if all || fields["provenance"] {
-			obj["provenance"] = json.RawMessage(m.Provenance)
+			obj["provenance"] = m.Provenance
 		}
 		if all || fields["signature"] {
 			obj["signature"] = m.Signature

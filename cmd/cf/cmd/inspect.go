@@ -32,13 +32,9 @@ var inspectCmd = &cobra.Command{
 			return fmt.Errorf("message %s not found (run 'cf read' first to sync)", messageID)
 		}
 
-		var provenance []message.ProvenanceHop
-		if err := json.Unmarshal([]byte(msg.Provenance), &provenance); err != nil {
-			return fmt.Errorf("parsing provenance: %w", err)
-		}
-
-		var antecedents []string
-		json.Unmarshal([]byte(msg.Antecedents), &antecedents)
+		// Tags, Antecedents, and Provenance are now typed Go values on MessageRecord
+		// (JSON deserialization happens at the store boundary), so no unmarshal needed.
+		antecedents := msg.Antecedents
 		if antecedents == nil {
 			antecedents = []string{}
 		}
@@ -79,9 +75,11 @@ var inspectCmd = &cobra.Command{
 				SignatureValid bool      `json:"signature_valid"`
 				Provenance     []hopJSON `json:"provenance"`
 			}
-			var tags []string
-			json.Unmarshal([]byte(msg.Tags), &tags)
 
+			tags := msg.Tags
+			if tags == nil {
+				tags = []string{}
+			}
 			out := inspectJSON{
 				ID:             msg.ID,
 				CampfireID:     msg.CampfireID,
@@ -94,7 +92,7 @@ var inspectCmd = &cobra.Command{
 				Timestamp:      msg.Timestamp,
 				SignatureValid: msgSigValid,
 			}
-			for _, hop := range provenance {
+			for _, hop := range msg.Provenance {
 				hopValid := message.VerifyHop(messageID, hop)
 				out.Provenance = append(out.Provenance, hopJSON{
 					CampfireID:            fmt.Sprintf("%x", hop.CampfireID),
@@ -117,9 +115,6 @@ var inspectCmd = &cobra.Command{
 			senderShort = senderShort[:12]
 		}
 
-		var tags []string
-		json.Unmarshal([]byte(msg.Tags), &tags)
-
 		sigStatus := "VALID"
 		if !msgSigValid {
 			sigStatus = "INVALID"
@@ -133,8 +128,8 @@ var inspectCmd = &cobra.Command{
 		}
 		fmt.Printf("Signature: %s\n", sigStatus)
 		fmt.Printf("Timestamp: %s\n", time.Unix(0, msg.Timestamp).Format("2006-01-02 15:04:05"))
-		if len(tags) > 0 {
-			fmt.Printf("Tags: %v\n", tags)
+		if len(msg.Tags) > 0 {
+			fmt.Printf("Tags: %v\n", msg.Tags)
 		}
 		fmt.Printf("Payload: %s\n", string(msg.Payload))
 		if len(antecedents) > 0 {
@@ -145,11 +140,11 @@ var inspectCmd = &cobra.Command{
 		}
 		fmt.Println()
 
-		if len(provenance) == 0 {
+		if len(msg.Provenance) == 0 {
 			fmt.Println("Provenance: (no hops)")
 		} else {
-			fmt.Printf("Provenance: %d hop(s)\n", len(provenance))
-			for i, hop := range provenance {
+			fmt.Printf("Provenance: %d hop(s)\n", len(msg.Provenance))
+			for i, hop := range msg.Provenance {
 				hopValid := message.VerifyHop(messageID, hop)
 				hopStatus := "VALID"
 				if !hopValid {

@@ -50,21 +50,7 @@ func addTestMessage(t *testing.T, s *store.Store, agentID *identity.Identity, ca
 	// Override timestamp for test determinism.
 	msg.Timestamp = timestamp
 
-	tagsJSON, _ := json.Marshal(msg.Tags)
-	anteJSON, _ := json.Marshal(msg.Antecedents)
-	provJSON, _ := json.Marshal(msg.Provenance)
-	if _, err := s.AddMessage(store.MessageRecord{
-		ID:          msg.ID,
-		CampfireID:  campfireID,
-		Sender:      agentID.PublicKeyHex(),
-		Payload:     msg.Payload,
-		Tags:        string(tagsJSON),
-		Antecedents: string(anteJSON),
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
-		Provenance:  string(provJSON),
-		ReceivedAt:  store.NowNano(),
-	}); err != nil {
+	if _, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); err != nil {
 		t.Fatalf("adding message: %v", err)
 	}
 	return msg.ID
@@ -260,10 +246,8 @@ func TestViewRead_PredicateFilters(t *testing.T) {
 	var matched []store.MessageRecord
 	for _, m := range allMsgs {
 		// Skip view definition messages.
-		var tags []string
-		json.Unmarshal([]byte(m.Tags), &tags)
 		isViewMsg := false
-		for _, tg := range tags {
+		for _, tg := range m.Tags {
 			if tg == "campfire:view" {
 				isViewMsg = true
 			}
@@ -310,10 +294,8 @@ func TestViewRead_OrderingDesc(t *testing.T) {
 
 	var matched []store.MessageRecord
 	for _, m := range allMsgs {
-		var tags []string
-		json.Unmarshal([]byte(m.Tags), &tags)
 		isView := false
-		for _, tg := range tags {
+		for _, tg := range m.Tags {
 			if tg == "campfire:view" {
 				isView = true
 			}
@@ -579,10 +561,8 @@ func TestViewRead_ComplexPredicate(t *testing.T) {
 
 	var matched []store.MessageRecord
 	for _, m := range allMsgs {
-		var tags []string
-		json.Unmarshal([]byte(m.Tags), &tags)
 		isView := false
-		for _, tg := range tags {
+		for _, tg := range m.Tags {
 			if tg == "campfire:view" {
 				isView = true
 			}

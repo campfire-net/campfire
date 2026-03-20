@@ -3,7 +3,6 @@ package message
 import (
 	"crypto/ed25519"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -174,18 +173,11 @@ func (m *Message) SenderHex() string {
 }
 
 // VerifyMessageSignature verifies a message signature from stored fields.
-// senderHex is the hex-encoded public key, tagsJSON and antecedentsJSON are JSON array strings.
-func VerifyMessageSignature(id string, payload []byte, tagsJSON string, antecedentsJSON string, timestamp int64, senderHex string, signature []byte) bool {
+// senderHex is the hex-encoded public key; tags and antecedents are typed slices
+// (JSON deserialization is handled at the store boundary, not here).
+func VerifyMessageSignature(id string, payload []byte, tags []string, antecedents []string, timestamp int64, senderHex string, signature []byte) bool {
 	senderPub, err := hex.DecodeString(senderHex)
 	if err != nil {
-		return false
-	}
-	var tags []string
-	if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
-		return false
-	}
-	var antecedents []string
-	if err := json.Unmarshal([]byte(antecedentsJSON), &antecedents); err != nil {
 		return false
 	}
 	signInput := MessageSignInput{

@@ -346,34 +346,23 @@ func buildSignedPayload(timestamp, nonce string, body []byte) []byte {
 }
 
 // recordToMessage converts a store.MessageRecord to a message.Message.
+// Tags, Antecedents, and Provenance are already typed Go values on MessageRecord
+// (JSON deserialization happens at the store boundary), so no unmarshaling is needed here.
 func recordToMessage(rec store.MessageRecord) (message.Message, error) {
 	senderBytes, err := hex.DecodeString(rec.Sender)
 	if err != nil {
 		return message.Message{}, fmt.Errorf("decoding sender: %w", err)
 	}
 
-	var tags []string
-	if err := json.Unmarshal([]byte(rec.Tags), &tags); err != nil {
-		tags = []string{}
-	}
-	var antecedents []string
-	if err := json.Unmarshal([]byte(rec.Antecedents), &antecedents); err != nil {
-		antecedents = []string{}
-	}
-	var provenance []message.ProvenanceHop
-	if err := json.Unmarshal([]byte(rec.Provenance), &provenance); err != nil {
-		provenance = []message.ProvenanceHop{}
-	}
-
 	return message.Message{
 		ID:          rec.ID,
 		Sender:      senderBytes,
 		Payload:     rec.Payload,
-		Tags:        tags,
-		Antecedents: antecedents,
+		Tags:        rec.Tags,
+		Antecedents: rec.Antecedents,
 		Timestamp:   rec.Timestamp,
 		Signature:   rec.Signature,
-		Provenance:  provenance,
+		Provenance:  rec.Provenance,
 		Instance:    rec.Instance,
 	}, nil
 }
