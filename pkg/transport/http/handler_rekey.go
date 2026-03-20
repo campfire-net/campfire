@@ -153,9 +153,11 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 			return
 		}
 
-		// Cache by sender's X25519 pub key hex.
+		// Cache keyed by (campfireID, senderEdPubKey, senderX25519Pub) to prevent
+		// an attacker from overwriting a legitimate session by racing phase-1 with
+		// the same SenderX25519Pub value.
 		h.transport.mu.Lock()
-		h.transport.storeRekeySession(req.SenderX25519Pub, myPriv)
+		h.transport.storeRekeySession(oldCampfireID, senderHex, req.SenderX25519Pub, myPriv)
 		h.transport.mu.Unlock()
 
 		resp := RekeyResponse{
@@ -169,7 +171,7 @@ func (h *handler) handleRekey(w http.ResponseWriter, r *http.Request, oldCampfir
 
 	// Phase 2: look up cached receiver key, derive shared secret, decrypt, update state.
 	h.transport.mu.Lock()
-	myPriv := h.transport.claimRekeySession(req.SenderX25519Pub)
+	myPriv := h.transport.claimRekeySession(oldCampfireID, senderHex, req.SenderX25519Pub)
 	h.transport.mu.Unlock()
 
 	if myPriv == nil {
