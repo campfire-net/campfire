@@ -20,6 +20,10 @@ func TestMain(m *testing.M) {
 	// Replace the production SSRF-safe httpClient with the standard client for tests.
 	// This allows test servers on loopback (127.0.0.1) to be reached normally.
 	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 30 * time.Second})
+	// Replace the poll transport with the default (non-SSRF-filtering) transport
+	// so Poll() can reach loopback test servers. The SSRF-safe transport is
+	// tested separately in ssrf_test.go via NewSSRFSafeClient().
+	cfhttp.OverridePollTransportForTest(http.DefaultTransport)
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	os.Exit(m.Run())
 }

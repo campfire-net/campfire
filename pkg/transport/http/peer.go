@@ -38,6 +38,16 @@ func OverrideHTTPClientForTest(c *http.Client) {
 	httpClient = c
 }
 
+// pollTransport is the http.RoundTripper used by Poll(). It defaults to an
+// SSRF-safe transport and can be overridden in tests via OverridePollTransportForTest.
+var pollTransport http.RoundTripper = newSSRFSafeTransport()
+
+// OverridePollTransportForTest replaces the transport used by Poll() so that
+// test servers on loopback (127.0.0.1) are reachable. Call from TestMain.
+func OverridePollTransportForTest(t http.RoundTripper) {
+	pollTransport = t
+}
+
 // Deliver POSTs a CBOR-encoded message to a peer endpoint.
 // Signs the request body with senderIdentity.
 func Deliver(endpoint string, campfireID string, msg *message.Message, id *identity.Identity) error {
@@ -419,7 +429,14 @@ func Poll(endpoint, campfireID string, cursor int64, timeoutSecs int, id *identi
 	// Use a per-request client with timeout = timeoutSecs + 5s so the OS does
 	// not cut the connection before the server responds. Do NOT use httpClient
 	// (which has a fixed 30s timeout, too short for long polls).
-	pollClient := &http.Client{Timeout: time.Duration(timeoutSecs+5) * time.Second}
+	// Use pollTransport (SSRF-safe by default) to close the DNS-rebinding
+	// TOCTOU window — endpoint validation at join time is not sufficient; the
+	// transport re-validates the resolved IP at connection time on every dial.
+	// pollTransport can be overridden in tests via OverridePollTransportForTest.
+	pollClient := &http.Client{
+		Timeout:   time.Duration(timeoutSecs+5) * time.Second,
+		Transport: pollTransport,
+	}
 	resp, err := pollClient.Do(req)
 	if err != nil {
 		return nil, cursor, fmt.Errorf("poll request to %s: %w", url, err)
