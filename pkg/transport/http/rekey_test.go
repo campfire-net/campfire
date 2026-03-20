@@ -58,14 +58,19 @@ func setupCampfireState(t *testing.T, priv []byte, pub ed25519.PublicKey, thresh
 
 // addMembershipWithDir adds a campfire membership with a specific TransportDir.
 func addMembershipWithDir(t *testing.T, s *store.Store, campfireID, transportDir string, thresh uint) {
+	addMembershipWithDirAndCreator(t, s, campfireID, transportDir, thresh, "")
+}
+
+func addMembershipWithDirAndCreator(t *testing.T, s *store.Store, campfireID, transportDir string, thresh uint, creatorPubkey string) {
 	t.Helper()
 	err := s.AddMembership(store.Membership{
-		CampfireID:   campfireID,
-		TransportDir: transportDir,
-		JoinProtocol: "open",
-		Role:         "member",
-		JoinedAt:     time.Now().UnixNano(),
-		Threshold:    thresh,
+		CampfireID:    campfireID,
+		TransportDir:  transportDir,
+		JoinProtocol:  "open",
+		Role:          "member",
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     thresh,
+		CreatorPubkey: creatorPubkey,
 	})
 	if err != nil {
 		t.Fatalf("adding membership: %v", err)
@@ -189,10 +194,10 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 
 	// B has the old campfire state on disk and in its store.
 	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
-	addMembershipWithDir(t, sA, oldCampfireID, t.TempDir(), 1)
-	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 1)
+	addMembershipWithDirAndCreator(t, sA, oldCampfireID, t.TempDir(), 1, idA.PublicKeyHex())
+	addMembershipWithDirAndCreator(t, sB, oldCampfireID, stateDirB, 1, idA.PublicKeyHex())
 
-	// Add A (sender) to B's peer endpoints so rekey membership check passes.
+	// Add A (sender/creator) to B's peer endpoints so rekey membership check passes.
 	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 		CampfireID:   oldCampfireID,
 		MemberPubkey: idA.PublicKeyHex(),
@@ -416,8 +421,8 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 
 	// B's campfire state on disk (no private key for threshold>1).
 	stateDirB, _ := setupCampfireState(t, nil, oldGroupKey, 2)
-	addMembershipWithDir(t, sA, oldCampfireID, t.TempDir(), 2)
-	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 2)
+	addMembershipWithDirAndCreator(t, sA, oldCampfireID, t.TempDir(), 2, idA.PublicKeyHex())
+	addMembershipWithDirAndCreator(t, sB, oldCampfireID, stateDirB, 2, idA.PublicKeyHex())
 
 	// Store old DKG shares.
 	oldShareA, _ := threshold.MarshalResult(1, oldDKGResults[1])

@@ -8,9 +8,11 @@ package http_test
 
 import (
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
@@ -87,8 +89,18 @@ func TestMembershipEvictRemovesPeer(t *testing.T) {
 	idVictim := tempIdentity(t)
 
 	s := tempStore(t)
-	// Use addMembership (no CreatorPubkey) so the backward-compat path allows any sender to evict.
-	addMembership(t, s, campfireID)
+	// Set CreatorPubkey to the sender so the creator check passes.
+	err := s.AddMembership(store.Membership{
+		CampfireID:    campfireID,
+		TransportDir:  os.TempDir(),
+		JoinProtocol:  "http",
+		Role:          "member",
+		JoinedAt:      time.Now().UnixNano(),
+		CreatorPubkey: idSender.PublicKeyHex(),
+	})
+	if err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
 	addPeerEndpoint(t, s, campfireID, idSender.PublicKeyHex())
 
 	base := portBase()
@@ -122,7 +134,7 @@ func TestMembershipEvictRemovesPeer(t *testing.T) {
 	}
 
 	if err := cfhttp.NotifyMembership(ep, campfireID, evictEvent, idSender); err != nil {
-		t.Errorf("evict should succeed (empty CreatorPubkey = backward compat), got error: %v", err)
+		t.Errorf("evict should succeed (sender is creator), got error: %v", err)
 	}
 
 	// Victim must be gone from transport peer list.

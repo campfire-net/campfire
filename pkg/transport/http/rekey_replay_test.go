@@ -76,7 +76,7 @@ func setupRekeyTestServer(t *testing.T, port int, idSenderPubHex string) (ep, ca
 
 	sB := tempStore(t)
 	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
-	addMembershipWithDir(t, sB, campfireID, stateDirB, 1)
+	addMembershipWithDirAndCreator(t, sB, campfireID, stateDirB, 1, idSenderPubHex)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ep = fmt.Sprintf("http://%s", addr)

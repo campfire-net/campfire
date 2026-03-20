@@ -585,12 +585,13 @@ func TestRekeyRejectsUnsignedRekeyMessage(t *testing.T) {
 	os.WriteFile(fmt.Sprintf("%s/%s.cbor", stateDirB, oldCampfireID), stateBytes, 0600) //nolint:errcheck
 
 	err = sB.AddMembership(store.Membership{
-		CampfireID:   oldCampfireID,
-		TransportDir: stateDirB,
-		JoinProtocol: "open",
-		Role:         "member",
-		JoinedAt:     time.Now().UnixNano(),
-		Threshold:    1,
+		CampfireID:    oldCampfireID,
+		TransportDir:  stateDirB,
+		JoinProtocol:  "open",
+		Role:          "member",
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		CreatorPubkey: idA.PublicKeyHex(),
 	})
 	if err != nil {
 		t.Fatalf("adding membership: %v", err)
