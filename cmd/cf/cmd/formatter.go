@@ -85,13 +85,9 @@ func printSingleMessage(w io.Writer, cfShort, ts, senderDisplay string, tags, an
 	fmt.Fprintf(w, "  %s\n\n", sanitizePayload(payload))
 }
 
-// extractMessageFields deserializes the JSON-encoded tags and antecedents from a
-// MessageRecord into typed slices. Errors are silently ignored (malformed JSON
-// produces empty slices, which is safe for display purposes).
+// extractMessageFields returns the typed tags and antecedents from a MessageRecord.
 func extractMessageFields(m store.MessageRecord) (tags []string, antecedents []string) {
-	json.Unmarshal([]byte(m.Tags), &tags)        //nolint:errcheck
-	json.Unmarshal([]byte(m.Antecedents), &antecedents) //nolint:errcheck
-	return tags, antecedents
+	return m.Tags, m.Antecedents
 }
 
 // printMessagesWithFields prints messages in human-readable format, filtering to
@@ -130,9 +126,7 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, 
 						refs, _ := s.ListReferencingMessages(m.ID)
 						fulfilled := false
 						for _, ref := range refs {
-							var refTags []string
-							json.Unmarshal([]byte(ref.Tags), &refTags) //nolint:errcheck
-							for _, rt := range refTags {
+							for _, rt := range ref.Tags {
 								if rt == "fulfills" {
 									fulfilled = true
 								}
@@ -269,7 +263,7 @@ func encodeMessagesJSONWithFields(allMessages []store.MessageRecord, fields map[
 			obj["timestamp"] = m.Timestamp
 		}
 		if all || fields["provenance"] {
-			obj["provenance"] = json.RawMessage(m.Provenance)
+			obj["provenance"] = m.Provenance
 		}
 		if all || fields["signature"] {
 			obj["signature"] = m.Signature
