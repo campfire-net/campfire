@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS pending_threshold_shares (
     share_data       BLOB NOT NULL,
     PRIMARY KEY (campfire_id, participant_id)
 );
+
+-- Migration tracking: one row per applied migration, in order.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     INTEGER PRIMARY KEY,
+    description TEXT    NOT NULL,
+    applied_at  INTEGER NOT NULL
+);
 `
 
 // PeerRole constants define the peer endpoint role namespace.
@@ -673,9 +680,17 @@ func (s *Store) maxCompactionTimestamp(campfireID string) (int64, error) {
 // cache invalidation to AddMessage: whenever a compaction event is stored, the cache
 // entry for that campfire is deleted under the write lock before the insert returns.
 // collectSupersededIDs now only needs a read lock for the cache hit path; cache misses
-// acquire the write lock to populate. This is correct because any compaction event
-// inserted after the cache check will have already invalidated the entry, so a stale
-// hit is impossible.
+// acquire the write lock to populate.
+//
+// Residual TOCTOU fix (workspace-pm9m.5.8): a second, narrower window remained. After
+// the cache-miss rebuild (ListCompactionEvents, no lock held), a concurrent AddMessage
+// could insert a new compaction event and delete the cache entry. We would then store a
+// cache entry with maxTS=T1 (the old timestamp), while the actual max is T2 > T1. The
+// stale entry would be evicted on the next call (maxTS query returns T2 ≠ T1), but
+// ListMessages calls in that window could return superseded messages that should be
+// filtered. The fix: re-query maxCompactionTimestamp inside the write lock before
+// storing. If the timestamp advanced, skip caching — the invalidation already happened
+// and the next call will rebuild with the correct maxTS.
 func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error) {
 	if campfireID != "" {
 		maxTS, err := s.maxCompactionTimestamp(campfireID)
@@ -714,11 +729,24 @@ func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error)
 			}
 		}
 
+		// TOCTOU fix (workspace-pm9m.5.8): re-query maxTS inside the write lock
+		// before storing the cache entry. Between step (1) above and here, AddMessage
+		// may have inserted a new compaction event and deleted the cache entry. If we
+		// stored maxTS=T1 now, the next reader would observe maxTS=T2 from the DB,
+		// causing an immediate cache miss and rebuild — but the brief window where
+		// ListMessages could return the stale T1 result is the bug. Instead, re-read
+		// maxTS under the write lock: if it advanced, skip caching (the entry is
+		// already invalidated and the next call will rebuild with the correct maxTS).
 		s.supersededMu.Lock()
-		s.supersededCache[campfireID] = supersededCacheEntry{
-			maxCompactionTS: maxTS,
-			superseded:      superseded,
+		currentMaxTS, tsErr := s.maxCompactionTimestamp(campfireID)
+		if tsErr == nil && currentMaxTS == maxTS {
+			s.supersededCache[campfireID] = supersededCacheEntry{
+				maxCompactionTS: maxTS,
+				superseded:      superseded,
+			}
 		}
+		// If tsErr != nil or currentMaxTS != maxTS, skip caching — the entry would
+		// be immediately stale or the DB is unavailable. The next call will retry.
 		s.supersededMu.Unlock()
 		// Return a copy so callers cannot mutate the cached map.
 		cp := make(map[string]bool, len(superseded))
