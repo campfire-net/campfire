@@ -140,6 +140,11 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 			admitted = true
 		}
 		if !admitted {
+			// Clean up any stale peer endpoint record for the rejected joiner.
+			// This can occur when a campfire was previously open and a joiner's
+			// endpoint was stored, then the campfire was changed to invite-only.
+			// Without cleanup, stale records pollute the peer list.
+			h.store.DeletePeerEndpoint(campfireID, senderHex) //nolint:errcheck
 			http.Error(w, "campfire is invite-only", http.StatusForbidden)
 			return
 		}

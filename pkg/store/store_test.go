@@ -964,7 +964,6 @@ func TestCollectSupersededIDs_Cache(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 // --- workspace-zqdc: TOCTOU race in collectSupersededIDs cache ---
 
 // TestCollectSupersededIDs_CacheInvalidatedOnNewCompaction is the regression test
@@ -1107,7 +1106,9 @@ func TestCollectSupersededIDs_NonCompactionInsertDoesNotInvalidateCache(t *testi
 	// m2 is a regular message — it should NOT be in the superseded set.
 	if sup2["m2"] {
 		t.Errorf("m2 should not be in superseded set (it was not superseded by any compaction event)")
-=======
+	}
+}
+
 // --- workspace-7q7: supersededCache returns a copy, not a shared map reference ---
 
 // TestCollectSupersededIDs_CacheReturnsCopy verifies that mutating the map
@@ -1148,7 +1149,6 @@ func TestCollectSupersededIDs_CacheReturnsCopy(t *testing.T) {
 	}
 	if sup2["injected-id"] {
 		t.Errorf("cache was corrupted: injected-id present in second call after caller mutated first result")
->>>>>>> worktree-agent-a37daf1e
 	}
 }
 
