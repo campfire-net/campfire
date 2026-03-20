@@ -81,4 +81,8 @@ func TestSwarmStatus_WithRoot(t *testing.T) {
 	if !strings.Contains(output, "Messages:") {
 		t.Errorf("expected 'Messages:' in output, got:\n%s", output)
 	}
+	// Filesystem swarm: self is NOT in peer_endpoints; solo creator = 1 member, not 2.
+	if !strings.Contains(output, "Members:        1") {
+		t.Errorf("expected 'Members:        1' for solo filesystem swarm, got:\n%s", output)
+	}
 }

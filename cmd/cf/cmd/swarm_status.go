@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -21,9 +20,9 @@ Returns an error if no active swarm (.campfire/root) exists.`,
 			return fmt.Errorf("no active swarm — no .campfire/root found")
 		}
 
-		s, err := store.Open(store.StorePath(CFHome()))
+		agentID, s, err := requireAgentAndStore()
 		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 
@@ -49,12 +48,27 @@ Returns an error if no active swarm (.campfire/root) exists.`,
 			peers = nil
 		}
 
+		// Count members. For p2p-http campfires, the local agent's endpoint is
+		// stored in peer_endpoints (so len(peers) already includes self). For
+		// filesystem campfires, self is not stored there, so we add 1.
+		selfInPeers := false
+		for _, p := range peers {
+			if p.MemberPubkey == agentID.PublicKeyHex() {
+				selfInPeers = true
+				break
+			}
+		}
+		memberCount := len(peers)
+		if !selfInPeers {
+			memberCount++
+		}
+
 		// Print status.
 		fmt.Printf("Swarm campfire: %s\n", campfireID[:12])
 		fmt.Printf("Full ID:        %s\n", campfireID)
 		fmt.Printf("Role:           %s\n", membership.Role)
 		fmt.Printf("Transport:      %s\n", membership.TransportDir)
-		fmt.Printf("Members:        %d\n", len(peers)+1)
+		fmt.Printf("Members:        %d\n", memberCount)
 		fmt.Printf("Messages:       %d\n", len(msgs))
 
 		// Show last N messages.
