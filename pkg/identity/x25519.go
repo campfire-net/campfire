@@ -12,17 +12,15 @@ package identity
 // key (converted to X25519).
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ecdh"
-	"crypto/hkdf"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/sha512"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
+
+	cfcrypto "github.com/campfire-net/campfire/pkg/crypto"
 )
 
 // p25519 is the field prime 2^255 - 19.
@@ -162,36 +160,32 @@ func EncryptToEd25519Key(recipientEd25519Pub []byte, plaintext []byte) ([]byte, 
 		return nil, fmt.Errorf("ECDH: %w", err)
 	}
 
-	// Generate nonce.
+	// Generate nonce. The nonce is also used as the HKDF salt (see HKDFSha256WithSalt).
 	nonce := make([]byte, 12)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("generating nonce: %w", err)
 	}
 
 	// Derive AES-256 key via HKDF-SHA256.
-	// salt = nonce, info = "campfire-key-delivery"
-	keyMaterial, err := hkdf.Key(sha256.New, sharedSecret, nonce, "campfire-key-delivery", 32)
+	// salt = nonce, info = "campfire-key-delivery".
+	// Using the nonce as salt binds the derived key to this specific nonce.
+	// See pkg/crypto package doc for the full audit notes on this choice.
+	keyMaterial, err := cfcrypto.HKDFSha256WithSalt(sharedSecret, nonce, "campfire-key-delivery")
 	if err != nil {
 		return nil, fmt.Errorf("HKDF: %w", err)
 	}
 
-	// AES-256-GCM encrypt.
-	block, err := aes.NewCipher(keyMaterial)
+	// AES-256-GCM encrypt using caller-supplied nonce (embedded in wire format below).
+	gcmCiphertext, err := cfcrypto.AESGCMEncryptWithNonce(keyMaterial, nonce, plaintext)
 	if err != nil {
-		return nil, fmt.Errorf("creating AES cipher: %w", err)
+		return nil, fmt.Errorf("AES-GCM encrypt: %w", err)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("creating GCM: %w", err)
-	}
-
-	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
 
 	// Wire format: ephemeral_pub || nonce || ciphertext+tag
-	out := make([]byte, 32+12+len(ciphertext))
+	out := make([]byte, 32+12+len(gcmCiphertext))
 	copy(out[0:32], ephemeralPub)
 	copy(out[32:44], nonce)
-	copy(out[44:], ciphertext)
+	copy(out[44:], gcmCiphertext)
 	return out, nil
 }
 
@@ -234,22 +228,13 @@ func DecryptWithEd25519Key(recipientEd25519Priv []byte, ciphertext []byte) ([]by
 	}
 
 	// Derive AES-256 key via HKDF-SHA256 (same parameters as encryption).
-	keyMaterial, err := hkdf.Key(sha256.New, sharedSecret, nonce, "campfire-key-delivery", 32)
+	keyMaterial, err := cfcrypto.HKDFSha256WithSalt(sharedSecret, nonce, "campfire-key-delivery")
 	if err != nil {
 		return nil, fmt.Errorf("HKDF: %w", err)
 	}
 
-	// AES-256-GCM decrypt.
-	block, err := aes.NewCipher(keyMaterial)
-	if err != nil {
-		return nil, fmt.Errorf("creating AES cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("creating GCM: %w", err)
-	}
-
-	plaintext, err := gcm.Open(nil, nonce, gcmCiphertext, nil)
+	// AES-256-GCM decrypt using the extracted nonce.
+	plaintext, err := cfcrypto.AESGCMDecryptWithNonce(keyMaterial, nonce, gcmCiphertext)
 	if err != nil {
 		return nil, fmt.Errorf("AES-GCM decryption failed (wrong key or tampered): %w", err)
 	}
