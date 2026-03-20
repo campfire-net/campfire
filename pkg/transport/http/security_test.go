@@ -1142,6 +1142,101 @@ func TestDeliverDefaultRoleAllowed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// workspace-06y — handleDeliver malformed CBOR body after valid signature
+// ---------------------------------------------------------------------------
+
+// TestDeliverMalformedCBORBodyReturns400 verifies that handleDeliver returns
+// 400 when the request body is valid CBOR but does not decode into a
+// message.Message (e.g., a CBOR map with string keys that produce a zero-value
+// Message with no valid signature).
+//
+// Attack surface: cfencoding.Unmarshal may silently succeed (all fields zero)
+// for a CBOR payload whose structure is incompatible with message.Message.
+// The handler must still reject it — either via a decode error or via the
+// subsequent msg.VerifySignature() check — with 400.
+func TestDeliverMalformedCBORBodyReturns400(t *testing.T) {
+	campfireID := "test-deliver-bad-cbor"
+	sender := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, sender.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+108)
+	startTransportWithSelf(t, addr, s, sender)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	// Build a valid CBOR payload that is NOT a message.Message.
+	// A map with string keys produces valid CBOR that will either decode into a
+	// zero-value Message (unknown fields ignored) or fail to decode — both must
+	// produce 400: the zero-value path fails VerifySignature(), and the decode-error
+	// path returns 400 at cfencoding.Unmarshal.
+	type wrongType struct {
+		Foo string `cbor:"foo"`
+		Bar int    `cbor:"bar"`
+	}
+	wrongPayload, err := cfencoding.Marshal(wrongType{Foo: "not-a-message", Bar: 42})
+	if err != nil {
+		t.Fatalf("encoding wrong-type CBOR: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(wrongPayload))
+	signTestRequest(req, sender, wrongPayload)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for wrong-type CBOR body, got %d", resp.StatusCode)
+	}
+}
+
+// TestDeliverNonMapCBORBodyReturns400 verifies that handleDeliver returns 400
+// when the body is valid CBOR but a non-map type (e.g., a CBOR integer), which
+// cannot decode into message.Message.
+//
+// This exercises the cfencoding.Unmarshal error path in handleDeliver lines 25-29.
+func TestDeliverNonMapCBORBodyReturns400(t *testing.T) {
+	campfireID := "test-deliver-cbor-int"
+	sender := tempIdentity(t)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, sender.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+109)
+	startTransportWithSelf(t, addr, s, sender)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	// Encode a plain integer as CBOR — this is valid CBOR but cannot unmarshal
+	// into message.Message (a struct), so cfencoding.Unmarshal must return an error.
+	intPayload, err := cfencoding.Marshal(uint64(12345))
+	if err != nil {
+		t.Fatalf("encoding integer CBOR: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(intPayload))
+	signTestRequest(req, sender, intPayload)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for non-map CBOR body, got %d", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
