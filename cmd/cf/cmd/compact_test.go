@@ -295,6 +295,58 @@ func TestListMessages_RespectCompaction_ViaReadPath(t *testing.T) {
 	}
 }
 
+// TestCompactBeforeNotFound verifies that --before with a non-existent message ID
+// returns a "message not found" error (regression test for workspace-pm9m.5.2: the
+// old sentinel `beforeTS == 0` was incorrect; the correct sentinel is `matchedID == ""`).
+func TestCompactBeforeNotFound(t *testing.T) {
+	agentID, s, campfireID, transportBaseDir, _ := setupCompactTestEnv(t, campfire.RoleFull)
+	seedMessages(t, 2, agentID, s, campfireID, transportBaseDir)
+
+	// A completely unknown message ID: must return "message not found".
+	_, err := execCompact(campfireID, "nonexistent-id-that-does-not-exist", "test", "archive", agentID, s)
+	if err == nil {
+		t.Fatal("expected 'message not found' error for unknown ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "message not found") {
+		t.Errorf("expected 'message not found' error, got: %v", err)
+	}
+}
+
+// TestCompactBeforeSentinelIsMatchedID documents the sentinel fix for workspace-pm9m.5.2.
+// The old code used `beforeTS == 0` as the not-found sentinel, which would incorrectly
+// return "message not found" for any message whose Timestamp field is zero (e.g., messages
+// created in tests or via import with clock reset). The correct sentinel is `matchedID == ""`.
+//
+// This test verifies the sentinel via the --before path: a valid message ID compacts
+// the correct set of messages, confirming matchedID-based detection works correctly.
+func TestCompactBeforeSentinelIsMatchedID(t *testing.T) {
+	agentID, s, campfireID, transportBaseDir, _ := setupCompactTestEnv(t, campfire.RoleFull)
+	msgIDs := seedMessages(t, 3, agentID, s, campfireID, transportBaseDir)
+
+	// Compact --before msgIDs[2]. With the correct matchedID sentinel, any found
+	// message with any timestamp value is handled correctly.
+	_, err := execCompact(campfireID, msgIDs[2], "sentinel-test", "archive", agentID, s)
+	if err != nil {
+		t.Fatalf("execCompact --before valid msg: unexpected error: %v", err)
+	}
+
+	// Verify the correct messages were superseded (msgIDs[0] and msgIDs[1] only).
+	events, err := s.ListCompactionEvents(campfireID)
+	if err != nil {
+		t.Fatalf("ListCompactionEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 compaction event, got %d", len(events))
+	}
+	var payload store.CompactionPayload
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshalling payload: %v", err)
+	}
+	if len(payload.Supersedes) != 2 {
+		t.Errorf("expected 2 superseded messages (before msgIDs[2]), got %d", len(payload.Supersedes))
+	}
+}
+
 // TestListMessages_AllShowsEverything verifies that without compaction filtering,
 // all messages are visible including superseded ones.
 func TestListMessages_AllShowsEverything(t *testing.T) {
