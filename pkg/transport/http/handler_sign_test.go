@@ -566,6 +566,183 @@ func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// workspace-qxpl — handleSign membership check: non-member gets 403
+// ---------------------------------------------------------------------------
+
+// TestHandleSignNonMemberRejected verifies that an authenticated peer that is
+// NOT a member of the campfire receives 403 Forbidden when calling POST /sign.
+//
+// The sign route is protected by authMiddleware which calls checkMembership.
+// This test confirms the path where the sender has a valid Ed25519 signature
+// but has no peer_endpoint record in the campfire's store.
+func TestHandleSignNonMemberRejected(t *testing.T) {
+	campfireID := "sign-nonmember-403"
+
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+
+	shareB, err := threshold.MarshalResult(2, dkgResults[2])
+	if err != nil {
+		t.Fatalf("MarshalResult B: %v", err)
+	}
+
+	// idNonMember is a valid identity but NOT enrolled in sB's peer list.
+	idNonMember := tempIdentity(t)
+	sB := tempStore(t)
+	addMembership(t, sB, campfireID)
+	// Deliberately do NOT add idNonMember as a peer — it is not a campfire member.
+
+	if err := sB.UpsertThresholdShare(store.ThresholdShare{
+		CampfireID:    campfireID,
+		ParticipantID: 2,
+		SecretShare:   shareB,
+	}); err != nil {
+		t.Fatalf("storing share B: %v", err)
+	}
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+54)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo("", epB)
+	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
+		share, err := sB.GetThresholdShare(cfID)
+		if err != nil || share == nil {
+			return 0, nil, fmt.Errorf("no share for %s", cfID)
+		}
+		return share.ParticipantID, share.SecretShare, nil
+	})
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Build a minimal round-1 request body (content doesn't matter — 403 fires before parsing).
+	req := cfhttp.SignRoundRequest{
+		SessionID: "nonmember-session",
+		Round:     1,
+		SignerIDs: []uint32{1, 2},
+		Messages:  [][]byte{},
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshaling request: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/sign", epB, campfireID)
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	signHTTPRequest(httpReq, idNonMember, body)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusForbidden {
+		b, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 403 Forbidden for non-member /sign, got %d: %s", resp.StatusCode, string(b))
+	}
+}
+
+// TestHandleSignWrongCampfireRejected verifies that an authenticated peer that
+// is a member of campfire A cannot initiate a signing session in campfire B.
+//
+// Concretely: the server for campfire B has no peer_endpoint for the sender
+// (whose only peer records are for campfire A). authMiddleware's membership
+// check is campfire-scoped, so the sender is treated as a non-member of B
+// and receives 403 Forbidden.
+func TestHandleSignWrongCampfireRejected(t *testing.T) {
+	campfireA := "sign-wrong-cf-A"
+	campfireB := "sign-wrong-cf-B"
+
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+
+	shareB, err := threshold.MarshalResult(2, dkgResults[2])
+	if err != nil {
+		t.Fatalf("MarshalResult B: %v", err)
+	}
+
+	// idA is a member of campfireA but NOT campfireB.
+	idA := tempIdentity(t)
+	sB := tempStore(t)
+
+	// Server hosts campfireB only.
+	addMembership(t, sB, campfireB)
+	// Register idA as a peer of campfireA on this store — not campfireB.
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireA, MemberPubkey: idA.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
+
+	if err := sB.UpsertThresholdShare(store.ThresholdShare{
+		CampfireID:    campfireB,
+		ParticipantID: 2,
+		SecretShare:   shareB,
+	}); err != nil {
+		t.Fatalf("storing share: %v", err)
+	}
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+55)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo("", epB)
+	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
+		share, err := sB.GetThresholdShare(cfID)
+		if err != nil || share == nil {
+			return 0, nil, fmt.Errorf("no share for %s", cfID)
+		}
+		return share.ParticipantID, share.SecretShare, nil
+	})
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	req := cfhttp.SignRoundRequest{
+		SessionID: "wrong-campfire-session",
+		Round:     1,
+		SignerIDs: []uint32{1, 2},
+		Messages:  [][]byte{},
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshaling request: %v", err)
+	}
+
+	// Attempt to sign in campfireB as a member of campfireA only.
+	url := fmt.Sprintf("%s/campfire/%s/sign", epB, campfireB)
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	signHTTPRequest(httpReq, idA, body)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusForbidden {
+		b, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 403 Forbidden for cross-campfire /sign, got %d: %s", resp.StatusCode, string(b))
+	}
+}
+
 // signHTTPRequest adds Ed25519 auth headers to an HTTP request using the
 // same convention as peer.go's signRequest function.
 func signHTTPRequest(req *http.Request, id *identity.Identity, body []byte) {
