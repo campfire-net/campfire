@@ -51,9 +51,9 @@ var createCmd = &cobra.Command{
 		// Add creator as first member
 		cf.AddMember(agentID.PublicKey)
 
-		s, err := store.Open(store.StorePath(CFHome()))
+		s, err := openStore()
 		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 

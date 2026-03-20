@@ -6,7 +6,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	"github.com/spf13/cobra"
@@ -22,14 +21,9 @@ var serveCmd = &cobra.Command{
 		serveTLSKey, _ := cmd.Flags().GetString("tls-key")
 		campfireID := args[0]
 
-		agentID, err := identity.Load(IdentityPath())
+		agentID, s, err := requireAgentAndStore()
 		if err != nil {
-			return fmt.Errorf("loading identity (run 'cf init' first): %w", err)
-		}
-
-		s, err := store.Open(store.StorePath(CFHome()))
-		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 

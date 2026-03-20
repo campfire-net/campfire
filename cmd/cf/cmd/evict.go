@@ -34,14 +34,9 @@ var evictCmd = &cobra.Command{
 		_, _ = cmd.Flags().GetString("tls-key") // registered but not used in logic beyond TLS pairing
 		evictedPubkeyHex := args[1]
 
-		agentID, err := identity.Load(IdentityPath())
+		agentID, s, err := requireAgentAndStore()
 		if err != nil {
-			return fmt.Errorf("loading identity: %w", err)
-		}
-
-		s, err := store.Open(store.StorePath(CFHome()))
-		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 

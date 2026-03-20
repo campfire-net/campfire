@@ -6,7 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
@@ -16,9 +15,9 @@ var membersCmd = &cobra.Command{
 	Short: "List members of a campfire",
 	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		s, err := store.Open(store.StorePath(CFHome()))
+		s, err := openStore()
 		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 

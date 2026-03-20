@@ -10,7 +10,6 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
@@ -32,9 +31,9 @@ var admitCmd = &cobra.Command{
 			return fmt.Errorf("public key must be 32 bytes (64 hex chars), got %d bytes", len(memberKey))
 		}
 
-		s, err := store.Open(store.StorePath(CFHome()))
+		s, err := openStore()
 		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 

@@ -37,14 +37,9 @@ var sendCmd = &cobra.Command{
 			sendAntecedents = append(sendAntecedents, legacyAnts...)
 		}
 
-		agentID, err := identity.Load(IdentityPath())
+		agentID, s, err := requireAgentAndStore()
 		if err != nil {
-			return fmt.Errorf("loading identity: %w", err)
-		}
-
-		s, err := store.Open(store.StorePath(CFHome()))
-		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 

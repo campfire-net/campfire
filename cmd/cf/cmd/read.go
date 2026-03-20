@@ -250,14 +250,9 @@ var readCmd = &cobra.Command{
 			return runPull(readPull, fieldSet)
 		}
 
-		agentID, err := identity.Load(IdentityPath())
+		agentID, s, err := requireAgentAndStore()
 		if err != nil {
-			return fmt.Errorf("loading identity: %w", err)
-		}
-
-		s, err := store.Open(store.StorePath(CFHome()))
-		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 
@@ -277,9 +272,9 @@ var readCmd = &cobra.Command{
 // It does NOT advance the read cursor and does NOT sync transports.
 // fieldSet controls which fields appear in output; nil means all fields.
 func runPull(idsArg string, fieldSet map[string]bool) error {
-	s, err := store.Open(store.StorePath(CFHome()))
+	s, err := openStore()
 	if err != nil {
-		return fmt.Errorf("opening store: %w", err)
+		return err
 	}
 	defer s.Close()
 
