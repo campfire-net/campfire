@@ -70,7 +70,3 @@ func (b *PollBroker) Notify(campfireID string) {
 	}
 }
 
-// NotifyEviction is a no-op stub. It exists so handleMembership can call it
-// without requiring a file change when forced-eviction support is added later.
-// Correctness without it: evicted members receive 403 on reconnect.
-func (b *PollBroker) NotifyEviction(campfireID, memberPubKey string) {}

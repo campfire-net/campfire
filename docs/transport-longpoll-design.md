@@ -349,11 +349,10 @@ Ed25519 keypair will receive 403. A member that has been evicted will also recei
 next poll request — held connections are not forcibly terminated on eviction, but
 will not be renewed.
 
-**Recommendation:** When `handleMembership` processes an eviction event, call
-`broker.NotifyEviction(campfireID, memberPubKey)`. The broker closes any channels
-held by that member's poll connections, causing their goroutines to return without
-sending messages. This is a nice-to-have; correctness holds without it because the
-poller reconnects and receives 403.
+Evicted members receive 403 on reconnect. Held connections are not forcibly
+terminated on eviction; they expire naturally on the next reconnect attempt.
+If immediate eviction notification is needed in the future, `PollBroker` would
+need a method to close channels for a specific member.
 
 ## Failure Modes
 
@@ -419,7 +418,7 @@ worsen it.
 
 ### New: `pkg/transport/http/poll_broker.go`
 
-- `PollBroker` struct with `Subscribe`, `Notify`, `NotifyEviction` methods.
+- `PollBroker` struct with `Subscribe`, `Notify` methods.
 - Per-campfire channel registry, per-campfire limits.
 
 ### Modified: `pkg/transport/http/transport.go`
@@ -455,8 +454,8 @@ worsen it.
    and requires no schema change. Recommendation: keep `ReceivedAt`.
 
 2. **Should poll connections be terminated on eviction?** Current design: no
-   (403 on reconnect is sufficient). The `NotifyEviction` path is a
-   nice-to-have. Defer to implementation.
+   (403 on reconnect is sufficient). Forcible termination would require a new
+   method on `PollBroker` to close channels for a specific member.
 
 3. **Should membership verification be backported to `/sync`?** It should.
    That is a separate fix, out of scope for this bead.
