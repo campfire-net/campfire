@@ -15,6 +15,7 @@ package fs
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -355,6 +356,44 @@ func TestDefaultBaseDir(t *testing.T) {
 	t.Setenv("CF_TRANSPORT_DIR", "/custom/transport")
 	if got := DefaultBaseDir(); got != "/custom/transport" {
 		t.Errorf("DefaultBaseDir() with env = %q, want /custom/transport", got)
+	}
+}
+
+// TestAtomicWriteCBOR_RandFallback verifies that when crypto/rand fails, the timestamp
+// fallback produces a non-empty temp filename and the write still succeeds.
+func TestAtomicWriteCBOR_RandFallback(t *testing.T) {
+	// Inject a failing rand reader to force the timestamp fallback path.
+	orig := randRead
+	randRead = func(b []byte) (int, error) {
+		return 0, fmt.Errorf("injected rand failure")
+	}
+	defer func() { randRead = orig }()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fallback.cbor")
+
+	type payload struct {
+		Value string `cbor:"1,keyasint"`
+	}
+	if err := atomicWriteCBOR(path, payload{Value: "fallback"}); err != nil {
+		t.Fatalf("atomicWriteCBOR() with rand failure should succeed via fallback, got error: %v", err)
+	}
+
+	// Final file must exist and have non-zero size.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("expected final file to exist after fallback write: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Error("expected non-empty file after fallback write")
+	}
+
+	// No tmp files must remain (rename cleaned up).
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.Name() != "fallback.cbor" {
+			t.Errorf("unexpected leftover temp file after fallback write: %s", e.Name())
+		}
 	}
 }
 

@@ -163,6 +163,11 @@ func (t *Transport) Remove(campfireID string) error {
 	return os.RemoveAll(t.CampfireDir(campfireID))
 }
 
+// randRead is the function used to fill random bytes for temp file names.
+// It is a package-level variable so tests can inject a failing reader to
+// exercise the nanosecond-timestamp fallback path.
+var randRead = func(b []byte) (int, error) { return rand.Read(b) }
+
 // atomicWriteCBOR writes CBOR data atomically using temp file + rename.
 func atomicWriteCBOR(path string, v interface{}) error {
 	data, err := cfencoding.Marshal(v)
@@ -172,7 +177,7 @@ func atomicWriteCBOR(path string, v interface{}) error {
 
 	// Generate random suffix for temp file; fall back to timestamp if crypto/rand fails.
 	var randBytes [8]byte
-	if _, err := rand.Read(randBytes[:]); err != nil {
+	if _, err := randRead(randBytes[:]); err != nil {
 		// Fallback: use nanosecond timestamp so concurrent writers still get distinct names.
 		ns := uint64(time.Now().UnixNano()) //nolint:gosec // fallback only
 		randBytes[0] = byte(ns >> 56)
