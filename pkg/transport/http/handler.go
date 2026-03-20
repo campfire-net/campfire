@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -27,76 +25,7 @@ const (
 // maxRequestBodySize is the maximum number of bytes accepted in any request body.
 const maxRequestBodySize = 4 * 1024 * 1024 // 4 MiB
 
-// validateJoinerEndpoint checks that a joiner-supplied endpoint URL is safe to
-// contact. It rejects:
-//   - non-http/https schemes (e.g. file://)
-//   - bare IP addresses in private/loopback/link-local ranges
-//   - hostnames that resolve exclusively to private/loopback addresses
-func validateJoinerEndpoint(rawURL string) error {
-	if rawURL == "" {
-		return nil
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("invalid endpoint URL: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("endpoint scheme %q not allowed (must be http or https)", u.Scheme)
-	}
-	host := u.Hostname()
-	if host == "" {
-		return fmt.Errorf("endpoint has no host")
-	}
-	ip := net.ParseIP(host)
-	if ip != nil {
-		if isPrivateIP(ip) {
-			return fmt.Errorf("endpoint IP %s is in a private/reserved range", ip)
-		}
-		return nil
-	}
-	// Resolve hostname and check each address.
-	addrs, err := net.LookupHost(host)
-	if err != nil {
-		// If we cannot resolve the host, reject it — better safe than sorry.
-		return fmt.Errorf("cannot resolve endpoint host %q: %w", host, err)
-	}
-	for _, a := range addrs {
-		parsed := net.ParseIP(a)
-		if parsed != nil && isPrivateIP(parsed) {
-			return fmt.Errorf("endpoint host %q resolves to private/reserved address %s", host, a)
-		}
-	}
-	return nil
-}
-
-// isPrivateIP reports whether ip is a loopback, private, link-local,
-// or other address that should not be dialled by a server-side handler.
-func isPrivateIP(ip net.IP) bool {
-	private := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"127.0.0.0/8",
-		"::1/128",
-		"169.254.0.0/16",
-		"fe80::/10",
-		"fc00::/7",
-		"0.0.0.0/8",
-		"100.64.0.0/10", // CGNAT
-		"198.18.0.0/15", // benchmarking
-		"240.0.0.0/4",   // reserved
-	}
-	for _, cidr := range private {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			continue
-		}
-		if network.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
+// validateJoinerEndpoint and isPrivateIP are defined in ssrf.go.
 
 // sanitizeTransportDir validates a TransportDir value from a membership record
 // and returns the cleaned absolute path. It rejects paths that are not absolute

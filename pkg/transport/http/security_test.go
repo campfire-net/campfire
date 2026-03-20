@@ -277,6 +277,9 @@ func TestRekeyPathTraversalAbsoluteRelative(t *testing.T) {
 // TestJoinSSRFPrivateIPRejected verifies that a join request with a
 // JoinerEndpoint pointing to a private IP address is rejected with 400.
 func TestJoinSSRFPrivateIPRejected(t *testing.T) {
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
+
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating campfire key: %v", err)
@@ -420,6 +423,9 @@ func TestJoinValidEndpointAccepted(t *testing.T) {
 
 // TestJoinFileSchemeRejected verifies that a file:// endpoint is rejected.
 func TestJoinFileSchemeRejected(t *testing.T) {
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
+
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating campfire key: %v", err)
@@ -591,6 +597,9 @@ func TestRequestBodySizeLimit(t *testing.T) {
 // through the HTTP layer (done above) and via a table-driven in-process test
 // using httptest so we don't need to export the function.
 func TestValidateJoinerEndpointUnit(t *testing.T) {
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
+
 	// We validate via the join endpoint on a test server so no export needed.
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -683,6 +692,9 @@ func TestValidateJoinerEndpointUnit(t *testing.T) {
 // coverage: CGNAT (100.64.0.0/10), IPv6 ULA (fc00::/7), IPv6 link-local
 // (fe80::/10), and reserved (240.0.0.0/4).
 func TestIsPrivateIPExtendedRanges(t *testing.T) {
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
+
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating campfire key: %v", err)

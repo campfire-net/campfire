@@ -124,7 +124,7 @@ func TestRekeyPhase2AfterSessionPrunedReturns400(t *testing.T) {
 	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
 
 	rr := httptest.NewRecorder()
-	h.handleRekey(rr, req, campfireID)
+	h.handleRekey(rr, req, campfireID, senderID.PublicKeyHex(), bodyBytes)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 when phase-2 arrives after session was pruned, got %d (body: %s)",

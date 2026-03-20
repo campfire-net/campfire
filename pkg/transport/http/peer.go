@@ -20,7 +20,18 @@ import (
 )
 
 
-var httpClient = &http.Client{Timeout: 30 * time.Second}
+// httpClient uses newSSRFSafeTransport() to re-validate resolved IPs at
+// connection time, closing the DNS-rebinding TOCTOU window.
+var httpClient = &http.Client{
+	Timeout:   30 * time.Second,
+	Transport: newSSRFSafeTransport(),
+}
+
+// OverrideHTTPClientForTest replaces the package-level HTTP client.
+// Call from TestMain when tests use loopback servers.
+func OverrideHTTPClientForTest(c *http.Client) {
+	httpClient = c
+}
 
 // Deliver POSTs a CBOR-encoded message to a peer endpoint.
 // Signs the request body with senderIdentity.

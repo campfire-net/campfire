@@ -489,3 +489,66 @@ func TestHandlePollFiltersByReceivedAt(t *testing.T) {
 	}
 }
 
+// TestHandlePollMembershipStoreError: ListPeerEndpoints returns an error
+// (DB closed before request) — sender is not the self key, so membership
+// check falls through to store lookup. Store error → skip loop → isMember
+// stays false → 403 (fail-closed, not 500).
+func TestHandlePollMembershipStoreError(t *testing.T) {
+	campfireID := "poll-store-error"
+	idSelf := tempIdentity(t)
+	idCaller := tempIdentity(t)
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, idCaller.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+48)
+	// Set self key to idSelf so idCaller is not the self key and must be
+	// looked up via ListPeerEndpoints.
+	startTransportWithSelf(t, addr, s, idSelf)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	// Close the store so ListPeerEndpoints returns an error.
+	if err := s.Close(); err != nil {
+		t.Fatalf("closing store: %v", err)
+	}
+
+	resp, err := doPoll(ep, campfireID, 0, 1, idCaller)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	// Fail-closed: store error must yield 403, not 200 or 500.
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403 (fail-closed on store error), got %d: %s", resp.StatusCode, body)
+	}
+}
+
+// TestHandlePollNoPeerEndpoints: sender is not the self key and the campfire
+// has no peer_endpoints rows. ListPeerEndpoints returns an empty list (no error).
+// The loop finds no match → isMember stays false → 403.
+func TestHandlePollNoPeerEndpoints(t *testing.T) {
+	campfireID := "poll-no-peers"
+	idSelf := tempIdentity(t)
+	idCaller := tempIdentity(t)
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	// Intentionally do NOT call addPeerEndpoint — empty peer list.
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+49)
+	startTransportWithSelf(t, addr, s, idSelf)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	resp, err := doPoll(ep, campfireID, 0, 1, idCaller)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403 (no peer endpoints), got %d: %s", resp.StatusCode, body)
+	}
+}
+
