@@ -23,18 +23,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	evictReason    string
-	evictListen    string
-	evictTLSCert   string
-	evictTLSKey    string
-)
-
 var evictCmd = &cobra.Command{
 	Use:   "evict <campfire-id> <member-pubkey-hex>",
 	Short: "Evict a member from a campfire (creator only). Always rekeys the campfire.",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		evictReason, _ := cmd.Flags().GetString("reason")
+		evictListen, _ := cmd.Flags().GetString("listen")
+		evictTLSCert, _ := cmd.Flags().GetString("tls-cert")
+		_, _ = cmd.Flags().GetString("tls-key") // registered but not used in logic beyond TLS pairing
 		evictedPubkeyHex := args[1]
 
 		agentID, err := identity.Load(IdentityPath())
@@ -124,6 +121,7 @@ var evictCmd = &cobra.Command{
 				&oldCFState, newCFIdentity,
 				evictedPubkeyHex, remainingPeers,
 				reason,
+				evictListen, evictTLSCert,
 			); err != nil {
 				return err
 			}
@@ -171,6 +169,8 @@ func evictThreshold1(
 	evictedPubkeyHex string,
 	remainingPeers []store.PeerEndpoint,
 	reason string,
+	listen string,
+	tlsCert string,
 ) error {
 	newPrivKey := []byte(newCFIdentity.PrivateKey)
 	newPubKey := []byte(newCFIdentity.PublicKey)
@@ -238,7 +238,8 @@ func evictThreshold1(
 
 	// Update beacon: remove old, publish new.
 	updateBeacon(oldCampfireID, newCFIdentity.PublicKey, newCFIdentity.PrivateKey,
-		oldCFState.JoinProtocol, oldCFState.ReceptionRequirements)
+		oldCFState.JoinProtocol, oldCFState.ReceptionRequirements,
+		listen, tlsCert)
 
 	return nil
 }
@@ -625,7 +626,7 @@ func storeRekeyMessage(s *store.Store, campfireID string, rekeyMsgCBOR []byte) e
 
 // updateBeacon removes the old beacon and publishes a new one for the rekeyed campfire.
 func updateBeacon(oldCampfireID string, newPubKey ed25519.PublicKey, newPrivKey ed25519.PrivateKey,
-	joinProtocol string, receptionReqs []string) {
+	joinProtocol string, receptionReqs []string, listen string, tlsCert string) {
 	beaconDir := BeaconDir()
 
 	// Remove old beacon.
@@ -636,9 +637,9 @@ func updateBeacon(oldCampfireID string, newPubKey ed25519.PublicKey, newPrivKey 
 
 	// Find self endpoint for new beacon.
 	selfEndpoint := ""
-	if evictListen != "" {
-		useTLS := evictTLSCert != ""
-		selfEndpoint = resolveEndpoint(evictListen, useTLS)
+	if listen != "" {
+		useTLS := tlsCert != ""
+		selfEndpoint = resolveEndpoint(listen, useTLS)
 	}
 
 	var transportConfig beacon.TransportConfig
@@ -669,9 +670,9 @@ func updateBeacon(oldCampfireID string, newPubKey ed25519.PublicKey, newPrivKey 
 }
 
 func init() {
-	evictCmd.Flags().StringVar(&evictReason, "reason", "", "reason for eviction")
-	evictCmd.Flags().StringVar(&evictListen, "listen", "", "HTTP listen address for beacon update (optional)")
-	evictCmd.Flags().StringVar(&evictTLSCert, "tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint in updated beacon")
-	evictCmd.Flags().StringVar(&evictTLSKey, "tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
+	evictCmd.Flags().String("reason", "", "reason for eviction")
+	evictCmd.Flags().String("listen", "", "HTTP listen address for beacon update (optional)")
+	evictCmd.Flags().String("tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint in updated beacon")
+	evictCmd.Flags().String("tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
 	rootCmd.AddCommand(evictCmd)
 }

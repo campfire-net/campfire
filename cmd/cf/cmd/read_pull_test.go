@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -117,16 +118,12 @@ func TestRunPull_MutualExclusivity(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CF_HOME", dir)
 
-	// Save and restore flag state.
-	origPull := readPull
-	origAll := readAll
-	origPeek := readPeek
-	origFollow := readFollow
+	// Reset all relevant flags after the test.
 	defer func() {
-		readPull = origPull
-		readAll = origAll
-		readPeek = origPeek
-		readFollow = origFollow
+		readCmd.Flags().Set("pull", "")        //nolint:errcheck
+		readCmd.Flags().Set("all", "false")    //nolint:errcheck
+		readCmd.Flags().Set("peek", "false")   //nolint:errcheck
+		readCmd.Flags().Set("follow", "false") //nolint:errcheck
 	}()
 
 	tests := []struct {
@@ -141,10 +138,10 @@ func TestRunPull_MutualExclusivity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			readPull = "some-id"
-			readAll = tt.all
-			readPeek = tt.peek
-			readFollow = tt.follow
+			readCmd.Flags().Set("pull", "some-id")                              //nolint:errcheck
+			readCmd.Flags().Set("all", fmt.Sprintf("%v", tt.all))               //nolint:errcheck
+			readCmd.Flags().Set("peek", fmt.Sprintf("%v", tt.peek))             //nolint:errcheck
+			readCmd.Flags().Set("follow", fmt.Sprintf("%v", tt.follow))         //nolint:errcheck
 
 			err := readCmd.RunE(readCmd, nil)
 			if err == nil {

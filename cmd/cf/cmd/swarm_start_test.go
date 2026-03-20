@@ -60,9 +60,9 @@ func setupSwarmTestEnv(t *testing.T) (cfHomeDir, projectDir string) {
 	t.Setenv("CF_HOME", cfHomeDir)
 	// Route beacon publishing to a temp dir so we don't pollute or create ~/.campfire/.
 	t.Setenv("CF_BEACON_DIR", filepath.Join(cfHomeDir, "beacons"))
-	forceInit = false
-	initName = ""
-	initSession = false
+	initCmd.Flags().Set("force", "false")   //nolint:errcheck
+	initCmd.Flags().Set("name", "")         //nolint:errcheck
+	initCmd.Flags().Set("session", "false") //nolint:errcheck
 	rootCmd.SetArgs([]string{"init"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("cf init failed: %v", err)

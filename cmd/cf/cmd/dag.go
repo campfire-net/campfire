@@ -12,17 +12,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	dagAll          bool
-	dagTagFilters   []string
-	dagSenderFilter string
-)
-
 var dagCmd = &cobra.Command{
 	Use:   "dag <campfire-id>",
 	Short: "Show message DAG index (no payloads)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		dagAll, _ := cmd.Flags().GetBool("all")
+		dagTagFilters, _ := cmd.Flags().GetStringArray("tag")
+		dagSenderFilter, _ := cmd.Flags().GetString("sender")
 		agentID, err := identity.Load(IdentityPath())
 		if err != nil {
 			return fmt.Errorf("loading identity: %w", err)
@@ -182,8 +179,8 @@ func formatDAGJSON(msgs []store.MessageRecord, w io.Writer) {
 }
 
 func init() {
-	dagCmd.Flags().BoolVar(&dagAll, "all", false, "show all messages (default: unread only)")
-	dagCmd.Flags().StringArrayVar(&dagTagFilters, "tag", nil, "filter messages by tag (OR semantics, repeatable)")
-	dagCmd.Flags().StringVar(&dagSenderFilter, "sender", "", "filter messages by sender hex prefix")
+	dagCmd.Flags().Bool("all", false, "show all messages (default: unread only)")
+	dagCmd.Flags().StringArray("tag", nil, "filter messages by tag (OR semantics, repeatable)")
+	dagCmd.Flags().String("sender", "", "filter messages by sender hex prefix")
 	rootCmd.AddCommand(dagCmd)
 }

@@ -25,21 +25,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	joinVia             string
-	joinListen          string
-	joinTLSCert         string
-	joinTLSKey          string
-	joinGitHubRepo      string
-	joinGitHubTokenEnv  string
-	joinGitHubBaseURL   string
-)
-
 var joinCmd = &cobra.Command{
 	Use:   "join <campfire-id>",
 	Short: "Join a campfire",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		joinVia, _ := cmd.Flags().GetString("via")
+		joinListen, _ := cmd.Flags().GetString("listen")
+		joinTLSCert, _ := cmd.Flags().GetString("tls-cert")
+		joinTLSKey, _ := cmd.Flags().GetString("tls-key")
+		joinGitHubRepo, _ := cmd.Flags().GetString("github-repo")
+		joinGitHubTokenEnv, _ := cmd.Flags().GetString("github-token-env")
+		joinGitHubBaseURL, _ := cmd.Flags().GetString("github-base-url")
 		agentID, err := identity.Load(IdentityPath())
 		if err != nil {
 			return fmt.Errorf("loading identity (run 'cf init' first): %w", err)
@@ -64,10 +61,10 @@ var joinCmd = &cobra.Command{
 
 		// Route based on --via flag (p2p-http), GitHub Issue URL, or filesystem (default).
 		if joinVia != "" {
-			return joinP2PHTTP(campfireID, agentID, s)
+			return joinP2PHTTP(campfireID, agentID, s, joinVia, joinListen, joinTLSCert, joinTLSKey)
 		}
 		if strings.HasPrefix(campfireID, "https://github.com/") {
-			return joinGitHub(campfireID, agentID, s)
+			return joinGitHub(campfireID, agentID, s, joinGitHubTokenEnv, joinGitHubBaseURL, joinGitHubRepo)
 		}
 		return joinFilesystem(campfireID, agentID, s)
 	},
@@ -142,22 +139,22 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Stor
 	return nil
 }
 
-func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store) error {
-	if (joinTLSCert == "") != (joinTLSKey == "") {
+func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store, via, listen, tlsCert, tlsKey string) error {
+	if (tlsCert == "") != (tlsKey == "") {
 		return fmt.Errorf("--tls-cert and --tls-key must both be provided or both omitted")
 	}
-	useTLS := joinTLSCert != ""
+	useTLS := tlsCert != ""
 
 	// Resolve joiner's own endpoint if --listen is provided.
 	myEndpoint := ""
-	if joinListen != "" {
-		myEndpoint = resolveEndpoint(joinListen, useTLS)
+	if listen != "" {
+		myEndpoint = resolveEndpoint(listen, useTLS)
 	}
 
 	// Send join request to the via endpoint.
-	result, err := cfhttp.Join(joinVia, campfireID, agentID, myEndpoint)
+	result, err := cfhttp.Join(via, campfireID, agentID, myEndpoint)
 	if err != nil {
-		return fmt.Errorf("joining campfire via %s: %w", joinVia, err)
+		return fmt.Errorf("joining campfire via %s: %w", via, err)
 	}
 
 	// Persist campfire state locally.
@@ -229,15 +226,15 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store) 
 
 	// If joiner has an endpoint, start the HTTP listener and notify peers.
 	if myEndpoint != "" {
-		tr := cfhttp.New(joinListen, s)
+		tr := cfhttp.New(listen, s)
 		if useTLS {
-			tr.SetTLSConfig(&cfhttp.TLSConfig{CertFile: joinTLSCert, KeyFile: joinTLSKey})
+			tr.SetTLSConfig(&cfhttp.TLSConfig{CertFile: tlsCert, KeyFile: tlsKey})
 		}
 		tr.SetSelfInfo(agentID.PublicKeyHex(), myEndpoint)
 		tr.SetKeyProvider(buildKeyProvider(CFHome()))
 		tr.SetThresholdShareProvider(buildThresholdShareProvider(s))
 		if err := tr.Start(); err != nil {
-			return fmt.Errorf("starting HTTP listener on %s: %w", joinListen, err)
+			return fmt.Errorf("starting HTTP listener on %s: %w", listen, err)
 		}
 
 		// Record self endpoint with participant ID.
@@ -288,8 +285,8 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store) 
 // will observe the campfire:join-request comment in their poll loop and post a
 // campfire:key-delivery comment encrypting the campfire private key to the joiner's
 // public key. This function polls until the key delivery comment arrives.
-func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) error {
-	token, err := resolveGitHubToken(joinGitHubTokenEnv, CFHome())
+func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store, tokenEnv, baseURL, ghRepo string) error {
+	token, err := resolveGitHubToken(tokenEnv, CFHome())
 	if err != nil {
 		return fmt.Errorf("resolving GitHub token: %w", err)
 	}
@@ -318,7 +315,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) 
 
 		// Fetch the issue to get the campfire ID from the beacon body.
 		// We use DiscoverBeacons and find the one with the matching issue number.
-		client := ghtr.NewClient(joinGitHubBaseURL, token)
+		client := ghtr.NewClient(baseURL, token)
 		beacons, err := ghtr.DiscoverBeacons(client, repo)
 		if err != nil {
 			return fmt.Errorf("discovering beacons from %s: %w", repo, err)
@@ -337,11 +334,11 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) 
 	} else {
 		// Ed25519 hex pubkey: use --github-repo to discover.
 		campfireID = campfireArg
-		if joinGitHubRepo == "" {
+		if ghRepo == "" {
 			return fmt.Errorf("--github-repo required when joining by campfire ID (not URL)")
 		}
-		repo = joinGitHubRepo
-		client := ghtr.NewClient(joinGitHubBaseURL, token)
+		repo = ghRepo
+		client := ghtr.NewClient(baseURL, token)
 		beacons, err := ghtr.DiscoverBeacons(client, repo)
 		if err != nil {
 			return fmt.Errorf("discovering beacons: %w", err)
@@ -368,7 +365,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) 
 		Repo:        repo,
 		IssueNumber: issueNumber,
 		Token:       token,
-		BaseURL:     joinGitHubBaseURL,
+		BaseURL:     baseURL,
 	}
 	tr, err := ghtr.New(cfg, s)
 	if err != nil {
@@ -410,7 +407,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store) 
 	transportDir, err := encodeGitHubTransportDir(githubTransportMeta{
 		Repo:        repo,
 		IssueNumber: issueNumber,
-		BaseURL:     joinGitHubBaseURL,
+		BaseURL:     baseURL,
 	})
 	if err != nil {
 		return fmt.Errorf("encoding transport dir: %w", err)
@@ -539,14 +536,14 @@ func projectBeaconDir() string {
 }
 
 func init() {
-	joinCmd.Flags().StringVar(&joinVia, "via", "", "peer HTTP endpoint to join through (enables p2p-http transport)")
-	joinCmd.Flags().StringVar(&joinListen, "listen", "", "HTTP listen address for p2p-http transport (e.g. :9002)")
-	joinCmd.Flags().StringVar(&joinTLSCert, "tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint advertisement")
-	joinCmd.Flags().StringVar(&joinTLSKey, "tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
+	joinCmd.Flags().String("via", "", "peer HTTP endpoint to join through (enables p2p-http transport)")
+	joinCmd.Flags().String("listen", "", "HTTP listen address for p2p-http transport (e.g. :9002)")
+	joinCmd.Flags().String("tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint advertisement")
+	joinCmd.Flags().String("tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
 	// GitHub transport flags.
-	joinCmd.Flags().StringVar(&joinGitHubRepo, "github-repo", "", "coordination repository for GitHub beacon discovery (owner/repo)")
-	joinCmd.Flags().StringVar(&joinGitHubTokenEnv, "github-token-env", "", "name of env var containing GitHub token (default: GITHUB_TOKEN)")
-	joinCmd.Flags().StringVar(&joinGitHubBaseURL, "github-base-url", "", "GitHub API base URL (for GitHub Enterprise; default: https://api.github.com)")
+	joinCmd.Flags().String("github-repo", "", "coordination repository for GitHub beacon discovery (owner/repo)")
+	joinCmd.Flags().String("github-token-env", "", "name of env var containing GitHub token (default: GITHUB_TOKEN)")
+	joinCmd.Flags().String("github-base-url", "", "GitHub API base URL (for GitHub Enterprise; default: https://api.github.com)")
 	rootCmd.AddCommand(joinCmd)
 }
 

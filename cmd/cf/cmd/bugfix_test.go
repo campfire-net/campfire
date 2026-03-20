@@ -163,17 +163,15 @@ func TestRunPull_FieldsProjectionJSON(t *testing.T) {
 	})
 	s.Close()
 
-	origFields := readFields
 	origJSON := jsonOutput
 	defer func() {
-		readFields = origFields
 		jsonOutput = origJSON
 	}()
-	readFields = "id,payload"
+	fieldsStr := "id,payload"
 	jsonOutput = true
 
 	out := captureStdout(t, func() {
-		fieldSet, err := parseFieldSet(readFields)
+		fieldSet, err := parseFieldSet(fieldsStr)
 		if err != nil {
 			t.Errorf("parseFieldSet: %v", err)
 			return
@@ -225,17 +223,15 @@ func TestRunPull_FieldsProjectionHumanReadable(t *testing.T) {
 	})
 	s.Close()
 
-	origFields := readFields
 	origJSON := jsonOutput
 	defer func() {
-		readFields = origFields
 		jsonOutput = origJSON
 	}()
-	readFields = "payload"
+	fieldsStr := "payload"
 	jsonOutput = false
 
 	out := captureStdout(t, func() {
-		fieldSet, _ := parseFieldSet(readFields)
+		fieldSet, _ := parseFieldSet(fieldsStr)
 		runPull("pull-hr-fields-0000-0000-0000-000000000000", fieldSet) //nolint:errcheck
 	})
 
@@ -270,17 +266,15 @@ func TestRunPull_AllFieldsByDefault(t *testing.T) {
 	})
 	s.Close()
 
-	origFields := readFields
 	origJSON := jsonOutput
 	defer func() {
-		readFields = origFields
 		jsonOutput = origJSON
 	}()
-	readFields = ""
+	fieldsStr := ""
 	jsonOutput = true
 
 	out := captureStdout(t, func() {
-		fieldSet, _ := parseFieldSet(readFields) // nil fieldSet = all fields
+		fieldSet, _ := parseFieldSet(fieldsStr) // nil fieldSet = all fields
 		runPull("pull-allfields-0000-0000-0000-000000000000", fieldSet) //nolint:errcheck
 	})
 

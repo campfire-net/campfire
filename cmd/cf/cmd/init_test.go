@@ -20,9 +20,9 @@ func captureInitSession(t *testing.T) (stdout string, err error) {
 	os.Stdout = w
 
 	// Reset flag state
-	forceInit = false
-	initName = ""
-	initSession = false
+	initCmd.Flags().Set("force", "false")   //nolint:errcheck
+	initCmd.Flags().Set("name", "")         //nolint:errcheck
+	initCmd.Flags().Set("session", "false") //nolint:errcheck
 	rootCmd.SetArgs([]string{"init", "--session"})
 	runErr := rootCmd.Execute()
 
@@ -48,9 +48,9 @@ func captureInitDefault(t *testing.T, cfHomeDir string) (stdout string, err erro
 	origStdout := os.Stdout
 	os.Stdout = w
 
-	forceInit = false
-	initName = ""
-	initSession = false
+	initCmd.Flags().Set("force", "false")   //nolint:errcheck
+	initCmd.Flags().Set("name", "")         //nolint:errcheck
+	initCmd.Flags().Set("session", "false") //nolint:errcheck
 	t.Setenv("CF_HOME", cfHomeDir)
 	rootCmd.SetArgs([]string{"init"})
 	runErr := rootCmd.Execute()

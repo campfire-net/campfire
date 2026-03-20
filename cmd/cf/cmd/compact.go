@@ -26,12 +26,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	compactBefore  string
-	compactSummary string
-	compactRetain  string
-)
-
 var compactCmd = &cobra.Command{
 	Use:   "compact <campfire-id>",
 	Short: "Create a compaction event (campfire:compact) for a campfire",
@@ -47,6 +41,9 @@ After compaction, cf read excludes superseded messages by default. Use cf read -
 see all messages including compacted ones.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		compactBefore, _ := cmd.Flags().GetString("before")
+		compactSummary, _ := cmd.Flags().GetString("summary")
+		compactRetain, _ := cmd.Flags().GetString("retention")
 		agentID, err := identity.Load(IdentityPath())
 		if err != nil {
 			return fmt.Errorf("loading identity: %w", err)
@@ -247,8 +244,8 @@ func computeCheckpointHash(msgs []store.MessageRecord) string {
 }
 
 func init() {
-	compactCmd.Flags().StringVar(&compactBefore, "before", "", "compact messages before the given message ID prefix")
-	compactCmd.Flags().StringVar(&compactSummary, "summary", "", "human-readable summary of compacted content")
-	compactCmd.Flags().StringVar(&compactRetain, "retention", "archive", "retention policy: 'archive' or 'discard'")
+	compactCmd.Flags().String("before", "", "compact messages before the given message ID prefix")
+	compactCmd.Flags().String("summary", "", "human-readable summary of compacted content")
+	compactCmd.Flags().String("retention", "archive", "retention policy: 'archive' or 'discard'")
 	rootCmd.AddCommand(compactCmd)
 }

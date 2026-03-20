@@ -22,19 +22,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	sendTags        []string
-	sendAntecedents []string
-	sendFuture      bool
-	sendFulfills    string
-	sendInstance    string
-)
-
 var sendCmd = &cobra.Command{
 	Use:   "send [campfire-id] <message>",
 	Short: "Send a message to a campfire",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		sendTags, _ := cmd.Flags().GetStringSlice("tag")
+		sendAntecedents, _ := cmd.Flags().GetStringSlice("reply-to")
+		sendFuture, _ := cmd.Flags().GetBool("future")
+		sendFulfills, _ := cmd.Flags().GetString("fulfills")
+		sendInstance, _ := cmd.Flags().GetString("instance")
 		// Merge deprecated --antecedent alias into --reply-to.
 		if legacyAnts, err := cmd.Flags().GetStringSlice("antecedent"); err == nil && len(legacyAnts) > 0 {
 			sendAntecedents = append(sendAntecedents, legacyAnts...)
@@ -435,13 +432,13 @@ func thresholdSignHop(msg *message.Message, cfState *campfire.CampfireState, mem
 
 
 func init() {
-	sendCmd.Flags().StringSliceVar(&sendTags, "tag", nil, "message tags")
-	sendCmd.Flags().StringSliceVar(&sendAntecedents, "reply-to", nil, "message IDs this message replies to (causal dependencies)")
+	sendCmd.Flags().StringSlice("tag", nil, "message tags")
+	sendCmd.Flags().StringSlice("reply-to", nil, "message IDs this message replies to (causal dependencies)")
 	// --antecedent is a hidden backward-compatibility alias for --reply-to.
 	sendCmd.Flags().StringSlice("antecedent", nil, "alias for --reply-to (deprecated)")
 	sendCmd.Flags().MarkHidden("antecedent") //nolint:errcheck
-	sendCmd.Flags().BoolVar(&sendFuture, "future", false, "tag this message as a future")
-	sendCmd.Flags().StringVar(&sendFulfills, "fulfills", "", "message ID this fulfills (adds 'fulfills' tag + reply-to in one step)")
-	sendCmd.Flags().StringVar(&sendInstance, "instance", "", "sender instance/role name (tainted, not verified)")
+	sendCmd.Flags().Bool("future", false, "tag this message as a future")
+	sendCmd.Flags().String("fulfills", "", "message ID this fulfills (adds 'fulfills' tag + reply-to in one step)")
+	sendCmd.Flags().String("instance", "", "sender instance/role name (tainted, not verified)")
 	rootCmd.AddCommand(sendCmd)
 }

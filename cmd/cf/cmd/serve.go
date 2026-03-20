@@ -12,17 +12,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	serveListen  string
-	serveTLSCert string
-	serveTLSKey  string
-)
-
 var serveCmd = &cobra.Command{
 	Use:   "serve <campfire-id>",
 	Short: "Start HTTP listener for a p2p-http campfire and block until interrupted",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		serveListen, _ := cmd.Flags().GetString("listen")
+		serveTLSCert, _ := cmd.Flags().GetString("tls-cert")
+		serveTLSKey, _ := cmd.Flags().GetString("tls-key")
 		campfireID := args[0]
 
 		agentID, err := identity.Load(IdentityPath())
@@ -91,8 +88,8 @@ var serveCmd = &cobra.Command{
 }
 
 func init() {
-	serveCmd.Flags().StringVar(&serveListen, "listen", "", "HTTP listen address (e.g. :9001)")
-	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint advertisement")
-	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
+	serveCmd.Flags().String("listen", "", "HTTP listen address (e.g. :9001)")
+	serveCmd.Flags().String("tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint advertisement")
+	serveCmd.Flags().String("tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
 	rootCmd.AddCommand(serveCmd)
 }

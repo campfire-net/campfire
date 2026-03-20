@@ -13,16 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	readAll          bool
-	readPeek         bool
-	readFollow       bool
-	readPull         string
-	readSelfEndpoint string
-	readTagFilters   []string
-	readSenderFilter string
-	readFields       string
-)
 
 // campfireEntry pairs a campfire ID with its membership record for read operations.
 type campfireEntry struct {
@@ -76,8 +66,8 @@ func resolveCampfireEntries(args []string, agentID *identity.Identity, s *store.
 }
 
 // runFollowMode runs the --follow polling loop: sync → query → print → sleep,
-// until a SIGINT/SIGTERM is received. Cursor advancement respects --peek and --all.
-func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s *store.Store, fieldSet map[string]bool) error {
+// until a SIGINT/SIGTERM is received. Cursor advancement respects peek and all flags.
+func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s *store.Store, fieldSet map[string]bool, all, peek bool, tagFilters []string, senderFilter string) error {
 	// Determine poll interval — use the shortest interval across all campfires.
 	interval := 2 * time.Second
 	for _, e := range entries {
@@ -104,7 +94,7 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s *store
 
 	// Track cursors per campfire for detecting new messages.
 	cursors := map[string]int64{}
-	if !readAll {
+	if !all {
 		for _, e := range entries {
 			c, _ := s.GetReadCursor(e.id)
 			cursors[e.id] = c
@@ -138,9 +128,9 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s *store
 		// Cursor advances based on ALL new messages (pre-filter) so filtered-out
 		// messages don't re-appear on the next poll.
 		if len(newMessages) > 0 {
-			printMessagesWithFields(filterMessages(newMessages, readTagFilters, readSenderFilter), s, fieldSet)
+			printMessagesWithFields(filterMessages(newMessages, tagFilters, senderFilter), s, fieldSet)
 
-			if !readPeek {
+			if !peek {
 				for _, m := range newMessages {
 					if m.Timestamp > cursors[m.CampfireID] {
 						cursors[m.CampfireID] = m.Timestamp
@@ -162,9 +152,9 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s *store
 }
 
 // runOneShotMode performs a single sync → query → print → cursor-advance cycle.
-// Compaction is respected unless --all is set. Cursor advancement is skipped for
-// --all and --peek modes.
-func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *identity.Identity, s *store.Store, fieldSet map[string]bool) error {
+// Compaction is respected unless all is set. Cursor advancement is skipped for
+// all and peek modes.
+func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *identity.Identity, s *store.Store, fieldSet map[string]bool, all, peek bool, tagFilters []string, senderFilter string) error {
 	// Sync all campfires.
 	for _, e := range entries {
 		syncCampfire(e.id, e.membership, agentID, s)
@@ -176,14 +166,14 @@ func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *iden
 	// reappear on the next read), while pushing tag/sender filtering into SQL.
 	preCursors := map[string]int64{}
 	sqlFilter := store.MessageFilter{
-		Tags:              readTagFilters,
-		Sender:            readSenderFilter,
-		RespectCompaction: !readAll,
+		Tags:              tagFilters,
+		Sender:            senderFilter,
+		RespectCompaction: !all,
 	}
 	var allMessages []store.MessageRecord
 	for _, cfID := range campfireIDs {
 		var afterTS int64
-		if !readAll {
+		if !all {
 			afterTS, _ = s.GetReadCursor(cfID)
 		}
 		unfiltered, err := s.ListMessages(cfID, afterTS)
@@ -224,8 +214,8 @@ func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *iden
 		printMessagesWithFields(allMessages, s, fieldSet)
 	}
 
-	// Update read cursors from pre-filter timestamps (unless --all or --peek).
-	if !readAll && !readPeek && len(preCursors) > 0 {
+	// Update read cursors from pre-filter timestamps (unless all or peek).
+	if !all && !peek && len(preCursors) > 0 {
 		for cfID, ts := range preCursors {
 			s.SetReadCursor(cfID, ts) //nolint:errcheck
 		}
@@ -238,6 +228,14 @@ var readCmd = &cobra.Command{
 	Short: "Read messages",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		readAll, _ := cmd.Flags().GetBool("all")
+		readPeek, _ := cmd.Flags().GetBool("peek")
+		readFollow, _ := cmd.Flags().GetBool("follow")
+		readPull, _ := cmd.Flags().GetString("pull")
+		readTagFilters, _ := cmd.Flags().GetStringArray("tag")
+		readSenderFilter, _ := cmd.Flags().GetString("sender")
+		readFields, _ := cmd.Flags().GetString("fields")
+
 		// --pull is mutually exclusive with --all, --peek, --follow.
 		// Parse --fields early so we can error before any I/O.
 		fieldSet, err := parseFieldSet(readFields)
@@ -269,9 +267,9 @@ var readCmd = &cobra.Command{
 		}
 
 		if readFollow {
-			return runFollowMode(entries, agentID, s, fieldSet)
+			return runFollowMode(entries, agentID, s, fieldSet, readAll, readPeek, readTagFilters, readSenderFilter)
 		}
-		return runOneShotMode(campfireIDs, entries, agentID, s, fieldSet)
+		return runOneShotMode(campfireIDs, entries, agentID, s, fieldSet, readAll, readPeek, readTagFilters, readSenderFilter)
 	},
 }
 
@@ -311,13 +309,13 @@ func runPull(idsArg string, fieldSet map[string]bool) error {
 }
 
 func init() {
-	readCmd.Flags().BoolVar(&readAll, "all", false, "show all messages (not just unread)")
-	readCmd.Flags().BoolVar(&readPeek, "peek", false, "show unread messages without updating cursor")
-	readCmd.Flags().BoolVar(&readFollow, "follow", false, "stream messages in real time (NAT mode: keep polling)")
-	readCmd.Flags().StringVar(&readPull, "pull", "", "fetch specific messages by ID (comma-separated)")
-	readCmd.Flags().StringVar(&readSelfEndpoint, "endpoint", "", "this agent's own HTTP endpoint (empty = NAT mode, poll peers)")
-	readCmd.Flags().StringArrayVar(&readTagFilters, "tag", nil, "filter messages by tag (OR semantics, repeatable)")
-	readCmd.Flags().StringVar(&readSenderFilter, "sender", "", "filter messages by sender hex prefix")
-	readCmd.Flags().StringVar(&readFields, "fields", "", "comma-separated list of fields to include (e.g. id,sender,payload); omit for all fields")
+	readCmd.Flags().Bool("all", false, "show all messages (not just unread)")
+	readCmd.Flags().Bool("peek", false, "show unread messages without updating cursor")
+	readCmd.Flags().Bool("follow", false, "stream messages in real time (NAT mode: keep polling)")
+	readCmd.Flags().String("pull", "", "fetch specific messages by ID (comma-separated)")
+	readCmd.Flags().String("endpoint", "", "this agent's own HTTP endpoint (empty = NAT mode, poll peers)")
+	readCmd.Flags().StringArray("tag", nil, "filter messages by tag (OR semantics, repeatable)")
+	readCmd.Flags().String("sender", "", "filter messages by sender hex prefix")
+	readCmd.Flags().String("fields", "", "comma-separated list of fields to include (e.g. id,sender,payload); omit for all fields")
 	rootCmd.AddCommand(readCmd)
 }

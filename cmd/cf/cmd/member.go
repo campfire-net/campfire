@@ -17,8 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var memberSetRoleFlag string
-
 var memberCmd = &cobra.Command{
 	Use:   "member",
 	Short: "Manage campfire members",
@@ -32,7 +30,7 @@ var memberSetRoleCmd = &cobra.Command{
 		campfireIDArg := args[0]
 		targetPubkeyHex := args[1]
 
-		newRole := memberSetRoleFlag
+		newRole, _ := cmd.Flags().GetString("role")
 		switch newRole {
 		case campfire.RoleObserver, campfire.RoleWriter, campfire.RoleFull:
 			// valid
@@ -187,7 +185,7 @@ var memberSetRoleCmd = &cobra.Command{
 }
 
 func init() {
-	memberSetRoleCmd.Flags().StringVar(&memberSetRoleFlag, "role", "", "new role: observer, writer, or full (required)")
+	memberSetRoleCmd.Flags().String("role", "", "new role: observer, writer, or full (required)")
 	memberSetRoleCmd.MarkFlagRequired("role") //nolint:errcheck
 	memberCmd.AddCommand(memberSetRoleCmd)
 	rootCmd.AddCommand(memberCmd)

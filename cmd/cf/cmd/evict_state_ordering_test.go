@@ -93,6 +93,8 @@ func TestEvictThreshold1_StateFileOrderingSuccess(t *testing.T) {
 		evictedPubkeyHex,
 		nil, // no remaining peers
 		"test-eviction",
+		"", // listen
+		"", // tlsCert
 	)
 	if err != nil {
 		t.Fatalf("evictThreshold1: %v", err)
@@ -215,6 +217,8 @@ func TestEvictThreshold1_NewFileWrittenBeforeOldRemoved(t *testing.T) {
 		agentID.PublicKeyHex(),
 		nil,
 		"ordering-test",
+		"", // listen
+		"", // tlsCert
 	); err != nil {
 		t.Fatalf("evictThreshold1: %v", err)
 	}

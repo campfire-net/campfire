@@ -25,15 +25,16 @@ func TestFollowPullMutuallyExclusive(t *testing.T) {
 	// But the bead asks for --follow + --pull to error. Let's verify with the flags.
 
 	// Simulate: set both flags and verify the error message.
-	oldPull := readPull
-	oldFollow := readFollow
+	if err := readCmd.Flags().Set("pull", "some-id"); err != nil {
+		t.Fatalf("setting pull flag: %v", err)
+	}
+	if err := readCmd.Flags().Set("follow", "true"); err != nil {
+		t.Fatalf("setting follow flag: %v", err)
+	}
 	defer func() {
-		readPull = oldPull
-		readFollow = oldFollow
+		readCmd.Flags().Set("pull", "")        //nolint:errcheck
+		readCmd.Flags().Set("follow", "false") //nolint:errcheck
 	}()
-
-	readPull = "some-id"
-	readFollow = true
 
 	// The RunE guard checks readPull first, so it should catch this.
 	err := readCmd.RunE(readCmd, []string{})

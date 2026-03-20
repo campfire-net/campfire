@@ -25,14 +25,6 @@ type viewDefinition struct {
 	Refresh    string   `json:"refresh,omitempty"`     // "on-read" (default), "on-write", "periodic"
 }
 
-var (
-	viewPredicate  string
-	viewProjection string
-	viewOrdering   string
-	viewLimit      int
-	viewRefresh    string
-)
-
 var viewCmd = &cobra.Command{
 	Use:   "view",
 	Short: "Manage named views (predicate-filtered message queries)",
@@ -52,7 +44,12 @@ Example predicates (S-expression syntax):
   (or (tag "memory:standing") (tag "memory:anchor"))`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runViewCreate(args[0], args[1])
+		viewPredicate, _ := cmd.Flags().GetString("predicate")
+		viewProjection, _ := cmd.Flags().GetString("projection")
+		viewOrdering, _ := cmd.Flags().GetString("ordering")
+		viewLimit, _ := cmd.Flags().GetInt("limit")
+		viewRefresh, _ := cmd.Flags().GetString("refresh")
+		return runViewCreate(args[0], args[1], viewPredicate, viewProjection, viewOrdering, viewRefresh, viewLimit)
 	},
 }
 
@@ -76,11 +73,11 @@ var viewListCmd = &cobra.Command{
 }
 
 func init() {
-	viewCreateCmd.Flags().StringVar(&viewPredicate, "predicate", "", "S-expression predicate (required)")
-	viewCreateCmd.Flags().StringVar(&viewProjection, "projection", "", "comma-separated field names for output projection")
-	viewCreateCmd.Flags().StringVar(&viewOrdering, "ordering", "timestamp asc", "ordering: 'timestamp asc' or 'timestamp desc'")
-	viewCreateCmd.Flags().IntVar(&viewLimit, "limit", 0, "maximum number of results (0 = no limit)")
-	viewCreateCmd.Flags().StringVar(&viewRefresh, "refresh", "on-read", "refresh strategy: on-read (only supported in P1)")
+	viewCreateCmd.Flags().String("predicate", "", "S-expression predicate (required)")
+	viewCreateCmd.Flags().String("projection", "", "comma-separated field names for output projection")
+	viewCreateCmd.Flags().String("ordering", "timestamp asc", "ordering: 'timestamp asc' or 'timestamp desc'")
+	viewCreateCmd.Flags().Int("limit", 0, "maximum number of results (0 = no limit)")
+	viewCreateCmd.Flags().String("refresh", "on-read", "refresh strategy: on-read (only supported in P1)")
 	viewCreateCmd.MarkFlagRequired("predicate") //nolint:errcheck
 
 	viewCmd.AddCommand(viewCreateCmd)
@@ -89,7 +86,7 @@ func init() {
 	rootCmd.AddCommand(viewCmd)
 }
 
-func runViewCreate(campfireIDArg, name string) error {
+func runViewCreate(campfireIDArg, name, viewPredicate, viewProjection, viewOrdering, viewRefresh string, viewLimit int) error {
 	agentID, err := identity.Load(IdentityPath())
 	if err != nil {
 		return fmt.Errorf("loading identity: %w", err)

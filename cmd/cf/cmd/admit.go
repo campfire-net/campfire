@@ -16,13 +16,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var admitRole string
-
 var admitCmd = &cobra.Command{
 	Use:   "admit <campfire-id> <member-public-key-hex>",
 	Short: "Admit a member to an invite-only campfire",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		admitRole, _ := cmd.Flags().GetString("role")
 		memberKeyHex := args[1]
 
 		memberKey, err := hex.DecodeString(memberKeyHex)
@@ -148,6 +147,6 @@ var admitCmd = &cobra.Command{
 }
 
 func init() {
-	admitCmd.Flags().StringVar(&admitRole, "role", "", "membership role: observer, writer, or full (default: full)")
+	admitCmd.Flags().String("role", "", "membership role: observer, writer, or full (default: full)")
 	rootCmd.AddCommand(admitCmd)
 }

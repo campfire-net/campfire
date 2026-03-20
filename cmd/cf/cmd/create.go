@@ -19,27 +19,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	createProtocol     string
-	createRequire      []string
-	createDescription  string
-	createThreshold    uint
-	createTransport    string
-	createListen       string
-	createTLSCert      string
-	createTLSKey       string
-	createParticipants uint
-
-	// GitHub transport flags.
-	createGitHubRepo         string
-	createGitHubTokenEnv     string
-	createGitHubBaseURL      string
-)
-
 var createCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a new campfire",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		createProtocol, _ := cmd.Flags().GetString("protocol")
+		createRequire, _ := cmd.Flags().GetStringSlice("require")
+		createDescription, _ := cmd.Flags().GetString("description")
+		createThreshold, _ := cmd.Flags().GetUint("threshold")
+		createTransport, _ := cmd.Flags().GetString("transport")
+		createListen, _ := cmd.Flags().GetString("listen")
+		createTLSCert, _ := cmd.Flags().GetString("tls-cert")
+		createTLSKey, _ := cmd.Flags().GetString("tls-key")
+		createParticipants, _ := cmd.Flags().GetUint("participants")
+		createGitHubRepo, _ := cmd.Flags().GetString("github-repo")
+		createGitHubTokenEnv, _ := cmd.Flags().GetString("github-token-env")
+		createGitHubBaseURL, _ := cmd.Flags().GetString("github-base-url")
+
 		// Load agent identity
 		agentID, err := identity.Load(IdentityPath())
 		if err != nil {
@@ -63,17 +59,17 @@ var createCmd = &cobra.Command{
 
 		switch createTransport {
 		case "github":
-			return createGitHub(cf, agentID, s, createDescription)
+			return createGitHub(cf, agentID, s, createDescription, createGitHubRepo, createGitHubTokenEnv, createGitHubBaseURL)
 		case "p2p-http":
-			return createP2PHTTP(cf, agentID, s)
+			return createP2PHTTP(cf, agentID, s, createDescription, createListen, createTLSCert, createTLSKey, createParticipants)
 		default:
-			return createFilesystem(cf, agentID, s)
+			return createFilesystem(cf, agentID, s, createDescription)
 		}
 	},
 }
 
-func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store) error {
-	return createFilesystemWithDesc(cf, agentID, s, fs.DefaultBaseDir(), createDescription)
+func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store, description string) error {
+	return createFilesystemWithDesc(cf, agentID, s, fs.DefaultBaseDir(), description)
 }
 
 // createFilesystemWithDesc is the testable core of createFilesystem.
@@ -171,15 +167,14 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 	return nil
 }
 
-func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store) error {
-	listenAddr := createListen
+func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store, description, listenAddr, tlsCert, tlsKey string, participants uint) error {
 	if listenAddr == "" {
 		return fmt.Errorf("--listen is required for p2p-http transport (e.g. --listen :9001)")
 	}
-	if (createTLSCert == "") != (createTLSKey == "") {
+	if (tlsCert == "") != (tlsKey == "") {
 		return fmt.Errorf("--tls-cert and --tls-key must both be provided or both omitted")
 	}
-	useTLS := createTLSCert != ""
+	useTLS := tlsCert != ""
 
 	campfireID := cf.PublicKeyHex()
 
@@ -200,7 +195,7 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 	// For threshold>1: run DKG for all participants and store shares.
 	// The creator gets participant 1; joiners receive participants 2..N in order.
 	if cf.Threshold > 1 {
-		n := createParticipants
+		n := participants
 		if n < cf.Threshold {
 			n = cf.Threshold // default: N=threshold (threshold-of-threshold)
 		}
@@ -254,7 +249,7 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 		Role:         "creator",
 		JoinedAt:     store.NowNano(),
 		Threshold:    cf.Threshold,
-		Description:  createDescription,
+		Description:  description,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
@@ -276,7 +271,7 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 	// Start HTTP listener.
 	tr := cfhttp.New(listenAddr, s)
 	if useTLS {
-		tr.SetTLSConfig(&cfhttp.TLSConfig{CertFile: createTLSCert, KeyFile: createTLSKey})
+		tr.SetTLSConfig(&cfhttp.TLSConfig{CertFile: tlsCert, KeyFile: tlsKey})
 	}
 	tr.SetSelfInfo(agentID.PublicKeyHex(), endpoint)
 	tr.SetKeyProvider(buildKeyProvider(CFHome()))
@@ -296,7 +291,7 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 			Protocol: "p2p-http",
 			Config:   map[string]string{"endpoints": endpoint},
 		},
-		createDescription,
+		description,
 	)
 	if err != nil {
 		return fmt.Errorf("creating beacon: %w", err)
@@ -327,20 +322,20 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 // createGitHub creates a campfire with the GitHub Issues transport.
 // It creates a GitHub Issue, publishes a beacon to the coordination repo,
 // and records the membership in the local store.
-func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store, description string) error {
-	if createGitHubRepo == "" {
+func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store, description, ghRepo, tokenEnv, baseURL string) error {
+	if ghRepo == "" {
 		return fmt.Errorf("--github-repo is required for GitHub transport (e.g. org/campfire-relay)")
 	}
 
-	token, err := resolveGitHubToken(createGitHubTokenEnv, CFHome())
+	token, err := resolveGitHubToken(tokenEnv, CFHome())
 	if err != nil {
 		return fmt.Errorf("resolving GitHub token: %w", err)
 	}
 
 	cfg := ghtr.Config{
-		Repo:    createGitHubRepo,
+		Repo:    ghRepo,
 		Token:   token,
-		BaseURL: createGitHubBaseURL,
+		BaseURL: baseURL,
 	}
 	tr, err := ghtr.New(cfg, s)
 	if err != nil {
@@ -362,9 +357,9 @@ func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.St
 		Transport: ghtr.BeaconTransport{
 			Protocol: "github",
 			Config: ghtr.BeaconTransportConfig{
-				Repo:        createGitHubRepo,
+				Repo:        ghRepo,
 				IssueNumber: issueNumber,
-				IssueURL:    fmt.Sprintf("https://github.com/%s/issues/%d", createGitHubRepo, issueNumber),
+				IssueURL:    fmt.Sprintf("https://github.com/%s/issues/%d", ghRepo, issueNumber),
 			},
 		},
 		Description: description,
@@ -376,17 +371,17 @@ func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.St
 	}
 	b.Signature = sig
 
-	client := ghtr.NewClient(createGitHubBaseURL, token)
-	if err := ghtr.PublishBeacon(client, createGitHubRepo, b); err != nil {
+	client := ghtr.NewClient(baseURL, token)
+	if err := ghtr.PublishBeacon(client, ghRepo, b); err != nil {
 		// Non-fatal: may lack Contents write permission. Warn and continue.
 		fmt.Fprintf(os.Stderr, "warning: could not publish beacon to repo (Contents write required): %v\n", err)
 	}
 
 	// Encode transport metadata into TransportDir.
 	transportDir, err := encodeGitHubTransportDir(githubTransportMeta{
-		Repo:        createGitHubRepo,
+		Repo:        ghRepo,
 		IssueNumber: issueNumber,
-		BaseURL:     createGitHubBaseURL,
+		BaseURL:     baseURL,
 	})
 	if err != nil {
 		return fmt.Errorf("encoding transport dir: %w", err)
@@ -410,9 +405,9 @@ func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.St
 			"campfire_id":   campfireID,
 			"join_protocol": cf.JoinProtocol,
 			"transport":     "github",
-			"repo":          createGitHubRepo,
+			"repo":          ghRepo,
 			"issue_number":  issueNumber,
-			"issue_url":     fmt.Sprintf("https://github.com/%s/issues/%d", createGitHubRepo, issueNumber),
+			"issue_url":     fmt.Sprintf("https://github.com/%s/issues/%d", ghRepo, issueNumber),
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -420,7 +415,7 @@ func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.St
 	}
 
 	fmt.Println(campfireID)
-	fmt.Fprintf(os.Stderr, "GitHub Issue: https://github.com/%s/issues/%d\n", createGitHubRepo, issueNumber)
+	fmt.Fprintf(os.Stderr, "GitHub Issue: https://github.com/%s/issues/%d\n", ghRepo, issueNumber)
 	return nil
 }
 
@@ -476,18 +471,18 @@ func buildThresholdShareProvider(s *store.Store) cfhttp.ThresholdShareProvider {
 
 
 func init() {
-	createCmd.Flags().StringVar(&createProtocol, "protocol", "open", "join protocol: open, invite-only")
-	createCmd.Flags().StringSliceVar(&createRequire, "require", nil, "reception requirements (tags)")
-	createCmd.Flags().StringVar(&createDescription, "description", "", "campfire description")
-	createCmd.Flags().UintVar(&createThreshold, "threshold", 1, "signature threshold (1=any member, >1=FROST multi-party, Phase 2)")
-	createCmd.Flags().StringVar(&createTransport, "transport", "filesystem", "transport type: filesystem, p2p-http, github")
-	createCmd.Flags().StringVar(&createListen, "listen", "", "HTTP listen address for p2p-http transport (e.g. :9001)")
-	createCmd.Flags().StringVar(&createTLSCert, "tls-cert", "", "TLS certificate file (PEM) for p2p-http transport; enables https:// endpoint")
-	createCmd.Flags().StringVar(&createTLSKey, "tls-key", "", "TLS private key file (PEM) for p2p-http transport; must be paired with --tls-cert")
-	createCmd.Flags().UintVar(&createParticipants, "participants", 0, "total number of DKG participants for threshold>1 (default: equals threshold)")
+	createCmd.Flags().String("protocol", "open", "join protocol: open, invite-only")
+	createCmd.Flags().StringSlice("require", nil, "reception requirements (tags)")
+	createCmd.Flags().String("description", "", "campfire description")
+	createCmd.Flags().Uint("threshold", 1, "signature threshold (1=any member, >1=FROST multi-party, Phase 2)")
+	createCmd.Flags().String("transport", "filesystem", "transport type: filesystem, p2p-http, github")
+	createCmd.Flags().String("listen", "", "HTTP listen address for p2p-http transport (e.g. :9001)")
+	createCmd.Flags().String("tls-cert", "", "TLS certificate file (PEM) for p2p-http transport; enables https:// endpoint")
+	createCmd.Flags().String("tls-key", "", "TLS private key file (PEM) for p2p-http transport; must be paired with --tls-cert")
+	createCmd.Flags().Uint("participants", 0, "total number of DKG participants for threshold>1 (default: equals threshold)")
 	// GitHub transport flags.
-	createCmd.Flags().StringVar(&createGitHubRepo, "github-repo", "", "coordination repository for GitHub transport (owner/repo)")
-	createCmd.Flags().StringVar(&createGitHubTokenEnv, "github-token-env", "", "name of env var containing GitHub token (default: GITHUB_TOKEN)")
-	createCmd.Flags().StringVar(&createGitHubBaseURL, "github-base-url", "", "GitHub API base URL (for GitHub Enterprise; default: https://api.github.com)")
+	createCmd.Flags().String("github-repo", "", "coordination repository for GitHub transport (owner/repo)")
+	createCmd.Flags().String("github-token-env", "", "name of env var containing GitHub token (default: GITHUB_TOKEN)")
+	createCmd.Flags().String("github-base-url", "", "GitHub API base URL (for GitHub Enterprise; default: https://api.github.com)")
 	rootCmd.AddCommand(createCmd)
 }

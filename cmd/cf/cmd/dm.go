@@ -16,13 +16,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var dmTags []string
-
 var dmCmd = &cobra.Command{
 	Use:   "dm <target-public-key-hex> <message>",
 	Short: "Send a private message (creates/reuses a 2-member campfire)",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		dmTags, _ := cmd.Flags().GetStringSlice("tag")
 		targetHex := args[0]
 		payload := args[1]
 
@@ -195,6 +194,6 @@ var dmCmd = &cobra.Command{
 }
 
 func init() {
-	dmCmd.Flags().StringSliceVar(&dmTags, "tag", nil, "message tags")
+	dmCmd.Flags().StringSlice("tag", nil, "message tags")
 	rootCmd.AddCommand(dmCmd)
 }

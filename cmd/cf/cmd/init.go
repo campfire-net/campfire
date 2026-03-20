@@ -10,12 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var forceInit bool
-
-var initName string
-
-var initSession bool
-
 var initCmd = &cobra.Command{
 	Use:   "init [--name agent-name] [--session]",
 	Short: "Generate a new agent identity (Ed25519 keypair)",
@@ -29,6 +23,9 @@ Named identities live at ~/.campfire/agents/<name>/. Session identities print
 the CF_HOME path on line 1 and the display name on line 2. The caller sets
 CF_HOME to the printed path for subsequent commands.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		forceInit, _ := cmd.Flags().GetBool("force")
+		initName, _ := cmd.Flags().GetString("name")
+		initSession, _ := cmd.Flags().GetBool("session")
 		// Session identity: temp dir, print path + display name, done.
 		if initSession {
 			tmpDir, err := os.MkdirTemp("", "cf-session-")
@@ -203,8 +200,8 @@ func writeContext(cfHome string) {
 }
 
 func init() {
-	initCmd.Flags().BoolVar(&forceInit, "force", false, "overwrite existing identity")
-	initCmd.Flags().StringVar(&initName, "name", "", "persistent agent name (survives across sessions)")
-	initCmd.Flags().BoolVar(&initSession, "session", false, "create a temporary identity in a unique temp dir")
+	initCmd.Flags().Bool("force", false, "overwrite existing identity")
+	initCmd.Flags().String("name", "", "persistent agent name (survives across sessions)")
+	initCmd.Flags().Bool("session", false, "create a temporary identity in a unique temp dir")
 	rootCmd.AddCommand(initCmd)
 }

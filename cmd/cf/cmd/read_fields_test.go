@@ -230,12 +230,6 @@ func TestProjectMessageJSON_DefaultAllFields(t *testing.T) {
 
 // TestReadCmd_InvalidFieldErrors verifies the command errors on unknown field.
 func TestReadCmd_InvalidFieldErrors(t *testing.T) {
-	// Save/restore global flag state.
-	origFields := readFields
-	defer func() { readFields = origFields }()
-
-	readFields = "id,bogus_field"
-
 	dir := t.TempDir()
 	t.Setenv("CF_HOME", dir)
 
@@ -245,6 +239,11 @@ func TestReadCmd_InvalidFieldErrors(t *testing.T) {
 	}
 	s.AddMembership(store.Membership{CampfireID: "cf1", TransportDir: dir, JoinProtocol: "open", Role: "member", JoinedAt: 1})
 	s.Close()
+
+	if err := readCmd.Flags().Set("fields", "id,bogus_field"); err != nil {
+		t.Fatalf("setting fields flag: %v", err)
+	}
+	defer readCmd.Flags().Set("fields", "") //nolint:errcheck
 
 	err = readCmd.RunE(readCmd, []string{"cf1"})
 	if err == nil {

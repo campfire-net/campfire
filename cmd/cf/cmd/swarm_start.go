@@ -15,8 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var swarmStartDescription string
-
 var swarmStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Create a root campfire for this project",
@@ -28,6 +26,7 @@ Other agents can join this campfire via 'cf join <id>' or by reading .campfire/r
 If .campfire/root already exists, returns an error. Use 'cf swarm end' first
 or join the existing campfire instead.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		swarmStartDescription, _ := cmd.Flags().GetString("description")
 		// Find the project directory (cwd).
 		projectDir, err := os.Getwd()
 		if err != nil {
@@ -126,6 +125,6 @@ or join the existing campfire instead.`,
 }
 
 func init() {
-	swarmStartCmd.Flags().StringVar(&swarmStartDescription, "description", "", "description for the root campfire")
+	swarmStartCmd.Flags().String("description", "", "description for the root campfire")
 	swarmCmd.AddCommand(swarmStartCmd)
 }
