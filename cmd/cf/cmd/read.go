@@ -160,10 +160,12 @@ func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *iden
 		syncCampfire(e.id, e.membership, agentID, s)
 	}
 
-	// Fetch unfiltered messages first to compute pre-filter cursors, then fetch
-	// filtered messages for display. This preserves the invariant that cursor
-	// advancement accounts for ALL messages (so filtered-out messages don't
-	// reappear on the next read), while pushing tag/sender filtering into SQL.
+	// Query each campfire once with the active filters for display, then use a
+	// lightweight MaxMessageTimestamp query to compute the pre-filter cursor
+	// (the max timestamp across ALL messages, not just the filtered set).
+	// This replaces the previous double-ListMessages pattern (one unfiltered + one
+	// filtered per campfire) with a single payload-bearing query + one scalar query,
+	// halving the number of full-scan SQL round-trips. (Fix for workspace-pm9m.5.15.)
 	preCursors := map[string]int64{}
 	sqlFilter := store.MessageFilter{
 		Tags:              tagFilters,
@@ -176,20 +178,21 @@ func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *iden
 		if !all {
 			afterTS, _ = s.GetReadCursor(cfID)
 		}
-		unfiltered, err := s.ListMessages(cfID, afterTS)
+		filtered, err := s.ListMessages(cfID, afterTS, sqlFilter)
 		if err != nil {
 			return fmt.Errorf("listing messages: %w", err)
 		}
-		for _, m := range unfiltered {
-			if m.Timestamp > preCursors[m.CampfireID] {
-				preCursors[m.CampfireID] = m.Timestamp
-			}
-		}
-		filtered, err := s.ListMessages(cfID, afterTS, sqlFilter)
-		if err != nil {
-			return fmt.Errorf("listing messages (filtered): %w", err)
-		}
 		allMessages = append(allMessages, filtered...)
+
+		// Compute the cursor advance using a scalar MAX query so we don't load
+		// all unfiltered payloads just to find the highest timestamp.
+		maxTS, err := s.MaxMessageTimestamp(cfID, afterTS)
+		if err != nil {
+			return fmt.Errorf("querying max message timestamp: %w", err)
+		}
+		if maxTS > preCursors[cfID] {
+			preCursors[cfID] = maxTS
+		}
 	}
 
 	if jsonOutput {

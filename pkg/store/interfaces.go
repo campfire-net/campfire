@@ -18,6 +18,7 @@ type MessageStore interface {
 	GetMessage(id string) (*MessageRecord, error)
 	GetMessageByPrefix(prefix string) (*MessageRecord, error)
 	ListMessages(campfireID string, afterTimestamp int64, filter ...MessageFilter) ([]MessageRecord, error)
+	MaxMessageTimestamp(campfireID string, afterTS int64) (int64, error)
 	ListReferencingMessages(messageID string) ([]MessageRecord, error)
 	ListCompactionEvents(campfireID string) ([]MessageRecord, error)
 	GetReadCursor(campfireID string) (int64, error)

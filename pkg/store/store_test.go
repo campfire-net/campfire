@@ -2454,3 +2454,147 @@ func TestThresholdStoreInterface(t *testing.T) {
 		t.Errorf("second claim: pid=%d data=%v err=%v, want (0,nil,nil)", pid2, data2, err)
 	}
 }
+
+// --- workspace-pm9m.5.16: versioned migration tests ---
+
+// TestMigrations_VersionsTracked verifies that all migrations in schemaMigrations
+// are recorded in schema_migrations after Open().
+func TestMigrations_VersionsTracked(t *testing.T) {
+	s := testStore(t)
+	rows, err := s.db.Query(`SELECT version, description FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		t.Fatalf("querying schema_migrations: %v", err)
+	}
+	defer rows.Close()
+
+	var versions []int
+	for rows.Next() {
+		var v int
+		var desc string
+		if err := rows.Scan(&v, &desc); err != nil {
+			t.Fatalf("scanning migration row: %v", err)
+		}
+		versions = append(versions, v)
+	}
+	if rows.Err() != nil {
+		t.Fatalf("rows error: %v", rows.Err())
+	}
+
+	if len(versions) != len(schemaMigrations) {
+		t.Errorf("schema_migrations has %d rows, want %d", len(versions), len(schemaMigrations))
+	}
+	for i, m := range schemaMigrations {
+		if i >= len(versions) {
+			t.Errorf("missing migration version %d in schema_migrations", m.version)
+			continue
+		}
+		if versions[i] != m.version {
+			t.Errorf("migration row %d has version %d, want %d", i, versions[i], m.version)
+		}
+	}
+}
+
+// TestMigrations_Idempotent verifies that calling Open() twice on the same db
+// does not duplicate rows in schema_migrations.
+func TestMigrations_Idempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.db")
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	s1.Close()
+
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer s2.Close()
+
+	var count int
+	if err := s2.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
+		t.Fatalf("querying schema_migrations count: %v", err)
+	}
+	if count != len(schemaMigrations) {
+		t.Errorf("schema_migrations has %d rows after two Opens, want %d (idempotency failure)", count, len(schemaMigrations))
+	}
+}
+
+// TestBackfillTransportTypes_SkipsWhenEmpty verifies the COUNT(*) guard:
+// a store with no memberships having empty transport_type incurs only the
+// COUNT query (no secondary SELECT). This is a correctness test, not a
+// performance test — it verifies the guard doesn't error on an empty table.
+func TestBackfillTransportTypes_SkipsWhenEmpty(t *testing.T) {
+	s := testStore(t)
+	// Add a membership with an explicit transport_type to ensure the table is
+	// non-empty but the backfill guard returns early.
+	err := s.AddMembership(Membership{
+		CampfireID:    "cf-no-backfill",
+		TransportDir:  "/tmp",
+		JoinProtocol:  "open",
+		Role:          "full",
+		JoinedAt:      1,
+		TransportType: "filesystem",
+	})
+	if err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+	// Calling backfillTransportTypes directly with no empty rows should be a no-op.
+	if err := backfillTransportTypes(s.db); err != nil {
+		t.Errorf("backfillTransportTypes with no empty rows: %v", err)
+	}
+}
+
+// --- workspace-pm9m.5.15: MaxMessageTimestamp ---
+
+// TestMaxMessageTimestamp_ReturnsMaxTS verifies the max timestamp across all messages.
+func TestMaxMessageTimestamp_ReturnsMaxTS(t *testing.T) {
+	s, cfID := setupFilterTestStore(t) // timestamps 1,2,3,4
+	maxTS, err := s.MaxMessageTimestamp(cfID, 0)
+	if err != nil {
+		t.Fatalf("MaxMessageTimestamp: %v", err)
+	}
+	if maxTS != 4 {
+		t.Errorf("MaxMessageTimestamp = %d, want 4", maxTS)
+	}
+}
+
+// TestMaxMessageTimestamp_AfterTS verifies that afterTS is respected.
+func TestMaxMessageTimestamp_AfterTS(t *testing.T) {
+	s, cfID := setupFilterTestStore(t) // timestamps 1,2,3,4
+	maxTS, err := s.MaxMessageTimestamp(cfID, 2)
+	if err != nil {
+		t.Fatalf("MaxMessageTimestamp: %v", err)
+	}
+	// Only timestamps 3 and 4 are > 2; max is 4.
+	if maxTS != 4 {
+		t.Errorf("MaxMessageTimestamp(afterTS=2) = %d, want 4", maxTS)
+	}
+}
+
+// TestMaxMessageTimestamp_NoMessages verifies that 0 is returned when no messages match.
+func TestMaxMessageTimestamp_NoMessages(t *testing.T) {
+	s, cfID := setupFilterTestStore(t) // timestamps 1,2,3,4
+	maxTS, err := s.MaxMessageTimestamp(cfID, 100)
+	if err != nil {
+		t.Fatalf("MaxMessageTimestamp: %v", err)
+	}
+	if maxTS != 0 {
+		t.Errorf("MaxMessageTimestamp(afterTS=100) = %d, want 0 (no messages)", maxTS)
+	}
+}
+
+// TestMaxMessageTimestamp_IgnoresFilters verifies that MaxMessageTimestamp returns the
+// unfiltered max — it counts all messages regardless of tags/sender. This is the
+// correctness invariant: cursor advances past ALL messages even when display is filtered.
+func TestMaxMessageTimestamp_IgnoresFilters(t *testing.T) {
+	s, cfID := setupFilterTestStore(t) // m4 has no tags, timestamp=4
+	// ListMessages with tag filter would exclude m4 (no "status" tag).
+	// MaxMessageTimestamp should still return 4.
+	maxTS, err := s.MaxMessageTimestamp(cfID, 0)
+	if err != nil {
+		t.Fatalf("MaxMessageTimestamp: %v", err)
+	}
+	if maxTS != 4 {
+		t.Errorf("MaxMessageTimestamp = %d, want 4 (unfiltered; m4 has no tags but highest ts)", maxTS)
+	}
+}

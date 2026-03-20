@@ -92,6 +92,82 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at  INTEGER NOT NULL
 );
 `
+// migration describes a single schema migration step.
+type migration struct {
+	version     int
+	description string
+	// sql is the DDL or DML statement to execute. For idempotent DDL (ALTER TABLE
+	// ADD COLUMN) SQLite returns "duplicate column name" when the column already
+	// exists; runMigrations treats that as success so the migration is recorded.
+	sql string
+}
+
+// schemaMigrations is the ordered list of all schema migrations. New migrations
+// must be appended to the end. Versions are 1-based and must be consecutive.
+var schemaMigrations = []migration{
+	{
+		version:     1,
+		description: "add instance column to messages",
+		sql:         "ALTER TABLE messages ADD COLUMN instance TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		version:     2,
+		description: "add description column to campfire_memberships",
+		sql:         "ALTER TABLE campfire_memberships ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		version:     3,
+		description: "add creator_pubkey column to campfire_memberships",
+		sql:         "ALTER TABLE campfire_memberships ADD COLUMN creator_pubkey TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		version:     4,
+		description: "add role column to peer_endpoints",
+		sql:         "ALTER TABLE peer_endpoints ADD COLUMN role TEXT NOT NULL DEFAULT 'member'",
+	},
+	{
+		version:     5,
+		description: "add transport_type column to campfire_memberships",
+		sql:         "ALTER TABLE campfire_memberships ADD COLUMN transport_type TEXT NOT NULL DEFAULT ''",
+	},
+}
+
+// runMigrations applies any unapplied migrations in schemaMigrations to db.
+// Each migration is recorded in schema_migrations after successful execution.
+// ALTER TABLE ADD COLUMN failures due to the column already existing are treated
+// as success (idempotent for databases upgraded by the previous bare-Exec code).
+// Any other error (disk full, corruption) is returned so Open fails loudly.
+func runMigrations(db *sql.DB) error {
+	for _, m := range schemaMigrations {
+		var count int
+		err := db.QueryRow(
+			`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version,
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("checking migration %d: %w", m.version, err)
+		}
+		if count > 0 {
+			// Already applied.
+			continue
+		}
+		if _, execErr := db.Exec(m.sql); execErr != nil {
+			// SQLite reports "duplicate column name" when the column already exists.
+			// Treat this as a no-op so that databases upgraded by the previous
+			// bare-Exec code are accepted by the new migration runner.
+			if !strings.Contains(execErr.Error(), "duplicate column name") {
+				return fmt.Errorf("migration %d (%s): %w", m.version, m.description, execErr)
+			}
+		}
+		if _, err := db.Exec(
+			`INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)`,
+			m.version, m.description, time.Now().Unix(),
+		); err != nil {
+			return fmt.Errorf("recording migration %d: %w", m.version, err)
+		}
+	}
+	return nil
+}
+
 
 // PeerRole constants define the peer endpoint role namespace.
 //
@@ -179,7 +255,20 @@ func inferTransportType(campfireID, transportDir string) string {
 // This runs once per Open() call after the column migration. The p2p-http
 // detection makes a filesystem call here (migration time) rather than on every
 // ResolveType invocation, eliminating repeated hot-path I/O.
+//
+// A COUNT(*) guard is checked first so that already-migrated databases incur
+// only a single cheap query rather than a full table scan on every startup.
 func backfillTransportTypes(db *sql.DB) error {
+	var needsBackfill int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM campfire_memberships WHERE transport_type = ''`,
+	).Scan(&needsBackfill); err != nil {
+		return fmt.Errorf("counting rows needing transport_type backfill: %w", err)
+	}
+	if needsBackfill == 0 {
+		return nil
+	}
+
 	rows, err := db.Query(
 		`SELECT campfire_id, transport_dir FROM campfire_memberships WHERE transport_type = ''`,
 	)
@@ -230,20 +319,20 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
-	// Migrate: add instance column to messages table if not present (backward compat).
-	db.Exec("ALTER TABLE messages ADD COLUMN instance TEXT NOT NULL DEFAULT ''") //nolint:errcheck
-	// Backward-compatible migration: add description column if missing.
-	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN description TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
-	// Backward-compatible migration: add creator_pubkey column if missing.
-	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN creator_pubkey TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
-	// Backward-compatible migration: add role column to peer_endpoints if missing.
-	db.Exec(`ALTER TABLE peer_endpoints ADD COLUMN role TEXT NOT NULL DEFAULT 'member'`) //nolint:errcheck
-	// Backward-compatible migration: add transport_type column if missing.
-	db.Exec(`ALTER TABLE campfire_memberships ADD COLUMN transport_type TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+	// Apply versioned migrations. Each migration is tracked in schema_migrations
+	// and executed at most once. ALTER TABLE failures due to the column already
+	// existing (from pre-migration deployments) are treated as success. Any other
+	// error (disk full, corruption) surfaces and aborts Open.
+	if err := runMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("running migrations: %w", err)
+	}
 	// Backfill transport_type for legacy rows where it is empty.
 	// Uses inferTransportType() which mirrors the old transport.ResolveType heuristic.
 	// This runs the filesystem probe (for p2p-http detection) once at migration time
 	// rather than on every ResolveType call, eliminating hot-path I/O.
+	// A COUNT(*) guard inside backfillTransportTypes ensures already-migrated
+	// databases skip the full table scan on subsequent startups.
 	if err := backfillTransportTypes(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("backfilling transport types: %w", err)
@@ -847,6 +936,23 @@ func (s *Store) SetReadCursor(campfireID string, timestamp int64) error {
 		return fmt.Errorf("setting read cursor: %w", err)
 	}
 	return nil
+}
+
+// MaxMessageTimestamp returns the maximum timestamp among all messages for a campfire
+// with timestamp > afterTS. Returns 0 if no messages match.
+// This is a lightweight cursor-only query — it reads no payloads and is intended to
+// replace the full unfiltered ListMessages call in runOneShotMode when only the max
+// timestamp is needed for cursor advancement. (Fix for workspace-pm9m.5.15.)
+func (s *Store) MaxMessageTimestamp(campfireID string, afterTS int64) (int64, error) {
+	var maxTS int64
+	err := s.db.QueryRow(
+		`SELECT COALESCE(MAX(timestamp), 0) FROM messages WHERE campfire_id = ? AND timestamp > ?`,
+		campfireID, afterTS,
+	).Scan(&maxTS)
+	if err != nil {
+		return 0, fmt.Errorf("querying max message timestamp: %w", err)
+	}
+	return maxTS, nil
 }
 
 // ListReferencingMessages finds messages whose antecedents contain the given message ID.
