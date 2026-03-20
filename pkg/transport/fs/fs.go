@@ -175,7 +175,7 @@ func atomicWriteCBOR(path string, v interface{}) error {
 	rand.Read(randBytes[:])
 	tmp := fmt.Sprintf("%s.tmp.%x", path, randBytes)
 
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return fmt.Errorf("writing temp file: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
