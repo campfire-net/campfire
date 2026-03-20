@@ -393,8 +393,19 @@ func evictThresholdN(
 	// Remove evicted member from peer endpoints.
 	s.DeletePeerEndpoint(actualNewCampfireID, evictedPubkeyHex) //nolint:errcheck
 
+	// Remove the creator from peer_endpoints if their entry was migrated by
+	// UpdateCampfireID (can happen when the creator's own endpoint was stored
+	// during the original join). The creator is the local node — their share
+	// lives in threshold_shares, not peer_endpoints.
+	s.DeletePeerEndpoint(actualNewCampfireID, agentID.PublicKeyHex()) //nolint:errcheck
+
 	// Update remaining peer participant IDs in store.
+	// Skip the creator: they are the local node and must not appear in peer_endpoints.
+	// Their share is stored in threshold_shares under participant ID 1.
 	for _, peer := range remainingPeers {
+		if peer.MemberPubkey == agentID.PublicKeyHex() {
+			continue
+		}
 		pid := peerToParticipantID[peer.MemberPubkey]
 		if pid == 0 {
 			continue
