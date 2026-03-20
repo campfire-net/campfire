@@ -132,7 +132,11 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 			return nil, fmt.Errorf("message not found: %s", beforeMsgID)
 		}
 		for _, msg := range allMsgs {
-			if msg.Timestamp >= beforeTS || isCompactionMsg(msg) {
+			// Exclude the before-message itself (by ID) and all strictly-later messages.
+			// Do NOT use timestamp >= beforeTS: that also excludes messages with the
+			// same nanosecond timestamp as the before-message that should be superseded
+			// (timestamp collisions are common on fast machines and in tests).
+			if msg.ID == matchedID || msg.Timestamp > beforeTS || isCompactionMsg(msg) {
 				continue
 			}
 			toSupersede = append(toSupersede, msg)

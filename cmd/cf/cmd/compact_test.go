@@ -347,6 +347,62 @@ func TestCompactBeforeSentinelIsMatchedID(t *testing.T) {
 	}
 }
 
+
+// TestCompactBeforeTimestampCollision verifies that when two messages share the same
+// nanosecond timestamp, --before <msg2> correctly supersedes msg1.
+//
+// Regression test for workspace-pm9m.5.5: the old condition `msg.Timestamp >= beforeTS`
+// excluded ALL messages at the same timestamp as the boundary message, including ones
+// that should have been compacted. The fix uses `msg.ID == matchedID || msg.Timestamp > beforeTS`
+// so only the exact boundary message (and strictly-later messages) are excluded.
+func TestCompactBeforeTimestampCollision(t *testing.T) {
+	agentID, s, campfireID, transportBaseDir, _ := setupCompactTestEnv(t, campfire.RoleFull)
+	transportDir := filepath.Join(transportBaseDir, campfireID)
+
+	sharedTS := store.NowNano()
+
+	sendAndStore := func(payload string) string {
+		msg, err := sendFilesystem(campfireID, payload, []string{"status"}, []string{}, "", agentID, transportDir)
+		if err != nil {
+			t.Fatalf("sendFilesystem: %v", err)
+		}
+		s.AddMessage(store.MessageRecord{ //nolint:errcheck
+			ID:          msg.ID,
+			CampfireID:  campfireID,
+			Sender:      agentID.PublicKeyHex(),
+			Payload:     msg.Payload,
+			Tags:        msg.Tags,
+			Antecedents: msg.Antecedents,
+			Timestamp:   sharedTS, // force identical timestamp for both messages
+			Signature:   msg.Signature,
+			Provenance:  msg.Provenance,
+			ReceivedAt:  store.NowNano(),
+		})
+		return msg.ID
+	}
+
+	// M1 and M2 share the same nanosecond timestamp.
+	m1ID := sendAndStore("msg1")
+	m2ID := sendAndStore("msg2")
+
+	// Compact --before M2: M1 should be superseded, M2 should not.
+	result, err := execCompact(campfireID, m2ID, "collision-test", "archive", agentID, s)
+	if err != nil {
+		t.Fatalf("execCompact with timestamp collision: %v", err)
+	}
+
+	superseded := make(map[string]bool, len(result.supersededIDs))
+	for _, id := range result.supersededIDs {
+		superseded[id] = true
+	}
+	if !superseded[m1ID] {
+		t.Errorf("m1 (same timestamp as before-msg) should be superseded but was not")
+	}
+	if superseded[m2ID] {
+		t.Errorf("m2 (the --before boundary) should NOT be superseded but was")
+	}
+}
+
 // TestListMessages_AllShowsEverything verifies that without compaction filtering,
 // all messages are visible including superseded ones.
 func TestListMessages_AllShowsEverything(t *testing.T) {
