@@ -481,6 +481,52 @@ func TestGetMessageByPrefix_CrossCampfire(t *testing.T) {
 	}
 }
 
+// TestGetMessageByPrefix_PercentWildcardInjection verifies that a '%' prefix
+// does not match all messages (wildcard injection prevention, workspace-4dr).
+func TestGetMessageByPrefix_PercentWildcardInjection(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	msg := MessageRecord{
+		ID: "abc12345-6789-0000-0000-000000000000", CampfireID: "cf1",
+		Sender: "sender1", Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
+		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+	}
+	s.AddMessage(msg)
+
+	// A prefix of '%' should match nothing — not all messages.
+	got, err := s.GetMessageByPrefix("%")
+	if err != nil {
+		t.Fatalf("GetMessageByPrefix('%%') error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("GetMessageByPrefix('%%') matched message %s; expected no match (wildcard injection)", got.ID)
+	}
+}
+
+// TestGetMessageByPrefix_UnderscoreWildcardInjection verifies that '_' in the
+// prefix is treated as a literal character, not a LIKE wildcard (workspace-4dr).
+func TestGetMessageByPrefix_UnderscoreWildcardInjection(t *testing.T) {
+	s := testStore(t)
+	s.AddMembership(Membership{CampfireID: "cf1", TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+
+	msg := MessageRecord{
+		ID: "abc12345-6789-0000-0000-000000000000", CampfireID: "cf1",
+		Sender: "sender1", Payload: []byte("hello"), Tags: "[]", Antecedents: "[]",
+		Timestamp: 100, Signature: []byte("sig"), Provenance: "[]", ReceivedAt: 200,
+	}
+	s.AddMessage(msg)
+
+	// "_bc12345" should NOT match "abc12345-..." — '_' is a literal, not wildcard.
+	got, err := s.GetMessageByPrefix("_bc12345")
+	if err != nil {
+		t.Fatalf("GetMessageByPrefix('_bc12345') error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("GetMessageByPrefix('_bc12345') matched message %s; expected no match (underscore injection)", got.ID)
+	}
+}
+
 // helpers shared across ListMessages filter tests.
 func setupFilterTestStore(t *testing.T) (*Store, string) {
 	t.Helper()

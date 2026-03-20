@@ -289,11 +289,15 @@ func (s *Store) GetMessage(id string) (*MessageRecord, error) {
 
 // GetMessageByPrefix resolves a message ID prefix to a single message.
 // Returns nil if no message matches. Returns an error if the prefix is ambiguous.
+//
+// Security: the prefix is escaped before use in LIKE to prevent wildcard injection
+// via '%' or '_' characters in user-supplied input (workspace-4dr).
 func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
+	escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(prefix)
 	rows, err := s.db.Query(
 		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
-		 FROM messages WHERE id LIKE ? ORDER BY id`,
-		prefix+"%",
+		 FROM messages WHERE id LIKE ? ESCAPE '\' ORDER BY id`,
+		escaped+"%",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying messages by prefix: %w", err)
