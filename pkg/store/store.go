@@ -257,6 +257,18 @@ func (s *Store) AddMessage(m MessageRecord) (bool, error) {
 		return false, fmt.Errorf("adding message: %w", err)
 	}
 	rows, _ := result.RowsAffected()
+	if rows > 0 && isCompactionEvent(m) {
+		// TOCTOU fix (workspace-zqdc): invalidate the superseded-ID cache for this
+		// campfire immediately after the insert commits. Any concurrent reader that
+		// observed the old cache before this point will have gotten a valid (non-stale)
+		// result, because the compaction event wasn't in the DB yet. Any reader that
+		// runs after this delete will see a cache miss and rebuild from the DB, picking
+		// up the new compaction event. This eliminates the window where a cache hit
+		// could be returned for a campfire that just received a new compaction event.
+		s.supersededMu.Lock()
+		delete(s.supersededCache, m.CampfireID)
+		s.supersededMu.Unlock()
+	}
 	return rows > 0, nil
 }
 
@@ -289,11 +301,15 @@ func (s *Store) GetMessage(id string) (*MessageRecord, error) {
 
 // GetMessageByPrefix resolves a message ID prefix to a single message.
 // Returns nil if no message matches. Returns an error if the prefix is ambiguous.
+//
+// Security: the prefix is escaped before use in LIKE to prevent wildcard injection
+// via '%' or '_' characters in user-supplied input (workspace-4dr).
 func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
+	escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(prefix)
 	rows, err := s.db.Query(
 		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
-		 FROM messages WHERE id LIKE ? ORDER BY id`,
-		prefix+"%",
+		 FROM messages WHERE id LIKE ? ESCAPE '\' ORDER BY id`,
+		escaped+"%",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying messages by prefix: %w", err)
@@ -457,6 +473,17 @@ func (s *Store) maxCompactionTimestamp(campfireID string) (int64, error) {
 // A new compaction event has a newer timestamp, causing a cache miss and rebuild.
 // Cross-campfire queries (campfireID=="") are not cached.
 // (Fix for workspace-x9p: avoid O(events × ids) work on every ListMessages call.)
+//
+// TOCTOU fix (workspace-zqdc): the previous implementation queried maxCompactionTimestamp
+// outside the lock, then acquired the lock to check the cache. A concurrent writer could
+// insert a new compaction event between those two operations, causing the stale cache to
+// be returned as a hit (the new event's timestamp wasn't yet observed). The fix moves
+// cache invalidation to AddMessage: whenever a compaction event is stored, the cache
+// entry for that campfire is deleted under the write lock before the insert returns.
+// collectSupersededIDs now only needs a read lock for the cache hit path; cache misses
+// acquire the write lock to populate. This is correct because any compaction event
+// inserted after the cache check will have already invalidated the entry, so a stale
+// hit is impossible.
 func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error) {
 	if campfireID != "" {
 		maxTS, err := s.maxCompactionTimestamp(campfireID)
