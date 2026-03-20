@@ -36,6 +36,11 @@ var serveCmd = &cobra.Command{
 		}
 		defer s.Close()
 
+		campfireID, err = resolveCampfireID(campfireID, s)
+		if err != nil {
+			return err
+		}
+
 		// Verify membership.
 		m, err := s.GetMembership(campfireID)
 		if err != nil {
