@@ -10,7 +10,6 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -95,9 +94,7 @@ func signJoinRequest(t *testing.T, ep, campfireID string, signerID *identity.Ide
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// Sign with signerID — this sets X-Campfire-Sender to signerID's pubkey.
-	sig := signerID.Sign(body)
-	req.Header.Set("X-Campfire-Sender", signerID.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, signerID, body)
 	return req
 }
 

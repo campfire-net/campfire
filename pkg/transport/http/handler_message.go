@@ -307,8 +307,10 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 }
 
 // verifyRequestSignature checks the Ed25519 signature header.
-// The signature covers the request body bytes.
-func verifyRequestSignature(senderHex, sigB64 string, body []byte) error {
+// The signature covers: timestamp (8 bytes, big-endian Unix seconds) || nonce (32 bytes) || body.
+// This construction prevents replay attacks: each request has a unique nonce and a
+// bounded timestamp, so captured requests cannot be re-submitted.
+func verifyRequestSignature(senderHex, sigB64, nonce, timestamp string, body []byte) error {
 	pubKeyBytes, err := hex.DecodeString(senderHex)
 	if err != nil {
 		return fmt.Errorf("decoding sender public key: %w", err)
@@ -320,10 +322,27 @@ func verifyRequestSignature(senderHex, sigB64 string, body []byte) error {
 	if err != nil {
 		return fmt.Errorf("decoding signature: %w", err)
 	}
-	if !ed25519.Verify(ed25519.PublicKey(pubKeyBytes), body, sig) {
+	// Build the signed payload: timestamp || nonce || body.
+	signedPayload := buildSignedPayload(timestamp, nonce, body)
+	if !ed25519.Verify(ed25519.PublicKey(pubKeyBytes), signedPayload, sig) {
 		return fmt.Errorf("signature verification failed")
 	}
 	return nil
+}
+
+// buildSignedPayload constructs the canonical bytes that are signed for a request.
+// Format: timestamp (as ASCII decimal string) + "\n" + nonce + "\n" + body.
+// Using ASCII strings avoids endianness ambiguity and is trivially debuggable.
+func buildSignedPayload(timestamp, nonce string, body []byte) []byte {
+	// pre-allocate: len(timestamp) + 1 + len(nonce) + 1 + len(body)
+	n := len(timestamp) + 1 + len(nonce) + 1 + len(body)
+	out := make([]byte, 0, n)
+	out = append(out, []byte(timestamp)...)
+	out = append(out, '\n')
+	out = append(out, []byte(nonce)...)
+	out = append(out, '\n')
+	out = append(out, body...)
+	return out
 }
 
 // recordToMessage converts a store.MessageRecord to a message.Message.

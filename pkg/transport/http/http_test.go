@@ -3,7 +3,6 @@ package http_test
 import (
 	"bytes"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -183,10 +182,11 @@ func TestInvalidSignatureRejected(t *testing.T) {
 	}
 	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
 
-	sig := id2.Sign(body)
+	// Sign with id2 but claim sender is id1 — signature will fail to verify.
+	// Use signTestRequest with id2, then overwrite the Sender header.
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	req.Header.Set("X-Campfire-Sender", id1.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, id2, body)
+	req.Header.Set("X-Campfire-Sender", id1.PublicKeyHex()) // override to wrong key
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -457,9 +457,7 @@ func TestMembershipJoinIdentityInjectionRejected(t *testing.T) {
 		t.Fatalf("building request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	sig := attacker.Sign(body)
-	req.Header.Set("X-Campfire-Sender", attacker.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, attacker, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -543,9 +541,7 @@ func TestMembershipLeaveIdentityMismatchRejected(t *testing.T) {
 		t.Fatalf("building request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	sig := attacker.Sign(body)
-	req.Header.Set("X-Campfire-Sender", attacker.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, attacker, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -591,9 +587,7 @@ func TestMembershipJoinSSRFEndpointRejected(t *testing.T) {
 		t.Fatalf("building request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	sig := attacker.Sign(body)
-	req.Header.Set("X-Campfire-Sender", attacker.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, attacker, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

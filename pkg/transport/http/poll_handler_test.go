@@ -1,7 +1,9 @@
 package http_test
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +19,32 @@ import (
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
+// signTestRequest sets the four Campfire auth headers (Sender, Nonce, Timestamp,
+// Signature) on req. body must be the request body bytes (empty slice for GET).
+// The signature covers timestamp+nonce+body, matching the server-side scheme.
+func signTestRequest(req *http.Request, id *identity.Identity, body []byte) {
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		panic("signTestRequest: rand.Read: " + err.Error())
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+
+	// Build signed payload: timestamp + "\n" + nonce + "\n" + body.
+	var payload []byte
+	payload = append(payload, []byte(timestamp)...)
+	payload = append(payload, '\n')
+	payload = append(payload, []byte(nonce)...)
+	payload = append(payload, '\n')
+	payload = append(payload, body...)
+
+	sig := id.Sign(payload)
+	req.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
+	req.Header.Set("X-Campfire-Nonce", nonce)
+	req.Header.Set("X-Campfire-Timestamp", timestamp)
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+}
+
 // doPoll performs an authenticated GET /campfire/{id}/poll request.
 // Returns the http.Response (caller must close Body).
 func doPoll(ep, campfireID string, since int64, timeout int, id *identity.Identity) (*http.Response, error) {
@@ -25,9 +53,7 @@ func doPoll(ep, campfireID string, since int64, timeout int, id *identity.Identi
 	if err != nil {
 		return nil, err
 	}
-	sig := id.Sign([]byte{})
-	req.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, id, []byte{})
 	return http.DefaultClient.Do(req)
 }
 
@@ -311,9 +337,7 @@ func TestHandlePollInvalidParams(t *testing.T) {
 
 	url := fmt.Sprintf("%s/campfire/%s/poll?since=abc&timeout=1", ep, campfireID)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	sig := id.Sign([]byte{})
-	req.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, id, []byte{})
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

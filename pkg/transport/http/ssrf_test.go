@@ -2,7 +2,6 @@ package http_test
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -150,9 +149,7 @@ func TestJoinRejectsPrivateEndpoint(t *testing.T) {
 				t.Fatalf("building request: %v", err)
 			}
 			req.Header.Set("Content-Type", "application/json")
-			sig := idJoiner.Sign(joinBody)
-			req.Header.Set("X-Campfire-Sender", idJoiner.PublicKeyHex())
-			req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+			signTestRequest(req, idJoiner, joinBody)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {

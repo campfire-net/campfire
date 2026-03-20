@@ -17,7 +17,6 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -59,10 +58,8 @@ func TestDeliverNonMemberForbidden(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
-	sig := idStranger.Sign(body)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	req.Header.Set("X-Campfire-Sender", idStranger.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, idStranger, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -114,10 +111,8 @@ func TestSyncNonMemberForbidden(t *testing.T) {
 	ep := fmt.Sprintf("http://%s", addr)
 
 	url := fmt.Sprintf("%s/campfire/%s/sync?since=0", ep, campfireID)
-	sig := idStranger.Sign([]byte{})
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	req.Header.Set("X-Campfire-Sender", idStranger.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, idStranger, []byte{})
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

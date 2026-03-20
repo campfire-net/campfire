@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,10 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	frostmessages "github.com/taurusgroup/frost-ed25519/pkg/messages"
 )
+
+// randRead is the function used to generate random nonce bytes.
+// Overridable in tests to inject deterministic nonces.
+var randRead = rand.Read
 
 
 // httpClient uses newSSRFSafeTransport() to re-validate resolved IPs at
@@ -449,10 +454,29 @@ func Poll(endpoint, campfireID string, cursor int64, timeoutSecs int, id *identi
 }
 
 // signRequest adds Ed25519 signature headers to an HTTP request.
-// X-Campfire-Sender: hex public key
-// X-Campfire-Signature: base64 signature of body
+// Headers set:
+//
+//	X-Campfire-Sender:    hex-encoded Ed25519 public key
+//	X-Campfire-Nonce:     hex-encoded 16-byte random value (per-request uniqueness)
+//	X-Campfire-Timestamp: Unix timestamp in seconds (for freshness checks)
+//	X-Campfire-Signature: base64 signature over timestamp+nonce+body
+//
+// The signed payload format mirrors buildSignedPayload in handler_message.go.
 func signRequest(req *http.Request, id *identity.Identity, body []byte) {
-	sig := id.Sign(body)
+	// Generate a random 16-byte nonce.
+	nonceBytes := make([]byte, 16)
+	if _, err := randRead(nonceBytes); err != nil {
+		// rand.Read only fails on catastrophic OS errors; panic to fail fast.
+		panic("signRequest: rand.Read failed: " + err.Error())
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+
+	signedPayload := buildSignedPayload(timestamp, nonce, body)
+	sig := id.Sign(signedPayload)
+
 	req.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
+	req.Header.Set("X-Campfire-Nonce", nonce)
+	req.Header.Set("X-Campfire-Timestamp", timestamp)
 	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
 }

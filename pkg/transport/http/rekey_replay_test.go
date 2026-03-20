@@ -23,7 +23,6 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -31,16 +30,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/identity"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // rawRekeyPost sends a signed rekey HTTP POST and returns the HTTP status code.
 // Unlike SendRekey/SendRekeyPhase1, this does not error on non-200 responses,
 // making it suitable for error-path testing.
-func rawRekeyPost(t *testing.T, endpoint, campfireID string, req cfhttp.RekeyRequest, id interface {
-	PublicKeyHex() string
-	Sign([]byte) []byte
-}) int {
+func rawRekeyPost(t *testing.T, endpoint, campfireID string, req cfhttp.RekeyRequest, id *identity.Identity) int {
 	t.Helper()
 
 	bodyBytes, err := json.Marshal(req)
@@ -55,9 +52,7 @@ func rawRekeyPost(t *testing.T, endpoint, campfireID string, req cfhttp.RekeyReq
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	sig := id.Sign(bodyBytes)
-	httpReq.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
-	httpReq.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(httpReq, id, bodyBytes)
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

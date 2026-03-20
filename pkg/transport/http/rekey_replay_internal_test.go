@@ -16,7 +16,6 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -126,10 +125,8 @@ func TestRekeyPhase2AfterSessionPrunedReturns400(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/campfire/"+campfireID+"/rekey", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
-	// Sign the body so verifyRequestSignature passes.
-	sig := senderID.Sign(bodyBytes)
-	req.Header.Set("X-Campfire-Sender", senderID.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	// Note: handleRekey receives senderHex and body as explicit params; auth headers
+	// are not read by the handler itself, only by the authMiddleware wrapping it.
 
 	rr := httptest.NewRecorder()
 	h.handleRekey(rr, req, campfireID, senderID.PublicKeyHex(), bodyBytes)

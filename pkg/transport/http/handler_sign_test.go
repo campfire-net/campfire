@@ -19,7 +19,6 @@ package http_test
 import (
 	"bytes"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -568,7 +567,5 @@ func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
 // signHTTPRequest adds Ed25519 auth headers to an HTTP request using the
 // same convention as peer.go's signRequest function.
 func signHTTPRequest(req *http.Request, id *identity.Identity, body []byte) {
-	sig := id.Sign(body)
-	req.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, id, body)
 }

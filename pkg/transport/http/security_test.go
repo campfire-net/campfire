@@ -10,7 +10,6 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,11 +24,6 @@ import (
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
-// signHeader signs body with the identity and returns a base64-encoded signature
-// suitable for the X-Campfire-Signature header.
-func signHeader(id *identity.Identity, body []byte) string {
-	return base64.StdEncoding.EncodeToString(id.Sign(body))
-}
 
 // ---------------------------------------------------------------------------
 // workspace-ccn — handleRekey path traversal via TransportDir
@@ -152,8 +146,7 @@ func TestRekeyPathTraversalRejected(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost,
 		fmt.Sprintf("%s/campfire/%s/rekey", epB, oldCampfireID), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Campfire-Sender", idA.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", signHeader(idA, body))
+	signTestRequest(req, idA, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -255,8 +248,7 @@ func TestRekeyPathTraversalAbsoluteRelative(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost,
 		fmt.Sprintf("%s/campfire/%s/rekey", epB, oldCampfireID), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Campfire-Sender", idA.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", signHeader(idA, body))
+	signTestRequest(req, idA, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -339,8 +331,7 @@ func TestJoinSSRFPrivateIPRejected(t *testing.T) {
 			req, _ := http.NewRequest(http.MethodPost,
 				fmt.Sprintf("%s/campfire/%s/join", ep, campfireID), bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Campfire-Sender", idA.PublicKeyHex())
-			req.Header.Set("X-Campfire-Signature", signHeader(idA, body))
+			signTestRequest(req, idA, body)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -407,8 +398,7 @@ func TestJoinValidEndpointAccepted(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost,
 		fmt.Sprintf("%s/campfire/%s/join", ep, campfireID), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Campfire-Sender", idA.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", signHeader(idA, body))
+	signTestRequest(req, idA, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -474,8 +464,7 @@ func TestJoinFileSchemeRejected(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost,
 		fmt.Sprintf("%s/campfire/%s/join", ep, campfireID), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Campfire-Sender", idA.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", signHeader(idA, body))
+	signTestRequest(req, idA, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -567,8 +556,7 @@ func TestRequestBodySizeLimit(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost,
 		fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID), bytes.NewReader(oversized))
 	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("X-Campfire-Sender", idA.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", signHeader(idA, oversized))
+	signTestRequest(req, idA, oversized)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -664,8 +652,7 @@ func TestValidateJoinerEndpointUnit(t *testing.T) {
 			req, _ := http.NewRequest(http.MethodPost,
 				fmt.Sprintf("%s/campfire/%s/join", ep, campfireID), bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Campfire-Sender", idA.PublicKeyHex())
-			req.Header.Set("X-Campfire-Signature", signHeader(idA, body))
+			signTestRequest(req, idA, body)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -755,8 +742,7 @@ func TestIsPrivateIPExtendedRanges(t *testing.T) {
 			req, _ := http.NewRequest(http.MethodPost,
 				fmt.Sprintf("%s/campfire/%s/join", ep, campfireID), bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Campfire-Sender", idA.PublicKeyHex())
-			req.Header.Set("X-Campfire-Signature", signHeader(idA, body))
+			signTestRequest(req, idA, body)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -811,14 +797,11 @@ func TestDeliverSenderSpoofingRejected(t *testing.T) {
 		t.Fatalf("encoding message: %v", err)
 	}
 
-	// M1 signs the HTTP request body (valid request-level auth for M1).
-	sig := m1.Sign(body)
-
 	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	// Header claims sender = M1, but message body contains M2's pubkey as Sender.
-	req.Header.Set("X-Campfire-Sender", m1.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	// We must use M1's identity to pass auth, but the inner message is from M2.
+	signTestRequest(req, m1, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -866,13 +849,9 @@ func TestDeliverInvalidMessageSigRejected(t *testing.T) {
 		t.Fatalf("encoding tampered message: %v", err)
 	}
 
-	// M1 signs the request body (valid request auth over tampered CBOR).
-	sig := m1.Sign(body)
-
 	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	req.Header.Set("X-Campfire-Sender", m1.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, m1, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -918,8 +897,7 @@ func buildSignedDeliverRequest(t *testing.T, ep, campfireID string, id *identity
 	}
 	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	req.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(id.Sign(body)))
+	signTestRequest(req, id, body)
 	return req
 }
 

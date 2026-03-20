@@ -35,6 +35,13 @@ type rekeySessionState struct {
 	createdAt time.Time
 }
 
+// nonceEntry records a seen request nonce and its expiry time.
+// Nonces are retained until the timestamp window has elapsed, after which
+// they cannot be replayed (the timestamp check would reject stale requests first).
+type nonceEntry struct {
+	expiresAt time.Time
+}
+
 // Transport manages an HTTP server for P2P campfire communication.
 type Transport struct {
 	listenAddr string
@@ -44,6 +51,11 @@ type Transport struct {
 
 	mu    sync.RWMutex
 	peers map[string][]PeerInfo // campfireID → []PeerInfo
+
+	// seenNonces tracks recently consumed request nonces to prevent replays.
+	// Keyed by nonce string; value is the expiry time (timestamp + window).
+	// Pruned lazily when a new nonce is consumed.
+	seenNonces map[string]nonceEntry
 
 	// selfPubKeyHex and selfEndpoint identify this node for join responses.
 	selfPubKeyHex string
@@ -92,6 +104,7 @@ func New(listenAddr string, s *store.Store) *Transport {
 		listenAddr:          listenAddr,
 		store:               s,
 		peers:               make(map[string][]PeerInfo),
+		seenNonces:          make(map[string]nonceEntry),
 		signSessions:        make(map[string]*signingSessionState),
 		signSessionCampfire: make(map[string]string),
 		signSessionCounts:   make(map[string]int),
@@ -342,4 +355,36 @@ func (t *Transport) Peers(campfireID string) []PeerInfo {
 	out := make([]PeerInfo, len(src))
 	copy(out, src)
 	return out
+}
+
+// nonceWindow is how long a nonce is retained. We keep it for 2× the timestamp
+// window: the window itself (max age of a valid request) plus the window again
+// to handle clock skew edge cases and avoid premature eviction.
+const nonceWindow = 2 * 60 * time.Second
+
+// consumeNonce records a nonce as seen and returns true if it was new.
+// Returns false if the nonce has been seen before (replay attempt).
+// Nonces are pruned lazily when a new nonce arrives.
+// Must not be called on a nil transport.
+func (t *Transport) consumeNonce(nonce string) (accepted bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := time.Now()
+
+	// Prune expired nonces.
+	for k, e := range t.seenNonces {
+		if now.After(e.expiresAt) {
+			delete(t.seenNonces, k)
+		}
+	}
+
+	// Check for duplicate.
+	if _, seen := t.seenNonces[nonce]; seen {
+		return false
+	}
+
+	// Record nonce.
+	t.seenNonces[nonce] = nonceEntry{expiresAt: now.Add(nonceWindow)}
+	return true
 }

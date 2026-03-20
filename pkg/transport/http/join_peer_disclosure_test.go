@@ -11,7 +11,6 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -116,9 +115,7 @@ func buildJoinRequest(t *testing.T, ep, campfireID string, joiner *identity.Iden
 		t.Fatalf("building join request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	sig := joiner.Sign(body)
-	req.Header.Set("X-Campfire-Sender", joiner.PublicKeyHex())
-	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+	signTestRequest(req, joiner, body)
 	return req
 }
 

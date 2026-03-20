@@ -7,7 +7,9 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/campfire-net/campfire/pkg/store"
 )
@@ -128,15 +130,42 @@ func (h *handler) signatureOnlyMiddleware(campfireID string, next func(w http.Re
 	}
 }
 
-// readAndVerify extracts and validates the X-Campfire-Sender / X-Campfire-Signature
-// headers, reads the body (for methods with a body), verifies the Ed25519 signature,
-// and returns (senderHex, body, true) on success or writes an HTTP error and
+// requestTimestampWindow is the maximum allowed age (or future skew) of a signed request.
+// Requests with a timestamp older than this window are rejected as stale replays.
+const requestTimestampWindow = 60 * time.Second
+
+// readAndVerify extracts and validates the X-Campfire-Sender / X-Campfire-Signature /
+// X-Campfire-Nonce / X-Campfire-Timestamp headers, reads the body (for methods with a
+// body), verifies the Ed25519 signature, enforces timestamp freshness, and checks nonce
+// uniqueness. Returns (senderHex, body, true) on success or writes an HTTP error and
 // returns ("", nil, false) on failure.
+//
+// Replay protection: the signature covers timestamp+nonce+body. The server rejects
+// requests with timestamps outside the ±60s window and nonces it has already seen.
 func (h *handler) readAndVerify(w http.ResponseWriter, r *http.Request) (senderHex string, body []byte, ok bool) {
 	senderHex = r.Header.Get("X-Campfire-Sender")
 	sigB64 := r.Header.Get("X-Campfire-Signature")
-	if senderHex == "" || sigB64 == "" {
+	nonce := r.Header.Get("X-Campfire-Nonce")
+	timestamp := r.Header.Get("X-Campfire-Timestamp")
+	if senderHex == "" || sigB64 == "" || nonce == "" || timestamp == "" {
 		http.Error(w, "missing signature headers", http.StatusUnauthorized)
+		return "", nil, false
+	}
+
+	// Validate timestamp freshness.
+	tsUnix, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid timestamp header", http.StatusUnauthorized)
+		return "", nil, false
+	}
+	tsTime := time.Unix(tsUnix, 0)
+	now := time.Now()
+	diff := now.Sub(tsTime)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > requestTimestampWindow {
+		http.Error(w, "request timestamp out of window", http.StatusUnauthorized)
 		return "", nil, false
 	}
 
@@ -144,7 +173,6 @@ func (h *handler) readAndVerify(w http.ResponseWriter, r *http.Request) (senderH
 	switch r.Method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch:
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-		var err error
 		body, err = io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "cannot read body", http.StatusBadRequest)
@@ -154,11 +182,21 @@ func (h *handler) readAndVerify(w http.ResponseWriter, r *http.Request) (senderH
 		body = []byte{}
 	}
 
-	if err := verifyRequestSignature(senderHex, sigB64, body); err != nil {
+	if err := verifyRequestSignature(senderHex, sigB64, nonce, timestamp, body); err != nil {
 		log.Printf("auth: signature verification failed for %s %s: %v", r.Method, r.URL.Path, err)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return "", nil, false
 	}
+
+	// Check nonce uniqueness — reject replays.
+	if h.transport != nil {
+		if !h.transport.consumeNonce(nonce) {
+			log.Printf("auth: duplicate nonce %s for %s %s", nonce, r.Method, r.URL.Path)
+			http.Error(w, "duplicate request nonce", http.StatusUnauthorized)
+			return "", nil, false
+		}
+	}
+
 	return senderHex, body, true
 }
 
