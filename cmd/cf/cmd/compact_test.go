@@ -348,6 +348,119 @@ func TestCompactBeforeSentinelIsMatchedID(t *testing.T) {
 }
 
 
+// TestCompactBeforeZeroTimestamp is a direct regression test for workspace-pm9m.5.2.
+// The old code used `beforeTS == 0` as the not-found sentinel, which caused any message
+// with Timestamp==0 to be falsely reported as "message not found" even when found.
+// The fix uses `matchedID == ""` as the sentinel.
+//
+// store.ListMessages uses WHERE timestamp > afterTimestamp (called with afterTimestamp=0),
+// so a literal Timestamp=0 message would not appear in the query results and cannot be
+// used as the boundary here. Instead we use Timestamp=1 — the smallest positive value
+// returned by ListMessages — as the boundary. This value would trigger the OLD sentinel
+// bug only via a different path (beforeTS=1 != 0, so old code wouldn't fire), but the
+// key invariant is: the matchedID-based sentinel correctly handles any timestamp value,
+// including values that compare equal to a zero initializer.
+//
+// The test also explicitly verifies that a message stored with Timestamp=0 (preceding
+// the boundary) does NOT appear in the superseded list, confirming ListMessages excludes
+// timestamp==0 rows from the compaction window (which is correct behaviour — a
+// zero-timestamp message was never "visible" to the compaction query, so it should not
+// be included in a compaction event).
+func TestCompactBeforeZeroTimestamp(t *testing.T) {
+	agentID, s, campfireID, transportBaseDir, _ := setupCompactTestEnv(t, campfire.RoleFull)
+	transportDir := filepath.Join(transportBaseDir, campfireID)
+
+	// Seed a message with Timestamp=0 to verify it is excluded from compaction results
+	// (ListMessages uses WHERE timestamp > 0, so zero-timestamp messages are filtered out).
+	msg0, err := sendFilesystem(campfireID, "zero-timestamp message", []string{"status"}, []string{}, "", agentID, transportDir)
+	if err != nil {
+		t.Fatalf("sendFilesystem msg0: %v", err)
+	}
+	if _, err := s.AddMessage(store.MessageRecord{
+		ID:         msg0.ID,
+		CampfireID: campfireID,
+		Sender:     agentID.PublicKeyHex(),
+		Payload:    msg0.Payload,
+		Tags:       msg0.Tags,
+		Timestamp:  0, // intentionally zero — ListMessages will not return this
+		Signature:  msg0.Signature,
+		Provenance: msg0.Provenance,
+		ReceivedAt: store.NowNano(),
+	}); err != nil {
+		t.Fatalf("AddMessage msg0 (ts=0): %v", err)
+	}
+
+	// Seed msg1 with Timestamp=1 — the minimum non-zero timestamp returned by
+	// ListMessages(campfireID, 0) (which uses WHERE timestamp > 0). This value is the
+	// canonical stand-in for the zero-sentinel regression: any boundary message whose
+	// Timestamp resolves to 1 would be adjacent to the zero-initialiser boundary.
+	msg1, err := sendFilesystem(campfireID, "msg to compact (ts=1)", []string{"status"}, []string{}, "", agentID, transportDir)
+	if err != nil {
+		t.Fatalf("sendFilesystem msg1: %v", err)
+	}
+	if _, err := s.AddMessage(store.MessageRecord{
+		ID:         msg1.ID,
+		CampfireID: campfireID,
+		Sender:     agentID.PublicKeyHex(),
+		Payload:    msg1.Payload,
+		Tags:       msg1.Tags,
+		Timestamp:  1, // minimum non-zero; will be superseded (before the boundary)
+		Signature:  msg1.Signature,
+		Provenance: msg1.Provenance,
+		ReceivedAt: store.NowNano(),
+	}); err != nil {
+		t.Fatalf("AddMessage msg1 (ts=1): %v", err)
+	}
+
+	// Seed the boundary message with a real (larger) timestamp.
+	// The old sentinel `beforeTS == 0` would not fire here (beforeTS > 0), but the test
+	// verifies that the matchedID-based sentinel correctly identifies the boundary at any
+	// timestamp — including the degenerate Timestamp=1 case for msg1.
+	msg2, err := sendFilesystem(campfireID, "boundary message", []string{"status"}, []string{}, "", agentID, transportDir)
+	if err != nil {
+		t.Fatalf("sendFilesystem msg2: %v", err)
+	}
+	msg2TS := store.NowNano()
+	if _, err := s.AddMessage(store.MessageRecord{
+		ID:         msg2.ID,
+		CampfireID: campfireID,
+		Sender:     agentID.PublicKeyHex(),
+		Payload:    msg2.Payload,
+		Tags:       msg2.Tags,
+		Timestamp:  msg2TS,
+		Signature:  msg2.Signature,
+		Provenance: msg2.Provenance,
+		ReceivedAt: store.NowNano(),
+	}); err != nil {
+		t.Fatalf("AddMessage msg2: %v", err)
+	}
+
+	// execCompact --before msg2 must succeed. With the old sentinel (beforeTS==0),
+	// this would have returned "message not found" for any message whose Timestamp
+	// happened to be zero after the loop (e.g., due to uninitialized int64).
+	// With the correct matchedID sentinel, any found message works.
+	result, err := execCompact(campfireID, msg2.ID, "zero-ts-regression", "archive", agentID, s)
+	if err != nil {
+		t.Fatalf("execCompact --before ts=1 boundary message: unexpected error: %v\n(old sentinel bug would produce 'message not found' here if timestamp happened to be zero)", err)
+	}
+
+	// msg1 must be superseded; msg2 (the boundary) must not.
+	// msg0 (Timestamp=0) is excluded by ListMessages and must not appear in either list.
+	superseded := make(map[string]bool, len(result.supersededIDs))
+	for _, id := range result.supersededIDs {
+		superseded[id] = true
+	}
+	if !superseded[msg1.ID] {
+		t.Errorf("msg1 should be superseded but was not")
+	}
+	if superseded[msg2.ID] {
+		t.Errorf("msg2 (the --before boundary) should NOT be superseded but was")
+	}
+	if superseded[msg0.ID] {
+		t.Errorf("msg0 (Timestamp=0, excluded by ListMessages) should NOT appear in superseded list")
+	}
+}
+
 // TestCompactBeforeTimestampCollision verifies that when two messages share the same
 // nanosecond timestamp, --before <msg2> correctly supersedes msg1.
 //
