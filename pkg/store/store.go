@@ -86,6 +86,33 @@ CREATE TABLE IF NOT EXISTS pending_threshold_shares (
 );
 `
 
+// PeerRole constants define the peer endpoint role namespace.
+//
+// This is a separate namespace from the campfire membership role (defined in
+// pkg/campfire as RoleObserver/RoleWriter/RoleFull). The two roles live on
+// different types with different semantics:
+//
+//   - Membership role (campfire.Member.Role): governs what a member may do
+//     within a campfire — "observer", "writer", or "full". Managed by the
+//     campfire owner and stored in campfire.MemberRecord files on disk.
+//   - Peer endpoint role (store.PeerEndpoint.Role): records the peer's
+//     standing relative to this agent's local store — "creator" or "member".
+//     Used for server-side delivery enforcement in handleDeliver. Stored in
+//     the peer_endpoints SQLite table. "creator" implies the peer founded the
+//     campfire (full access); "member" is the backward-compatible default.
+//
+// campfire.EffectiveRole maps legacy peer roles ("creator", "member") → RoleFull
+// for backward compatibility with older wire formats. These constants are the
+// canonical source for any code that sets or compares PeerEndpoint.Role values.
+const (
+	// PeerRoleCreator is assigned to the peer that created the campfire.
+	// Implies full access (read, write, and sign system messages).
+	PeerRoleCreator = "creator"
+	// PeerRoleMember is the default role for all other peers.
+	// Implies full access (read and write), but not campfire creation rights.
+	PeerRoleMember = "member"
+)
+
 // supersededCacheEntry is a cached result of collectSupersededIDs for a campfire.
 // It is valid as long as the maximum compaction event timestamp hasn't changed.
 type supersededCacheEntry struct {
@@ -498,6 +525,8 @@ func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 // MessageFilter holds optional tag and sender filters for ListMessages.
 // Tags uses OR semantics: a message matches if it has ANY of the specified tags.
 // Sender matches on prefix of the sender hex string (case-insensitive).
+// LIKE wildcards ('%' and '_') in Sender are escaped before use in the query
+// so they are treated as literals, not SQL wildcards (workspace-ipzx).
 // Empty fields mean no filtering for that dimension.
 // When RespectCompaction is true, messages superseded by a compaction event are excluded
 // (compaction events themselves are always included).
@@ -556,8 +585,12 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...
 	}
 
 	if f.Sender != "" {
-		conditions = append(conditions, "LOWER(sender) LIKE LOWER(?) || '%'")
-		args = append(args, f.Sender)
+		// Escape LIKE wildcards in the caller-supplied sender prefix so that
+		// '%' and '_' are treated as literals, not SQL wildcards.
+		// Consistent with the fix applied to GetMessageByPrefix (workspace-4dr).
+		escapedSender := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(f.Sender)
+		conditions = append(conditions, `LOWER(sender) LIKE LOWER(?) || '%' ESCAPE '\'`)
+		args = append(args, escapedSender)
 	}
 
 	query := `SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
@@ -822,17 +855,19 @@ type PeerEndpoint struct {
 	MemberPubkey  string `json:"member_pubkey"`
 	Endpoint      string `json:"endpoint"`
 	ParticipantID uint32 `json:"participant_id,omitempty"` // FROST participant ID (0 = unknown)
-	// Role is the member's role in the campfire: "creator", "member", "writer", or "observer".
-	// Defaults to "member" if not set. Used for server-side role enforcement in handleDeliver.
+	// Role is the peer's role in the campfire: PeerRoleCreator or PeerRoleMember.
+	// Defaults to PeerRoleMember if not set. Used for server-side role enforcement in handleDeliver.
+	// Note: this is the peer endpoint role namespace, distinct from the campfire membership
+	// role (campfire.RoleObserver/RoleWriter/RoleFull). See PeerRole constants above.
 	Role string `json:"role,omitempty"`
 }
 
 // UpsertPeerEndpoint inserts or replaces a peer endpoint record.
-// If Role is empty, it defaults to "member".
+// If Role is empty, it defaults to PeerRoleMember.
 func (s *Store) UpsertPeerEndpoint(e PeerEndpoint) error {
 	role := e.Role
 	if role == "" {
-		role = "member"
+		role = PeerRoleMember
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO peer_endpoints (campfire_id, member_pubkey, endpoint, participant_id, role)
@@ -879,7 +914,7 @@ func (s *Store) ListPeerEndpoints(campfireID string) ([]PeerEndpoint, error) {
 			return nil, fmt.Errorf("scanning peer endpoint: %w", err)
 		}
 		if e.Role == "" {
-			e.Role = "member"
+			e.Role = PeerRoleMember
 		}
 		endpoints = append(endpoints, e)
 	}
@@ -887,7 +922,7 @@ func (s *Store) ListPeerEndpoints(campfireID string) ([]PeerEndpoint, error) {
 }
 
 // GetPeerRole returns the role of a specific member in a campfire.
-// Returns "member" if the peer is not found (backward-compatible default).
+// Returns PeerRoleMember if the peer is not found (backward-compatible default).
 func (s *Store) GetPeerRole(campfireID, memberPubkey string) (string, error) {
 	var role string
 	err := s.db.QueryRow(
@@ -895,13 +930,13 @@ func (s *Store) GetPeerRole(campfireID, memberPubkey string) (string, error) {
 		campfireID, memberPubkey,
 	).Scan(&role)
 	if err == sql.ErrNoRows {
-		return "member", nil
+		return PeerRoleMember, nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("querying peer role: %w", err)
 	}
 	if role == "" {
-		return "member", nil
+		return PeerRoleMember, nil
 	}
 	return role, nil
 }
@@ -1029,7 +1064,19 @@ func (s *Store) UpdateCampfireID(oldID, newID string) error {
 		return fmt.Errorf("updating messages.campfire_id: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Evict the supersededCache entry for oldID so no dangling artifact
+	// remains after the rename. The newID entry (if any) is also evicted
+	// so the first ListMessages(newID) rebuilds from the renamed DB rows.
+	s.supersededMu.Lock()
+	delete(s.supersededCache, oldID)
+	delete(s.supersededCache, newID)
+	s.supersededMu.Unlock()
+
+	return nil
 }
 
 // StorePath returns the default store path for a given CF_HOME.

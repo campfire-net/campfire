@@ -666,6 +666,35 @@ func TestListMessages_SenderFilter_CaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestListMessages_SenderFilter_PercentWildcardInjection verifies that a Sender
+// value of "%" does not match all senders (LIKE wildcard injection, workspace-ipzx).
+// The --sender flag is documented as a hex prefix; "%" should match nothing because
+// no sender hex string starts with a literal percent sign.
+func TestListMessages_SenderFilter_PercentWildcardInjection(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Sender: "%"})
+	if err != nil {
+		t.Fatalf("ListMessages(Sender=%%): %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("ListMessages(Sender=%%): got %d messages, want 0 (LIKE wildcard injection)", len(msgs))
+	}
+}
+
+// TestListMessages_SenderFilter_UnderscoreWildcardInjection verifies that '_' in
+// Sender is treated as a literal character, not a LIKE wildcard (workspace-ipzx).
+func TestListMessages_SenderFilter_UnderscoreWildcardInjection(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	// "_abbccdd" would match "aabbccdd" if '_' were a wildcard; it must not.
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Sender: "_abbccdd"})
+	if err != nil {
+		t.Fatalf("ListMessages(Sender=_abbccdd): %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("ListMessages(Sender=_abbccdd): got %d messages, want 0 (LIKE wildcard injection)", len(msgs))
+	}
+}
+
 func TestListMessages_BothFilters(t *testing.T) {
 	s, cfID := setupFilterTestStore(t)
 	// sender aabb + tag status → only m1
@@ -1539,6 +1568,88 @@ func TestUpdateCampfireID_PartialState(t *testing.T) {
 	}
 	if len(msgs) != 0 {
 		t.Errorf("expected 0 messages under newID (none seeded), got %d", len(msgs))
+	}
+}
+
+// TestUpdateCampfireID_InvalidatesSupersededCache verifies that UpdateCampfireID
+// evicts the supersededCache entry for oldID (and newID if present) after the
+// rename. Without this, a stale cache entry for oldID would be a dangling
+// artifact after rekey. (Fix for workspace-pm9m.5.1.)
+func TestUpdateCampfireID_InvalidatesSupersededCache(t *testing.T) {
+	s := testStore(t)
+	oldID := "cf-cache-old"
+	newID := "cf-cache-new"
+
+	// Seed membership so AddMessage is accepted.
+	if err := s.AddMembership(Membership{
+		CampfireID:   oldID,
+		TransportDir: "/tmp/campfire/" + oldID,
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1000,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	// Add a regular message and a compaction event under oldID so the
+	// supersededCache gets populated for oldID.
+	if _, err := s.AddMessage(MessageRecord{
+		ID: "msg-cache-1", CampfireID: oldID, Sender: "aabb",
+		Payload: []byte("hello"), Tags: []string{"status"}, Antecedents: []string{},
+		Timestamp: 100, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 100,
+	}); err != nil {
+		t.Fatalf("AddMessage regular: %v", err)
+	}
+	payload, _ := json.Marshal(CompactionPayload{
+		Supersedes:     []string{"msg-cache-1"},
+		Summary:        []byte("compact"),
+		Retention:      "archive",
+		CheckpointHash: "abc",
+	})
+	if _, err := s.AddMessage(MessageRecord{
+		ID: "ev-cache-1", CampfireID: oldID, Sender: "aabb",
+		Payload: payload, Tags: []string{"campfire:compact"}, Antecedents: []string{"msg-cache-1"},
+		Timestamp: 200, Signature: []byte("sig"), Provenance: nil, ReceivedAt: 200,
+	}); err != nil {
+		t.Fatalf("AddMessage compact: %v", err)
+	}
+
+	// Warm the supersededCache for oldID.
+	sup, err := s.collectSupersededIDs(oldID)
+	if err != nil {
+		t.Fatalf("collectSupersededIDs(oldID): %v", err)
+	}
+	if !sup["msg-cache-1"] {
+		t.Fatal("expected msg-cache-1 in superseded set before rename")
+	}
+
+	// Verify the cache entry for oldID exists.
+	s.supersededMu.RLock()
+	_, hadOld := s.supersededCache[oldID]
+	s.supersededMu.RUnlock()
+	if !hadOld {
+		t.Fatal("supersededCache should have an entry for oldID before rename")
+	}
+
+	// Rename oldID → newID.
+	if err := s.UpdateCampfireID(oldID, newID); err != nil {
+		t.Fatalf("UpdateCampfireID: %v", err)
+	}
+
+	// After rename the cache entry for oldID must be gone.
+	s.supersededMu.RLock()
+	_, stillHasOld := s.supersededCache[oldID]
+	s.supersededMu.RUnlock()
+	if stillHasOld {
+		t.Error("supersededCache still has stale entry for oldID after UpdateCampfireID — cache invalidation bug")
+	}
+
+	// The cache entry for newID must also be absent (evicted or never populated).
+	s.supersededMu.RLock()
+	_, hasNew := s.supersededCache[newID]
+	s.supersededMu.RUnlock()
+	if hasNew {
+		t.Error("supersededCache should not have a pre-populated entry for newID after UpdateCampfireID")
 	}
 }
 
