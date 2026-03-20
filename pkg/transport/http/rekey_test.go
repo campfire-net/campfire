@@ -558,9 +558,14 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 		}
 	}
 
-	// --- A and B can threshold-sign under new campfire ID ---
+	// --- A and B can threshold-sign under new campfire ID via HTTP ---
+	// This exercises the critical path: B's rekey'd share (received over the
+	// rekey protocol and stored in sB) is loaded by B's HTTP sign handler and
+	// used in a full FROST signing round with A as initiator. The local
+	// threshold.Sign() shortcut is intentionally not used — the point is to
+	// validate the store → HTTP handler → FROST round-trip.
 
-	// Store A's new share.
+	// Store A's new share so A can act as signing initiator.
 	newShareAData, _ := threshold.MarshalResult(1, newDKGResults[1])
 	sA.UpsertThresholdShare(store.ThresholdShare{ //nolint:errcheck
 		CampfireID:    newCampfireID,
@@ -568,13 +573,87 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 		SecretShare:   newShareAData,
 	})
 
-	signMsg := []byte("post-rekey threshold signing test")
-	sig, err := threshold.Sign(newDKGResults, []uint32{1, 2}, signMsg)
+	// Add new campfire membership for A. B's membership was already added by the
+	// rekey handler when it processed the phase-2 request above.
+	addMembershipWithDir(t, sA, newCampfireID, t.TempDir(), 2)
+
+	// Allocate A's transport address (B is already running at base+34).
+	addrA := fmt.Sprintf("127.0.0.1:%d", base+37)
+	epA := fmt.Sprintf("http://%s", addrA)
+
+	// Register peer endpoints under the new campfire ID so auth checks pass.
+	sA.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:    newCampfireID,
+		MemberPubkey:  idB.PublicKeyHex(),
+		Endpoint:      epB,
+		ParticipantID: 2,
+	})
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:    newCampfireID,
+		MemberPubkey:  idA.PublicKeyHex(),
+		Endpoint:      epA,
+		ParticipantID: 1,
+	})
+
+	// Start A's transport with a threshold share provider backed by sA.
+	trA := cfhttp.New(addrA, sA)
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trA.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
+		share, err := sA.GetThresholdShare(cfID)
+		if err != nil || share == nil {
+			return 0, nil, fmt.Errorf("no share for %s", cfID)
+		}
+		return share.ParticipantID, share.SecretShare, nil
+	})
+	if err := trA.Start(); err != nil {
+		t.Fatalf("starting A: %v", err)
+	}
+	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Build a CBOR-encoded MessageSignInput (required by the sign handler's
+	// signing-oracle defence — arbitrary bytes are rejected).
+	signInput := message.MessageSignInput{
+		ID:          "post-rekey-sign-test",
+		Payload:     []byte("post-rekey threshold signing over HTTP"),
+		Tags:        []string{"test"},
+		Antecedents: []string{},
+		Timestamp:   time.Now().UnixNano(),
+	}
+	signMsg, err := cfencoding.Marshal(signInput)
 	if err != nil {
-		t.Fatalf("threshold.Sign with new DKG: %v", err)
+		t.Fatalf("marshaling MessageSignInput: %v", err)
+	}
+
+	// Unmarshal A's DKG result for RunFROSTSign.
+	_, dkgResultA, err := threshold.UnmarshalResult(newShareAData)
+	if err != nil {
+		t.Fatalf("UnmarshalResult A: %v", err)
+	}
+
+	// A runs FROST signing with B as co-signer over HTTP.
+	// This validates that B's rekey'd share (stored via the rekey protocol)
+	// is correctly loaded by B's HTTP sign handler.
+	coSigners := []cfhttp.CoSigner{
+		{Endpoint: epB, ParticipantID: 2},
+	}
+	sig, err := cfhttp.RunFROSTSign(
+		dkgResultA,
+		1, // A's participant ID
+		signMsg,
+		coSigners,
+		newCampfireID,
+		"post-rekey-sign-session",
+		idA,
+	)
+	if err != nil {
+		t.Fatalf("RunFROSTSign post-rekey: %v", err)
+	}
+	if len(sig) != 64 {
+		t.Fatalf("expected 64-byte Ed25519 signature, got %d bytes", len(sig))
 	}
 	if !ed25519.Verify(newGroupKey, signMsg, sig) {
-		t.Fatal("post-rekey threshold signature invalid")
+		t.Fatal("post-rekey HTTP threshold signature invalid")
 	}
 
 	t.Logf("Rekey threshold=2 test passed: old=%s new=%s", oldCampfireID[:12], newCampfireID[:12])
