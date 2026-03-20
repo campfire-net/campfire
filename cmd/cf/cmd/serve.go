@@ -13,7 +13,9 @@ import (
 )
 
 var (
-	serveListen string
+	serveListen  string
+	serveTLSCert string
+	serveTLSKey  string
 )
 
 var serveCmd = &cobra.Command{
@@ -47,8 +49,12 @@ var serveCmd = &cobra.Command{
 		if listenAddr == "" {
 			return fmt.Errorf("--listen is required (e.g. --listen :9001)")
 		}
+		if (serveTLSCert == "") != (serveTLSKey == "") {
+			return fmt.Errorf("--tls-cert and --tls-key must both be provided or both omitted")
+		}
+		useTLS := serveTLSCert != ""
 
-		endpoint := resolveEndpoint(listenAddr)
+		endpoint := resolveEndpoint(listenAddr, useTLS)
 
 		// Record/update self endpoint.
 		s.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
@@ -58,6 +64,9 @@ var serveCmd = &cobra.Command{
 		})
 
 		tr := cfhttp.New(listenAddr, s)
+		if useTLS {
+			tr.SetTLSConfig(&cfhttp.TLSConfig{CertFile: serveTLSCert, KeyFile: serveTLSKey})
+		}
 		tr.SetSelfInfo(agentID.PublicKeyHex(), endpoint)
 		tr.SetKeyProvider(buildKeyProvider(CFHome()))
 		tr.SetThresholdShareProvider(buildThresholdShareProvider(s))
@@ -78,5 +87,7 @@ var serveCmd = &cobra.Command{
 
 func init() {
 	serveCmd.Flags().StringVar(&serveListen, "listen", "", "HTTP listen address (e.g. :9001)")
+	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint advertisement")
+	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
 	rootCmd.AddCommand(serveCmd)
 }
