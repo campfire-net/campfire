@@ -951,3 +951,150 @@ func TestRekeyDBFailureLeavesStateFileIntact(t *testing.T) {
 		t.Error("new campfire state file must NOT be written when UpdateCampfireID fails")
 	}
 }
+
+// TestRekeyPhase2CorruptCiphertextReturns400 verifies that if phase-2 sends a ciphertext
+// encrypted under a different key (not the HKDF-derived shared secret), the handler
+// returns 400 Bad Request. This exercises the integration path:
+//
+//	wrong shared secret → aesGCMDecrypt failure → http.StatusBadRequest
+//
+// The aesGCMDecrypt function is unit-tested in crypto_test.go; this test covers the
+// handler-level integration path that was previously untested.
+func TestRekeyPhase2CorruptCiphertextReturns400(t *testing.T) {
+	// Generate old campfire keypair.
+	oldCFPub, oldCFPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating old campfire key: %v", err)
+	}
+	oldCampfireID := fmt.Sprintf("%x", oldCFPub)
+
+	// Generate new campfire keypair (we only need the pub for the new campfire ID).
+	newCFPub, newCFPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating new campfire key: %v", err)
+	}
+	newCampfireID := fmt.Sprintf("%x", newCFPub)
+
+	idA := tempIdentity(t) // sender (creator)
+	sB := tempStore(t)
+
+	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
+	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 1)
+
+	// A must be in B's peer endpoints so the membership check passes.
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:   oldCampfireID,
+		MemberPubkey: idA.PublicKeyHex(),
+		Endpoint:     "http://127.0.0.1:9995",
+	})
+
+	base := portBase()
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+52)
+	epB := fmt.Sprintf("http://%s", addrB)
+
+	trB := cfhttp.New(addrB, sB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Build a valid campfire:rekey message signed by the old campfire key.
+	rekeyPayload, _ := json.Marshal(map[string]string{
+		"old_key": oldCampfireID,
+		"new_key": newCampfireID,
+		"reason":  "eviction",
+	})
+	rekeyMsg, err := message.NewMessage(
+		ed25519.PrivateKey(oldCFPriv),
+		ed25519.PublicKey(oldCFPub),
+		rekeyPayload,
+		[]string{"campfire:rekey"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("creating rekey message: %v", err)
+	}
+	rekeyMsgCBOR, err := cfencoding.Marshal(rekeyMsg)
+	if err != nil {
+		t.Fatalf("encoding rekey message: %v", err)
+	}
+
+	// --- Phase 1: complete successfully to establish the rekey session ---
+	senderPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating sender ephemeral key: %v", err)
+	}
+	senderPubHex := fmt.Sprintf("%x", senderPriv.PublicKey().Bytes())
+
+	phase1Req := cfhttp.RekeyRequest{
+		NewCampfireID:    newCampfireID,
+		SenderX25519Pub:  senderPubHex,
+		RekeyMessageCBOR: rekeyMsgCBOR,
+	}
+	receiverEphemeralPubHex, err := cfhttp.SendRekeyPhase1(epB, oldCampfireID, phase1Req, idA)
+	if err != nil {
+		t.Fatalf("rekey phase 1 failed (expected success): %v", err)
+	}
+	if receiverEphemeralPubHex == "" {
+		t.Fatal("expected non-empty receiver ephemeral pub key from phase 1")
+	}
+
+	// --- Phase 2: encrypt the payload with a DIFFERENT key (not the HKDF-derived secret) ---
+	//
+	// The correct shared secret is derived from senderPriv.ECDH(receiverPub).
+	// Instead, we generate a fresh random X25519 key and use its derived secret —
+	// this produces a ciphertext the server cannot decrypt because it holds a
+	// different private key.
+	wrongSenderPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating wrong sender key: %v", err)
+	}
+	// Use the real receiver pub so ECDH doesn't fail on parsing, but the wrong
+	// sender private key produces a different raw shared secret.
+	receiverPubBytes, err := hex.DecodeString(receiverEphemeralPubHex)
+	if err != nil {
+		t.Fatalf("decoding receiver ephemeral pub: %v", err)
+	}
+	receiverPub, err := ecdh.X25519().NewPublicKey(receiverPubBytes)
+	if err != nil {
+		t.Fatalf("parsing receiver ephemeral pub: %v", err)
+	}
+	wrongRawShared, err := wrongSenderPriv.ECDH(receiverPub)
+	if err != nil {
+		t.Fatalf("ECDH with wrong sender key: %v", err)
+	}
+	wrongDerivedKey := testHKDFSHA256(wrongRawShared, "campfire-rekey-v1")
+
+	// Encrypt the new private key using the WRONG derived key.
+	encNewPrivKey, err := rekeyTestEncrypt(wrongDerivedKey, newCFPriv)
+	if err != nil {
+		t.Fatalf("encrypting with wrong key: %v", err)
+	}
+
+	// Phase 2: senderPubHex is the CORRECT sender pub (server looks it up),
+	// but the ciphertext was encrypted with a different shared secret.
+	// aesGCMDecrypt will fail because the GCM authentication tag won't verify.
+	phase2Req := cfhttp.RekeyRequest{
+		NewCampfireID:    newCampfireID,
+		SenderX25519Pub:  senderPubHex,
+		RekeyMessageCBOR: rekeyMsgCBOR,
+		EncryptedPrivKey: encNewPrivKey,
+	}
+	err = cfhttp.SendRekey(epB, oldCampfireID, phase2Req, idA)
+	if err == nil {
+		t.Fatal("expected phase-2 to return 400 when ciphertext was encrypted with wrong key")
+	}
+	t.Logf("phase-2 with corrupt ciphertext correctly rejected: %v", err)
+
+	// Verify that B's store was NOT updated — old membership still present, no new one.
+	oldMembership, _ := sB.GetMembership(oldCampfireID)
+	if oldMembership == nil {
+		t.Error("old membership should still exist after a failed phase-2 decryption")
+	}
+	newMembership, _ := sB.GetMembership(newCampfireID)
+	if newMembership != nil {
+		t.Error("new membership must NOT be created when phase-2 decryption fails")
+	}
+}
