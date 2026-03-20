@@ -161,16 +161,10 @@ func (c *Campfire) IsMember(pubKey ed25519.PublicKey) bool {
 func (c *Campfire) MembershipHash() []byte {
 	keys := make([][]byte, len(c.Members))
 	for i, m := range c.Members {
-		keys[i] = make([]byte, len(m.PublicKey))
-		copy(keys[i], m.PublicKey)
+		keys[i] = m.PublicKey
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		for k := 0; k < len(keys[i]) && k < len(keys[j]); k++ {
-			if keys[i][k] != keys[j][k] {
-				return keys[i][k] < keys[j][k]
-			}
-		}
-		return len(keys[i]) < len(keys[j])
+		return bytes.Compare(keys[i], keys[j]) < 0
 	})
 	h := sha256.New()
 	for _, k := range keys {
