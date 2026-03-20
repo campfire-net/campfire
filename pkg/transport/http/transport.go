@@ -52,9 +52,16 @@ type Transport struct {
 	mu    sync.RWMutex
 	peers map[string][]PeerInfo // campfireID → []PeerInfo
 
+	// nonceMu guards seenNonces independently of the transport-global mu.
+	// This decouples nonce checks from FROST signing / rekey operations so
+	// that high-frequency nonce operations do not serialize with session
+	// management under the same lock.
+	nonceMu sync.Mutex
+
 	// seenNonces tracks recently consumed request nonces to prevent replays.
 	// Keyed by nonce string; value is the expiry time (timestamp + window).
-	// Pruned lazily when a new nonce is consumed.
+	// Pruned lazily on write and periodically via the background pruner
+	// started in Start().
 	seenNonces map[string]nonceEntry
 
 	// selfPubKeyHex and selfEndpoint identify this node for join responses.
@@ -85,6 +92,10 @@ type Transport struct {
 
 	// pollBroker fans out new-message notifications to active long-poll goroutines.
 	pollBroker *PollBroker
+
+	// stopNoncePruner is closed by Stop() to signal the background nonce
+	// pruner goroutine to exit cleanly.
+	stopNoncePruner chan struct{}
 }
 
 // ThresholdShareProvider returns the local FROST DKG share for a campfire.
@@ -109,6 +120,7 @@ func New(listenAddr string, s *store.Store) *Transport {
 		signSessionCampfire: make(map[string]string),
 		signSessionCounts:   make(map[string]int),
 		rekeySessions:       make(map[string]*rekeySessionState),
+		stopNoncePruner:     make(chan struct{}),
 		pollBroker: &PollBroker{
 			subs:           make(map[string][]chan struct{}),
 			limits:         make(map[string]int),
@@ -184,13 +196,40 @@ func (t *Transport) Start() error {
 		}
 	}
 	go t.server.Serve(ln) //nolint:errcheck
+
+	// Background nonce pruner: sweeps the nonce map every nonceWindow/2
+	// (60 s). This bounds map size independently of request traffic, so even
+	// a quiet server followed by a burst doesn't accumulate stale entries.
+	// The goroutine exits when stopNoncePruner is closed via Stop().
+	go func() {
+		ticker := time.NewTicker(nonceWindow / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				t.pruneNonces()
+			case <-t.stopNoncePruner:
+				return
+			}
+		}
+	}()
+
 	return nil
 }
 
 // Stop gracefully shuts down the HTTP server with a 5-second timeout.
 // Using context.Background() would block indefinitely while long-poll connections
 // (up to 120s timeout) are active. A 5-second timeout ensures timely shutdown.
+// Stop also signals the background nonce pruner goroutine to exit.
 func (t *Transport) Stop() error {
+	// Signal the nonce pruner goroutine to stop. Use select with default so
+	// that calling Stop() multiple times is safe.
+	select {
+	case <-t.stopNoncePruner:
+		// already closed
+	default:
+		close(t.stopNoncePruner)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return t.server.Shutdown(ctx)
@@ -368,27 +407,45 @@ const nonceWindow = 2 * 60 * time.Second
 
 // consumeNonce records a nonce as seen and returns true if it was new.
 // Returns false if the nonce has been seen before (replay attempt).
-// Nonces are pruned lazily when a new nonce arrives.
+// Nonces are pruned lazily on write. A periodic background pruner (started
+// in Start) also sweeps the map every nonceWindow/2, bounding the map size
+// without requiring every request to pay the full O(n) scan cost.
 // Must not be called on a nil transport.
 func (t *Transport) consumeNonce(nonce string) (accepted bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.nonceMu.Lock()
+	defer t.nonceMu.Unlock()
 
 	now := time.Now()
 
-	// Prune expired nonces.
+	// Check for duplicate before pruning — fast path for replay rejection.
+	if _, seen := t.seenNonces[nonce]; seen {
+		return false
+	}
+
+	// Lazy prune: remove expired entries while we hold the lock anyway.
+	// This keeps the map bounded without a separate allocation.
 	for k, e := range t.seenNonces {
 		if now.After(e.expiresAt) {
 			delete(t.seenNonces, k)
 		}
 	}
 
-	// Check for duplicate.
-	if _, seen := t.seenNonces[nonce]; seen {
-		return false
-	}
-
 	// Record nonce.
 	t.seenNonces[nonce] = nonceEntry{expiresAt: now.Add(nonceWindow)}
 	return true
+}
+
+// pruneNonces removes all expired nonce entries. Called periodically from the
+// background pruner goroutine started by Start() so that map growth is bounded
+// even when lazy pruning misses a sweep (e.g. very low traffic followed by a
+// burst).
+func (t *Transport) pruneNonces() {
+	now := time.Now()
+	t.nonceMu.Lock()
+	defer t.nonceMu.Unlock()
+	for k, e := range t.seenNonces {
+		if now.After(e.expiresAt) {
+			delete(t.seenNonces, k)
+		}
+	}
 }
