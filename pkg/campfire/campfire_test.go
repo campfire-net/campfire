@@ -1,6 +1,7 @@
 package campfire
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
@@ -64,14 +65,14 @@ func TestMembershipHash(t *testing.T) {
 	// Empty membership hash should be deterministic
 	h1 := c.MembershipHash()
 	h2 := c.MembershipHash()
-	if !equal(h1, h2) {
+	if !bytes.Equal(h1, h2) {
 		t.Error("empty membership hash should be deterministic")
 	}
 
 	// Adding members should change the hash
 	c.AddMember(pub1)
 	h3 := c.MembershipHash()
-	if equal(h1, h3) {
+	if bytes.Equal(h1, h3) {
 		t.Error("hash should change after adding a member")
 	}
 
@@ -82,7 +83,7 @@ func TestMembershipHash(t *testing.T) {
 
 	c.AddMember(pub2)
 
-	if !equal(c.MembershipHash(), c2.MembershipHash()) {
+	if !bytes.Equal(c.MembershipHash(), c2.MembershipHash()) {
 		t.Error("membership hash should be order-independent")
 	}
 }

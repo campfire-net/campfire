@@ -734,7 +734,7 @@ func TestRekeyForgedSenderRejected(t *testing.T) {
 
 	sB := tempStore(t)
 	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
-	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 1)
+	addMembershipWithDirAndCreator(t, sB, oldCampfireID, stateDirB, 1, idA.PublicKeyHex())
 
 	// Add A to B's peer endpoints.
 	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
@@ -843,7 +843,7 @@ func TestRekeyUnsignedMessageRejected(t *testing.T) {
 			idA := tempIdentity(t)
 			sB := tempStore(t)
 			stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, tc.threshold)
-			addMembershipWithDir(t, sB, oldCampfireID, stateDirB, tc.threshold)
+			addMembershipWithDirAndCreator(t, sB, oldCampfireID, stateDirB, tc.threshold, idA.PublicKeyHex())
 
 			sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 				CampfireID:   oldCampfireID,
@@ -922,7 +922,7 @@ func TestRekeyDBFailureLeavesStateFileIntact(t *testing.T) {
 
 	sB := tempStore(t)
 	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
-	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 1)
+	addMembershipWithDirAndCreator(t, sB, oldCampfireID, stateDirB, 1, idA.PublicKeyHex())
 
 	// Add A to B's peer endpoints so membership check passes.
 	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
@@ -1061,7 +1061,7 @@ func TestRekeyPhase2CorruptCiphertextReturns400(t *testing.T) {
 	sB := tempStore(t)
 
 	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
-	addMembershipWithDir(t, sB, oldCampfireID, stateDirB, 1)
+	addMembershipWithDirAndCreator(t, sB, oldCampfireID, stateDirB, 1, idA.PublicKeyHex())
 
 	// A must be in B's peer endpoints so the membership check passes.
 	sB.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
