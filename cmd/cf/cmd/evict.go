@@ -53,7 +53,7 @@ var evictCmd = &cobra.Command{
 		if m == nil {
 			return fmt.Errorf("not a member of campfire %s", oldCampfireID[:12])
 		}
-		if m.Role != "creator" {
+		if m.Role != store.PeerRoleCreator {
 			return fmt.Errorf("only the creator can evict members (your role: %s)", m.Role)
 		}
 

@@ -44,14 +44,9 @@ see all messages including compacted ones.`,
 		compactBefore, _ := cmd.Flags().GetString("before")
 		compactSummary, _ := cmd.Flags().GetString("summary")
 		compactRetain, _ := cmd.Flags().GetString("retention")
-		agentID, err := identity.Load(IdentityPath())
+		agentID, s, err := requireAgentAndStore()
 		if err != nil {
-			return fmt.Errorf("loading identity: %w", err)
-		}
-
-		s, err := store.Open(store.StorePath(CFHome()))
-		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 
@@ -133,7 +128,7 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 				matchedID = msg.ID
 			}
 		}
-		if beforeTS == 0 {
+		if matchedID == "" {
 			return nil, fmt.Errorf("message not found: %s", beforeMsgID)
 		}
 		for _, msg := range allMsgs {

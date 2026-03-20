@@ -37,14 +37,9 @@ var joinCmd = &cobra.Command{
 		joinGitHubRepo, _ := cmd.Flags().GetString("github-repo")
 		joinGitHubTokenEnv, _ := cmd.Flags().GetString("github-token-env")
 		joinGitHubBaseURL, _ := cmd.Flags().GetString("github-base-url")
-		agentID, err := identity.Load(IdentityPath())
+		agentID, s, err := requireAgentAndStore()
 		if err != nil {
-			return fmt.Errorf("loading identity (run 'cf init' first): %w", err)
-		}
-
-		s, err := store.Open(store.StorePath(CFHome()))
-		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 

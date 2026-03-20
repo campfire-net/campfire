@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
+	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
@@ -33,7 +34,7 @@ var disbandCmd = &cobra.Command{
 		if m == nil {
 			return fmt.Errorf("not a member of campfire %s", campfireID)
 		}
-		if m.Role != "creator" {
+		if m.Role != store.PeerRoleCreator {
 			return fmt.Errorf("only the creator can disband a campfire")
 		}
 

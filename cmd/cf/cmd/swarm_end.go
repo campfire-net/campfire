@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -53,7 +52,7 @@ If no .campfire/root exists, returns an error.`,
 
 		// Send farewell message to the root campfire.
 		// This is best-effort; if it fails, we still remove the root file.
-		s, err := store.Open(store.StorePath(CFHome()))
+		s, err := openStore()
 		if err == nil {
 			defer s.Close()
 

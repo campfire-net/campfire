@@ -133,7 +133,7 @@ var dmCmd = &cobra.Command{
 				CampfireID:   cf.PublicKeyHex(),
 				TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
 				JoinProtocol: cf.JoinProtocol,
-				Role:         "creator",
+				Role:         store.PeerRoleCreator,
 				JoinedAt:     now,
 			}); err != nil {
 				return fmt.Errorf("recording membership: %w", err)

@@ -9,7 +9,6 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
@@ -39,11 +38,12 @@ or join the existing campfire instead.`,
 			return fmt.Errorf("project already has a root campfire — use `cf swarm end` first or join the existing one")
 		}
 
-		// Load agent identity.
-		agentID, err := identity.Load(IdentityPath())
+		// Load agent identity and open store.
+		agentID, s, err := requireAgentAndStore()
 		if err != nil {
-			return fmt.Errorf("loading identity (run 'cf init' first): %w", err)
+			return err
 		}
+		defer s.Close()
 
 		// Create the campfire.
 		cf, err := campfire.New("open", nil, 1)
@@ -51,12 +51,6 @@ or join the existing campfire instead.`,
 			return fmt.Errorf("creating campfire: %w", err)
 		}
 		cf.AddMember(agentID.PublicKey)
-
-		s, err := store.Open(store.StorePath(CFHome()))
-		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
-		}
-		defer s.Close()
 
 		// Set up filesystem transport.
 		transport := fs.New(fs.DefaultBaseDir())
@@ -96,7 +90,7 @@ or join the existing campfire instead.`,
 			CampfireID:   cf.PublicKeyHex(),
 			TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
 			JoinProtocol: cf.JoinProtocol,
-			Role:         "creator",
+			Role:         store.PeerRoleCreator,
 			JoinedAt:     store.NowNano(),
 			Threshold:    cf.Threshold,
 		}); err != nil {

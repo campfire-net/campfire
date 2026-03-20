@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/predicate"
 	"github.com/campfire-net/campfire/pkg/store"
@@ -87,14 +86,9 @@ func init() {
 }
 
 func runViewCreate(campfireIDArg, name, viewPredicate, viewProjection, viewOrdering, viewRefresh string, viewLimit int) error {
-	agentID, err := identity.Load(IdentityPath())
+	agentID, s, err := requireAgentAndStore()
 	if err != nil {
-		return fmt.Errorf("loading identity: %w", err)
-	}
-
-	s, err := store.Open(store.StorePath(CFHome()))
-	if err != nil {
-		return fmt.Errorf("opening store: %w", err)
+		return err
 	}
 	defer s.Close()
 
@@ -200,9 +194,9 @@ func runViewCreate(campfireIDArg, name, viewPredicate, viewProjection, viewOrder
 }
 
 func runViewRead(campfireIDArg, name string) error {
-	s, err := store.Open(store.StorePath(CFHome()))
+	s, err := openStore()
 	if err != nil {
-		return fmt.Errorf("opening store: %w", err)
+		return err
 	}
 	defer s.Close()
 
@@ -289,9 +283,9 @@ func runViewRead(campfireIDArg, name string) error {
 }
 
 func runViewList(campfireIDArg string) error {
-	s, err := store.Open(store.StorePath(CFHome()))
+	s, err := openStore()
 	if err != nil {
-		return fmt.Errorf("opening store: %w", err)
+		return err
 	}
 	defer s.Close()
 

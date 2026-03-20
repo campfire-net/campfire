@@ -10,6 +10,14 @@ import (
 )
 
 // Membership role constants.
+//
+// These constants represent the campfire membership role namespace. They govern
+// what actions a member may take within a campfire. This is distinct from the
+// peer endpoint role namespace (store.PeerRoleCreator/PeerRoleMember), which
+// records the peer's standing relative to a local store and is used for
+// server-side delivery enforcement. The two namespaces share a Role field on
+// different types (campfire.Member vs. store.PeerEndpoint) but have different
+// semantics and should not be conflated.
 const (
 	// RoleObserver can read messages only. Cannot send. Client-side enforced.
 	RoleObserver = "observer"
