@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
@@ -16,9 +15,9 @@ var disbandCmd = &cobra.Command{
 	Short: "Disband a campfire (creator only)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		s, err := store.Open(store.StorePath(CFHome()))
+		s, err := openStore()
 		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 

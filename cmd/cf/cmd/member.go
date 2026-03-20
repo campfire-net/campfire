@@ -9,9 +9,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
@@ -51,16 +49,9 @@ var memberSetRoleCmd = &cobra.Command{
 			return fmt.Errorf("public key must be 32 bytes (64 hex chars), got %d bytes", len(targetPubkeyBytes))
 		}
 
-		// Load caller identity.
-		agentID, err := identity.Load(IdentityPath())
+		agentID, s, err := requireAgentAndStore()
 		if err != nil {
-			return fmt.Errorf("loading identity: %w", err)
-		}
-
-		// Open store.
-		s, err := store.Open(store.StorePath(CFHome()))
-		if err != nil {
-			return fmt.Errorf("opening store: %w", err)
+			return err
 		}
 		defer s.Close()
 
