@@ -60,9 +60,14 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID,
 		// Round 1: create a new signing session and return this participant's commitments.
 		// Acquire global lock only to find/create the session state.
 		h.transport.mu.Lock()
-		sessionState, err := h.transport.getOrCreateSignSession(req.SessionID, req.SignerIDs, req.MessageToSign, dkgResult, participantID)
+		sessionState, err := h.transport.getOrCreateSignSession(campfireID, req.SessionID, req.SignerIDs, req.MessageToSign, dkgResult, participantID)
 		h.transport.mu.Unlock()
 		if err != nil {
+			if err == errSignSessionCapExceeded {
+				log.Printf("handleSign: sign session cap exceeded for campfire %s (max %d)", campfireID, maxSignSessionsPerCampfire)
+				http.Error(w, "too many concurrent sign sessions for this campfire", http.StatusTooManyRequests)
+				return
+			}
 			log.Printf("handleSign: failed to create signing session %s for campfire %s: %v", req.SessionID, campfireID, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
