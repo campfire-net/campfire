@@ -94,7 +94,16 @@ func NewMessage(senderPriv ed25519.PrivateKey, senderPub ed25519.PublicKey, payl
 }
 
 // VerifySignature checks the message sender's signature.
+// Returns false (rather than panicking) if the sender public key or signature
+// are absent or have the wrong length — which can occur when the CBOR body
+// decodes into a zero-value Message (e.g., wrong CBOR structure).
 func (m *Message) VerifySignature() bool {
+	if len(m.Sender) != ed25519.PublicKeySize {
+		return false
+	}
+	if len(m.Signature) != ed25519.SignatureSize {
+		return false
+	}
 	signInput := MessageSignInput{
 		ID:          m.ID,
 		Payload:     m.Payload,
