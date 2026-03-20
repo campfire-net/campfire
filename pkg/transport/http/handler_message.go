@@ -316,7 +316,7 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 }
 
 // verifyRequestSignature checks the Ed25519 signature header.
-// The signature covers: timestamp (8 bytes, big-endian Unix seconds) || nonce (32 bytes) || body.
+// The signature covers: timestamp (as ASCII decimal Unix seconds string) || newline || nonce (hex string) || newline || body.
 // This construction prevents replay attacks: each request has a unique nonce and a
 // bounded timestamp, so captured requests cannot be re-submitted.
 func verifyRequestSignature(senderHex, sigB64, nonce, timestamp string, body []byte) error {
