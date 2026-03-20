@@ -283,5 +283,95 @@ func TestCfReadFollowTerminatesOnSignal(t *testing.T) {
 	}
 }
 
+// TestRunNATPollOneShotSinglePeerError verifies that in one-shot mode with a
+// single failing peer, runNATPoll returns an error (not immediately — the peer
+// is tried exactly once) rather than firing the peerIdx==0 check on the very
+// first increment (which previously returned before any second attempt).
+//
+// The old bug: peerIdx = (0+1)%1 = 0, then "if peerIdx == 0 { return firstErr }"
+// fired on the first error, which is correct exit behaviour but the comment
+// above said it should "not fire immediately if first peer errors". The real
+// semantic: the loop should attempt all peers once, then exit. With 1 peer that
+// means exactly 1 attempt. So the fix: use consecutiveErrors >= len(peers).
+func TestRunNATPollOneShotSinglePeerError(t *testing.T) {
+	// Use a port that will refuse connections immediately.
+	badEndpoint := "http://127.0.0.1:1" // port 1 should be unreachable
+	id := tempTestIdentity(t)
+
+	peers := []store.PeerEndpoint{
+		{CampfireID: "cf-test", MemberPubkey: "aaa", Endpoint: badEndpoint},
+	}
+
+	stopCh := make(chan os.Signal, 1)
+	cfg := natPollConfig{
+		campfireID:  "cf-test",
+		peers:       peers,
+		cursor:      0,
+		follow:      false,
+		id:          id,
+		timeoutSecs: 1,
+		stopCh:      stopCh,
+	}
+
+	start := time.Now()
+	var out bytes.Buffer
+	err := runNATPoll(cfg, &out)
+	elapsed := time.Since(start)
+
+	// Must return an error since the only peer is unreachable.
+	if err == nil {
+		t.Fatal("expected error from unreachable peer, got nil")
+	}
+
+	// Must not loop indefinitely — should complete quickly (1 peer, 1 sleep of 1s).
+	if elapsed > 5*time.Second {
+		t.Errorf("runNATPoll took too long (%v); expected < 5s for single-peer one-shot", elapsed)
+	}
+}
+
+// TestRunNATPollOneShotMultiPeerAllFail verifies that in one-shot mode with
+// multiple failing peers, runNATPoll returns after trying all peers exactly once.
+// Specifically, this guards against the multi-peer infinite loop: if peer[0]
+// fails (firstErr set, peerIdx→1), peer[1] succeeds (firstErr cleared,
+// consecutiveErrors reset), then peer[0] fails again (peerIdx→1), the loop
+// used to run forever because peerIdx never wrapped back to 0.
+// With the consecutiveErrors fix, we correctly detect N consecutive failures.
+func TestRunNATPollOneShotMultiPeerAllFail(t *testing.T) {
+	badEndpoint1 := "http://127.0.0.1:2" // port 2, unreachable
+	badEndpoint2 := "http://127.0.0.1:3" // port 3, unreachable
+	id := tempTestIdentity(t)
+
+	peers := []store.PeerEndpoint{
+		{CampfireID: "cf-test-multi", MemberPubkey: "aaa", Endpoint: badEndpoint1},
+		{CampfireID: "cf-test-multi", MemberPubkey: "bbb", Endpoint: badEndpoint2},
+	}
+
+	stopCh := make(chan os.Signal, 1)
+	cfg := natPollConfig{
+		campfireID:  "cf-test-multi",
+		peers:       peers,
+		cursor:      0,
+		follow:      false,
+		id:          id,
+		timeoutSecs: 1,
+		stopCh:      stopCh,
+	}
+
+	start := time.Now()
+	var out bytes.Buffer
+	err := runNATPoll(cfg, &out)
+	elapsed := time.Since(start)
+
+	// Must return an error since all peers are unreachable.
+	if err == nil {
+		t.Fatal("expected error from unreachable peers, got nil")
+	}
+
+	// With 2 peers each sleeping 1s, should complete around 2s, not indefinitely.
+	if elapsed > 10*time.Second {
+		t.Errorf("runNATPoll took too long (%v); expected < 10s for 2-peer one-shot", elapsed)
+	}
+}
+
 // Verify that httptest.Server is importable (compile check only).
 var _ = (*httptest.Server)(nil)

@@ -394,6 +394,12 @@ func runNATPoll(cfg natPollConfig, w io.Writer) error {
 	// firstErr records the first poll error in one-shot mode so it is reported
 	// instead of the last error when all peers have been tried.
 	var firstErr error
+	// consecutiveErrors tracks how many peers have failed since the last success.
+	// In one-shot mode, once this reaches len(peers) all peers have been tried
+	// and the loop exits. This correctly handles both the single-peer case
+	// (where peerIdx wraps to 0 immediately) and multi-peer cases with
+	// alternating success/failure (where peerIdx never wraps back to 0).
+	consecutiveErrors := 0
 
 	for {
 		// Check for stop signal (non-blocking).
@@ -407,6 +413,7 @@ func runNATPoll(cfg natPollConfig, w io.Writer) error {
 		if err != nil {
 			// Rotate to next peer on error.
 			peerIdx = (peerIdx + 1) % len(peers)
+			consecutiveErrors++
 			if !cfg.follow && firstErr == nil {
 				firstErr = err
 			}
@@ -418,14 +425,20 @@ func runNATPoll(cfg natPollConfig, w io.Writer) error {
 			default:
 			}
 			if !cfg.follow {
-				// In one-shot mode, do not retry indefinitely; return after exhausting all peers once.
-				if peerIdx == 0 {
+				// In one-shot mode, do not retry indefinitely; return after
+				// exhausting all peers once. Use consecutiveErrors rather than
+				// peerIdx wrap-around: peerIdx wraps to 0 on the first error
+				// when len(peers) == 1, so the index check would fire before
+				// a second peer is tried. For multi-peer cases with alternating
+				// success/failure, peerIdx may never wrap back to 0.
+				if consecutiveErrors >= len(peers) {
 					return fmt.Errorf("polling peers: %w", firstErr)
 				}
 			}
 			continue
 		}
-		// Reset firstErr on success so subsequent failures report fresh errors.
+		// Reset error tracking on success.
+		consecutiveErrors = 0
 		firstErr = nil
 
 		if len(msgs) > 0 {
