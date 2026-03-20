@@ -2,11 +2,9 @@ package http
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -28,39 +26,8 @@ const (
 const maxRequestBodySize = 4 * 1024 * 1024 // 4 MiB
 
 // validateJoinerEndpoint and isPrivateIP are defined in ssrf.go.
-
-// sanitizeTransportDir validates a TransportDir value from a membership record
-// and returns the cleaned absolute path. It rejects paths that are not absolute
-// or that contain ".." components, defending against path traversal attacks.
-func sanitizeTransportDir(dir string) (string, error) {
-	if dir == "" {
-		return "", fmt.Errorf("transport dir is empty")
-	}
-	// Clean the path (resolves any . and .. elements).
-	clean := filepath.Clean(dir)
-	// After cleaning, the path must still be absolute.
-	if !filepath.IsAbs(clean) {
-		return "", fmt.Errorf("transport dir %q is not an absolute path", dir)
-	}
-	// Reject if the original path contained ".." segments (pre-clean check).
-	// filepath.Clean resolves them, but we want to reject stored values that
-	// include traversal markers — they indicate a tampered record.
-	if strings.Contains(dir, "..") {
-		return "", fmt.Errorf("transport dir %q contains path traversal", dir)
-	}
-	return clean, nil
-}
-
-// MembershipEvent represents a membership change notification.
-type MembershipEvent struct {
-	Event    string `json:"event"`    // "join", "leave", or "evict"
-	Member   string `json:"member"`   // hex public key
-	Endpoint string `json:"endpoint"` // HTTP endpoint URL (may be empty for leave/evict)
-}
-
-// CampfireKeyProvider returns the campfire private key for a given campfire ID.
-// Returns an error if the campfire is not found on this node.
-type CampfireKeyProvider func(campfireID string) (privKey []byte, pubKey []byte, err error)
+// sanitizeTransportDir is defined in validate.go.
+// MembershipEvent and CampfireKeyProvider are defined in types.go.
 
 type handler struct {
 	store     *store.Store
