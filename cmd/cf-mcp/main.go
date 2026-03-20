@@ -556,7 +556,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		CampfireID:   cf.PublicKeyHex(),
 		TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
 		JoinProtocol: cf.JoinProtocol,
-		Role:         "creator",
+		Role:         store.PeerRoleCreator,
 		JoinedAt:     store.NowNano(),
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
@@ -1216,7 +1216,7 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 			CampfireID:   cf.PublicKeyHex(),
 			TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
 			JoinProtocol: cf.JoinProtocol,
-			Role:         "creator",
+			Role:         store.PeerRoleCreator,
 			JoinedAt:     now,
 		}); err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
