@@ -47,8 +47,8 @@ func mustNewCampfire(t *testing.T, s *store.Store) *campfire.Campfire {
 func mustNewMessage(t *testing.T, c *campfire.Campfire, payload string) *message.Message {
 	t.Helper()
 	msg, err := message.NewMessage(
-		c.Identity.PrivateKey,
-		c.Identity.PublicKey,
+		c.PrivateKey,
+		c.PublicKey,
 		[]byte(payload),
 		nil,
 		nil,

@@ -542,7 +542,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	}
 
 	b, err := beacon.New(
-		cf.Identity.PublicKey, cf.Identity.PrivateKey,
+		cf.PublicKey, cf.PrivateKey,
 		cf.JoinProtocol, cf.ReceptionRequirements,
 		beacon.TransportConfig{
 			Protocol: "filesystem",
@@ -1208,7 +1208,7 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 		}
 
 		b, err := beacon.New(
-			cf.Identity.PublicKey, cf.Identity.PrivateKey,
+			cf.PublicKey, cf.PrivateKey,
 			cf.JoinProtocol, cf.ReceptionRequirements,
 			beacon.TransportConfig{
 				Protocol: "filesystem",

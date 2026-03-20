@@ -94,8 +94,8 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 
 	// Build beacon
 	b, err := beacon.New(
-		cf.Identity.PublicKey,
-		cf.Identity.PrivateKey,
+		cf.PublicKey,
+		cf.PrivateKey,
 		cf.JoinProtocol,
 		cf.ReceptionRequirements,
 		beacon.TransportConfig{
@@ -283,8 +283,8 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 	// Publish beacon with p2p-http transport config.
 	beaconDir := BeaconDir()
 	b, err := beacon.New(
-		cf.Identity.PublicKey,
-		cf.Identity.PrivateKey,
+		cf.PublicKey,
+		cf.PrivateKey,
 		cf.JoinProtocol,
 		cf.ReceptionRequirements,
 		beacon.TransportConfig{
@@ -365,7 +365,7 @@ func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.St
 		Description: description,
 	}
 	// Sign the beacon with the campfire's private key.
-	sig, err := ghtr.SignBeacon(b, cf.Identity.PrivateKey)
+	sig, err := ghtr.SignBeacon(b, cf.PrivateKey)
 	if err != nil {
 		return fmt.Errorf("signing beacon: %w", err)
 	}

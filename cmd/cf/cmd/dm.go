@@ -113,7 +113,7 @@ var dmCmd = &cobra.Command{
 
 			// Publish beacon
 			b, err := beacon.New(
-				cf.Identity.PublicKey, cf.Identity.PrivateKey,
+				cf.PublicKey, cf.PrivateKey,
 				cf.JoinProtocol, cf.ReceptionRequirements,
 				beacon.TransportConfig{
 					Protocol: "filesystem",

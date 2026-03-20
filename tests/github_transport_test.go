@@ -372,7 +372,7 @@ func TestGitHubTransport_EndToEnd(t *testing.T) {
 	}
 
 	// Encrypt the campfire private key to the joiner's Ed25519 public key.
-	campfirePrivKey := []byte(cf.Identity.PrivateKey)
+	campfirePrivKey := []byte(cf.PrivateKey)
 	ciphertext, err := identity.EncryptToEd25519Key(joinerPubKey, campfirePrivKey)
 	if err != nil {
 		t.Fatalf("EncryptToEd25519Key: %v", err)

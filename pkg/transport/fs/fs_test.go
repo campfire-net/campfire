@@ -102,7 +102,7 @@ func TestInit_WritesCampfireState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadState() error: %v", err)
 	}
-	if string(state.PublicKey) != string(cf.Identity.PublicKey) {
+	if string(state.PublicKey) != string(cf.PublicKey) {
 		t.Errorf("state.PublicKey mismatch")
 	}
 	if state.JoinProtocol != cf.JoinProtocol {

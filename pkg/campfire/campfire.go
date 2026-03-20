@@ -2,12 +2,11 @@ package campfire
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
 	"sort"
 	"time"
-
-	"github.com/campfire-net/campfire/pkg/identity"
 )
 
 // Membership role constants.
@@ -34,8 +33,11 @@ func EffectiveRole(role string) string {
 }
 
 // Campfire represents a campfire's state.
+// PublicKey and PrivateKey hold the campfire's Ed25519 keypair directly —
+// pkg/campfire no longer depends on pkg/identity (infrastructure package).
 type Campfire struct {
-	Identity              *identity.Identity `cbor:"1,keyasint" json:"-"`
+	PublicKey             ed25519.PublicKey  `cbor:"1,keyasint" json:"-"`
+	PrivateKey            ed25519.PrivateKey `cbor:"-" json:"-"`
 	JoinProtocol          string             `cbor:"2,keyasint" json:"join_protocol"`
 	ReceptionRequirements []string           `cbor:"3,keyasint" json:"reception_requirements"`
 	Members               []Member           `cbor:"4,keyasint" json:"members"`
@@ -72,9 +74,9 @@ type MemberRecord struct {
 // threshold=1 means any single member can sign provenance hops (default behavior).
 // threshold>1 requires FROST multi-party signing (Phase 2).
 func New(joinProtocol string, receptionReqs []string, threshold uint) (*Campfire, error) {
-	id, err := identity.Generate()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("generating campfire identity: %w", err)
+		return nil, fmt.Errorf("generating campfire keypair: %w", err)
 	}
 	if receptionReqs == nil {
 		receptionReqs = []string{}
@@ -83,7 +85,8 @@ func New(joinProtocol string, receptionReqs []string, threshold uint) (*Campfire
 		threshold = 1
 	}
 	return &Campfire{
-		Identity:              id,
+		PublicKey:             pub,
+		PrivateKey:            priv,
 		JoinProtocol:          joinProtocol,
 		ReceptionRequirements: receptionReqs,
 		Members:               []Member{},
@@ -94,7 +97,7 @@ func New(joinProtocol string, receptionReqs []string, threshold uint) (*Campfire
 
 // PublicKeyHex returns the hex-encoded public key of the campfire.
 func (c *Campfire) PublicKeyHex() string {
-	return fmt.Sprintf("%x", c.Identity.PublicKey)
+	return fmt.Sprintf("%x", c.PublicKey)
 }
 
 // AddMember adds a member to the campfire.
@@ -152,8 +155,8 @@ func (c *Campfire) MembershipHash() []byte {
 // State returns the on-disk state representation.
 func (c *Campfire) State() CampfireState {
 	return CampfireState{
-		PublicKey:             c.Identity.PublicKey,
-		PrivateKey:            c.Identity.PrivateKey,
+		PublicKey:             c.PublicKey,
+		PrivateKey:            c.PrivateKey,
 		JoinProtocol:          c.JoinProtocol,
 		ReceptionRequirements: c.ReceptionRequirements,
 		CreatedAt:             c.CreatedAt,
