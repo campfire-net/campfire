@@ -3,6 +3,7 @@ package predicate
 import (
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -456,5 +457,33 @@ func TestNodeString_PayloadSize(t *testing.T) {
 	}
 	if node.String() != "(payload-size)" {
 		t.Errorf("expected (payload-size), got %q", node.String())
+	}
+}
+
+func TestParse_MaxChildrenExceeded(t *testing.T) {
+	// Build (and e1 e2 ... e257) — one over the limit.
+	args := make([]string, MaxChildren+1)
+	for i := range args {
+		args[i] = fmt.Sprintf(`(tag "t%d")`, i)
+	}
+	expr := "(and " + strings.Join(args, " ") + ")"
+	_, err := Parse(expr)
+	if err == nil {
+		t.Fatal("expected parse error for and with more than MaxChildren arguments, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum argument count") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestParse_MaxChildrenAllowed(t *testing.T) {
+	// Build (and e1 e2) — well under the limit, should succeed.
+	node, err := Parse(`(and (tag "a") (tag "b"))`)
+	if err != nil {
+		t.Fatalf("expected no parse error for 2-argument and, got: %v", err)
+	}
+	ctx := &MessageContext{Tags: []string{"a", "b"}}
+	if !Eval(node, ctx) {
+		t.Error("expected (and (tag \"a\") (tag \"b\")) to be true when both tags present")
 	}
 }

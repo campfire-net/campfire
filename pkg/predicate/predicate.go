@@ -36,6 +36,10 @@ import (
 // Deeply nested expressions beyond this limit return ErrDepthExceeded.
 const MaxDepth = 64
 
+// MaxChildren is the maximum number of arguments allowed in a variadic
+// expression (and/or). Wide predicates beyond this limit return a parse error.
+const MaxChildren = 256
+
 // ErrDepthExceeded is returned when a predicate exceeds MaxDepth.
 var ErrDepthExceeded = fmt.Errorf("predicate depth exceeds maximum (%d)", MaxDepth)
 
@@ -301,6 +305,9 @@ func parseVariadic(op string, input string) (*Node, string, error) {
 			return nil, "", err
 		}
 		children = append(children, child)
+		if len(children) > MaxChildren {
+			return nil, "", fmt.Errorf("%s exceeds maximum argument count (%d)", op, MaxChildren)
+		}
 		rest = newRest
 	}
 }
@@ -490,27 +497,57 @@ func evalDepth(node *Node, ctx *MessageContext, depth int) EvalResult {
 
 	case NodeGt:
 		left := evalDepth(node.Children[0], ctx, depth+1)
+		if left.Err != nil {
+			return left
+		}
 		right := evalDepth(node.Children[1], ctx, depth+1)
+		if right.Err != nil {
+			return right
+		}
 		return EvalResult{Bool: toNum(left) > toNum(right)}
 
 	case NodeLt:
 		left := evalDepth(node.Children[0], ctx, depth+1)
+		if left.Err != nil {
+			return left
+		}
 		right := evalDepth(node.Children[1], ctx, depth+1)
+		if right.Err != nil {
+			return right
+		}
 		return EvalResult{Bool: toNum(left) < toNum(right)}
 
 	case NodeGte:
 		left := evalDepth(node.Children[0], ctx, depth+1)
+		if left.Err != nil {
+			return left
+		}
 		right := evalDepth(node.Children[1], ctx, depth+1)
+		if right.Err != nil {
+			return right
+		}
 		return EvalResult{Bool: toNum(left) >= toNum(right)}
 
 	case NodeLte:
 		left := evalDepth(node.Children[0], ctx, depth+1)
+		if left.Err != nil {
+			return left
+		}
 		right := evalDepth(node.Children[1], ctx, depth+1)
+		if right.Err != nil {
+			return right
+		}
 		return EvalResult{Bool: toNum(left) <= toNum(right)}
 
 	case NodeEq:
 		left := evalDepth(node.Children[0], ctx, depth+1)
+		if left.Err != nil {
+			return left
+		}
 		right := evalDepth(node.Children[1], ctx, depth+1)
+		if right.Err != nil {
+			return right
+		}
 		if left.IsStr && right.IsStr {
 			return EvalResult{Bool: left.Str == right.Str}
 		}
@@ -518,12 +555,24 @@ func evalDepth(node *Node, ctx *MessageContext, depth int) EvalResult {
 
 	case NodeMul:
 		left := evalDepth(node.Children[0], ctx, depth+1)
+		if left.Err != nil {
+			return left
+		}
 		right := evalDepth(node.Children[1], ctx, depth+1)
+		if right.Err != nil {
+			return right
+		}
 		return EvalResult{Num: toNum(left) * toNum(right), IsNum: true}
 
 	case NodePow:
 		base := evalDepth(node.Children[0], ctx, depth+1)
+		if base.Err != nil {
+			return base
+		}
 		exp := evalDepth(node.Children[1], ctx, depth+1)
+		if exp.Err != nil {
+			return exp
+		}
 		return EvalResult{Num: math.Pow(toNum(base), toNum(exp)), IsNum: true}
 	}
 
