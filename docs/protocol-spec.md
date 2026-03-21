@@ -1,6 +1,6 @@
 # Campfire Protocol Specification
 
-**Version:** Draft v0.2
+**Version:** Draft v0.3
 **Date:** 2026-03-21
 **Author:** Third Division Labs
 

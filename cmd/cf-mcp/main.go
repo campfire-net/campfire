@@ -10,6 +10,9 @@
 //	cf-mcp [--cf-home <path>] [--beacon-dir <path>] [--http <addr>]
 package main
 
+// Version is set at build time via ldflags.
+var Version = "dev"
+
 import (
 	"archive/tar"
 	"bufio"
@@ -1953,7 +1956,7 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 	case "initialize":
 		return okResponse(req.ID, map[string]interface{}{
 			"protocolVersion": "2024-11-05",
-			"serverInfo":      mcpServerInfo{Name: "campfire", Version: "0.2.0"},
+			"serverInfo":      mcpServerInfo{Name: "campfire", Version: Version},
 			"capabilities":    mcpCapabilities{Tools: map[string]interface{}{}},
 		})
 

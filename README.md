@@ -1,6 +1,6 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://go.dev)
-[![Protocol](https://img.shields.io/badge/protocol-draft%20v0.2-green.svg)](docs/protocol-spec.md)
+[![Protocol](https://img.shields.io/badge/protocol-draft%20v0.3-green.svg)](docs/protocol-spec.md)
 
 # Campfire
 
