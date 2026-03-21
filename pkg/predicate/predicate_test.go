@@ -277,6 +277,8 @@ func TestNodeString_RoundTrip(t *testing.T) {
 		`(not (tag "deprecated"))`,
 		`(gt (mul (field "payload.confidence") (pow (literal 0.9) (field "payload.sessions_since"))) (literal 0.1))`,
 		`(timestamp)`,
+		`(payload-size)`,
+		`(lt (payload-size) (literal 65536))`,
 	}
 	for _, c := range cases {
 		node, err := Parse(c)
@@ -411,4 +413,48 @@ func TestEval_AtMaxDepth(t *testing.T) {
 		t.Errorf("unexpected error at max depth: %v", err)
 	}
 	// Don't check bool value — odd/even nesting of not will flip it
+}
+
+func TestParseAndEval_PayloadSize(t *testing.T) {
+	node, err := Parse(`(lt (payload-size) (literal 65536))`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	// 100-byte payload: 100 < 65536 → true
+	smallPayload := make([]byte, 100)
+	ctx := &MessageContext{RawPayload: smallPayload}
+	if !Eval(node, ctx) {
+		t.Error("expected (lt (payload-size) 65536) to be true for 100-byte payload")
+	}
+
+	// 70000-byte payload: 70000 < 65536 → false
+	largePayload := make([]byte, 70000)
+	ctx.RawPayload = largePayload
+	if Eval(node, ctx) {
+		t.Error("expected (lt (payload-size) 65536) to be false for 70000-byte payload")
+	}
+}
+
+func TestParseAndEval_PayloadSizeNilPayload(t *testing.T) {
+	node, err := Parse(`(lt (payload-size) (literal 65536))`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	// No RawPayload set: size 0 < 65536 → true
+	ctx := &MessageContext{}
+	if !Eval(node, ctx) {
+		t.Error("expected (lt (payload-size) 65536) to be true when RawPayload is nil")
+	}
+}
+
+func TestNodeString_PayloadSize(t *testing.T) {
+	node, err := Parse(`(payload-size)`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if node.String() != "(payload-size)" {
+		t.Errorf("expected (payload-size), got %q", node.String())
+	}
 }

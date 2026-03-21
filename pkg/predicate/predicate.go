@@ -20,6 +20,7 @@
 //	(pow BASE EXPONENT)            — exponentiation
 //	(literal VALUE)                — literal number or string
 //	(timestamp)                    — message timestamp (unix nanos)
+//	(payload-size)                 — byte length of the raw message payload
 package predicate
 
 import (
@@ -42,21 +43,22 @@ var ErrDepthExceeded = fmt.Errorf("predicate depth exceeds maximum (%d)", MaxDep
 type NodeType int
 
 const (
-	NodeAnd       NodeType = iota // Boolean AND of children
-	NodeOr                        // Boolean OR of children
-	NodeNot                       // Boolean NOT of single child
-	NodeTag                       // Tag match: (tag "value")
-	NodeSender                    // Sender prefix match: (sender "hex")
-	NodeGt                        // Greater than: (gt a b)
-	NodeLt                        // Less than: (lt a b)
-	NodeGte                       // Greater or equal: (gte a b)
-	NodeLte                       // Less or equal: (lte a b)
-	NodeEq                        // Equality: (eq a b)
-	NodeField                     // Payload field: (field "path")
-	NodeMul                       // Multiply: (mul a b)
-	NodePow                       // Power: (pow base exp)
-	NodeLiteral                   // Literal value: (literal 0.5) or "hello"
-	NodeTimestamp                  // Message timestamp: (timestamp)
+	NodeAnd         NodeType = iota // Boolean AND of children
+	NodeOr                          // Boolean OR of children
+	NodeNot                         // Boolean NOT of single child
+	NodeTag                         // Tag match: (tag "value")
+	NodeSender                      // Sender prefix match: (sender "hex")
+	NodeGt                          // Greater than: (gt a b)
+	NodeLt                          // Less than: (lt a b)
+	NodeGte                         // Greater or equal: (gte a b)
+	NodeLte                         // Less or equal: (lte a b)
+	NodeEq                          // Equality: (eq a b)
+	NodeField                       // Payload field: (field "path")
+	NodeMul                         // Multiply: (mul a b)
+	NodePow                         // Power: (pow base exp)
+	NodeLiteral                     // Literal value: (literal 0.5) or "hello"
+	NodeTimestamp                   // Message timestamp: (timestamp)
+	NodePayloadSize                 // Raw payload byte length: (payload-size)
 )
 
 // Node is a single node in the predicate AST.
@@ -68,10 +70,11 @@ type Node struct {
 
 // MessageContext provides the data a predicate evaluates against.
 type MessageContext struct {
-	Tags      []string       // decoded tags
-	Sender    string         // hex sender
-	Timestamp int64          // unix nanos
-	Payload   map[string]any // decoded JSON payload (nil if not JSON)
+	Tags       []string       // decoded tags
+	Sender     string         // hex sender
+	Timestamp  int64          // unix nanos
+	Payload    map[string]any // decoded JSON payload (nil if not JSON)
+	RawPayload []byte         // raw payload bytes for size-based filtering (Go-only, not serialized)
 }
 
 // EvalResult holds the result of evaluating a predicate node.
@@ -169,6 +172,8 @@ func (n *Node) String() string {
 		return fmt.Sprintf("(literal %q)", n.Value)
 	case NodeTimestamp:
 		return "(timestamp)"
+	case NodePayloadSize:
+		return "(payload-size)"
 	}
 	return "(unknown)"
 }
@@ -261,6 +266,12 @@ func parseSExpr(input string) (*Node, string, error) {
 			return nil, "", fmt.Errorf("expected ')' after timestamp")
 		}
 		return &Node{Type: NodeTimestamp}, rest[1:], nil
+	case "payload-size":
+		rest = strings.TrimSpace(rest)
+		if rest == "" || rest[0] != ')' {
+			return nil, "", fmt.Errorf("expected ')' after payload-size")
+		}
+		return &Node{Type: NodePayloadSize}, rest[1:], nil
 	default:
 		return nil, "", fmt.Errorf("unknown operator: %q", op)
 	}
@@ -467,6 +478,9 @@ func evalDepth(node *Node, ctx *MessageContext, depth int) EvalResult {
 
 	case NodeTimestamp:
 		return EvalResult{Num: float64(ctx.Timestamp), IsNum: true}
+
+	case NodePayloadSize:
+		return EvalResult{Num: float64(len(ctx.RawPayload)), IsNum: true}
 
 	case NodeField:
 		return evalField(node.Value, ctx)
