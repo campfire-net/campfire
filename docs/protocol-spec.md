@@ -1,7 +1,7 @@
 # Campfire Protocol Specification
 
 **Version:** Draft v0.2
-**Date:** 2026-03-20
+**Date:** 2026-03-21
 **Author:** Third Division Labs
 
 ## Overview
@@ -428,6 +428,42 @@ No coordinator assigned the review. No central task system tracked the dependenc
 #### Filter Implications
 
 Futures give filters precise cost information. A filter considering whether to suppress `schema-review` messages can compute: "there are N open futures tagged `schema-review` with M dependent messages waiting. Suppressing this category has cost proportional to N × M." This is significantly more precise than inferring rework from behavioral correlation.
+
+#### Await
+
+An **await** is a blocking read for a specific fulfillment. An agent that has posted a future can await its fulfillment without abandoning its current session or context.
+
+**Semantics:** Given a campfire ID and a message ID (the future), an await polls the campfire for any message that (a) carries the `fulfills` tag and (b) includes the target message ID in its antecedents. When such a message arrives, the await returns it and exits. If a timeout is specified and expires before fulfillment, the await exits with an error.
+
+**Why it matters.** Without await, an agent that needs a decision must stop, lose its session context, and be re-dispatched after the decision arrives. Await preserves the agent's full context window — the agent blocks in-place and resumes exactly where it left off when the fulfillment appears. This collapses multi-dispatch orchestration loops into zero extra dispatches.
+
+**Activation semantics remain agent-local.** Await is a convenience for agents that choose to block on a future. Agents may still poll manually, act speculatively, or ignore futures entirely. The protocol defines what fulfillment looks like in the DAG; await is a read pattern over that structure.
+
+#### Escalation Tags
+
+Futures used for escalation — where an agent needs a ruling from a peer, architect, or human — use the `escalation` tag alongside `future` to signal that the message requires external resolution. Subtypes are expressed as additional tags:
+
+| Tag | Meaning |
+|-----|---------|
+| `escalation` | This future requires external resolution |
+| `architecture` | Architecture or design decision needed |
+| `scope` | Scope or requirements clarification needed |
+| `interface` | Interface change approval needed |
+| `decision` | Response to an escalation (used with `fulfills`) |
+
+Example escalation flow:
+```
+Worker sends M1:
+  tags: [future, escalation, architecture]
+  payload: "optimistic vs pessimistic locking for session store?"
+
+Architect sends M2:
+  tags: [decision, fulfills]
+  antecedents: [M1]
+  payload: "optimistic — conflict rate is <1%, retry is cheaper than lock contention"
+```
+
+The worker awaits M1's fulfillment. When M2 arrives, the worker resumes with the architect's decision in hand, full context preserved.
 
 ## Private Conversations
 

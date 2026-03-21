@@ -374,6 +374,28 @@ func init() {
 			}),
 		},
 		{
+			Name:        "campfire_await",
+			Description: "Block until a future message is fulfilled. Polls the campfire for a message with the 'fulfills' tag whose antecedents include the target message ID. Returns the fulfilling message. Useful for in-session escalation without losing context.",
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Campfire ID (hex public key)",
+					},
+					"msg_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Message ID to await fulfillment of",
+					},
+					"timeout": map[string]interface{}{
+						"type":        "string",
+						"description": "Maximum time to wait (e.g. '30s', '5m', '1h'). Omit to wait indefinitely.",
+					},
+				},
+				"required": []string{"campfire_id", "msg_id"},
+			}),
+		},
+		{
 			Name:        "campfire_trust",
 			Description: "Set a human-readable pet name for an agent public key, or look up the resolved display name.",
 			InputSchema: mustJSON(map[string]interface{}{
@@ -888,6 +910,105 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 	return okResponse(id, result)
 }
 
+func (s *server) handleAwait(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	campfireID := getStr(params, "campfire_id")
+	targetMsgID := getStr(params, "msg_id")
+	timeoutStr := getStr(params, "timeout")
+
+	if campfireID == "" || targetMsgID == "" {
+		return errResponse(id, -32602, "campfire_id and msg_id are required")
+	}
+
+	var timeout time.Duration
+	if timeoutStr != "" {
+		var err error
+		timeout, err = time.ParseDuration(timeoutStr)
+		if err != nil {
+			return errResponse(id, -32602, fmt.Sprintf("invalid timeout: %v", err))
+		}
+	} else {
+		// Default to 10 minutes for MCP (avoid indefinite blocking).
+		timeout = 10 * time.Minute
+	}
+
+	st, err := store.Open(s.storePath())
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	}
+	defer st.Close()
+
+	transport := fs.New(fs.DefaultBaseDir())
+	interval := 2 * time.Second
+	deadline := time.After(timeout)
+
+	// Initial sync and check.
+	if msgs, err := transport.ListMessages(campfireID); err == nil {
+		for _, m := range msgs {
+			st.AddMessage(store.MessageRecordFromMessage(campfireID, &m, store.NowNano())) //nolint:errcheck
+		}
+	}
+	if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
+		result, _ := toolResultJSON(msg)
+		return okResponse(id, result)
+	}
+
+	// Poll loop.
+	for {
+		select {
+		case <-deadline:
+			return errResponse(id, -32000, "timeout: no fulfillment received")
+		case <-time.After(interval):
+		}
+
+		if msgs, err := transport.ListMessages(campfireID); err == nil {
+			for _, m := range msgs {
+				st.AddMessage(store.MessageRecordFromMessage(campfireID, &m, store.NowNano())) //nolint:errcheck
+			}
+		}
+		if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
+			result, _ := toolResultJSON(msg)
+			return okResponse(id, result)
+		}
+	}
+}
+
+// findMCPFulfillment searches for a message with the "fulfills" tag whose
+// antecedents contain the target message ID.
+func findMCPFulfillment(st *store.Store, campfireID, targetMsgID string) *map[string]interface{} {
+	msgs, err := st.ListMessages(campfireID, 0, store.MessageFilter{
+		Tags: []string{"fulfills"},
+	})
+	if err != nil {
+		return nil
+	}
+	for _, m := range msgs {
+		for _, ant := range m.Antecedents {
+			if ant == targetMsgID {
+				tags := m.Tags
+				if tags == nil {
+					tags = []string{}
+				}
+				ants := m.Antecedents
+				if ants == nil {
+					ants = []string{}
+				}
+				result := map[string]interface{}{
+					"id":          m.ID,
+					"campfire_id": m.CampfireID,
+					"sender":      m.Sender,
+					"instance":    m.Instance,
+					"payload":     string(m.Payload),
+					"tags":        tags,
+					"antecedents": ants,
+					"timestamp":   m.Timestamp,
+				}
+				return &result
+			}
+		}
+	}
+	return nil
+}
+
 func (s *server) handleInspect(id interface{}, params map[string]interface{}) jsonRPCResponse {
 	messageID := getStr(params, "message_id")
 	if messageID == "" {
@@ -1318,6 +1439,8 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 			return s.handleMembers(req.ID, callParams.Arguments)
 		case "campfire_dm":
 			return s.handleDM(req.ID, callParams.Arguments)
+		case "campfire_await":
+			return s.handleAwait(req.ID, callParams.Arguments)
 		default:
 			return errResponse(req.ID, -32601, fmt.Sprintf("unknown tool: %s", callParams.Name))
 		}

@@ -38,6 +38,7 @@ var rootCmd = &cobra.Command{
   cf join <id>         join a campfire
   cf send <id> "msg"   send a message (--reply-to, --future, --fulfills)
   cf read [id]         read messages (--all, --peek, --follow)
+  cf await <id> <msg>  block until a future message is fulfilled
   cf inspect <msg-id>  verify provenance chain
 
   Start: cf init && cf create --description "what this campfire is for"`,

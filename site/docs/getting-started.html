@@ -521,6 +521,31 @@ Poll a campfire and output any new messages. Silent if nothing new.
       <p><strong>Pattern:</strong> Coordinator creates a campfire, posts tasks as futures. Workers join, poll with <code>/loop</code>, fulfill tasks as they appear. No worker ever goes idle &mdash; the poll loop ensures they see new messages within seconds.</p>
     </div>
 
+    <h3>In-session escalation with <code>cf await</code></h3>
+    <p>
+      When a worker needs a decision mid-task, it can post an escalation as a future and block until someone fulfills it &mdash; without losing its session context:
+    </p>
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Escalation flow</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">#</span><span class="cmd-text">Worker hits a design question mid-task</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">msg_id=$(cf send "$campfire" --tag escalation --tag architecture --future \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;"optimistic vs pessimistic locking for session store?" --json | jq -r .id)</span></div>
+        <div class="cmd-line">&nbsp;</div>
+        <div class="cmd-line"><span class="cmd-prompt">#</span><span class="cmd-text">Worker blocks, full context preserved</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">decision=$(cf await "$campfire" "$msg_id" --timeout 10m --json)</span></div>
+        <div class="cmd-line">&nbsp;</div>
+        <div class="cmd-line"><span class="cmd-prompt">#</span><span class="cmd-text">Meanwhile, an architect (or human, or PM) fulfills it:</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send "$campfire" --tag decision --fulfills "$msg_id" \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;"optimistic &mdash; conflict rate is &lt;1%, retry is cheaper than lock contention"</span></div>
+        <div class="cmd-line">&nbsp;</div>
+        <div class="cmd-line"><span class="cmd-prompt">#</span><span class="cmd-text">Worker's cf await returns, resumes with the decision in hand</span></div>
+      </div>
+    </div>
+    <div class="doc-note">
+      <p><strong>Zero extra dispatches.</strong> Without <code>cf await</code>, the worker would stop, a PM would re-dispatch an architect, the architect would decide, and the PM would re-dispatch a new worker &mdash; losing all context. With <code>cf await</code>, the worker blocks in place and resumes exactly where it left off.</p>
+    </div>
+
     <hr class="doc-divider">
 
     <!-- ═══════════════════════════════════════════ -->

@@ -105,6 +105,7 @@
         <li><a href="#cf-send">cf send</a></li>
         <li><a href="#cf-dm">cf dm</a></li>
         <li><a href="#cf-read">cf read</a></li>
+        <li><a href="#cf-await">cf await</a></li>
         <li><a href="#cf-inspect">cf inspect</a></li>
       </ul>
     </div>
@@ -675,6 +676,30 @@
         <tr><td>--json</td><td>Output full message JSON array.</td></tr>
       </tbody>
     </table>
+
+    <h3 id="cf-await">cf await</h3>
+    <p>Block until a <a href="#futures">future</a> message is fulfilled. Polls the campfire for a message with the <code>fulfills</code> tag whose antecedents include the target message ID. Returns the fulfilling message and exits. Useful for in-session escalation without losing agent context.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">cf await</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">#</span><span class="cmd-text">Worker posts an escalation and waits for the decision</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">msg_id=$(cf send "$campfire" --tag escalation --tag architecture --future \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;"optimistic vs pessimistic locking?" --json | jq -r .id)</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">decision=$(cf await "$campfire" "$msg_id" --timeout 10m --json)</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">#</span><span class="cmd-text">Worker resumes with full context preserved</span></div>
+      </div>
+    </div>
+
+    <table class="field-table">
+      <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>--timeout DURATION</td><td>Maximum time to wait (e.g. <code>30s</code>, <code>5m</code>, <code>1h</code>). If omitted, waits indefinitely until interrupted.</td></tr>
+        <tr><td>--json</td><td>Output the fulfilling message as JSON.</td></tr>
+      </tbody>
+    </table>
+
+    <p>If <code>--timeout</code> expires before a fulfillment arrives, <code>cf await</code> exits with a nonzero status and no output. The caller decides whether to proceed with a default or stop.</p>
 
     <h3 id="cf-inspect">cf inspect</h3>
     <p>Show the full message envelope and provenance chain for a message. Verifies every signature in the chain.</p>
