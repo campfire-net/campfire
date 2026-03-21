@@ -621,11 +621,17 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		return errResponse(id, -32000, fmt.Sprintf("publishing beacon: %v", err))
 	}
 
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// In session mode, reuse the already-open store to avoid a second SQLite
+	// connection to the same file. Otherwise open a dedicated connection.
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	if err := st.AddMembership(store.Membership{
 		CampfireID:   cf.PublicKeyHex(),
@@ -1111,8 +1117,9 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 	}
 
 	fsTransport := fs.New(fs.DefaultBaseDir())
-	interval := 2 * time.Second
 	deadline := time.After(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
 	// Initial sync and check.
 	if msgs, err := fsTransport.ListMessages(campfireID); err == nil {
@@ -1130,7 +1137,7 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 		select {
 		case <-deadline:
 			return errResponse(id, -32000, "timeout: no fulfillment received")
-		case <-time.After(interval):
+		case <-ticker.C:
 		}
 
 		if msgs, err := fsTransport.ListMessages(campfireID); err == nil {
