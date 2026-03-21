@@ -1710,6 +1710,16 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 	return okResponse(id, result)
 }
 
+// maxExportSize is the maximum in-memory tarball size (uncompressed bytes
+// written to the tar stream) that handleExport will produce. Exports that
+// exceed this limit return a -32000 error so no single session can exhaust
+// server memory.
+const maxExportSize = 50 * 1024 * 1024 // 50 MB
+
+// errExportTooLarge is a sentinel returned from the WalkDir callback when the
+// accumulated tar write size exceeds maxExportSize.
+var errExportTooLarge = fmt.Errorf("export too large")
+
 // handleExport tars the agent's session directory (cfHome) and returns it as
 // a base64-encoded gzip tar archive. The tarball contains identity.json,
 // store.db, and any campfire state files present. Dropping the contents into
@@ -1739,12 +1749,26 @@ func (s *server) handleExport(id interface{}, _ map[string]interface{}) jsonRPCR
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 
-	err := filepath.Walk(s.cfHome, func(path string, info os.FileInfo, walkErr error) error {
+	var totalWritten int64
+
+	err := filepath.WalkDir(s.cfHome, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if info.IsDir() {
+		// Skip directories — they have no content to archive.
+		if d.IsDir() {
 			return nil
+		}
+		// Skip symlinks. filepath.WalkDir does not follow symlinks for
+		// directories, but does resolve them for files (the DirEntry.Type()
+		// check catches symlinks before os.Open resolves them).
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return err
 		}
 
 		rel, err := filepath.Rel(s.cfHome, path)
@@ -1767,12 +1791,21 @@ func (s *server) handleExport(id interface{}, _ map[string]interface{}) jsonRPCR
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
 		}
-		if _, err := io.Copy(tw, f); err != nil {
+
+		n, err := io.Copy(tw, f)
+		if err != nil {
 			return err
+		}
+		totalWritten += n
+		if totalWritten > maxExportSize {
+			return errExportTooLarge
 		}
 		return nil
 	})
 	if err != nil {
+		if err == errExportTooLarge {
+			return errResponse(id, -32000, "export too large: session data exceeds 50 MB limit")
+		}
 		return errResponse(id, -32000, fmt.Sprintf("creating tarball: %v", err))
 	}
 
@@ -2027,6 +2060,10 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.sessManager.getOrCreate(token)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
+		var limitErr *sessionLimitError
+		if errors.As(err, &limitErr) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
 		json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("creating session: %v", err))) //nolint:errcheck
 		return
 	}
