@@ -416,6 +416,39 @@ func TestEval_AtMaxDepth(t *testing.T) {
 	// Don't check bool value — odd/even nesting of not will flip it
 }
 
+func TestEval_DepthLimit_ComparisonNodes(t *testing.T) {
+	// Regression: comparison/arithmetic nodes must propagate ErrDepthExceeded
+	// from children rather than silently treating the child result as 0.
+	makeDeep := func(inner string) string {
+		expr := inner
+		for i := 0; i < MaxDepth+5; i++ {
+			expr = fmt.Sprintf("(not %s)", expr)
+		}
+		return expr
+	}
+	ctx := &MessageContext{Tags: []string{"x"}}
+
+	cases := []string{
+		fmt.Sprintf("(gt %s (literal 5))", makeDeep(`(literal 1)`)),
+		fmt.Sprintf("(lt %s (literal 5))", makeDeep(`(literal 1)`)),
+		fmt.Sprintf("(gte %s (literal 5))", makeDeep(`(literal 1)`)),
+		fmt.Sprintf("(lte %s (literal 5))", makeDeep(`(literal 1)`)),
+		fmt.Sprintf("(eq %s (literal 5))", makeDeep(`(literal 1)`)),
+		fmt.Sprintf("(mul %s (literal 2))", makeDeep(`(literal 1)`)),
+		fmt.Sprintf("(pow %s (literal 2))", makeDeep(`(literal 1)`)),
+	}
+	for _, expr := range cases {
+		node, err := Parse(expr)
+		if err != nil {
+			t.Fatalf("parse error for %q: %v", expr, err)
+		}
+		_, err = EvalSafe(node, ctx)
+		if err != ErrDepthExceeded {
+			t.Errorf("expr %q: expected ErrDepthExceeded, got %v", expr, err)
+		}
+	}
+}
+
 func TestParseAndEval_PayloadSize(t *testing.T) {
 	node, err := Parse(`(lt (payload-size) (literal 65536))`)
 	if err != nil {
