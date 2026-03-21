@@ -102,6 +102,9 @@ func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *i
 	// Get the HTTP sync cursor.
 	httpCursor, _ := s.GetReadCursor(campfireID)
 
+	// Initialize membership sync state.
+	memberState := newMembershipSyncState()
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -111,6 +114,9 @@ func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *i
 
 		// Pump B: HTTP → store → fs
 		httpCursor = pumpHTTPToFS(campfireID, fsTransport, s, agentID, httpEndpoint, httpCursor)
+
+		// Sync membership between fs and HTTP transports.
+		syncMembership(campfireID, fsTransport, s, agentID, httpEndpoint, memberState)
 
 		select {
 		case <-done:
@@ -124,8 +130,9 @@ func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *i
 // tagFilters, when non-empty, restricts relay to messages matching any of the given tags.
 func runBridgeAll(done <-chan struct{}, agentID *identity.Identity, s *store.Store, httpEndpoint string, tagFilters []string) error {
 	type bridgeState struct {
-		forwarded  map[string]bool
-		httpCursor int64
+		forwarded   map[string]bool
+		httpCursor  int64
+		memberState *membershipSyncState
 	}
 
 	baseDir := fs.DefaultBaseDir()
@@ -148,7 +155,7 @@ func runBridgeAll(done <-chan struct{}, agentID *identity.Identity, s *store.Sto
 			}
 			forwarded := buildForwardedSet(cfID, fsTransport, s)
 			cursor, _ := s.GetReadCursor(cfID)
-			bridges[cfID] = &bridgeState{forwarded: forwarded, httpCursor: cursor}
+			bridges[cfID] = &bridgeState{forwarded: forwarded, httpCursor: cursor, memberState: newMembershipSyncState()}
 			fmt.Fprintf(os.Stderr, "discovered campfire %s\n", cfID[:min(12, len(cfID))])
 		}
 	}
@@ -160,6 +167,7 @@ func runBridgeAll(done <-chan struct{}, agentID *identity.Identity, s *store.Sto
 		for cfID, bs := range bridges {
 			pumpFSToHTTP(cfID, fsTransport, s, agentID, httpEndpoint, bs.forwarded, tagFilters)
 			bs.httpCursor = pumpHTTPToFS(cfID, fsTransport, s, agentID, httpEndpoint, bs.httpCursor)
+			syncMembership(cfID, fsTransport, s, agentID, httpEndpoint, bs.memberState)
 		}
 
 		select {
