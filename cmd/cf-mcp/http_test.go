@@ -72,6 +72,69 @@ func TestHTTP_CampfireInit(t *testing.T) {
 	}
 }
 
+// TestHTTP_SessionedCampfireInit verifies that POST /mcp in sessioned mode
+// with a campfire_init call injects the session token into the response text.
+// This includes a JSON round-trip of resp.Result to exercise the fix for the
+// fragile []map[string]interface{} assertion (JSON always produces []interface{}).
+func TestHTTP_SessionedCampfireInit(t *testing.T) {
+	dir := t.TempDir()
+	sm := NewSessionManager(dir)
+	defer sm.Stop()
+
+	srv := &server{
+		cfHome:         dir,
+		beaconDir:      dir,
+		sessManager:    sm,
+		cfHomeExplicit: true,
+	}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	srv.handleMCPSessioned(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var rpcResp jsonRPCResponse
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if rpcResp.Error != nil {
+		t.Fatalf("unexpected error: code=%d msg=%s", rpcResp.Error.Code, rpcResp.Error.Message)
+	}
+
+	// Round-trip the result through JSON to confirm the token survived.
+	// Before the fix, []map[string]interface{} assertion failed silently after
+	// any json.Marshal/Unmarshal cycle; this exercises the fixed code path.
+	resultBytes, err := json.Marshal(rpcResp.Result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(resultBytes, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(result.Content) == 0 {
+		t.Fatal("expected content in result")
+	}
+	text := result.Content[0].Text
+	if !strings.Contains(text, "Session token:") {
+		t.Errorf("expected 'Session token:' in campfire_init response, got: %q", text)
+	}
+	if !strings.Contains(text, "Authorization: Bearer") {
+		t.Errorf("expected 'Authorization: Bearer' hint in campfire_init response, got: %q", text)
+	}
+}
+
 // TestHTTP_ParseError verifies that invalid JSON in the request body returns
 // a JSON-RPC -32700 parse error.
 func TestHTTP_ParseError(t *testing.T) {

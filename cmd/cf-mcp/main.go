@@ -89,6 +89,8 @@ type server struct {
 	httpTransport   *cfhttp.Transport // non-nil when this server has an embedded HTTP transport
 	transportRouter *TransportRouter  // non-nil in hosted HTTP mode (shared across sessions)
 	externalAddr    string            // public URL of the hosted server (e.g. "http://localhost:8080")
+	sessionToken    string            // non-empty in session mode; used for campfire ownership tracking in the router
+	st              *store.Store      // non-nil in session mode; already-open store shared from Session
 }
 
 func (s *server) identityPath() string {
@@ -706,9 +708,10 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 	}
 
 	// Register this campfire with the transport router so external peers
-	// can reach it via the hosted server's /campfire/ routes.
+	// can reach it via the hosted server's /campfire/ routes. Use
+	// RegisterForSession so UnregisterSession can clean up on reap.
 	if s.transportRouter != nil {
-		s.transportRouter.Register(cf.PublicKeyHex(), s.httpTransport)
+		s.transportRouter.RegisterForSession(cf.PublicKeyHex(), s.sessionToken, s.httpTransport)
 	}
 
 	result, _ := toolResultJSON(map[string]interface{}{
@@ -1079,11 +1082,17 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 		timeout = 10 * time.Minute
 	}
 
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// In session mode, reuse the already-open store to avoid a second SQLite
+	// connection to the same file. Otherwise open a dedicated connection.
+	st := s.st
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	// In HTTP mode, use PollBroker for efficient notification instead of
 	// filesystem polling. The PollBroker wakes this goroutine when a new
@@ -1625,7 +1634,7 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 			transportType = "p2p-http"
 			// Register DM campfire with transport router.
 			if s.transportRouter != nil {
-				s.transportRouter.Register(cf.PublicKeyHex(), s.httpTransport)
+				s.transportRouter.RegisterForSession(cf.PublicKeyHex(), s.sessionToken, s.httpTransport)
 			}
 		}
 		if err := st.AddMembership(store.Membership{
@@ -1702,19 +1711,22 @@ func (s *server) handleExport(id interface{}, _ map[string]interface{}) jsonRPCR
 		return errResponse(id, -32000, "no identity found (run campfire_init first)")
 	}
 
-	// Ensure store.db exists — open and immediately close to create the file.
-	// This guarantees the exported tarball always contains a valid store.
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// Ensure store.db exists. In session mode the store is already open, so
+	// no second connection is needed. Otherwise open and close to create the file,
+	// guaranteeing the tarball always contains a valid store.
+	if s.st == nil {
+		st, openErr := store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		st.Close()
 	}
-	st.Close()
 
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 
-	err = filepath.Walk(s.cfHome, func(path string, info os.FileInfo, walkErr error) error {
+	err := filepath.Walk(s.cfHome, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
