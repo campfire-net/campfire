@@ -26,11 +26,15 @@ filesystem appear at the HTTP endpoint and vice versa.
 The bridge uses your agent identity. It joins the campfire on the HTTP
 side (you are already a member on the filesystem side).
 
+When --tag is specified, only messages matching any of the given tags are
+relayed. Untagged messages are still stored locally but not forwarded.
+
 Ctrl-C triggers graceful shutdown.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		bridgeTo, _ := cmd.Flags().GetString("to")
 		bridgeAll, _ := cmd.Flags().GetBool("all")
+		tagFilters, _ := cmd.Flags().GetStringArray("tag")
 
 		if bridgeTo == "" {
 			return fmt.Errorf("--to is required (e.g. --to http://localhost:9000)")
@@ -53,7 +57,7 @@ Ctrl-C triggers graceful shutdown.`,
 		defer cancel()
 
 		if bridgeAll {
-			return runBridgeAll(ctx.Done(), agentID, s, bridgeTo)
+			return runBridgeAll(ctx.Done(), agentID, s, bridgeTo, tagFilters)
 		}
 
 		campfireID, err := resolveCampfireID(args[0], s)
@@ -71,19 +75,21 @@ Ctrl-C triggers graceful shutdown.`,
 		}
 
 		fmt.Fprintf(os.Stderr, "bridging campfire %s to %s\n", campfireID[:12], bridgeTo)
-		return runBridge(ctx.Done(), campfireID, m.TransportDir, agentID, s, bridgeTo)
+		return runBridge(ctx.Done(), campfireID, m.TransportDir, agentID, s, bridgeTo, tagFilters)
 	},
 }
 
 func init() {
 	bridgeCmd.Flags().String("to", "", "HTTP endpoint to bridge to (required)")
 	bridgeCmd.Flags().Bool("all", false, "bridge all filesystem campfires")
+	bridgeCmd.Flags().StringArray("tag", nil, "only relay messages matching this tag (repeatable, OR semantics)")
 	rootCmd.AddCommand(bridgeCmd)
 }
 
 // runBridge runs a bidirectional message pump for a single campfire.
 // It blocks until done is closed.
-func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *identity.Identity, s *store.Store, httpEndpoint string) error {
+// tagFilters, when non-empty, restricts relay to messages matching any of the given tags.
+func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *identity.Identity, s *store.Store, httpEndpoint string, tagFilters []string) error {
 	baseDir := fs.DefaultBaseDir()
 	if transportDir != "" {
 		baseDir = filepath.Dir(transportDir)
@@ -101,7 +107,7 @@ func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *i
 
 	for {
 		// Pump A: fs → store → HTTP
-		pumpFSToHTTP(campfireID, fsTransport, s, agentID, httpEndpoint, forwarded)
+		pumpFSToHTTP(campfireID, fsTransport, s, agentID, httpEndpoint, forwarded, tagFilters)
 
 		// Pump B: HTTP → store → fs
 		httpCursor = pumpHTTPToFS(campfireID, fsTransport, s, agentID, httpEndpoint, httpCursor)
@@ -115,7 +121,8 @@ func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *i
 }
 
 // runBridgeAll discovers all filesystem campfires and bridges them.
-func runBridgeAll(done <-chan struct{}, agentID *identity.Identity, s *store.Store, httpEndpoint string) error {
+// tagFilters, when non-empty, restricts relay to messages matching any of the given tags.
+func runBridgeAll(done <-chan struct{}, agentID *identity.Identity, s *store.Store, httpEndpoint string, tagFilters []string) error {
 	type bridgeState struct {
 		forwarded  map[string]bool
 		httpCursor int64
@@ -151,7 +158,7 @@ func runBridgeAll(done <-chan struct{}, agentID *identity.Identity, s *store.Sto
 
 	for {
 		for cfID, bs := range bridges {
-			pumpFSToHTTP(cfID, fsTransport, s, agentID, httpEndpoint, bs.forwarded)
+			pumpFSToHTTP(cfID, fsTransport, s, agentID, httpEndpoint, bs.forwarded, tagFilters)
 			bs.httpCursor = pumpHTTPToFS(cfID, fsTransport, s, agentID, httpEndpoint, bs.httpCursor)
 		}
 
@@ -166,7 +173,10 @@ func runBridgeAll(done <-chan struct{}, agentID *identity.Identity, s *store.Sto
 }
 
 // pumpFSToHTTP reads fs messages into the store and delivers new ones to HTTP peers.
-func pumpFSToHTTP(campfireID string, fsTransport *fs.Transport, s *store.Store, agentID *identity.Identity, httpEndpoint string, forwarded map[string]bool) {
+// tagFilters, when non-empty, applies OR semantics: only messages carrying at least one
+// of the specified tags are relayed. Messages that don't match are still stored locally
+// (so the cursor advances and they aren't reprocessed) but are not forwarded to HTTP.
+func pumpFSToHTTP(campfireID string, fsTransport *fs.Transport, s *store.Store, agentID *identity.Identity, httpEndpoint string, forwarded map[string]bool, tagFilters []string) {
 	fsMessages, err := fsTransport.ListMessages(campfireID)
 	if err != nil {
 		return
@@ -198,12 +208,26 @@ func pumpFSToHTTP(campfireID string, fsTransport *fs.Transport, s *store.Store, 
 		// Store in local SQLite (dedup via INSERT OR IGNORE).
 		s.AddMessage(store.MessageRecordFromMessage(campfireID, &fsMsg, store.NowNano())) //nolint:errcheck
 
-		// Deliver to HTTP endpoint.
-		msg := fsMsg // copy for pointer
-		cfhttp.DeliverToAll(endpoints, campfireID, &msg, agentID)
+		// Apply tag filter: relay only if no filter specified, or message matches any tag.
+		if len(tagFilters) == 0 || messageMatchesAnyTag(&fsMsg, tagFilters) {
+			msg := fsMsg // copy for pointer
+			cfhttp.DeliverToAll(endpoints, campfireID, &msg, agentID)
+		}
 
 		forwarded[fsMsg.ID] = true
 	}
+}
+
+// messageMatchesAnyTag returns true if the message has at least one tag in the filter list.
+func messageMatchesAnyTag(msg *message.Message, tagFilters []string) bool {
+	for _, want := range tagFilters {
+		for _, have := range msg.Tags {
+			if have == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // pumpHTTPToFS pulls messages from the HTTP endpoint and writes them to the filesystem.

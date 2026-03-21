@@ -153,7 +153,7 @@ func TestBridgeFSToHTTP(t *testing.T) {
 	}
 
 	// Run one pump cycle.
-	pumpFSToHTTP(campfireID, fsTransport, s, agentID, srv.URL, forwarded)
+	pumpFSToHTTP(campfireID, fsTransport, s, agentID, srv.URL, forwarded, nil)
 
 	// Verify the message was delivered to the HTTP peer.
 	delivered := peer.getDelivered()
@@ -304,13 +304,13 @@ func TestBridgeDedup(t *testing.T) {
 	forwarded := buildForwardedSet(campfireID, fsTransport, s)
 
 	// First pump — should deliver.
-	pumpFSToHTTP(campfireID, fsTransport, s, agentID, srv.URL, forwarded)
+	pumpFSToHTTP(campfireID, fsTransport, s, agentID, srv.URL, forwarded, nil)
 	if len(peer.getDelivered()) != 1 {
 		t.Fatalf("expected 1 delivery after first pump, got %d", len(peer.getDelivered()))
 	}
 
 	// Second pump — same message should NOT be re-delivered.
-	pumpFSToHTTP(campfireID, fsTransport, s, agentID, srv.URL, forwarded)
+	pumpFSToHTTP(campfireID, fsTransport, s, agentID, srv.URL, forwarded, nil)
 	if len(peer.getDelivered()) != 1 {
 		t.Fatalf("expected still 1 delivery after second pump (dedup), got %d", len(peer.getDelivered()))
 	}
@@ -358,7 +358,7 @@ func TestBridgeForwardedSetRebuildsOnRestart(t *testing.T) {
 
 	// First run: pump once.
 	forwarded := buildForwardedSet(campfireID, fsTransport, s)
-	pumpFSToHTTP(campfireID, fsTransport, s, agentID, srv.URL, forwarded)
+	pumpFSToHTTP(campfireID, fsTransport, s, agentID, srv.URL, forwarded, nil)
 	if len(peer.getDelivered()) != 1 {
 		t.Fatalf("expected 1 delivery, got %d", len(peer.getDelivered()))
 	}
@@ -372,7 +372,7 @@ func TestBridgeForwardedSetRebuildsOnRestart(t *testing.T) {
 	}
 
 	// Pumping again should not re-deliver.
-	pumpFSToHTTP(campfireID, fsTransport, s, agentID, srv.URL, forwarded2)
+	pumpFSToHTTP(campfireID, fsTransport, s, agentID, srv.URL, forwarded2, nil)
 	if len(peer.getDelivered()) != 1 {
 		t.Fatalf("expected still 1 delivery after restart rebuild, got %d", len(peer.getDelivered()))
 	}
