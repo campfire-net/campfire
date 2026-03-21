@@ -11,7 +11,11 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
+	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -414,6 +418,15 @@ func init() {
 					},
 				},
 				"required": []string{"public_key"},
+			}),
+		},
+		{
+			Name:        "campfire_export",
+			Description: "Export this agent's session directory as a base64-encoded tar.gz. Contains identity.json, store.db, and campfire state files. Drop the contents into a local CF_HOME directory to migrate to a self-hosted cf-mcp or standalone cf binary.",
+			InputSchema: mustJSON(map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+				"required":   []string{},
 			}),
 		},
 	}
@@ -1387,6 +1400,87 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 	return okResponse(id, result)
 }
 
+// handleExport tars the agent's session directory (cfHome) and returns it as
+// a base64-encoded gzip tar archive. The tarball contains identity.json,
+// store.db, and any campfire state files present. Dropping the contents into
+// a local CF_HOME directory and running `cf id` will show the same public key.
+func (s *server) handleExport(id interface{}, _ map[string]interface{}) jsonRPCResponse {
+	if s.cfHome == "" {
+		return errResponse(id, -32000, "no session directory (run campfire_init first)")
+	}
+
+	// Verify the identity exists — require init before export.
+	if !identity.Exists(s.identityPath()) {
+		return errResponse(id, -32000, "no identity found (run campfire_init first)")
+	}
+
+	// Ensure store.db exists — open and immediately close to create the file.
+	// This guarantees the exported tarball always contains a valid store.
+	st, err := store.Open(s.storePath())
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	}
+	st.Close()
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+
+	err = filepath.Walk(s.cfHome, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		rel, err := filepath.Rel(s.cfHome, path)
+		if err != nil {
+			return err
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		hdr := &tar.Header{
+			Name:    rel,
+			Mode:    int64(info.Mode()),
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if _, err := io.Copy(tw, f); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("creating tarball: %v", err))
+	}
+
+	if err := tw.Close(); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("closing tar writer: %v", err))
+	}
+	if err := gz.Close(); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("closing gzip writer: %v", err))
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
+	result, _ := toolResultJSON(map[string]interface{}{
+		"tarball":     encoded,
+		"encoding":    "base64",
+		"compression": "gzip",
+		"instructions": "Decode the tarball and extract into a local CF_HOME directory. " +
+			"Then run `cf id` to verify the same public key appears.",
+	})
+	return okResponse(id, result)
+}
+
 // ---------------------------------------------------------------------------
 // Request dispatch
 // ---------------------------------------------------------------------------
@@ -1444,6 +1538,8 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 			return s.handleDM(req.ID, callParams.Arguments)
 		case "campfire_await":
 			return s.handleAwait(req.ID, callParams.Arguments)
+		case "campfire_export":
+			return s.handleExport(req.ID, callParams.Arguments)
 		default:
 			return errResponse(req.ID, -32601, fmt.Sprintf("unknown tool: %s", callParams.Name))
 		}
