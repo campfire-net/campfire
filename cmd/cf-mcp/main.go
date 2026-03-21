@@ -80,6 +80,7 @@ type server struct {
 	beaconDir      string
 	cfHomeExplicit bool
 	lockFile       *os.File
+	sessManager    *SessionManager // non-nil only in HTTP+session mode
 }
 
 func (s *server) identityPath() string {
@@ -1534,10 +1535,114 @@ func (s *server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleMCPSessioned is the session-aware MCP handler used in hosted HTTP mode.
+//
+// Protocol:
+//   - No Authorization header + campfire_init call: generate a token, create a
+//     session, dispatch using the session's server, inject "session_token" into
+//     the campfire_init result text.
+//   - No Authorization header + any other call: reject with -32000 (session
+//     required).
+//   - Authorization: Bearer <token>: look up the session and dispatch.
+func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(errResponse(nil, -32700, fmt.Sprintf("read error: %v", err))) //nolint:errcheck
+		return
+	}
+
+	var req jsonRPCRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(errResponse(nil, -32700, fmt.Sprintf("parse error: %v", err))) //nolint:errcheck
+		return
+	}
+
+	// Extract Bearer token.
+	token := ""
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		token = strings.TrimPrefix(auth, "Bearer ")
+	}
+
+	// Determine if this is a campfire_init call.
+	isInit := false
+	if req.Method == "tools/call" && req.Params != nil {
+		var cp struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(req.Params, &cp) == nil {
+			isInit = cp.Name == "campfire_init"
+		}
+	}
+
+	if token == "" && !isInit {
+		// Non-init request with no session token.
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "session required: call campfire_init first to obtain a session token")) //nolint:errcheck
+		return
+	}
+
+	if token == "" {
+		// campfire_init with no token: create a new session.
+		var genErr error
+		token, genErr = generateToken()
+		if genErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("generating session token: %v", genErr))) //nolint:errcheck
+			return
+		}
+	}
+
+	sess, err := s.sessManager.getOrCreate(token)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("creating session: %v", err))) //nolint:errcheck
+		return
+	}
+
+	// Build a per-request server view pointing at the session's cfHome.
+	sessSrv := sess.server()
+	resp := sessSrv.dispatch(req)
+
+	// For campfire_init, inject the session token so the client knows what to
+	// include in subsequent Authorization: Bearer headers.
+	if isInit && resp.Error == nil && resp.Result != nil {
+		if m, ok := resp.Result.(map[string]interface{}); ok {
+			if content, ok := m["content"].([]map[string]interface{}); ok && len(content) > 0 {
+				if text, ok := content[0]["text"].(string); ok {
+					content[0]["text"] = text + "\n\nSession token: " + token + "\nInclude this in subsequent requests as: Authorization: Bearer " + token
+				}
+			}
+		}
+	}
+
+	if resp.JSONRPC == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		fmt.Fprintf(os.Stderr, "http encode error: %v\n", err)
+	}
+}
+
 // serveHTTP starts the HTTP+SSE MCP server on the given address.
 func (s *server) serveHTTP(addr string) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/mcp", s.handleMCP)
+	if s.sessManager != nil {
+		mux.HandleFunc("/mcp", s.handleMCPSessioned)
+	} else {
+		mux.HandleFunc("/mcp", s.handleMCP)
+	}
 	mux.HandleFunc("/sse", s.handleSSE)
 
 	fmt.Fprintf(os.Stderr, "cf-mcp listening on %s\n", addr)
@@ -1553,6 +1658,7 @@ func main() {
 	cfHome := ""
 	beaconDir := ""
 	httpAddr := ""
+	sessionsDir := ""
 	cfHomeExplicit := false
 	for i, arg := range os.Args[1:] {
 		switch {
@@ -1570,6 +1676,10 @@ func main() {
 			httpAddr = os.Args[i+2]
 		case strings.HasPrefix(arg, "--http="):
 			httpAddr = strings.TrimPrefix(arg, "--http=")
+		case arg == "--sessions-dir" && i+1 < len(os.Args[1:]):
+			sessionsDir = os.Args[i+2]
+		case strings.HasPrefix(arg, "--sessions-dir="):
+			sessionsDir = strings.TrimPrefix(arg, "--sessions-dir=")
 		}
 	}
 
@@ -1603,6 +1713,14 @@ func main() {
 
 	// HTTP+SSE mode when --http is set, otherwise stdio.
 	if httpAddr != "" {
+		// When --sessions-dir is provided, enable per-session isolation.
+		if sessionsDir != "" {
+			if err := os.MkdirAll(sessionsDir, 0700); err != nil {
+				fmt.Fprintf(os.Stderr, "error: creating sessions dir: %v\n", err)
+				os.Exit(1)
+			}
+			srv.sessManager = NewSessionManager(sessionsDir)
+		}
 		if err := srv.serveHTTP(httpAddr); err != nil {
 			fmt.Fprintf(os.Stderr, "http server error: %v\n", err)
 			os.Exit(1)
