@@ -1998,12 +1998,22 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 
 	// For campfire_init, inject the session token so the client knows what to
 	// include in subsequent Authorization: Bearer headers.
+	//
+	// We round-trip through JSON to avoid fragile type assertions: Go's
+	// encoding/json always produces []interface{}, not []map[string]interface{},
+	// when unmarshaling into interface{}, so any prior marshal/unmarshal of
+	// resp.Result would silently break a direct type assertion chain.
 	if isInit && resp.Error == nil && resp.Result != nil {
-		if m, ok := resp.Result.(map[string]interface{}); ok {
-			if content, ok := m["content"].([]map[string]interface{}); ok && len(content) > 0 {
-				if text, ok := content[0]["text"].(string); ok {
-					content[0]["text"] = text + "\n\nSession token: " + token + "\nInclude this in subsequent requests as: Authorization: Bearer " + token
-				}
+		var initResult struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if b, err := json.Marshal(resp.Result); err == nil {
+			if err := json.Unmarshal(b, &initResult); err == nil && len(initResult.Content) > 0 {
+				initResult.Content[0].Text += "\n\nSession token: " + token + "\nInclude this in subsequent requests as: Authorization: Bearer " + token
+				resp.Result = initResult
 			}
 		}
 	}
@@ -2069,6 +2079,7 @@ func main() {
 	beaconDir := ""
 	httpAddr := ""
 	sessionsDir := ""
+	externalAddrFlag := ""
 	cfHomeExplicit := false
 	for i, arg := range os.Args[1:] {
 		switch {
@@ -2090,6 +2101,10 @@ func main() {
 			sessionsDir = os.Args[i+2]
 		case strings.HasPrefix(arg, "--sessions-dir="):
 			sessionsDir = strings.TrimPrefix(arg, "--sessions-dir=")
+		case arg == "--external-addr" && i+1 < len(os.Args[1:]):
+			externalAddrFlag = os.Args[i+2]
+		case strings.HasPrefix(arg, "--external-addr="):
+			externalAddrFlag = strings.TrimPrefix(arg, "--external-addr=")
 		}
 	}
 
@@ -2114,6 +2129,11 @@ func main() {
 			beaconDir = filepath.Join(cfHome, "beacons")
 		}
 	}
+	// Resolve external address: flag > env > derived from listen addr.
+	externalAddr := externalAddrFlag
+	if externalAddr == "" {
+		externalAddr = os.Getenv("CF_EXTERNAL_URL")
+	}
 
 	srv := &server{
 		cfHome:         cfHome,
@@ -2133,13 +2153,15 @@ func main() {
 			router := NewTransportRouter()
 			sm := NewSessionManager(sessionsDir)
 			sm.router = router
-			// Build the external address from the listen address.
+			// If external address not provided via flag/env, derive from listen address.
 			// If the address starts with ":", prepend "http://localhost".
-			externalAddr := httpAddr
-			if strings.HasPrefix(externalAddr, ":") {
-				externalAddr = "http://localhost" + externalAddr
-			} else if !strings.HasPrefix(externalAddr, "http") {
-				externalAddr = "http://" + externalAddr
+			if externalAddr == "" {
+				externalAddr = httpAddr
+				if strings.HasPrefix(externalAddr, ":") {
+					externalAddr = "http://localhost" + externalAddr
+				} else if !strings.HasPrefix(externalAddr, "http") {
+					externalAddr = "http://" + externalAddr
+				}
 			}
 			sm.externalAddr = externalAddr
 			srv.sessManager = sm
