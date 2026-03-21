@@ -2066,73 +2066,73 @@
   var TIMELINE4 = [
     // Phase 1: Orchestrator creates swarm campfire, Architect blocks
     { delay: 0,     panel: 1, type: 'cmd', prompt: '$', text: 'cf swarm start --description "api-feature" \\\n  --require gate-human --require schema-change' },
-    { delay: 700,   panel: 1, type: 'out', text: 'a3f9c1 · api-feature\n  gate-human → propagates to root\n  schema-change → propagates to root' },
-    { delay: 1000,  panel: 0, type: 'beacon', text: 'beacon published · api-feature' },
-    { delay: 1200,  panel: 0, type: 'members', text: '1 member' },
-    { delay: 1800,  panel: 1, type: 'cmd', prompt: '$', text: 'cf read a3f9c1 --follow --tag escalation' },
-    { delay: 2100,  panel: 1, type: 'out', text: 'blocking · waiting for escalation...' },
-    { delay: 2300,  panel: 0, type: 'members', text: '2 members' },
+    { delay: 1400,  panel: 1, type: 'out', text: 'a3f9c1 · api-feature\n  gate-human → propagates to root\n  schema-change → propagates to root' },
+    { delay: 2400,  panel: 0, type: 'beacon', text: 'beacon published · api-feature' },
+    { delay: 2800,  panel: 0, type: 'members', text: '1 member' },
+    { delay: 4000,  panel: 1, type: 'cmd', prompt: '$', text: 'cf read a3f9c1 --follow --tag escalation' },
+    { delay: 5000,  panel: 1, type: 'out', text: 'blocking · waiting for escalation...' },
+    { delay: 5500,  panel: 0, type: 'members', text: '2 members' },
 
     // Phase 2: Implementer A — baseline green
-    { delay: 3000,  panel: 2, type: 'cmd', prompt: '$', text: 'cf join a3f9c1' },
-    { delay: 3300,  panel: 2, type: 'out', text: 'Joined: api-feature' },
-    { delay: 3500,  panel: 0, type: 'members', text: '3 members' },
-    { delay: 3800,  panel: 2, type: 'cmd', prompt: '$', text: 'go test ./... 2>&1 | tail -3' },
-    { delay: 4200,  panel: 2, type: 'out', text: 'ok  pkg/auth   0.412s\nok  pkg/api    0.531s\nok  pkg/store  0.388s' },
-    { delay: 4600,  panel: 2, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "baseline green. starting auth middleware." \\\n  --tag status' },
-    { delay: 4900,  panel: 2, type: 'out', text: 'c1a8f3' },
-    { delay: 5000,  panel: 0, type: 'log', text: 'Impl A: baseline green', color: 'teal', agent: 2 },
+    { delay: 7000,  panel: 2, type: 'cmd', prompt: '$', text: 'cf join a3f9c1' },
+    { delay: 7800,  panel: 2, type: 'out', text: 'Joined: api-feature' },
+    { delay: 8200,  panel: 0, type: 'members', text: '3 members' },
+    { delay: 9200,  panel: 2, type: 'cmd', prompt: '$', text: 'go test ./... 2>&1 | tail -3' },
+    { delay: 10400, panel: 2, type: 'out', text: 'ok  pkg/auth   0.412s\nok  pkg/api    0.531s\nok  pkg/store  0.388s' },
+    { delay: 12000, panel: 2, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "baseline green. starting auth middleware." \\\n  --tag status' },
+    { delay: 13000, panel: 2, type: 'out', text: 'c1a8f3' },
+    { delay: 13500, panel: 0, type: 'log', text: 'Impl A: baseline green', color: 'teal', agent: 2 },
 
     // Phase 3: Implementer B — baseline RED, escalates
-    { delay: 5700,  panel: 3, type: 'cmd', prompt: '$', text: 'cf join a3f9c1' },
-    { delay: 6000,  panel: 3, type: 'out', text: 'Joined: api-feature' },
-    { delay: 6100,  panel: 0, type: 'members', text: '4 members' },
-    { delay: 6400,  panel: 3, type: 'cmd', prompt: '$', text: 'go test ./pkg/auth/... 2>&1 | tail -4' },
-    { delay: 6800,  panel: 3, type: 'out', text: '--- FAIL: TestTokenRefresh (0.003s)\n    want 200, got 401\nFAIL\npkg/auth [build failed]' },
-    { delay: 7200,  panel: 3, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "[RED-BASELINE] pkg/auth: TestTokenRefresh\n  want 200, got 401. Need fix before I can proceed." \\\n  --tag red-baseline --tag gate-human --future' },
-    { delay: 7700,  panel: 3, type: 'out', text: 'e2c7f5' },
-    { delay: 7900,  panel: 0, type: 'flight', from: 3, to: 0 },
-    { delay: 8100,  panel: 0, type: 'log', text: '[RED-BASELINE] propagating to root', color: 'amber', agent: 3 },
+    { delay: 15000, panel: 3, type: 'cmd', prompt: '$', text: 'cf join a3f9c1' },
+    { delay: 15800, panel: 3, type: 'out', text: 'Joined: api-feature' },
+    { delay: 16200, panel: 0, type: 'members', text: '4 members' },
+    { delay: 17200, panel: 3, type: 'cmd', prompt: '$', text: 'go test ./pkg/auth/... 2>&1 | tail -4' },
+    { delay: 18400, panel: 3, type: 'out', text: '--- FAIL: TestTokenRefresh (0.003s)\n    want 200, got 401\nFAIL\npkg/auth [build failed]' },
+    { delay: 20200, panel: 3, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "[RED-BASELINE] pkg/auth: TestTokenRefresh\n  want 200, got 401. Need fix before I can proceed." \\\n  --tag red-baseline --tag gate-human --future' },
+    { delay: 21600, panel: 3, type: 'out', text: 'e2c7f5' },
+    { delay: 22200, panel: 0, type: 'flight', from: 3, to: 0 },
+    { delay: 22800, panel: 0, type: 'log', text: '[RED-BASELINE] propagating to root', color: 'amber', agent: 3 },
 
     // Phase 4: Fix lands, Impl B resumes
-    { delay: 9000,  panel: 3, type: 'cmd', prompt: '$', text: 'cf await a3f9c1 --fulfills e2c7f5' },
-    { delay: 9200,  panel: 3, type: 'out', text: 'blocking · waiting for fulfillment...' },
-    { delay: 10500, panel: 0, type: 'log', text: 'fix dispatched → pkg/auth token refresh', color: 'teal' },
-    { delay: 12000, panel: 3, type: 'out', text: '[a3f9c1] orchestrator · fulfills: e2c7f5\n  Fix merged. git pull && retry.' },
-    { delay: 12500, panel: 3, type: 'cmd', prompt: '$', text: 'git pull && go test ./pkg/auth/... 2>&1 | tail -1' },
-    { delay: 13000, panel: 3, type: 'out', text: 'ok  pkg/auth  0.398s' },
-    { delay: 13200, panel: 0, type: 'log', text: 'red baseline fixed · Impl B resuming', color: 'teal', agent: 3 },
+    { delay: 24500, panel: 3, type: 'cmd', prompt: '$', text: 'cf await a3f9c1 --fulfills e2c7f5' },
+    { delay: 25500, panel: 3, type: 'out', text: 'blocking · waiting for fulfillment...' },
+    { delay: 28000, panel: 0, type: 'log', text: 'fix dispatched → pkg/auth token refresh', color: 'teal' },
+    { delay: 31000, panel: 3, type: 'out', text: '[a3f9c1] orchestrator · fulfills: e2c7f5\n  Fix merged. git pull && retry.' },
+    { delay: 32500, panel: 3, type: 'cmd', prompt: '$', text: 'git pull && go test ./pkg/auth/... 2>&1 | tail -1' },
+    { delay: 33800, panel: 3, type: 'out', text: 'ok  pkg/auth  0.398s' },
+    { delay: 34500, panel: 0, type: 'log', text: 'red baseline fixed · Impl B resuming', color: 'teal', agent: 3 },
 
     // Phase 5: Impl B hits design question, escalates, blocks
-    { delay: 14000, panel: 3, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "Design Q: token refresh — optimistic\n  (retry on conflict) or pessimistic (lock on read)?" \\\n  --tag escalation --future' },
-    { delay: 14600, panel: 3, type: 'out', text: 'f4b1d8' },
-    { delay: 14800, panel: 3, type: 'cmd', prompt: '$', text: 'cf await a3f9c1 --fulfills f4b1d8' },
-    { delay: 15000, panel: 3, type: 'out', text: 'blocking · waiting for ruling...' },
-    { delay: 15100, panel: 0, type: 'flight', from: 3, to: 0 },
-    { delay: 15200, panel: 0, type: 'log', text: '[escalation] design Q → Architect waking', color: 'amber', agent: 3 },
+    { delay: 36500, panel: 3, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "Design Q: token refresh — optimistic\n  (retry on conflict) or pessimistic (lock on read)?" \\\n  --tag escalation --future' },
+    { delay: 38000, panel: 3, type: 'out', text: 'f4b1d8' },
+    { delay: 39000, panel: 3, type: 'cmd', prompt: '$', text: 'cf await a3f9c1 --fulfills f4b1d8' },
+    { delay: 40000, panel: 3, type: 'out', text: 'blocking · waiting for ruling...' },
+    { delay: 40600, panel: 0, type: 'flight', from: 3, to: 0 },
+    { delay: 41200, panel: 0, type: 'log', text: '[escalation] design Q → Architect waking', color: 'amber', agent: 3 },
 
     // Phase 6: Architect wakes, reads, rules
-    { delay: 15800, panel: 1, type: 'out', text: '[a3f9c1] impl-b · escalation · f4b1d8\n  Design Q: optimistic or pessimistic locking?' },
-    { delay: 16400, panel: 1, type: 'cmd', prompt: '$', text: 'cf read a3f9c1 --tag decision --all' },
-    { delay: 16800, panel: 1, type: 'out', text: 'no prior rulings on locking strategy' },
-    { delay: 17400, panel: 1, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "Ruling: pessimistic locking.\n  Design §3.2: concurrent balance checks require it.\n  Lock on read — not retry on conflict." \\\n  --tag decision --fulfills f4b1d8' },
-    { delay: 17900, panel: 1, type: 'out', text: 'a9e3c2' },
-    { delay: 18100, panel: 0, type: 'flight', from: 1, to: 0 },
-    { delay: 18200, panel: 0, type: 'log', text: 'ruling: pessimistic locking · §3.2', color: 'teal', agent: 1 },
+    { delay: 43000, panel: 1, type: 'out', text: '[a3f9c1] impl-b · escalation · f4b1d8\n  Design Q: optimistic or pessimistic locking?' },
+    { delay: 44500, panel: 1, type: 'cmd', prompt: '$', text: 'cf read a3f9c1 --tag decision --all' },
+    { delay: 45500, panel: 1, type: 'out', text: 'no prior rulings on locking strategy' },
+    { delay: 47500, panel: 1, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "Ruling: pessimistic locking.\n  Design §3.2: concurrent balance checks require it.\n  Lock on read — not retry on conflict." \\\n  --tag decision --fulfills f4b1d8' },
+    { delay: 49000, panel: 1, type: 'out', text: 'a9e3c2' },
+    { delay: 49600, panel: 0, type: 'flight', from: 1, to: 0 },
+    { delay: 50200, panel: 0, type: 'log', text: 'ruling: pessimistic locking · §3.2', color: 'teal', agent: 1 },
 
     // Phase 7: Impl B resumes; both signal merge-ready
-    { delay: 18800, panel: 3, type: 'out', text: '[a3f9c1] architect · fulfills: f4b1d8\n  Ruling: pessimistic. Design §3.2.' },
-    { delay: 19500, panel: 2, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "PR #42 ready. auth middleware.\n  Touches: pkg/auth/, pkg/middleware/" \\\n  --tag merge-ready' },
-    { delay: 19900, panel: 2, type: 'out', text: 'd8c2f6' },
-    { delay: 20000, panel: 0, type: 'log', text: 'merge-ready: PR #42', color: 'teal', agent: 2 },
-    { delay: 20800, panel: 3, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "PR #43 ready. pessimistic locking.\n  SCHEMA CHANGE: AuthToken — added LockVersion." \\\n  --tag merge-ready --tag schema-change' },
-    { delay: 21300, panel: 3, type: 'out', text: 'e5a9c7' },
-    { delay: 21500, panel: 0, type: 'flight', from: 3, to: 0 },
-    { delay: 21700, panel: 0, type: 'log', text: 'schema-change propagating to root', color: 'amber', agent: 3 },
+    { delay: 52000, panel: 3, type: 'out', text: '[a3f9c1] architect · fulfills: f4b1d8\n  Ruling: pessimistic. Design §3.2.' },
+    { delay: 54000, panel: 2, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "PR #42 ready. auth middleware.\n  Touches: pkg/auth/, pkg/middleware/" \\\n  --tag merge-ready' },
+    { delay: 55200, panel: 2, type: 'out', text: 'd8c2f6' },
+    { delay: 55800, panel: 0, type: 'log', text: 'merge-ready: PR #42', color: 'teal', agent: 2 },
+    { delay: 57500, panel: 3, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "PR #43 ready. pessimistic locking.\n  SCHEMA CHANGE: AuthToken — added LockVersion." \\\n  --tag merge-ready --tag schema-change' },
+    { delay: 59000, panel: 3, type: 'out', text: 'e5a9c7' },
+    { delay: 59600, panel: 0, type: 'flight', from: 3, to: 0 },
+    { delay: 60200, panel: 0, type: 'log', text: 'schema-change propagating to root', color: 'amber', agent: 3 },
 
     // Finale
-    { delay: 22700, panel: 0, type: 'complete' },
-    { delay: 23400, panel: 0, type: 'summary' },
+    { delay: 62000, panel: 0, type: 'complete' },
+    { delay: 63500, panel: 0, type: 'summary' },
   ];
 
   function Demo4Animation(stageEl) {
@@ -2340,7 +2340,7 @@
   };
 
   Demo4Animation.prototype.updateProgress = function(step, delay) {
-    var pct = Math.round((delay / this.totalDuration) * 100);
+    var pct = Math.round((step / this.totalSteps) * 100);
     if (this.progressBar) this.progressBar.style.width = pct + '%';
     if (this.progressEl) this.progressEl.setAttribute('aria-valuenow', pct);
     if (this.stepCount) this.stepCount.textContent = 'Step ' + step + '/' + this.totalSteps;
