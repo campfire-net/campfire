@@ -89,8 +89,7 @@ func syncHTTPToFS(
 			continue
 		}
 		if state.writtenToFS[pubHex] {
-			// Already attempted in a prior cycle; skip (avoids repeated writes
-			// if the fs write failed due to a transient error).
+			// Already successfully written to fs this session; skip to avoid re-writing.
 			continue
 		}
 
