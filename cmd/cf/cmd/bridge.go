@@ -239,6 +239,10 @@ func messageMatchesAnyTag(msg *message.Message, tagFilters []string) bool {
 }
 
 // pumpHTTPToFS pulls messages from the HTTP endpoint and writes them to the filesystem.
+// The cursor is advanced using the maximum message.Timestamp from the returned messages,
+// not store.NowNano(). handleSync interprets 'since' as afterTimestamp (creation time),
+// so the cursor must live in that same space to avoid missing messages whose creation
+// timestamp is earlier than the bridge's local wall clock.
 func pumpHTTPToFS(campfireID string, fsTransport *fs.Transport, s *store.Store, agentID *identity.Identity, httpEndpoint string, cursor int64) int64 {
 	msgs, err := cfhttp.Sync(httpEndpoint, campfireID, cursor, agentID)
 	if err != nil {
@@ -247,13 +251,14 @@ func pumpHTTPToFS(campfireID string, fsTransport *fs.Transport, s *store.Store, 
 
 	maxCursor := cursor
 	for _, msg := range msgs {
-		now := store.NowNano()
-		if now > maxCursor {
-			maxCursor = now
+		// Advance the cursor in message.Timestamp space (matching how handleSync
+		// interprets the 'since' query parameter via store.ListMessages afterTimestamp).
+		if msg.Timestamp > maxCursor {
+			maxCursor = msg.Timestamp
 		}
 
 		// Store in local SQLite (dedup).
-		inserted, _ := s.AddMessage(store.MessageRecordFromMessage(campfireID, &msg, now))
+		inserted, _ := s.AddMessage(store.MessageRecordFromMessage(campfireID, &msg, store.NowNano()))
 		if !inserted {
 			continue
 		}

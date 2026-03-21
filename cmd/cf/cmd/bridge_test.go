@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -69,15 +70,31 @@ func (m *mockHTTPPeer) handleDeliver(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (m *mockHTTPPeer) handleSync(w http.ResponseWriter, _ *http.Request) {
+func (m *mockHTTPPeer) handleSync(w http.ResponseWriter, r *http.Request) {
+	sinceStr := r.URL.Query().Get("since")
+	var since int64
+	if sinceStr != "" {
+		if v, err := strconv.ParseInt(sinceStr, 10, 64); err == nil {
+			since = v
+		}
+	}
+
 	m.mu.Lock()
-	msgs := m.toServe
+	all := m.toServe
 	m.toServe = nil
 	m.mu.Unlock()
 
-	if len(msgs) == 0 {
+	// Filter by creation timestamp, matching handleSync server semantics.
+	var msgs []message.Message
+	for _, msg := range all {
+		if msg.Timestamp > since {
+			msgs = append(msgs, msg)
+		}
+	}
+	if msgs == nil {
 		msgs = []message.Message{}
 	}
+
 	data, err := cfencoding.Marshal(msgs)
 	if err != nil {
 		http.Error(w, "encode error", http.StatusInternalServerError)
@@ -260,6 +277,98 @@ func TestBridgeHTTPToFS(t *testing.T) {
 	if newCursor == 0 {
 		t.Error("expected cursor to advance past 0")
 	}
+}
+
+// TestBridgeHTTPToFSCursorSemantic verifies that pumpHTTPToFS advances the cursor
+// using message.Timestamp (creation time), not the local wall clock, so that a
+// subsequent sync with the returned cursor is correctly filtered by the server.
+//
+// Regression for: bridge advanced cursor in received_at (NowNano) space while
+// handleSync filters by afterTimestamp (message.Timestamp), causing messages whose
+// creation timestamp < bridge wall clock to be silently dropped after the first batch.
+func TestBridgeHTTPToFSCursorSemantic(t *testing.T) {
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 5 * time.Second})
+	defer cfhttp.OverrideHTTPClientForTest(http.DefaultClient)
+
+	remoteID, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// msg1 has Timestamp=1000; msg2 has Timestamp=2000.
+	// After syncing msg1, the cursor must advance to 1000 so that msg2 (Timestamp=2000)
+	// is returned on the next sync. If the cursor were set to NowNano() instead,
+	// and NowNano() > 2000 (which is always true for nanosecond wall-clock values),
+	// msg2 would be silently dropped.
+	msg1 := makeMessageWithTimestamp(t, remoteID, []byte("msg-one"), 1000)
+	msg2 := makeMessageWithTimestamp(t, remoteID, []byte("msg-two"), 2000)
+
+	peer := newMockHTTPPeer()
+	srv := httptest.NewServer(peer.handler())
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	campfireID := "bridge-test-cursor-semantic-campfire-0000000000000000000000000000000"
+	cfDir := filepath.Join(tmpDir, campfireID)
+	for _, sub := range []string{"members", "messages"} {
+		if err := os.MkdirAll(filepath.Join(cfDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fsTransport := fs.New(tmpDir)
+
+	// First pump: serve msg1 only.
+	peer.addSyncMessage(*msg1)
+	cursor := pumpHTTPToFS(campfireID, fsTransport, s, agentID, srv.URL, 0)
+
+	// Cursor must equal msg1.Timestamp, not NowNano().
+	if cursor != msg1.Timestamp {
+		t.Fatalf("after first pump: cursor = %d, want %d (msg1.Timestamp)", cursor, msg1.Timestamp)
+	}
+
+	// Second pump: serve msg2 with Timestamp > cursor.
+	// The mock now filters by 'since', so msg2 is returned only if Timestamp > cursor.
+	peer.addSyncMessage(*msg2)
+	cursor = pumpHTTPToFS(campfireID, fsTransport, s, agentID, srv.URL, cursor)
+
+	if cursor != msg2.Timestamp {
+		t.Fatalf("after second pump: cursor = %d, want %d (msg2.Timestamp)", cursor, msg2.Timestamp)
+	}
+
+	// Both messages must be in the filesystem transport.
+	fsMessages, err := fsTransport.ListMessages(campfireID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fsMessages) != 2 {
+		t.Fatalf("expected 2 fs messages, got %d (second message was dropped)", len(fsMessages))
+	}
+}
+
+// makeMessageWithTimestamp creates a signed message with an explicit Timestamp value.
+// message.NewMessage always uses time.Now(), so we patch the Timestamp field directly
+// after construction; the signature covers the other fields and the test verifies
+// round-trip through the store/fs, not signature correctness.
+func makeMessageWithTimestamp(t *testing.T, id *identity.Identity, payload []byte, ts int64) *message.Message {
+	t.Helper()
+	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, payload, []string{"test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg.Timestamp = ts
+	return msg
 }
 
 // TestBridgeDedup verifies that the same message is not delivered twice to HTTP.
