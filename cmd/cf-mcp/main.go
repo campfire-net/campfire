@@ -7,13 +7,15 @@
 //
 // Usage:
 //
-//	cf-mcp [--cf-home <path>] [--beacon-dir <path>]
+//	cf-mcp [--cf-home <path>] [--beacon-dir <path>] [--http <addr>]
 package main
 
 import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,10 +76,10 @@ type mcpCapabilities struct {
 // ---------------------------------------------------------------------------
 
 type server struct {
-	cfHome          string
-	beaconDir       string
-	cfHomeExplicit  bool
-	lockFile        *os.File
+	cfHome         string
+	beaconDir      string
+	cfHomeExplicit bool
+	lockFile       *os.File
 }
 
 func (s *server) identityPath() string {
@@ -1451,6 +1453,98 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 }
 
 // ---------------------------------------------------------------------------
+// HTTP+SSE transport
+// ---------------------------------------------------------------------------
+
+// handleMCP handles POST /mcp — accepts a JSON-RPC 2.0 request body, calls
+// dispatch(), and returns the JSON-RPC response. This is the HTTP equivalent
+// of the stdio line-based loop.
+func (s *server) handleMCP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024)) // 1MB max
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(errResponse(nil, -32700, fmt.Sprintf("read error: %v", err)))
+		return
+	}
+
+	var req jsonRPCRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK) // JSON-RPC errors use 200 per spec
+		json.NewEncoder(w).Encode(errResponse(nil, -32700, fmt.Sprintf("parse error: %v", err)))
+		return
+	}
+
+	resp := s.dispatch(req)
+
+	// Skip empty responses (notifications).
+	if resp.JSONRPC == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		fmt.Fprintf(os.Stderr, "http encode error: %v\n", err)
+	}
+}
+
+// handleSSE handles GET /sse — opens a server-sent events stream. For Phase 1,
+// this establishes the SSE connection and sends a heartbeat. The endpoint URL
+// for POSTing messages is communicated via the initial "endpoint" event.
+func (s *server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// Send the MCP endpoint event so clients know where to POST.
+	fmt.Fprintf(w, "event: endpoint\ndata: /mcp\n\n")
+	flusher.Flush()
+
+	// Keep the connection alive until the client disconnects.
+	ctx := r.Context()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			fmt.Fprintf(w, ": heartbeat\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// serveHTTP starts the HTTP+SSE MCP server on the given address.
+func (s *server) serveHTTP(addr string) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", s.handleMCP)
+	mux.HandleFunc("/sse", s.handleSSE)
+
+	fmt.Fprintf(os.Stderr, "cf-mcp listening on %s\n", addr)
+	return http.ListenAndServe(addr, mux)
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1458,6 +1552,7 @@ func main() {
 	// Parse minimal flags.
 	cfHome := ""
 	beaconDir := ""
+	httpAddr := ""
 	cfHomeExplicit := false
 	for i, arg := range os.Args[1:] {
 		switch {
@@ -1471,6 +1566,10 @@ func main() {
 			beaconDir = os.Args[i+2]
 		case strings.HasPrefix(arg, "--beacon-dir="):
 			beaconDir = strings.TrimPrefix(arg, "--beacon-dir=")
+		case arg == "--http" && i+1 < len(os.Args[1:]):
+			httpAddr = os.Args[i+2]
+		case strings.HasPrefix(arg, "--http="):
+			httpAddr = strings.TrimPrefix(arg, "--http=")
 		}
 	}
 
@@ -1502,7 +1601,16 @@ func main() {
 		cfHomeExplicit: cfHomeExplicit,
 	}
 
-	// JSON-RPC 2.0 over stdio.
+	// HTTP+SSE mode when --http is set, otherwise stdio.
+	if httpAddr != "" {
+		if err := srv.serveHTTP(httpAddr); err != nil {
+			fmt.Fprintf(os.Stderr, "http server error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// JSON-RPC 2.0 over stdio (default).
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB max line
 	enc := json.NewEncoder(os.Stdout)
