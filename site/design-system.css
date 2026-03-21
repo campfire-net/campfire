@@ -1,0 +1,364 @@
+/* Campfire Design System — Shared tokens and components
+ * Consumed by: campfire-recipes/docs/ and campfire/site/
+ * Site-specific layouts and page-specific components stay in each site's own stylesheet.
+ */
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── Design Tokens ── */
+:root {
+  /* Colors */
+  --ds-bg:              #0a0a0a;
+  --ds-surface:         #111111;
+  --ds-surface-hover:   #1a1a1a;
+  --ds-text:            #e8e4df;
+  --ds-text-secondary:  #8a8480;
+  --ds-text-muted:      #666666;
+  --ds-accent-primary:  #d97706;   /* amber */
+  --ds-accent-secondary:#0d9488;   /* teal */
+  --ds-border:          #222222;
+  --ds-code-bg:         #0d0d0d;
+  --ds-success:         #0d9488;   /* teal */
+  --ds-warning:         #d97706;   /* amber */
+  --ds-error:           #ef4444;
+
+  /* Derived accent shades */
+  --ds-accent-primary-light:   #f59e0b;
+  --ds-accent-secondary-light: #14b8a6;
+
+  /* Typography */
+  --ds-font-body:  "Rubik", system-ui, sans-serif;
+  --ds-font-mono:  "Fira Code", "Fira Mono", monospace;
+
+  --ds-text-hero: 56px;
+  --ds-text-2xl:  44px;
+  --ds-text-xl:   28px;
+  --ds-text-lg:   22px;
+  --ds-text-base: 17px;
+  --ds-text-sm:   14px;
+  --ds-text-xs:   12px;
+
+  --ds-line-height:       1.7;
+  --ds-line-height-tight: 1.3;
+
+  /* Spacing — 8px baseline */
+  --ds-space-xs:      8px;
+  --ds-space-sm:      16px;
+  --ds-space-md:      24px;
+  --ds-space-lg:      32px;
+  --ds-space-xl:      48px;
+  --ds-space-2xl:     72px;
+  --ds-space-section: 96px;
+
+  /* Layout */
+  --ds-max-width: 1120px;
+  --ds-doc-width: 860px;
+  --ds-gutter:    32px;
+  --ds-radius:    8px;
+  --ds-radius-lg: 12px;
+}
+
+/* ── Base Styles ── */
+html {
+  font-size: var(--ds-text-base);
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--ds-font-body);
+  color: var(--ds-text);
+  background: var(--ds-bg);
+  line-height: var(--ds-line-height);
+  -webkit-font-smoothing: antialiased;
+}
+
+img { max-width: 100%; height: auto; display: block; }
+
+a {
+  color: var(--ds-accent-secondary-light);
+  text-decoration: none;
+}
+a:hover { color: var(--ds-accent-secondary); }
+
+/* ── Headings ── */
+h1 {
+  font-family: var(--ds-font-body);
+  font-size: clamp(32px, 5vw, var(--ds-text-hero));
+  font-weight: 700;
+  line-height: var(--ds-line-height-tight);
+  letter-spacing: -0.03em;
+  margin-bottom: var(--ds-space-sm);
+}
+
+h2 {
+  font-size: var(--ds-text-xl);
+  font-weight: 700;
+  line-height: var(--ds-line-height-tight);
+  letter-spacing: -0.02em;
+  margin-bottom: var(--ds-space-xs);
+}
+
+h3 {
+  font-size: var(--ds-text-lg);
+  font-weight: 600;
+  line-height: var(--ds-line-height-tight);
+  letter-spacing: -0.01em;
+  margin-bottom: var(--ds-space-xs);
+}
+
+h4 {
+  font-size: var(--ds-text-base);
+  font-weight: 600;
+  line-height: var(--ds-line-height-tight);
+  margin-bottom: var(--ds-space-xs);
+}
+
+/* ── Code & Pre ── */
+code {
+  font-family: var(--ds-font-mono);
+  font-size: 0.9em;
+  background: var(--ds-code-bg);
+  border: 1px solid var(--ds-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--ds-accent-secondary-light);
+}
+
+pre {
+  font-family: var(--ds-font-mono);
+}
+
+pre code {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* ── Shared Components ── */
+
+/* Navigation */
+.ds-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(10, 10, 10, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--ds-border);
+}
+
+.ds-nav .ds-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 60px;
+  gap: var(--ds-space-lg);
+}
+
+.ds-nav-brand {
+  font-family: var(--ds-font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ds-text);
+  text-decoration: none;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.ds-nav-brand span { color: var(--ds-accent-primary); }
+
+.ds-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  list-style: none;
+}
+
+.ds-nav-links a {
+  font-size: var(--ds-text-sm);
+  font-weight: 500;
+  color: var(--ds-text-secondary);
+  transition: color 0.15s;
+}
+
+.ds-nav-links a:hover,
+.ds-nav-links a.active { color: var(--ds-text); }
+
+.ds-nav-cta {
+  font-size: var(--ds-text-xs);
+  font-weight: 600;
+  background: var(--ds-accent-primary);
+  color: #000;
+  padding: 7px 16px;
+  border-radius: var(--ds-radius);
+  transition: background 0.15s;
+  white-space: nowrap;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.ds-nav-cta:hover { background: var(--ds-accent-primary-light); color: #000; }
+
+/* Buttons */
+.ds-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--ds-font-body);
+  font-size: var(--ds-text-sm);
+  font-weight: 700;
+  color: #000;
+  background: var(--ds-accent-primary);
+  padding: 12px 24px;
+  border-radius: var(--ds-radius);
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.ds-btn-primary:hover { background: var(--ds-accent-primary-light); color: #000; }
+
+.ds-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--ds-font-body);
+  font-size: var(--ds-text-sm);
+  font-weight: 500;
+  color: var(--ds-text-secondary);
+  background: transparent;
+  padding: 12px 24px;
+  border-radius: var(--ds-radius);
+  border: 1px solid var(--ds-border);
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.ds-btn-ghost:hover { border-color: var(--ds-text-secondary); color: var(--ds-text); }
+
+/* Card */
+.ds-card {
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-lg);
+  padding: var(--ds-space-md);
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.ds-card:hover {
+  border-color: var(--ds-accent-primary);
+  transform: translateY(-2px);
+}
+
+/* Code block — terminal/command display */
+.ds-code-block {
+  background: var(--ds-code-bg);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius);
+  padding: 20px;
+  font-family: var(--ds-font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+  color: #ccc;
+}
+
+.ds-code-block .comment { color: #4a4a4a; }
+.ds-code-block .cmd     { color: var(--ds-accent-secondary-light); }
+.ds-code-block .arrow   { color: var(--ds-accent-primary); }
+.ds-code-block .output  { color: var(--ds-text-secondary); }
+
+/* Callout — left accent bar box */
+.ds-callout {
+  border-left: 4px solid var(--ds-accent-secondary);
+  background: var(--ds-surface);
+  border-radius: 0 var(--ds-radius) var(--ds-radius) 0;
+  padding: var(--ds-space-md);
+  font-size: var(--ds-text-sm);
+  color: var(--ds-text-secondary);
+  line-height: 1.6;
+}
+
+.ds-callout--warning { border-left-color: var(--ds-warning); }
+.ds-callout--error   { border-left-color: var(--ds-error); }
+.ds-callout--success { border-left-color: var(--ds-success); }
+
+.ds-callout-label {
+  display: block;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ds-accent-secondary);
+  margin-bottom: 6px;
+}
+
+.ds-callout--warning .ds-callout-label { color: var(--ds-warning); }
+.ds-callout--error   .ds-callout-label { color: var(--ds-error); }
+
+/* Container */
+.ds-container {
+  max-width: var(--ds-max-width);
+  margin: 0 auto;
+  padding: 0 var(--ds-gutter);
+}
+
+.ds-container--doc {
+  max-width: var(--ds-doc-width);
+  margin: 0 auto;
+  padding: 0 var(--ds-gutter);
+}
+
+/* Footer */
+.ds-footer {
+  border-top: 1px solid var(--ds-border);
+  padding: 36px 0;
+}
+
+.ds-footer-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--ds-space-sm);
+}
+
+.ds-footer-brand {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-sm);
+  color: var(--ds-text-secondary);
+}
+
+.ds-footer-brand span { color: var(--ds-accent-primary); }
+
+.ds-footer-links {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.ds-footer-links a {
+  font-size: 13px;
+  color: var(--ds-text-secondary);
+  transition: color 0.15s;
+}
+
+.ds-footer-links a:hover { color: var(--ds-text); }
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  :root {
+    --ds-gutter: 20px;
+  }
+
+  .ds-nav .ds-container { height: 54px; }
+  .ds-nav-links { display: none; }
+}
