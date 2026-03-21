@@ -185,6 +185,89 @@ func TestSSE_MethodNotAllowed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// GET /health
+// ---------------------------------------------------------------------------
+
+// TestHealth_OK verifies that GET /health returns 200 with JSON status.
+func TestHealth_OK(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	srv.handleHealth(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected application/json, got %q", ct)
+	}
+
+	var body struct {
+		Status   string `json:"status"`
+		Sessions int    `json:"sessions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode health response: %v", err)
+	}
+	if body.Status != "ok" {
+		t.Errorf("expected status=ok, got %q", body.Status)
+	}
+}
+
+// TestHealth_MethodNotAllowed verifies that POST /health returns 405.
+func TestHealth_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/health", nil)
+	w := httptest.NewRecorder()
+	srv.handleHealth(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// TestHealth_SessionCount verifies that /health reports active session count.
+func TestHealth_SessionCount(t *testing.T) {
+	dir := t.TempDir()
+	sm := NewSessionManager(dir)
+	defer sm.Stop()
+
+	// Create two sessions.
+	_, err := sm.getOrCreate("tok-a")
+	if err != nil {
+		t.Fatalf("create session a: %v", err)
+	}
+	_, err = sm.getOrCreate("tok-b")
+	if err != nil {
+		t.Fatalf("create session b: %v", err)
+	}
+
+	srv := &server{
+		cfHome:      dir,
+		beaconDir:   dir,
+		sessManager: sm,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	srv.handleHealth(w, req)
+
+	var body struct {
+		Status   string `json:"status"`
+		Sessions int    `json:"sessions"`
+	}
+	if err := json.NewDecoder(w.Result().Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Sessions != 2 {
+		t.Errorf("expected sessions=2, got %d", body.Sessions)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Integration: full HTTP mux
 // ---------------------------------------------------------------------------
 

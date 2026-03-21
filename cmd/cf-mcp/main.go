@@ -2019,6 +2019,25 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleHealth handles GET /health. Returns 200 with a JSON body reporting
+// the server status and active session count. Used by Fly.io health checks.
+func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sessions := 0
+	if s.sessManager != nil {
+		s.sessManager.sessions.Range(func(_, _ interface{}) bool {
+			sessions++
+			return true
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"status":"ok","sessions":%d}`, sessions)
+}
+
 // serveHTTP starts the HTTP+SSE MCP server on the given address.
 func (s *server) serveHTTP(addr string) error {
 	mux := http.NewServeMux()
@@ -2028,6 +2047,7 @@ func (s *server) serveHTTP(addr string) error {
 		mux.HandleFunc("/mcp", s.handleMCP)
 	}
 	mux.HandleFunc("/sse", s.handleSSE)
+	mux.HandleFunc("/health", s.handleHealth)
 
 	// Mount the HTTP transport router so external peers can reach hosted
 	// campfires via /campfire/{id}/deliver, /campfire/{id}/poll, etc.
