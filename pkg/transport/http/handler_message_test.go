@@ -111,6 +111,55 @@ func TestRelayDeliverNonMemberForbidden(t *testing.T) {
 	}
 }
 
+// TestRelayDeliverObserverForbidden verifies that a campfire member with RoleObserver
+// cannot relay a message on behalf of another member. The observer role check in
+// handleDeliver (applied to the HTTP request sender, not the message author) must
+// reject the relay with 403, regardless of the fact that the message itself is signed
+// by a full member. This exercises the role check at the relay path: observer C relays
+// a message authored by full member A.
+func TestRelayDeliverObserverForbidden(t *testing.T) {
+	campfireID := "relay-deliver-observer-forbidden"
+	idA := tempIdentity(t) // message author (full member)
+	idC := tempIdentity(t) // relay deliverer (observer member)
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	// A is a full member; C is a member but with RoleObserver.
+	addPeerEndpoint(t, s, campfireID, idA.PublicKeyHex())
+	addPeerEndpointWithRole(t, s, campfireID, idC.PublicKeyHex(), "observer")
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+443)
+	startTransportWithSelf(t, addr, s, idA)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	// A signs the message.
+	msg := newTestMessage(t, idA)
+	body, err := cfencoding.Marshal(msg)
+	if err != nil {
+		t.Fatalf("encoding message: %v", err)
+	}
+
+	// C (observer) attempts to relay it — should be rejected with 403.
+	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	signTestRequest(req, idC, body)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("observer relay deliver request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403 for observer relay deliver, got %d: %s", resp.StatusCode, respBody)
+	}
+}
+
 // TestDirectDeliverStillWorks verifies that the normal case (sender == deliverer)
 // continues to work after the relay relaxation.
 func TestDirectDeliverStillWorks(t *testing.T) {
