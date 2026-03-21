@@ -447,3 +447,97 @@ func TestFlock_ReleaseAndReacquire(t *testing.T) {
 		t.Errorf("expected tryFlock to succeed after release, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// validateAgentName: path traversal rejection
+// ---------------------------------------------------------------------------
+
+// TestValidateAgentName_Traversal verifies that names designed to escape the
+// agents/ directory are rejected before any filesystem operation.
+func TestValidateAgentName_Traversal(t *testing.T) {
+	malicious := []string{
+		"../escape",
+		"../../tmp/evil",
+		"foo/../bar",
+		"/absolute",
+		"sub/dir",
+		`sub\dir`,
+		"..",
+		".",
+	}
+	for _, name := range malicious {
+		if err := validateAgentName(name); err == nil {
+			t.Errorf("validateAgentName(%q) expected error, got nil", name)
+		}
+	}
+}
+
+// TestValidateAgentName_Valid verifies that legitimate single-component names
+// are accepted.
+func TestValidateAgentName_Valid(t *testing.T) {
+	valid := []string{
+		"myagent",
+		"valid-agent",
+		"agent_123",
+		"Agent.Name",
+		"a",
+	}
+	for _, name := range valid {
+		if err := validateAgentName(name); err != nil {
+			t.Errorf("validateAgentName(%q) expected nil, got: %v", name, err)
+		}
+	}
+}
+
+// TestHandleInit_TraversalRejected verifies that campfire_init with a path
+// traversal name returns a -32602 error and does not create any directory
+// outside the expected base.
+func TestHandleInit_TraversalRejected(t *testing.T) {
+	srv := newTestServer(t)
+	// Snapshot home dir state before call.
+	home, _ := os.UserHomeDir()
+	escapedPath := filepath.Join(home, ".campfire", "agents", "..", "escape")
+
+	resp := srv.handleInit(float64(1), map[string]interface{}{
+		"name": "../escape",
+	})
+
+	if resp.Error == nil {
+		t.Fatal("expected error for traversal name, got nil")
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("expected error code -32602, got %d", resp.Error.Code)
+	}
+
+	// Directory must not have been created.
+	if _, err := os.Stat(escapedPath); err == nil {
+		t.Errorf("traversal directory was created at %s — this is a security failure", escapedPath)
+	}
+}
+
+// TestHandleInit_ValidNameSucceeds verifies that campfire_init with a valid
+// single-component name proceeds normally (creates identity, no error).
+func TestHandleInit_ValidNameSucceeds(t *testing.T) {
+	// Use a temp dir as the named home so we don't touch ~/.campfire/agents.
+	namedHome := t.TempDir()
+	srv := &server{
+		cfHome:         namedHome,
+		beaconDir:      filepath.Join(namedHome, "beacons"),
+		cfHomeExplicit: true,
+	}
+	if err := os.MkdirAll(srv.beaconDir, 0700); err != nil {
+		t.Fatalf("creating beaconDir: %v", err)
+	}
+
+	// Calling with no name (session-scoped) uses the pre-configured cfHome.
+	resp := srv.handleInit(float64(1), map[string]interface{}{})
+	if resp.Error != nil {
+		t.Fatalf("handleInit with no name failed: %+v", resp.Error)
+	}
+
+	// Identity file should exist in cfHome.
+	idPath := filepath.Join(srv.cfHome, "identity.json")
+	if _, err := os.Stat(idPath); err != nil {
+		t.Errorf("identity.json not found after valid init: %v", err)
+	}
+}

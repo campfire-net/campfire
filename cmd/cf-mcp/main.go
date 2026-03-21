@@ -460,12 +460,25 @@ func mustJSON(v interface{}) json.RawMessage {
 // Tool handlers
 // ---------------------------------------------------------------------------
 
+// validateAgentName rejects names that would escape the agents/ directory via
+// path traversal. A valid name is a single path component with no separators
+// and is not a dot-only component ("." or "..").
+func validateAgentName(name string) error {
+	if strings.ContainsAny(name, `/\`) || name == ".." || name == "." || filepath.Base(name) != name {
+		return fmt.Errorf("invalid agent name %q: must be a single path component with no separators", name)
+	}
+	return nil
+}
+
 func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonRPCResponse {
 	name := getStr(params, "name")
 
 	// Named identity: persistent agent across sessions
 	// No name: session-scoped identity (disposable)
 	if name != "" {
+		if err := validateAgentName(name); err != nil {
+			return errResponse(id, -32602, err.Error())
+		}
 		home, _ := os.UserHomeDir()
 		namedHome := filepath.Join(home, ".campfire", "agents", name)
 		if err := os.MkdirAll(namedHome, 0700); err != nil {
