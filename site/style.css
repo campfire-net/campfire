@@ -2270,6 +2270,28 @@ a:hover { color: var(--color-accent-secondary-hover); }
   text-decoration: underline;
 }
 
+.accordion-callout {
+  margin-top: 16px;
+  padding: 14px 18px;
+  background: var(--color-surface-2, rgba(255,255,255,0.04));
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+.accordion-callout strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+.accordion-callout a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+.accordion-callout a:hover {
+  text-decoration: underline;
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
   .accordion-header {
