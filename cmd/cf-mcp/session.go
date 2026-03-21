@@ -3,17 +3,23 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // idleTimeout is the duration after which an inactive session closes its store.
 const idleTimeout = 10 * time.Minute
+
+// defaultMaxSessions is the maximum number of concurrent active sessions
+// when no override is provided to NewSessionManager.
+const defaultMaxSessions = 1000
 
 // Session represents one agent's isolated state: a per-session directory
 // containing identity.json and store.db, with the store held open in memory.
@@ -94,14 +100,21 @@ type SessionManager struct {
 	// idleTimeoutOverride allows tests to set a custom idle timeout.
 	// When non-zero, reaper uses this instead of the package constant.
 	idleTimeoutOverride time.Duration
+	// maxSessions is the maximum number of concurrent active sessions.
+	// getOrCreate returns an error when this limit is reached.
+	// Zero means use defaultMaxSessions.
+	maxSessions int
 }
 
 // NewSessionManager creates a SessionManager rooted at sessionsDir and
-// starts the background idle-session reaper.
+// starts the background idle-session reaper. The session limit defaults to
+// defaultMaxSessions; use SessionManager.maxSessions directly in tests to
+// override.
 func NewSessionManager(sessionsDir string) *SessionManager {
 	m := &SessionManager{
 		sessionsDir: sessionsDir,
 		stopCh:      make(chan struct{}),
+		maxSessions: defaultMaxSessions,
 	}
 	go m.reaper()
 	return m
@@ -136,6 +149,20 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 		return sess, nil
 	}
 
+	// Enforce the session limit before allocating any resources.
+	limit := m.maxSessions
+	if limit <= 0 {
+		limit = defaultMaxSessions
+	}
+	var count int
+	m.sessions.Range(func(_, _ interface{}) bool {
+		count++
+		return count < limit // stop early once the limit is reached
+	})
+	if count >= limit {
+		return nil, &sessionLimitError{limit: limit}
+	}
+
 	cfHome := filepath.Join(m.sessionsDir, token)
 	beaconDir := filepath.Join(cfHome, "beacons")
 	if err := os.MkdirAll(beaconDir, 0700); err != nil {
@@ -159,6 +186,18 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 	if m.router != nil {
 		t := cfhttp.New("", st)
 		t.StartNoncePruner()
+		// Set the key provider once at session init so that repeated campfire
+		// creations within the same session do not overwrite it. The closure
+		// captures cfHome (constant for this session) and resolves the
+		// campfire-specific state on each call via the campfireID argument.
+		fsT := fs.New(cfHome)
+		t.SetKeyProvider(func(campfireID string) (privKey []byte, pubKey []byte, err error) {
+			state, err := fsT.ReadState(campfireID)
+			if err != nil {
+				return nil, nil, err
+			}
+			return state.PrivateKey, state.PublicKey, nil
+		})
 		sess.httpTransport = t
 		sess.router = m.router
 		m.router.RegisterSession(token, t)
@@ -194,6 +233,17 @@ func (m *SessionManager) reaper() {
 			})
 		}
 	}
+}
+
+// sessionLimitError is returned by getOrCreate when the active session count
+// reaches maxSessions. Callers translate this to a -32000 JSON-RPC error with
+// an HTTP 503 status so clients know to retry later.
+type sessionLimitError struct {
+	limit int
+}
+
+func (e *sessionLimitError) Error() string {
+	return fmt.Sprintf("session limit reached (%d active sessions)", e.limit)
 }
 
 // generateToken returns a random 32-byte hex session token.
