@@ -13,11 +13,25 @@ jobs:
   release:
     name: Build and release
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version_bare: ${{ steps.version.outputs.version_bare }}
+      version_minor: ${{ steps.version.outputs.version_minor }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Parse version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          VERSION_BARE="${VERSION#v}"  # strip leading v
+          VERSION_MINOR="v$(echo "${VERSION_BARE}" | cut -d. -f1-2)"  # e.g., v0.3
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version_bare=${VERSION_BARE}" >> "$GITHUB_OUTPUT"
+          echo "version_minor=${VERSION_MINOR}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -29,9 +43,9 @@ jobs:
 
       - name: Build binaries
         run: |
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${{ steps.version.outputs.version }}"
           LDFLAGS_CF="-s -w -X github.com/campfire-net/campfire/cmd/cf/cmd.Version=${VERSION}"
-          LDFLAGS_MCP="-s -w"
+          LDFLAGS_MCP="-s -w -X main.Version=${VERSION}"
           OUTDIR="dist"
           mkdir -p "${OUTDIR}"
 
@@ -165,7 +179,7 @@ jobs:
             fi
             echo "---"
             echo ""
-            echo "**Full changelog**: [\`${PREV_TAG}...${GITHUB_REF_NAME}\`](https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${GITHUB_REF_NAME})"
+            echo "**Full changelog**: [\`${PREV_TAG}...${{ steps.version.outputs.version }}\`](https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${{ steps.version.outputs.version }})"
           } > /tmp/release_notes.md
 
       - name: Create GitHub Release
@@ -179,3 +193,146 @@ jobs:
             dist/checksums.txt
             dist/*.sig
             dist/*.pem
+
+  publish-npm:
+    name: Publish npm packages
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build cf-mcp binaries
+        run: |
+          VERSION="${{ needs.release.outputs.version }}"
+          LDFLAGS="-s -w -X main.Version=${VERSION}"
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            os=$(echo $target | cut -d_ -f1)
+            arch=$(echo $target | cut -d_ -f2)
+            GOOS=$os GOARCH=$arch go build -ldflags "${LDFLAGS}" -o dist/cf-mcp-${target} ./cmd/cf-mcp
+          done
+          GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/cf-mcp-windows_amd64.exe ./cmd/cf-mcp
+
+      - name: Copy binaries to platform packages
+        run: |
+          cp dist/cf-mcp-linux_amd64 npm/campfire-mcp-linux-x64/cf-mcp
+          cp dist/cf-mcp-linux_arm64 npm/campfire-mcp-linux-arm64/cf-mcp
+          cp dist/cf-mcp-darwin_amd64 npm/campfire-mcp-darwin-x64/cf-mcp
+          cp dist/cf-mcp-darwin_arm64 npm/campfire-mcp-darwin-arm64/cf-mcp
+          cp dist/cf-mcp-windows_amd64.exe npm/campfire-mcp-win32-x64/cf-mcp.exe
+          chmod +x npm/campfire-mcp-*/cf-mcp
+
+      - name: Set version
+        run: |
+          VERSION="${{ needs.release.outputs.version_bare }}"
+          for dir in campfire-mcp campfire-mcp-linux-x64 campfire-mcp-linux-arm64 campfire-mcp-darwin-x64 campfire-mcp-darwin-arm64 campfire-mcp-win32-x64; do
+            cd npm/$dir
+            npm version $VERSION --no-git-tag-version --allow-same-version
+            cd ../..
+          done
+
+      - name: Publish platform packages
+        run: |
+          for dir in campfire-mcp-linux-x64 campfire-mcp-linux-arm64 campfire-mcp-darwin-x64 campfire-mcp-darwin-arm64 campfire-mcp-win32-x64; do
+            cd npm/$dir
+            npm publish --access public --provenance
+            cd ../..
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package
+        run: |
+          cd npm/campfire-mcp
+          npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  update-site:
+    name: Update site metadata and versioned docs
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Update site version metadata
+        run: |
+          VERSION="${{ needs.release.outputs.version_bare }}"
+
+          # Update schema.org softwareVersion
+          sed -i "s/\"softwareVersion\": \"[^\"]*\"/\"softwareVersion\": \"${VERSION}\"/" site/index.html
+
+          # Update .well-known beacon version
+          sed -i "s/\"version\": \"campfire\/[^\"]*\"/\"version\": \"campfire\/${VERSION}\"/" site/.well-known/campfire
+
+      - name: Snapshot versioned docs
+        run: |
+          VERSION_MINOR="${{ needs.release.outputs.version_minor }}"
+          DOCS_DIR="site/docs/${VERSION_MINOR}"
+
+          # Copy current docs to versioned path (overwrite if same minor)
+          rm -rf "${DOCS_DIR}"
+          mkdir -p "${DOCS_DIR}"
+
+          # Copy all doc pages
+          for f in site/docs/*.html; do
+            [ -f "$f" ] || continue
+            cp "$f" "${DOCS_DIR}/"
+          done
+
+          # Update relative paths in versioned copies (stylesheet links)
+          for f in "${DOCS_DIR}"/*.html; do
+            [ -f "$f" ] || continue
+            # ../style.css → ../../style.css (one level deeper)
+            sed -i 's|href="\.\./style\.css"|href="../../style.css"|g' "$f"
+            sed -i 's|href="\.\./design-system\.css"|href="../../design-system.css"|g' "$f"
+            sed -i 's|src="\.\./|src="../../|g' "$f"
+            # Fix nav links to point back to site root
+            sed -i 's|href="/docs/|href="/docs/|g' "$f"
+          done
+
+          # Update versions.json manifest
+          VERSIONS_FILE="site/docs/versions.json"
+          VERSION_BARE="${{ needs.release.outputs.version_bare }}"
+
+          if [ -f "${VERSIONS_FILE}" ]; then
+            # Add or update this minor version entry
+            python3 -c "
+          import json, sys
+          with open('${VERSIONS_FILE}') as f:
+              versions = json.load(f)
+          entry = {'version': '${VERSION_MINOR}', 'path': '/docs/${VERSION_MINOR}/', 'release': '${VERSION_BARE}'}
+          versions = [v for v in versions if v['version'] != '${VERSION_MINOR}']
+          versions.insert(0, entry)
+          with open('${VERSIONS_FILE}', 'w') as f:
+              json.dump(versions, f, indent=2)
+          "
+          else
+            echo '[{"version": "'"${VERSION_MINOR}"'", "path": "/docs/'"${VERSION_MINOR}"'/", "release": "'"${VERSION_BARE}"'"}]' | python3 -m json.tool > "${VERSIONS_FILE}"
+          fi
+
+      - name: Commit and push site updates
+        run: |
+          VERSION="${{ needs.release.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add site/
+          git diff --staged --quiet && echo "No site changes" && exit 0
+          git commit -m "site: update metadata and docs snapshot for ${VERSION}"
+          git push

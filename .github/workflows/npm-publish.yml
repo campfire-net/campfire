@@ -1,10 +1,12 @@
-name: Publish npm packages
+name: Publish npm packages (manual)
 
+# Manual fallback only — releases trigger npm publish automatically via release.yml.
+# Use this to re-publish a specific version without cutting a new release.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g., 0.1.1)'
+        description: 'Version to publish (e.g., 0.3.2)'
         required: true
 
 permissions:
@@ -28,12 +30,14 @@ jobs:
 
       - name: Build binaries
         run: |
+          VERSION="${{ github.event.inputs.version }}"
+          LDFLAGS="-s -w -X main.Version=v${VERSION}"
           for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
             os=$(echo $target | cut -d_ -f1)
             arch=$(echo $target | cut -d_ -f2)
-            GOOS=$os GOARCH=$arch go build -o dist/cf-mcp-${target} ./cmd/cf-mcp
+            GOOS=$os GOARCH=$arch go build -ldflags "${LDFLAGS}" -o dist/cf-mcp-${target} ./cmd/cf-mcp
           done
-          GOOS=windows GOARCH=amd64 go build -o dist/cf-mcp-windows_amd64.exe ./cmd/cf-mcp
+          GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/cf-mcp-windows_amd64.exe ./cmd/cf-mcp
 
       - name: Copy binaries to platform packages
         run: |
