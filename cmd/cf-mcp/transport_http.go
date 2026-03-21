@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
@@ -32,9 +33,9 @@ func NewTransportRouter() *TransportRouter {
 	}
 }
 
-// Register associates a campfire ID with a session's transport instance.
-// Called when a hosted agent creates a campfire via the MCP campfire_create tool.
-func (r *TransportRouter) Register(campfireID string, t *cfhttp.Transport) {
+// register is unexported to prevent direct use. Use RegisterForSession instead,
+// which also tracks session ownership for cleanup on reap.
+func (r *TransportRouter) register(campfireID string, t *cfhttp.Transport) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.campfires[campfireID] = t
@@ -110,7 +111,7 @@ func (r *TransportRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// The path after /campfire/ starts at index 10
 	rest := path[len("/campfire/"):]
 	campfireID := rest
-	if idx := indexOf(rest, '/'); idx >= 0 {
+	if idx := strings.IndexByte(rest, '/'); idx >= 0 {
 		campfireID = rest[:idx]
 	}
 
@@ -128,14 +129,4 @@ func (r *TransportRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Delegate to the transport's handler. The transport's mux expects
 	// the full /campfire/{id}/{action} path.
 	t.Handler().ServeHTTP(w, req)
-}
-
-// indexOf returns the index of the first occurrence of sep in s, or -1.
-func indexOf(s string, sep byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == sep {
-			return i
-		}
-	}
-	return -1
 }

@@ -145,7 +145,9 @@ func syncFSToHTTP(
 		// The HTTP membership protocol only allows a member to announce itself.
 		// Only send notifications for the bridge's own identity; skip others.
 		if pubHex != bridgePubHex {
-			// Mark as "announced" to avoid re-attempting on every cycle.
+			// Mark as processed to avoid re-attempting on every cycle.
+			// Non-bridge members are skipped (not sent to HTTP), but we still mark
+			// them as processed to prevent spinning on them indefinitely.
 			state.announcedToHTTP[pubHex] = true
 			continue
 		}

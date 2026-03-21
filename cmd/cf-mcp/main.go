@@ -16,7 +16,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1534,11 +1536,9 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 	if len(targetHex) != 64 {
 		return errResponse(id, -32602, "target_key must be 64 hex characters (32 bytes)")
 	}
-	targetKey := make([]byte, 32)
-	for i := 0; i < 32; i++ {
-		var b byte
-		fmt.Sscanf(targetHex[i*2:i*2+2], "%02x", &b)
-		targetKey[i] = b
+	targetKey, err := hex.DecodeString(targetHex)
+	if err != nil {
+		return errResponse(id, -32602, "target_key must be valid hex")
 	}
 
 	agentID, err := identity.Load(s.identityPath())
@@ -1875,11 +1875,18 @@ func (s *server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024)) // 1MB max
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024) // 1MB max; closes conn on overflow
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(errResponse(nil, -32700, fmt.Sprintf("read error: %v", err)))
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			json.NewEncoder(w).Encode(errResponse(nil, -32700, "request body too large"))
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(errResponse(nil, -32700, fmt.Sprintf("read error: %v", err)))
+		}
 		return
 	}
 
@@ -1959,11 +1966,18 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024) // 1MB max; closes conn on overflow
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(errResponse(nil, -32700, fmt.Sprintf("read error: %v", err))) //nolint:errcheck
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			json.NewEncoder(w).Encode(errResponse(nil, -32700, "request body too large")) //nolint:errcheck
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(errResponse(nil, -32700, fmt.Sprintf("read error: %v", err))) //nolint:errcheck
+		}
 		return
 	}
 
