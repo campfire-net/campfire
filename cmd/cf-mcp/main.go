@@ -1127,38 +1127,125 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 	}
 }
 
+// httpAwaitChunkDuration is the maximum time a single handleAwaitHTTP call
+// blocks before returning a "pending" status. Capped below typical MCP gateway
+// timeouts (30-120s) so agents always receive a well-typed response instead of
+// an HTTP-level timeout.
+const httpAwaitChunkDuration = 30 * time.Second
+
 // handleAwaitHTTP uses the PollBroker for efficient notification-driven await
-// instead of filesystem polling.
+// instead of filesystem polling. Each call blocks for at most httpAwaitChunkDuration
+// (30s), then returns a structured status:
+//
+//   - fulfilled: {"status":"fulfilled","message":{...}}
+//   - pending:   {"status":"pending","elapsed":"30s","remaining":"4m30s","retry":true}
+//   - timeout:   {"status":"timeout","elapsed":"5m","remaining":"0s"}
+//   - error:     {"status":"error","message":"campfire not found"}
+//
+// The agent (or MCP gateway) retries on pending. The full timeout is enforced
+// across retries by passing the decremented timeout on each call.
 func (s *server) handleAwaitHTTP(id interface{}, st *store.Store, campfireID, targetMsgID string, timeout time.Duration) jsonRPCResponse {
-	// Check if already fulfilled.
-	if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
-		result, _ := toolResultJSON(msg)
+	// Validate that the campfire is registered on this server. This catches
+	// misspelled or non-existent campfire IDs before blocking.
+	if s.transportRouter != nil && s.transportRouter.GetCampfireTransport(campfireID) == nil {
+		result, _ := toolResultJSON(map[string]interface{}{
+			"status":  "error",
+			"message": fmt.Sprintf("campfire not found: %s", campfireID),
+		})
 		return okResponse(id, result)
 	}
 
-	deadline := time.After(timeout)
+	// Check if already fulfilled before blocking.
+	if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
+		result, _ := awaitStatusFulfilled(msg)
+		return okResponse(id, result)
+	}
 
-	for {
-		// Subscribe to PollBroker for this campfire.
-		ch, dereg, err := s.httpTransport.PollBrokerSubscribe(campfireID)
-		if err != nil {
-			return errResponse(id, -32000, fmt.Sprintf("subscribing to poll broker: %v", err))
+	// If the caller's remaining timeout is zero or negative, it has expired.
+	if timeout <= 0 {
+		result, _ := toolResultJSON(map[string]interface{}{
+			"status":    "timeout",
+			"elapsed":   "0s",
+			"remaining": "0s",
+		})
+		return okResponse(id, result)
+	}
+
+	// Cap this poll chunk at httpAwaitChunkDuration.
+	chunkDur := timeout
+	if chunkDur > httpAwaitChunkDuration {
+		chunkDur = httpAwaitChunkDuration
+	}
+
+	start := time.Now()
+
+	// Subscribe to PollBroker for this campfire.
+	ch, dereg, err := s.httpTransport.PollBrokerSubscribe(campfireID)
+	if err != nil {
+		result, _ := toolResultJSON(map[string]interface{}{
+			"status":  "error",
+			"message": fmt.Sprintf("subscribing to poll broker: %v", err),
+		})
+		return okResponse(id, result)
+	}
+	defer dereg()
+
+	// Block until a message arrives, the chunk expires, or the full timeout expires.
+	select {
+	case <-time.After(chunkDur):
+		// Chunk expired without fulfillment.
+		elapsed := time.Since(start).Round(time.Second)
+		remaining := timeout - elapsed
+		if remaining < 0 {
+			remaining = 0
 		}
-
-		select {
-		case <-deadline:
-			dereg()
-			return errResponse(id, -32000, "timeout: no fulfillment received")
-		case <-ch:
-			dereg()
-		}
-
-		// Check for fulfillment after notification.
-		if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
-			result, _ := toolResultJSON(msg)
+		if remaining == 0 {
+			result, _ := toolResultJSON(map[string]interface{}{
+				"status":    "timeout",
+				"elapsed":   elapsed.String(),
+				"remaining": "0s",
+			})
 			return okResponse(id, result)
 		}
+		result, _ := toolResultJSON(map[string]interface{}{
+			"status":    "pending",
+			"elapsed":   elapsed.String(),
+			"remaining": remaining.String(),
+			"retry":     true,
+		})
+		return okResponse(id, result)
+
+	case <-ch:
+		// PollBroker fired — check for fulfillment.
+		if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
+			result, _ := awaitStatusFulfilled(msg)
+			return okResponse(id, result)
+		}
+		// Message arrived but was not the fulfilling one. Return pending so the
+		// agent retries immediately with the remaining timeout.
+		elapsed := time.Since(start).Round(time.Second)
+		remaining := timeout - elapsed
+		if remaining < 0 {
+			remaining = 0
+		}
+		result, _ := toolResultJSON(map[string]interface{}{
+			"status":    "pending",
+			"elapsed":   elapsed.String(),
+			"remaining": remaining.String(),
+			"retry":     true,
+		})
+		return okResponse(id, result)
 	}
+}
+
+// awaitStatusFulfilled returns a structured "fulfilled" tool result wrapping
+// the fulfilling message. The message is nested under the "message" key so
+// callers can distinguish fulfilled from pending without parsing "status".
+func awaitStatusFulfilled(msg *map[string]interface{}) (map[string]interface{}, error) {
+	return toolResultJSON(map[string]interface{}{
+		"status":  "fulfilled",
+		"message": msg,
+	})
 }
 
 // findMCPFulfillment searches for a message with the "fulfills" tag whose
