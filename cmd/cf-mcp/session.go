@@ -81,6 +81,9 @@ type SessionManager struct {
 	// externalAddr is the public URL of the hosted server (e.g. "http://localhost:8080").
 	// Used as the HTTP transport endpoint in beacon transport configs.
 	externalAddr string
+	// idleTimeoutOverride allows tests to set a custom idle timeout.
+	// When non-zero, reaper uses this instead of the package constant.
+	idleTimeoutOverride time.Duration
 }
 
 // NewSessionManager creates a SessionManager rooted at sessionsDir and
@@ -154,7 +157,11 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 
 // reaper closes stores for sessions that have been idle longer than idleTimeout.
 func (m *SessionManager) reaper() {
-	ticker := time.NewTicker(idleTimeout / 2)
+	timeout := idleTimeout
+	if m.idleTimeoutOverride > 0 {
+		timeout = m.idleTimeoutOverride
+	}
+	ticker := time.NewTicker(timeout / 2)
 	defer ticker.Stop()
 	for {
 		select {
@@ -164,9 +171,10 @@ func (m *SessionManager) reaper() {
 			m.sessions.Range(func(k, v interface{}) bool {
 				sess := v.(*Session)
 				sess.mu.Lock()
-				idle := time.Since(sess.lastActivity) > idleTimeout
+				idle := time.Since(sess.lastActivity) > timeout
 				sess.mu.Unlock()
 				if idle {
+					m.sessions.Delete(k)
 					sess.Close()
 				}
 				return true

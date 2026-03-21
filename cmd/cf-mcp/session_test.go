@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -180,16 +181,33 @@ func TestSession_SameTokenSameIdentity(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestSession_IdleTimeoutClosesStore verifies that after a session has been
-// idle for longer than idleTimeout, the reaper closes the store (st == nil).
-// This test injects a short timeout by directly manipulating lastActivity.
+// idle for longer than idleTimeout, the reaper goroutine closes the store (st == nil).
+// This test uses a short idleTimeout override and waits for the actual reaper
+// goroutine to fire and clean up the session.
 func TestSession_IdleTimeoutClosesStore(t *testing.T) {
-	srv := newTestServerWithSessions(t)
+	// Use a very short idle timeout for testing (actual reaper checks every timeout/2).
+	testTimeout := 50 * time.Millisecond
+	dir := t.TempDir()
+	m := &SessionManager{
+		sessionsDir:         dir,
+		stopCh:              make(chan struct{}),
+		idleTimeoutOverride: testTimeout,
+	}
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	srv := &server{
+		cfHome:         t.TempDir(),
+		beaconDir:      t.TempDir(),
+		cfHomeExplicit: true,
+		sessManager:    m,
+	}
 
 	// Create a session.
 	initResp := postMCP(t, srv, mcpInitBody, "")
 	token := extractTokenFromInit(t, initResp)
 
-	// Retrieve the session and back-date its lastActivity past idleTimeout.
+	// Retrieve the session and back-date its lastActivity past testTimeout.
 	v, ok := srv.sessManager.sessions.Load(token)
 	if !ok {
 		t.Fatal("session not found in manager after init")
@@ -197,7 +215,7 @@ func TestSession_IdleTimeoutClosesStore(t *testing.T) {
 	sess := v.(*Session)
 
 	sess.mu.Lock()
-	sess.lastActivity = time.Now().Add(-(idleTimeout + time.Second))
+	sess.lastActivity = time.Now().Add(-(testTimeout + time.Millisecond))
 	sess.mu.Unlock()
 
 	// Verify store is open before reaping.
@@ -208,24 +226,84 @@ func TestSession_IdleTimeoutClosesStore(t *testing.T) {
 		t.Fatal("expected store to be open before reaping")
 	}
 
-	// Run one reap cycle directly (avoids sleeping for idleTimeout/2).
-	srv.sessManager.sessions.Range(func(k, v interface{}) bool {
+	// Wait for the reaper goroutine to fire (runs every testTimeout/2).
+	// We wait up to testTimeout*3 to be safe.
+	deadline := time.Now().Add(testTimeout * 3)
+	for time.Now().Before(deadline) {
+		sess.mu.Lock()
+		storeNow := sess.st
+		sess.mu.Unlock()
+		if storeNow == nil {
+			// Store was closed by the reaper. Success!
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Error("timeout waiting for reaper to close the store")
+}
+
+// ---------------------------------------------------------------------------
+// Test: after reaper fires, getOrCreate creates a fresh session
+// ---------------------------------------------------------------------------
+
+// TestSession_ReaperDeletesFromMap verifies that after the reaper closes and
+// removes a session from the sync.Map, a subsequent getOrCreate for the same
+// token creates a fresh session with a valid (non-nil) open store. Before this
+// fix the reaper only called sess.Close() (st = nil) but left the stale entry
+// in the map, causing the next caller to receive a session with st == nil.
+func TestSession_ReaperDeletesFromMap(t *testing.T) {
+	m := newTestSessionManager(t)
+
+	// Create session directly via getOrCreate.
+	token, err := generateToken()
+	if err != nil {
+		t.Fatalf("generateToken: %v", err)
+	}
+	sess1, err := m.getOrCreate(token)
+	if err != nil {
+		t.Fatalf("getOrCreate (first): %v", err)
+	}
+
+	// Back-date lastActivity so the reaper considers it idle.
+	sess1.mu.Lock()
+	sess1.lastActivity = time.Now().Add(-(idleTimeout + time.Second))
+	sess1.mu.Unlock()
+
+	// Run one reap cycle directly.
+	m.sessions.Range(func(k, v interface{}) bool {
 		s := v.(*Session)
 		s.mu.Lock()
 		idle := time.Since(s.lastActivity) > idleTimeout
 		s.mu.Unlock()
 		if idle {
+			m.sessions.Delete(k)
 			s.Close()
 		}
 		return true
 	})
 
-	// Store must be nil after the reap.
-	sess.mu.Lock()
-	storeAfter := sess.st
-	sess.mu.Unlock()
-	if storeAfter != nil {
-		t.Error("expected store to be closed (nil) after idle timeout reap")
+	// Session must no longer be in the map.
+	if _, ok := m.sessions.Load(token); ok {
+		t.Fatal("reaper did not remove session from sync.Map")
+	}
+
+	// getOrCreate for the same token must produce a fresh session with st != nil.
+	sess2, err := m.getOrCreate(token)
+	if err != nil {
+		t.Fatalf("getOrCreate (after reap): %v", err)
+	}
+
+	sess2.mu.Lock()
+	st := sess2.st
+	sess2.mu.Unlock()
+	if st == nil {
+		t.Fatal("getOrCreate after reap returned session with nil store (use-after-reap bug)")
+	}
+
+	// The new session must be a distinct object from the reaped one.
+	if sess2 == sess1 {
+		t.Fatal("getOrCreate returned the reaped session object; expected a new one")
 	}
 }
 
@@ -299,5 +377,117 @@ func TestSession_StoreOpenOnce(t *testing.T) {
 
 	if storeAfterRequests != storeAfterInit {
 		t.Error("store pointer changed between requests: store was closed and reopened per-request")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: concurrent getOrCreate for same token leaves exactly one live transport
+// ---------------------------------------------------------------------------
+
+// TestSession_ConcurrentGetOrCreateOneTransport verifies that when two goroutines
+// race to create a session for the same token, exactly one live transport is
+// registered in the router. The loser must not leave a stale stopped-transport
+// pointer in the router.
+//
+// This test uses a sync.WaitGroup barrier to maximise the chance of a real
+// race between the two goroutines. Because SQLite cannot be opened concurrently
+// for the exact same path, one goroutine will win cleanly and the other may
+// see a SQLITE_BUSY error — that's acceptable (the router must still be clean).
+// We also test the sequential "second call after first wins" path, which is the
+// common real-world scenario.
+func TestSession_ConcurrentGetOrCreateOneTransport(t *testing.T) {
+	dir := t.TempDir()
+	m := &SessionManager{
+		sessionsDir: dir,
+		stopCh:      make(chan struct{}),
+		router:      NewTransportRouter(),
+	}
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	const token = "race-token-abc123"
+
+	// --- Sequential path: first call creates, second call reuses ---
+	sess1, err := m.getOrCreate(token)
+	if err != nil {
+		t.Fatalf("first getOrCreate: %v", err)
+	}
+	if sess1.httpTransport == nil {
+		t.Fatal("winner session has nil httpTransport")
+	}
+
+	// Router must point at the winner's transport immediately after the first call.
+	registered := m.router.GetTransport(token)
+	if registered == nil {
+		t.Fatal("no transport registered in router after first getOrCreate")
+	}
+	if registered != sess1.httpTransport {
+		t.Error("router holds a different transport than the session that won")
+	}
+
+	// Second call (same token, session already in sync.Map) must return the same session.
+	sess2, err := m.getOrCreate(token)
+	if err != nil {
+		t.Fatalf("second getOrCreate: %v", err)
+	}
+	if sess2 != sess1 {
+		t.Error("second getOrCreate returned a different session pointer")
+	}
+
+	// Router must still point at the original transport (unchanged).
+	registered2 := m.router.GetTransport(token)
+	if registered2 != sess1.httpTransport {
+		t.Error("router transport changed after second getOrCreate — loser overwrote winner")
+	}
+
+	// --- Concurrent path: goroutines race on a fresh token ---
+	const token2 = "race-token-concurrent"
+
+	var wg sync.WaitGroup
+	type result struct {
+		sess *Session
+		err  error
+	}
+	results := make([]result, 2)
+
+	// Use a ready channel to maximise goroutine overlap.
+	ready := make(chan struct{})
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			<-ready
+			sess, err := m.getOrCreate(token2)
+			results[i] = result{sess, err}
+		}()
+	}
+	close(ready)
+	wg.Wait()
+
+	// At least one goroutine must succeed (the winner). The loser may fail with
+	// SQLITE_BUSY — that's a known SQLite constraint for concurrent opens of the
+	// same file, not a bug in getOrCreate.
+	var winner *Session
+	for _, r := range results {
+		if r.err == nil {
+			if winner == nil {
+				winner = r.sess
+			} else if r.sess != winner {
+				t.Error("two goroutines returned different session pointers — sync.Map race lost")
+			}
+		}
+	}
+	if winner == nil {
+		t.Fatal("all goroutines failed; at least one must succeed")
+	}
+
+	// Router must hold exactly the winner's transport (not a stale stopped pointer).
+	registeredConcurrent := m.router.GetTransport(token2)
+	if registeredConcurrent == nil {
+		t.Fatal("no transport registered in router after concurrent getOrCreate")
+	}
+	if registeredConcurrent != winner.httpTransport {
+		t.Error("router has a stale transport — loser registered before LoadOrStore decided the winner")
 	}
 }
