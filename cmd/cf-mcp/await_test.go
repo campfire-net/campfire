@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -179,11 +180,30 @@ func TestAwaitHTTP_ChunkCapReturnsPending(t *testing.T) {
 	// Practical approach: use timeout=35s. The chunk cap fires at 30s → pending.
 	// Acceptable test duration: ~30s. Mark as not-short.
 	start := time.Now()
-	resp := mcpCall(t, tsURL, token, "campfire_await", map[string]interface{}{
+	// mcpCall has a 10s client timeout, but this test needs ~30s for the chunk cap.
+	// Use a direct HTTP call with a longer client timeout.
+	argsJSON, _ := json.Marshal(map[string]interface{}{
 		"campfire_id": campfireID,
 		"msg_id":      "nonexistent-message-id",
 		"timeout":     "35s",
 	})
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_await","arguments":%s}}`, argsJSON)
+	req, err := http.NewRequest(http.MethodPost, tsURL+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("creating request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: 45 * time.Second}
+	httpResp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST /mcp: %v", err)
+	}
+	defer httpResp.Body.Close()
+	var resp jsonRPCResponse
+	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	elapsed := time.Since(start)
 
 	payload := awaitStatus(t, resp)
