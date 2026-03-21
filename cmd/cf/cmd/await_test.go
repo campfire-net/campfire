@@ -31,7 +31,7 @@ func TestFindFulfillment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddMessage(store.MessageRecordFromMessage(campfireID, futureMsg, store.NowNano())); err != nil {
+	if _, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, futureMsg, store.NowNano())); err != nil {
 		t.Fatal(err)
 	}
 
@@ -49,7 +49,7 @@ func TestFindFulfillment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddMessage(store.MessageRecordFromMessage(campfireID, unrelated, store.NowNano())); err != nil {
+	if _, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, unrelated, store.NowNano())); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,7 +67,7 @@ func TestFindFulfillment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddMessage(store.MessageRecordFromMessage(campfireID, fulfillMsg, store.NowNano())); err != nil {
+	if _, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, fulfillMsg, store.NowNano())); err != nil {
 		t.Fatal(err)
 	}
 
