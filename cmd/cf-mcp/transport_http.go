@@ -17,16 +17,18 @@ import (
 // HTTP transport peers. External CLI agents see the hosted server as a normal
 // peer endpoint.
 type TransportRouter struct {
-	mu         sync.RWMutex
-	campfires  map[string]*cfhttp.Transport // campfireID → session's transport
-	transports map[string]*cfhttp.Transport // session token → transport
+	mu               sync.RWMutex
+	campfires        map[string]*cfhttp.Transport // campfireID → session's transport
+	transports       map[string]*cfhttp.Transport // session token → transport
+	sessionCampfires map[string][]string          // session token → owned campfire IDs
 }
 
 // NewTransportRouter creates a new TransportRouter.
 func NewTransportRouter() *TransportRouter {
 	return &TransportRouter{
-		campfires:  make(map[string]*cfhttp.Transport),
-		transports: make(map[string]*cfhttp.Transport),
+		campfires:        make(map[string]*cfhttp.Transport),
+		transports:       make(map[string]*cfhttp.Transport),
+		sessionCampfires: make(map[string][]string),
 	}
 }
 
@@ -36,6 +38,38 @@ func (r *TransportRouter) Register(campfireID string, t *cfhttp.Transport) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.campfires[campfireID] = t
+}
+
+// RegisterForSession associates a campfire ID with a session's transport and
+// records the campfire as owned by the session token. Use this instead of
+// Register when the session token is available, so that UnregisterSession can
+// clean up all campfires when the session is reaped.
+func (r *TransportRouter) RegisterForSession(campfireID, token string, t *cfhttp.Transport) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.campfires[campfireID] = t
+	r.sessionCampfires[token] = append(r.sessionCampfires[token], campfireID)
+}
+
+// Unregister removes a campfire ID from the router. After this call, requests
+// for the campfire return 404.
+func (r *TransportRouter) Unregister(campfireID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.campfires, campfireID)
+}
+
+// UnregisterSession removes the session's transport and all campfire routes it
+// owns. After this call, requests for any campfire owned by the session return
+// 404 instead of hitting a stopped transport.
+func (r *TransportRouter) UnregisterSession(token string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, campfireID := range r.sessionCampfires[token] {
+		delete(r.campfires, campfireID)
+	}
+	delete(r.sessionCampfires, token)
+	delete(r.transports, token)
 }
 
 // RegisterSession associates a session token with its transport instance.

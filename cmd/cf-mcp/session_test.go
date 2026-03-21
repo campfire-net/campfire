@@ -385,112 +385,61 @@ func TestSession_StoreOpenOnce(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestSession_ReapedSessionCampfire404 verifies the done condition from workspace-zg09:
-// after a session is reaped, POST /campfire/{id}/deliver for one of its campfires
-// returns 404, not an error from a stopped transport.
+// after a session is reaped, /campfire/{id}/deliver for one of its campfires
+// returns 404 (not an error from a stopped transport), and the router no longer
+// holds the session transport or any of its campfire routes.
 func TestSession_ReapedSessionCampfire404(t *testing.T) {
-	_, ts, tsURL := newTestServerWithHTTPTransport(t)
-	_ = ts
-
-	// 1. Create a session and campfire via MCP.
-	initResp := mcpCall(t, tsURL, "", "campfire_init", map[string]interface{}{})
-	token := extractTokenFromInit(t, initResp)
-
-	createResp := mcpCall(t, tsURL, token, "campfire_create", map[string]interface{}{
-		"description": "reap-test campfire",
-	})
-	createText := extractResultText(t, createResp)
-	var createResult struct {
-		CampfireID string `json:"campfire_id"`
+	dir := t.TempDir()
+	router := NewTransportRouter()
+	sm := &SessionManager{
+		sessionsDir:  dir,
+		stopCh:       make(chan struct{}),
+		router:       router,
+		externalAddr: "http://test-server",
 	}
-	if err := json.Unmarshal([]byte(createText), &createResult); err != nil {
-		t.Fatalf("parsing create result: %v", err)
-	}
-	campfireID := createResult.CampfireID
+	go sm.reaper()
+	t.Cleanup(sm.Stop)
 
-	// Verify the campfire is reachable before reaping (should not be 404).
-	resp, err := http.Post(tsURL+"/campfire/"+campfireID+"/deliver", "application/octet-stream", strings.NewReader(""))
+	token, err := generateToken()
 	if err != nil {
-		t.Fatalf("pre-reap deliver: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		t.Fatal("campfire should be reachable before reap, got 404")
+		t.Fatalf("generateToken: %v", err)
 	}
 
-	// 2. Simulate reaping: back-date lastActivity and run one reap cycle.
-	// The real reaper calls m.sessions.Delete then s.Close() — replicate that.
-	// We need the SessionManager, which is inside the server.
-	// Access it via the router on the test server: use newTestServerWithHTTPTransport
-	// which returns srv. But we used the HTTP endpoint form above.
-	// Instead, reach into the session map via the test setup's router.
-	// The simplest way: call Close() directly after removing from the map.
-	// We use the session_test helper pattern: get session from sessions map.
+	sess, err := sm.getOrCreate(token)
+	if err != nil {
+		t.Fatalf("getOrCreate: %v", err)
+	}
 
-	// We need the SessionManager. newTestServerWithHTTPTransport stores sm
-	// inside the server but doesn't return it. Retrieve the session via a
-	// campfire_id call to get the token, then look it up in the router.
-	// Easiest: just call Close() on the session we find via the router.
+	// Register a campfire for this session.
+	const campfireID = "deadbeef1234"
+	router.RegisterForSession(campfireID, token, sess.httpTransport)
 
-	// Since mcpCall uses tsURL + "/mcp", the sessManager is the one wired to
-	// the test server's router. We can't reach it directly here. Instead,
-	// simulate the reap via an HTTP call to a helper that exposes it —
-	// but that doesn't exist. Use a different approach: build the manager
-	// directly in the test and reap it ourselves.
+	// Campfire must be registered before reap.
+	if tr := router.GetCampfireTransport(campfireID); tr == nil {
+		t.Fatal("campfire not registered before reap")
+	}
 
-	// Re-run with direct manager access instead.
-	t.Run("direct", func(t *testing.T) {
-		dir := t.TempDir()
-		router := NewTransportRouter()
-		sm := &SessionManager{
-			sessionsDir:  dir,
-			stopCh:       make(chan struct{}),
-			router:       router,
-			externalAddr: "http://test-server",
-		}
-		go sm.reaper()
-		t.Cleanup(sm.Stop)
+	// Simulate reap: remove from sessions map and close.
+	sm.sessions.Delete(token)
+	sess.Close()
 
-		genToken, err := generateToken()
-		if err != nil {
-			t.Fatalf("generateToken: %v", err)
-		}
+	// After reap: campfire route must be gone.
+	if tr := router.GetCampfireTransport(campfireID); tr != nil {
+		t.Error("campfire route still present after session reap")
+	}
 
-		sess, err := sm.getOrCreate(genToken)
-		if err != nil {
-			t.Fatalf("getOrCreate: %v", err)
-		}
+	// After reap: session transport must be gone.
+	if tr := router.GetTransport(token); tr != nil {
+		t.Error("session transport still present after session reap")
+	}
 
-		// Manually register a fake campfire ID in the router for this session.
-		const fakeCampfireID = "deadbeef1234"
-		router.RegisterForSession(fakeCampfireID, genToken, sess.httpTransport)
-
-		// Confirm the campfire is registered.
-		if tr := router.GetCampfireTransport(fakeCampfireID); tr == nil {
-			t.Fatal("campfire not registered before reap")
-		}
-
-		// Reap: remove from map and call Close().
-		sm.sessions.Delete(genToken)
-		sess.Close()
-
-		// After reap, the campfire route must be gone.
-		if tr := router.GetCampfireTransport(fakeCampfireID); tr != nil {
-			t.Error("campfire route still present after session reap — UnregisterSession not called")
-		}
-
-		// And the session transport must be gone too.
-		if tr := router.GetTransport(genToken); tr != nil {
-			t.Error("session transport still present after reap — UnregisterSession not called")
-		}
-
-		// The router's ServeHTTP must return 404 for the reaped campfire.
-		req := httptest.NewRequest(http.MethodPost, "/campfire/"+fakeCampfireID+"/deliver", nil)
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		if w.Code != http.StatusNotFound {
-			t.Errorf("expected 404 after reap, got %d", w.Code)
-		}
-	})
+	// ServeHTTP must return 404 for the reaped campfire, not a transport error.
+	req := httptest.NewRequest(http.MethodPost, "/campfire/"+campfireID+"/deliver", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 after reap, got %d", w.Code)
+	}
 }
 
 // ---------------------------------------------------------------------------
