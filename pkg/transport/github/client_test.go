@@ -133,7 +133,7 @@ func (fs *fakeServer) handleListComments(w http.ResponseWriter, r *http.Request)
 
 	var filtered []fakeComment
 	for _, c := range comments {
-		if since.IsZero() || c.CreatedAt.After(since) {
+		if since.IsZero() || !c.CreatedAt.Before(since) {
 			filtered = append(filtered, c)
 		}
 	}

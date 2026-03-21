@@ -146,7 +146,7 @@ func (fs *e2eFakeServer) handleListComments(w http.ResponseWriter, r *http.Reque
 
 	var filtered []e2eComment
 	for _, c := range comments {
-		if since.IsZero() || c.CreatedAt.After(since) {
+		if since.IsZero() || !c.CreatedAt.Before(since) {
 			filtered = append(filtered, c)
 		}
 	}
