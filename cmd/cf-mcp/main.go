@@ -2091,7 +2091,15 @@ func (s *server) serveHTTP(addr string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "cf-mcp listening on %s\n", addr)
-	return http.ListenAndServe(addr, mux)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      65 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 // ---------------------------------------------------------------------------
