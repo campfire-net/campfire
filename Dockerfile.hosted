@@ -9,4 +9,6 @@ FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
 COPY --from=build /cf-mcp /usr/local/bin/cf-mcp
 EXPOSE 8080
+# CF_EXTERNAL_URL must be set to the public URL of this deployment (e.g. https://cf-mcp.fly.dev).
+# Without it, beacons will advertise localhost:8080 and be unreachable by CLI peers.
 ENTRYPOINT ["cf-mcp", "--http", ":8080", "--sessions-dir", "/data/sessions"]
