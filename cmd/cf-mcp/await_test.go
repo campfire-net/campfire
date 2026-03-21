@@ -269,6 +269,92 @@ func TestAwaitHTTP_FullTimeoutReturnsTimeout(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: non-fulfilling notification returns pending immediately
+// ---------------------------------------------------------------------------
+
+// TestAwaitHTTP_NonFulfillingNotification verifies that campfire_await returns
+// status="pending" quickly when PollBroker fires (a message arrives) but that
+// message does NOT fulfill the awaited msg_id.  The handler should not block
+// for the full chunk duration — it should return as soon as it determines the
+// arriving message is irrelevant.
+func TestAwaitHTTP_NonFulfillingNotification(t *testing.T) {
+	tsURL, token, campfireID, cliID := setupHTTPAwaitSession(t)
+
+	// Create a placeholder msg_id that nothing will ever fulfill.
+	targetMsgID := "placeholder-msg-id-that-will-never-be-fulfilled"
+
+	// Use a long timeout so the only way to return quickly is via the
+	// non-fulfilling-notification branch (not chunk expiry or timeout).
+	const awaitTimeout = "5m"
+
+	type awaitResult struct {
+		payload map[string]interface{}
+		elapsed time.Duration
+	}
+	resultCh := make(chan awaitResult, 1)
+
+	go func() {
+		start := time.Now()
+		resp := mcpCall(t, tsURL, token, "campfire_await", map[string]interface{}{
+			"campfire_id": campfireID,
+			"msg_id":      targetMsgID,
+			"timeout":     awaitTimeout,
+		})
+		resultCh <- awaitResult{
+			payload: awaitStatus(t, resp),
+			elapsed: time.Since(start),
+		}
+	}()
+
+	// Give the await goroutine time to subscribe to the PollBroker before
+	// delivering the non-fulfilling message.
+	time.Sleep(200 * time.Millisecond)
+
+	// Deliver a message that has no "fulfills" tag and does not reference
+	// targetMsgID in its antecedents — this wakes the PollBroker but should
+	// not satisfy the await condition.
+	nonFulfillingMsg, err := message.NewMessage(
+		cliID.PrivateKey, cliID.PublicKey,
+		[]byte("unrelated message"),
+		nil, // tags
+		nil, // antecedents
+	)
+	if err != nil {
+		t.Fatalf("creating non-fulfilling message: %v", err)
+	}
+	if err := cfhttp.Deliver(tsURL, campfireID, nonFulfillingMsg, cliID); err != nil {
+		t.Fatalf("delivering non-fulfilling message: %v", err)
+	}
+
+	// Wait for the await to return, with a tight deadline.  The handler must
+	// return well before the 30s chunk cap — it should wake on PollBroker,
+	// find no fulfillment, and return pending immediately.
+	select {
+	case res := <-resultCh:
+		status, _ := res.payload["status"].(string)
+		if status != "pending" {
+			t.Errorf("expected status=pending, got %q (payload: %v)", status, res.payload)
+		}
+		retry, _ := res.payload["retry"].(bool)
+		if !retry {
+			t.Error("expected retry=true in pending response")
+		}
+		if res.payload["elapsed"] == nil {
+			t.Error("expected elapsed field in pending response")
+		}
+		if res.payload["remaining"] == nil {
+			t.Error("expected remaining field in pending response")
+		}
+		// Must return quickly — not block for the chunk cap.
+		if res.elapsed > 10*time.Second {
+			t.Errorf("non-fulfilling notification blocked too long: %v (expected <10s)", res.elapsed)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("campfire_await did not return within 15s after non-fulfilling notification")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test: invalid campfire returns status="error"
 // ---------------------------------------------------------------------------
 
