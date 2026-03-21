@@ -702,15 +702,9 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 	}
 
 	// Configure the HTTP transport: set self info so join responses include
-	// this node's identity, and register a key provider for the join handler.
+	// this node's identity. SetKeyProvider is set once at session init
+	// (see session.go getOrCreate) so we do not overwrite it here.
 	s.httpTransport.SetSelfInfo(agentID.PublicKeyHex(), s.externalAddr)
-	s.httpTransport.SetKeyProvider(func(campfireID string) (privKey []byte, pubKey []byte, err error) {
-		state, err := fsTransport.ReadState(campfireID)
-		if err != nil {
-			return nil, nil, err
-		}
-		return state.PrivateKey, state.PublicKey, nil
-	})
 
 	// Register self as a peer so membership checks pass for self-authored messages.
 	if err := st.UpsertPeerEndpoint(store.PeerEndpoint{
@@ -1710,6 +1704,75 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 	return okResponse(id, result)
 }
 
+// trustFilePath returns the path to the trust.json file in cfHome.
+func (s *server) trustFilePath() string {
+	return filepath.Join(s.cfHome, "trust.json")
+}
+
+// loadTrust reads the trust map from trust.json. Returns an empty map if the
+// file does not exist yet.
+func (s *server) loadTrust() (map[string]string, error) {
+	data, err := os.ReadFile(s.trustFilePath())
+	if os.IsNotExist(err) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parsing trust.json: %w", err)
+	}
+	return m, nil
+}
+
+// saveTrust writes the trust map back to trust.json atomically.
+func (s *server) saveTrust(m map[string]string) error {
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := s.trustFilePath() + ".tmp"
+	if err := os.WriteFile(tmp, b, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.trustFilePath())
+}
+
+// handleTrust sets or resolves a human-readable pet name for an agent public
+// key. With label: stores the mapping. Without label: returns the current label
+// or "(unlabeled)" if no pet name has been set.
+func (s *server) handleTrust(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	if s.cfHome == "" {
+		return errResponse(id, -32000, "no session directory (run campfire_init first)")
+	}
+	publicKey := getStr(params, "public_key")
+	if publicKey == "" {
+		return errResponse(id, -32602, "public_key is required")
+	}
+	label := getStr(params, "label")
+
+	trust, err := s.loadTrust()
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("loading trust store: %v", err))
+	}
+
+	if label != "" {
+		// Set mode: store the pet name.
+		trust[publicKey] = label
+		if err := s.saveTrust(trust); err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("saving trust store: %v", err))
+		}
+		return okResponse(id, toolResult(fmt.Sprintf("Labeled %s as %q", publicKey, label)))
+	}
+
+	// Resolve mode: look up the current label.
+	if name, ok := trust[publicKey]; ok {
+		return okResponse(id, toolResult(fmt.Sprintf("%s \u2192 %s", publicKey, name)))
+	}
+	return okResponse(id, toolResult(fmt.Sprintf("%s \u2192 (unlabeled)", publicKey)))
+}
+
 // maxExportSize is the maximum in-memory tarball size (uncompressed bytes
 // written to the tar stream) that handleExport will produce. Exports that
 // exceed this limit return a -32000 error so no single session can exhaust
@@ -1884,6 +1947,8 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 			return s.handleDM(req.ID, callParams.Arguments)
 		case "campfire_await":
 			return s.handleAwait(req.ID, callParams.Arguments)
+		case "campfire_trust":
+			return s.handleTrust(req.ID, callParams.Arguments)
 		case "campfire_export":
 			return s.handleExport(req.ID, callParams.Arguments)
 		default:

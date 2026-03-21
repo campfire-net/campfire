@@ -177,6 +177,75 @@ func mapKeys(m map[string][]byte) []string {
 }
 
 // ---------------------------------------------------------------------------
+// Test: export returns an error when session data exceeds the 50 MB cap.
+// ---------------------------------------------------------------------------
+
+// TestExport_SizeCap verifies that campfire_export returns a -32000 error when
+// the session directory contains more than maxExportSize bytes of data.
+func TestExport_SizeCap(t *testing.T) {
+	srv := newTestServer(t)
+
+	r1 := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if r1.Error != nil {
+		t.Fatalf("campfire_init failed: %+v", r1.Error)
+	}
+
+	// Write a file larger than maxExportSize into the session directory.
+	bigFile := srv.cfHome + "/bigfile.bin"
+	if err := os.WriteFile(bigFile, make([]byte, maxExportSize+1), 0600); err != nil {
+		t.Fatalf("writing large file: %v", err)
+	}
+
+	r2 := srv.dispatch(makeReq("tools/call", `{"name":"campfire_export","arguments":{}}`))
+	if r2.Error == nil {
+		t.Fatal("expected error from campfire_export when session exceeds size cap, got nil")
+	}
+	if r2.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", r2.Error.Code)
+	}
+	if r2.Error.Message != "export too large: session data exceeds 50 MB limit" {
+		t.Errorf("unexpected error message: %q", r2.Error.Message)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: symlinks in the session directory are not included in the tarball.
+// ---------------------------------------------------------------------------
+
+// TestExport_SkipsSymlinks verifies that symlinks in the session directory
+// are not archived by campfire_export.
+func TestExport_SkipsSymlinks(t *testing.T) {
+	srv := newTestServer(t)
+
+	r1 := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if r1.Error != nil {
+		t.Fatalf("campfire_init failed: %+v", r1.Error)
+	}
+
+	// Create a real file and a symlink pointing to it inside the session dir.
+	realFile := srv.cfHome + "/real.txt"
+	if err := os.WriteFile(realFile, []byte("hello"), 0600); err != nil {
+		t.Fatalf("writing real file: %v", err)
+	}
+	symlinkPath := srv.cfHome + "/link.txt"
+	if err := os.Symlink(realFile, symlinkPath); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+
+	r2 := srv.dispatch(makeReq("tools/call", `{"name":"campfire_export","arguments":{}}`))
+	encoded := extractExportTarball(t, r2)
+	entries := decodeTarEntries(t, encoded)
+
+	if _, ok := entries["link.txt"]; ok {
+		t.Error("tarball contains symlink entry link.txt; symlinks must be skipped")
+	}
+	// real.txt should still be present.
+	if _, ok := entries["real.txt"]; !ok {
+		t.Error("tarball is missing real.txt; regular files must be included")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test: exported identity.json has the same public key as the session.
 // ---------------------------------------------------------------------------
 
