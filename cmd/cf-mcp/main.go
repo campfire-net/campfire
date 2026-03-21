@@ -688,12 +688,17 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		return errResponse(id, -32000, fmt.Sprintf("publishing beacon: %v", err))
 	}
 
-	// Store membership in SQLite.
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// Store membership in SQLite. In session mode, reuse the already-open
+	// store to avoid a second SQLite connection to the same file.
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	if err := st.AddMembership(store.Membership{
 		CampfireID:    cf.PublicKeyHex(),
@@ -750,11 +755,17 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		return errResponse(id, -32000, fmt.Sprintf("loading identity: %v", err))
 	}
 
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// In session mode, reuse the already-open store to avoid a second SQLite
+	// connection to the same file. Otherwise open a dedicated connection.
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	transport := s.fsTransport()
 
@@ -870,11 +881,17 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		return errResponse(id, -32000, fmt.Sprintf("loading identity: %v", err))
 	}
 
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// In session mode, reuse the already-open store to avoid a second SQLite
+	// connection to the same file. Otherwise open a dedicated connection.
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	m, err := st.GetMembership(campfireID)
 	if err != nil {
@@ -970,11 +987,17 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 	readAll := getBool(params, "all")
 	readPeek := getBool(params, "peek")
 
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// In session mode, reuse the already-open store to avoid a second SQLite
+	// connection to the same file. Otherwise open a dedicated connection.
+	st := s.st
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	var campfireIDs []string
 	if campfireID != "" {
@@ -1316,11 +1339,17 @@ func (s *server) handleInspect(id interface{}, params map[string]interface{}) js
 		return errResponse(id, -32602, "message_id is required")
 	}
 
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// In session mode, reuse the already-open store to avoid a second SQLite
+	// connection to the same file. Otherwise open a dedicated connection.
+	st := s.st
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	msg, err := st.GetMessage(messageID)
 	if err != nil {
@@ -1441,11 +1470,17 @@ func (s *server) handleDiscover(id interface{}, _ map[string]interface{}) jsonRP
 }
 
 func (s *server) handleLS(id interface{}, _ map[string]interface{}) jsonRPCResponse {
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// In session mode, reuse the already-open store to avoid a second SQLite
+	// connection to the same file. Otherwise open a dedicated connection.
+	st := s.st
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	memberships, err := st.ListMemberships()
 	if err != nil {
@@ -1486,11 +1521,17 @@ func (s *server) handleMembers(id interface{}, params map[string]interface{}) js
 		return errResponse(id, -32602, "campfire_id is required")
 	}
 
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// In session mode, reuse the already-open store to avoid a second SQLite
+	// connection to the same file. Otherwise open a dedicated connection.
+	st := s.st
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	m, err := st.GetMembership(campfireID)
 	if err != nil {
@@ -1551,11 +1592,17 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 		return errResponse(id, -32000, "cannot DM yourself")
 	}
 
-	st, err := store.Open(s.storePath())
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	// In session mode, reuse the already-open store to avoid a second SQLite
+	// connection to the same file. Otherwise open a dedicated connection.
+	st := s.st
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	transport := s.fsTransport()
 
