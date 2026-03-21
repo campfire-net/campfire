@@ -761,19 +761,22 @@ func TestIsPrivateIPExtendedRanges(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // workspace-sdgd — handleDeliver sender spoofing / inner message signature
+// workspace-iwc2.2 — relay relaxation: member relay is now allowed
 // ---------------------------------------------------------------------------
 
 // TestDeliverSenderSpoofingRejected verifies that handleDeliver rejects a message
-// where the CBOR msg.Sender does not match the authenticated X-Campfire-Sender header.
+// where the inner CBOR message has an invalid signature (tampered content), even
+// when the HTTP request itself is properly signed by a campfire member.
 //
-// Attack: member M1 constructs a valid HTTP request (header + sig = M1), but
-// the inner message was created by and attributed to M2. The handler must reject
-// this with 400 — not store it.
+// With relay support (workspace-iwc2.2), M1 delivering a legitimately signed M2
+// message is now allowed — the message signature proves authenticity. What remains
+// rejected is forged content: a message claiming to be from M2 but with a broken
+// inner signature. This test verifies that broken inner signatures are rejected.
 func TestDeliverSenderSpoofingRejected(t *testing.T) {
 	campfireID := "test-deliver-spoof"
 
-	// M1 is the authenticated sender (controls the HTTP request signature).
-	// M2 is the victim whose identity is being spoofed.
+	// M1 is the authenticated deliverer (controls the HTTP request signature).
+	// M2 is the claimed author, but the inner message signature will be invalid.
 	m1 := tempIdentity(t)
 	m2 := tempIdentity(t)
 
@@ -787,13 +790,16 @@ func TestDeliverSenderSpoofingRejected(t *testing.T) {
 	startTransportWithSelf(t, addr, s, m1)
 	ep := fmt.Sprintf("http://%s", addr)
 
-	// Build a message legitimately authored by M2 (msg.Sender = M2 pubkey, signed by M2).
-	m2msg, err := message.NewMessage(m2.PrivateKey, m2.PublicKey, []byte("spoofed content"), []string{"test"}, nil)
+	// Build a message legitimately authored by M2 (msg.Sender = M2 pubkey, signed by M2),
+	// then tamper with the payload so VerifySignature() fails.
+	m2msg, err := message.NewMessage(m2.PrivateKey, m2.PublicKey, []byte("original content"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
+	// Tamper with the payload — inner signature is now invalid.
+	m2msg.Payload = []byte("tampered content")
 
-	// Encode the message body.
+	// Encode the tampered message body.
 	body, err := cfencoding.Marshal(m2msg)
 	if err != nil {
 		t.Fatalf("encoding message: %v", err)
@@ -801,8 +807,7 @@ func TestDeliverSenderSpoofingRejected(t *testing.T) {
 
 	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	// Header claims sender = M1, but message body contains M2's pubkey as Sender.
-	// We must use M1's identity to pass auth, but the inner message is from M2.
+	// M1 delivers the tampered message (relay attempt with forged content).
 	signTestRequest(req, m1, body)
 
 	resp, err := http.DefaultClient.Do(req)
@@ -811,8 +816,9 @@ func TestDeliverSenderSpoofingRejected(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
+	// Tampered inner signature must be rejected regardless of who delivers it.
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400 Bad Request for spoofed sender, got %d", resp.StatusCode)
+		t.Errorf("expected 400 Bad Request for tampered message signature, got %d", resp.StatusCode)
 	}
 }
 

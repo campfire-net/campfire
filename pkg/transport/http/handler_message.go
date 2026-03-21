@@ -36,21 +36,16 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		return
 	}
 
-	// Verify that msg.Sender matches the authenticated senderHex from the request headers.
-	// This prevents a member from delivering a message attributed to a different member
-	// (e.g., M1 sending a message where msg.Sender == M2's pubkey).
-	if msg.SenderHex() != senderHex {
-		log.Printf("handleDeliver: sender mismatch for campfire %s: header=%s msg=%s", campfireID, senderHex, msg.SenderHex())
-		http.Error(w, "sender mismatch", http.StatusBadRequest)
-		return
-	}
-
-	// Server-side role enforcement.
+	// Server-side role enforcement on the deliverer (the HTTP request sender).
 	// Self (the local node) is always allowed — it is the creator/admitting member.
 	// For peers, look up their stored role and enforce restrictions:
 	//   - observer: cannot deliver any messages.
 	//   - writer:   cannot deliver campfire:* system messages.
 	//   - full (and backward-compat aliases "member", "creator", ""): no restrictions.
+	//
+	// When msg.Sender != senderHex (relay case), the deliverer acts on behalf of the
+	// original author. The message signature (VerifySignature above) proves the content
+	// is authentic; we only need to verify the deliverer has delivery rights.
 	//
 	// campfire.EffectiveRole normalizes legacy/unknown values ("member", "creator",
 	// empty string) to campfire.RoleFull so the switch only needs to handle the
@@ -81,6 +76,14 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 			}
 		}
 		// campfire.RoleFull and any other normalized value: no restrictions.
+	}
+
+	// Sender-match check: when the HTTP deliverer differs from the message author,
+	// this is a relay. Relay is permitted for members with delivery rights (RoleFull or
+	// RoleWriter), which was verified above. Non-members are already rejected by
+	// authMiddleware before this point.
+	if msg.SenderHex() != senderHex {
+		log.Printf("handleDeliver: relay for campfire %s: deliverer=%s author=%s", campfireID, senderHex, msg.SenderHex())
 	}
 
 	// Store in local SQLite
