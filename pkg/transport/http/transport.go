@@ -387,6 +387,69 @@ func (t *Transport) HTTPServer() *http.Server {
 	return t.server
 }
 
+// Handler returns the HTTP handler for this transport's routes. Use this to
+// mount the transport's /campfire/ endpoints on an external mux (e.g. when
+// embedding the transport in a hosted MCP server that serves both MCP and
+// transport endpoints on the same port).
+func (t *Transport) Handler() http.Handler {
+	return t.server.Handler
+}
+
+// StartNoncePruner starts only the background nonce pruner goroutine without
+// binding a listener. Use this when the transport is embedded in another HTTP
+// server (the host server handles listening). The pruner exits when
+// StopNoncePruner is called.
+func (t *Transport) StartNoncePruner() {
+	go func() {
+		ticker := time.NewTicker(nonceWindow / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				t.pruneNonces()
+			case <-t.stopNoncePruner:
+				return
+			}
+		}
+	}()
+}
+
+// StopNoncePruner signals the background nonce pruner to exit.
+// Safe to call multiple times.
+func (t *Transport) StopNoncePruner() {
+	select {
+	case <-t.stopNoncePruner:
+		// already closed
+	default:
+		close(t.stopNoncePruner)
+	}
+}
+
+// PollBrokerNotify signals all pollers subscribed to the given campfire that
+// new messages are available. Useful for hosted mode where messages are stored
+// via MCP tool calls and external pollers need to be woken.
+func (t *Transport) PollBrokerNotify(campfireID string) {
+	if t.pollBroker != nil {
+		t.pollBroker.Notify(campfireID)
+	}
+}
+
+// Store returns the transport's store. Used by hosted mode to share the store
+// between MCP handlers and transport handlers within the same session.
+func (t *Transport) Store() *store.Store {
+	return t.store
+}
+
+// PollBrokerSubscribe subscribes to notifications for a campfire. Returns a
+// channel that is signalled when new messages arrive, a deregister function
+// that must be called when done, and an error if the limit is exceeded.
+func (t *Transport) PollBrokerSubscribe(campfireID string) (<-chan struct{}, func(), error) {
+	if t.pollBroker == nil {
+		return nil, nil, fmt.Errorf("poll broker not initialized")
+	}
+	return t.pollBroker.Subscribe(campfireID)
+}
+
 // SetMaxPollersPerCampfire overrides the per-campfire long-poll concurrency limit.
 // Must be called before Start(). Default is 64.
 func (t *Transport) SetMaxPollersPerCampfire(max int) {

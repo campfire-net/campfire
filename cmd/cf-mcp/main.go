@@ -31,6 +31,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // ---------------------------------------------------------------------------
@@ -80,11 +81,14 @@ type mcpCapabilities struct {
 // ---------------------------------------------------------------------------
 
 type server struct {
-	cfHome         string
-	beaconDir      string
-	cfHomeExplicit bool
-	lockFile       *os.File
-	sessManager    *SessionManager // non-nil only in HTTP+session mode
+	cfHome          string
+	beaconDir       string
+	cfHomeExplicit  bool
+	lockFile        *os.File
+	sessManager     *SessionManager   // non-nil only in HTTP+session mode
+	httpTransport   *cfhttp.Transport // non-nil when this server has an embedded HTTP transport
+	transportRouter *TransportRouter  // non-nil in hosted HTTP mode (shared across sessions)
+	externalAddr    string            // public URL of the hosted server (e.g. "http://localhost:8080")
 }
 
 func (s *server) identityPath() string {
@@ -93,6 +97,16 @@ func (s *server) identityPath() string {
 
 func (s *server) storePath() string {
 	return store.StorePath(s.cfHome)
+}
+
+// fsTransport returns a filesystem transport rooted at the correct base dir.
+// In hosted HTTP mode, campfire state (campfire.cbor, members/) lives under
+// the session's cfHome. In filesystem mode, it uses the shared transport dir.
+func (s *server) fsTransport() *fs.Transport {
+	if s.httpTransport != nil {
+		return fs.New(s.cfHome)
+	}
+	return fs.New(fs.DefaultBaseDir())
 }
 
 // ---------------------------------------------------------------------------
@@ -556,7 +570,13 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 
 	cf.AddMember(agentID.PublicKey)
 
-	transport := fs.New(fs.DefaultBaseDir())
+	// In hosted HTTP mode, use the session's local fs for campfire state and
+	// the HTTP transport for message delivery. Beacons point to the server URL.
+	if s.httpTransport != nil {
+		return s.handleCreateHTTP(id, cf, agentID, description)
+	}
+
+	transport := s.fsTransport()
 	if err := transport.Init(cf); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("initializing transport: %v", err))
 	}
@@ -609,6 +629,98 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	return okResponse(id, result)
 }
 
+// handleCreateHTTP is the hosted HTTP mode path for campfire creation.
+// It stores campfire state in the session's local filesystem, publishes an
+// HTTP transport beacon, registers the campfire with the transport router,
+// and sets up the HTTP transport so external peers can reach this campfire.
+func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID *identity.Identity, description string) jsonRPCResponse {
+	// Use the session's cfHome as the fs transport base for state storage.
+	fsTransport := fs.New(s.cfHome)
+	if err := fsTransport.Init(cf); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("initializing campfire state: %v", err))
+	}
+
+	now := time.Now().UnixNano()
+	if err := fsTransport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
+		PublicKey: agentID.PublicKey,
+		JoinedAt:  now,
+	}); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
+	}
+
+	// Publish beacon with HTTP transport config pointing to the server URL.
+	b, err := beacon.New(
+		cf.PublicKey, cf.PrivateKey,
+		cf.JoinProtocol, cf.ReceptionRequirements,
+		beacon.TransportConfig{
+			Protocol: "p2p-http",
+			Config:   map[string]string{"endpoint": s.externalAddr},
+		},
+		description,
+	)
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("creating beacon: %v", err))
+	}
+	if err := beacon.Publish(s.beaconDir, b); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("publishing beacon: %v", err))
+	}
+
+	// Store membership in SQLite.
+	st, err := store.Open(s.storePath())
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+	}
+	defer st.Close()
+
+	if err := st.AddMembership(store.Membership{
+		CampfireID:    cf.PublicKeyHex(),
+		TransportDir:  s.externalAddr,
+		TransportType: "p2p-http",
+		JoinProtocol:  cf.JoinProtocol,
+		Role:          store.PeerRoleCreator,
+		JoinedAt:      now,
+		CreatorPubkey: agentID.PublicKeyHex(),
+	}); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
+	}
+
+	// Configure the HTTP transport: set self info so join responses include
+	// this node's identity, and register a key provider for the join handler.
+	s.httpTransport.SetSelfInfo(agentID.PublicKeyHex(), s.externalAddr)
+	s.httpTransport.SetKeyProvider(func(campfireID string) (privKey []byte, pubKey []byte, err error) {
+		state, err := fsTransport.ReadState(campfireID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return state.PrivateKey, state.PublicKey, nil
+	})
+
+	// Register self as a peer so membership checks pass for self-authored messages.
+	if err := st.UpsertPeerEndpoint(store.PeerEndpoint{
+		CampfireID:   cf.PublicKeyHex(),
+		MemberPubkey: agentID.PublicKeyHex(),
+		Endpoint:     s.externalAddr,
+		Role:         store.PeerRoleCreator,
+	}); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("adding self as peer: %v", err))
+	}
+
+	// Register this campfire with the transport router so external peers
+	// can reach it via the hosted server's /campfire/ routes.
+	if s.transportRouter != nil {
+		s.transportRouter.Register(cf.PublicKeyHex(), s.httpTransport)
+	}
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"campfire_id":            cf.PublicKeyHex(),
+		"join_protocol":          cf.JoinProtocol,
+		"reception_requirements": cf.ReceptionRequirements,
+		"transport":              "p2p-http",
+		"endpoint":               s.externalAddr,
+	})
+	return okResponse(id, result)
+}
+
 func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonRPCResponse {
 	campfireID := getStr(params, "campfire_id")
 	if campfireID == "" {
@@ -626,7 +738,7 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 	}
 	defer st.Close()
 
-	transport := fs.New(fs.DefaultBaseDir())
+	transport := s.fsTransport()
 
 	state, err := transport.ReadState(campfireID)
 	if err != nil {
@@ -754,9 +866,9 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", campfireID[:12]))
 	}
 
-	transport := fs.New(fs.DefaultBaseDir())
+	fsT := s.fsTransport()
 
-	members, err := transport.ListMembers(campfireID)
+	members, err := fsT.ListMembers(campfireID)
 	if err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("listing members: %v", err))
 	}
@@ -786,7 +898,7 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 	}
 	msg.Instance = instance // tainted metadata, not covered by signature
 
-	state, err := transport.ReadState(campfireID)
+	state, err := fsT.ReadState(campfireID)
 	if err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("reading campfire state: %v", err))
 	}
@@ -800,8 +912,26 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		return errResponse(id, -32000, fmt.Sprintf("adding provenance hop: %v", err))
 	}
 
-	if err := transport.WriteMessage(campfireID, msg); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("writing message: %v", err))
+	if s.httpTransport != nil {
+		// HTTP mode: store in SQLite and deliver to HTTP peers.
+		if _, err := st.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("storing message: %v", err))
+		}
+		// Wake any long-polling goroutines (hosted and external peers).
+		s.httpTransport.PollBrokerNotify(campfireID)
+		// Deliver to external HTTP peers.
+		peers := s.httpTransport.Peers(campfireID)
+		if len(peers) > 0 {
+			endpoints := make([]string, len(peers))
+			for i, p := range peers {
+				endpoints[i] = p.Endpoint
+			}
+			cfhttp.DeliverToAll(endpoints, campfireID, msg, agentID)
+		}
+	} else {
+		if err := fsT.WriteMessage(campfireID, msg); err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("writing message: %v", err))
+		}
 	}
 
 	result, _ := toolResultJSON(map[string]interface{}{
@@ -828,8 +958,6 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 	}
 	defer st.Close()
 
-	transport := fs.New(fs.DefaultBaseDir())
-
 	var campfireIDs []string
 	if campfireID != "" {
 		campfireIDs = []string{campfireID}
@@ -843,14 +971,18 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 		}
 	}
 
-	// Sync from filesystem
-	for _, cfID := range campfireIDs {
-		fsMessages, err := transport.ListMessages(cfID)
-		if err != nil {
-			continue
-		}
-		for _, fsMsg := range fsMessages {
-			st.AddMessage(store.MessageRecordFromMessage(cfID, &fsMsg, store.NowNano())) //nolint:errcheck
+	// Sync from filesystem (skip in HTTP mode — messages are already in SQLite
+	// via the HTTP transport's handleDeliver or via handleSend).
+	if s.httpTransport == nil {
+		fsTransport := fs.New(fs.DefaultBaseDir())
+		for _, cfID := range campfireIDs {
+			fsMessages, err := fsTransport.ListMessages(cfID)
+			if err != nil {
+				continue
+			}
+			for _, fsMsg := range fsMessages {
+				st.AddMessage(store.MessageRecordFromMessage(cfID, &fsMsg, store.NowNano())) //nolint:errcheck
+			}
 		}
 	}
 
@@ -953,12 +1085,19 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 	}
 	defer st.Close()
 
-	transport := fs.New(fs.DefaultBaseDir())
+	// In HTTP mode, use PollBroker for efficient notification instead of
+	// filesystem polling. The PollBroker wakes this goroutine when a new
+	// message is delivered via the HTTP transport.
+	if s.httpTransport != nil {
+		return s.handleAwaitHTTP(id, st, campfireID, targetMsgID, timeout)
+	}
+
+	fsTransport := fs.New(fs.DefaultBaseDir())
 	interval := 2 * time.Second
 	deadline := time.After(timeout)
 
 	// Initial sync and check.
-	if msgs, err := transport.ListMessages(campfireID); err == nil {
+	if msgs, err := fsTransport.ListMessages(campfireID); err == nil {
 		for _, m := range msgs {
 			st.AddMessage(store.MessageRecordFromMessage(campfireID, &m, store.NowNano())) //nolint:errcheck
 		}
@@ -976,11 +1115,45 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 		case <-time.After(interval):
 		}
 
-		if msgs, err := transport.ListMessages(campfireID); err == nil {
+		if msgs, err := fsTransport.ListMessages(campfireID); err == nil {
 			for _, m := range msgs {
 				st.AddMessage(store.MessageRecordFromMessage(campfireID, &m, store.NowNano())) //nolint:errcheck
 			}
 		}
+		if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
+			result, _ := toolResultJSON(msg)
+			return okResponse(id, result)
+		}
+	}
+}
+
+// handleAwaitHTTP uses the PollBroker for efficient notification-driven await
+// instead of filesystem polling.
+func (s *server) handleAwaitHTTP(id interface{}, st *store.Store, campfireID, targetMsgID string, timeout time.Duration) jsonRPCResponse {
+	// Check if already fulfilled.
+	if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
+		result, _ := toolResultJSON(msg)
+		return okResponse(id, result)
+	}
+
+	deadline := time.After(timeout)
+
+	for {
+		// Subscribe to PollBroker for this campfire.
+		ch, dereg, err := s.httpTransport.PollBrokerSubscribe(campfireID)
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("subscribing to poll broker: %v", err))
+		}
+
+		select {
+		case <-deadline:
+			dereg()
+			return errResponse(id, -32000, "timeout: no fulfillment received")
+		case <-ch:
+			dereg()
+		}
+
+		// Check for fulfillment after notification.
 		if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
 			result, _ := toolResultJSON(msg)
 			return okResponse(id, result)
@@ -1167,7 +1340,7 @@ func (s *server) handleLS(id interface{}, _ map[string]interface{}) jsonRPCRespo
 		return errResponse(id, -32000, fmt.Sprintf("listing memberships: %v", err))
 	}
 
-	transport := fs.New(fs.DefaultBaseDir())
+	transport := s.fsTransport()
 
 	type entry struct {
 		CampfireID   string `json:"campfire_id"`
@@ -1215,7 +1388,7 @@ func (s *server) handleMembers(id interface{}, params map[string]interface{}) js
 		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", campfireID[:12]))
 	}
 
-	transport := fs.New(fs.DefaultBaseDir())
+	transport := s.fsTransport()
 	members, err := transport.ListMembers(campfireID)
 	if err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("listing members: %v", err))
@@ -1274,7 +1447,7 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 	}
 	defer st.Close()
 
-	transport := fs.New(fs.DefaultBaseDir())
+	transport := s.fsTransport()
 
 	memberships, err := st.ListMemberships()
 	if err != nil {
@@ -1333,13 +1506,22 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 			return errResponse(id, -32000, fmt.Sprintf("writing target member record: %v", err))
 		}
 
+		var transportConfig beacon.TransportConfig
+		if s.httpTransport != nil {
+			transportConfig = beacon.TransportConfig{
+				Protocol: "p2p-http",
+				Config:   map[string]string{"endpoint": s.externalAddr},
+			}
+		} else {
+			transportConfig = beacon.TransportConfig{
+				Protocol: "filesystem",
+				Config:   map[string]string{"dir": transport.CampfireDir(cf.PublicKeyHex())},
+			}
+		}
 		b, err := beacon.New(
 			cf.PublicKey, cf.PrivateKey,
 			cf.JoinProtocol, cf.ReceptionRequirements,
-			beacon.TransportConfig{
-				Protocol: "filesystem",
-				Config:   map[string]string{"dir": transport.CampfireDir(cf.PublicKeyHex())},
-			},
+			transportConfig,
 			fmt.Sprintf("dm:%s:%s", agentID.PublicKeyHex()[:12], targetHex[:12]),
 		)
 		if err != nil {
@@ -1349,12 +1531,23 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 			return errResponse(id, -32000, fmt.Sprintf("publishing beacon: %v", err))
 		}
 
+		transportDir := transport.CampfireDir(cf.PublicKeyHex())
+		transportType := ""
+		if s.httpTransport != nil {
+			transportDir = s.externalAddr
+			transportType = "p2p-http"
+			// Register DM campfire with transport router.
+			if s.transportRouter != nil {
+				s.transportRouter.Register(cf.PublicKeyHex(), s.httpTransport)
+			}
+		}
 		if err := st.AddMembership(store.Membership{
-			CampfireID:   cf.PublicKeyHex(),
-			TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
-			JoinProtocol: cf.JoinProtocol,
-			Role:         store.PeerRoleCreator,
-			JoinedAt:     now,
+			CampfireID:    cf.PublicKeyHex(),
+			TransportDir:  transportDir,
+			TransportType: transportType,
+			JoinProtocol:  cf.JoinProtocol,
+			Role:          store.PeerRoleCreator,
+			JoinedAt:      now,
 		}); err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
 		}
@@ -1386,8 +1579,16 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 		return errResponse(id, -32000, fmt.Sprintf("adding provenance hop: %v", err))
 	}
 
-	if err := transport.WriteMessage(campfireID, msg); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("writing message: %v", err))
+	if s.httpTransport != nil {
+		// HTTP mode: store in SQLite and deliver to peers.
+		if _, err := st.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("storing message: %v", err))
+		}
+		s.httpTransport.PollBrokerNotify(campfireID)
+	} else {
+		if err := transport.WriteMessage(campfireID, msg); err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("writing message: %v", err))
+		}
 	}
 
 	result, _ := toolResultJSON(map[string]interface{}{
@@ -1705,7 +1906,7 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build a per-request server view pointing at the session's cfHome.
-	sessSrv := sess.server()
+	sessSrv := sess.server(s.sessManager)
 	resp := sessSrv.dispatch(req)
 
 	// For campfire_init, inject the session token so the client knows what to
@@ -1740,6 +1941,12 @@ func (s *server) serveHTTP(addr string) error {
 		mux.HandleFunc("/mcp", s.handleMCP)
 	}
 	mux.HandleFunc("/sse", s.handleSSE)
+
+	// Mount the HTTP transport router so external peers can reach hosted
+	// campfires via /campfire/{id}/deliver, /campfire/{id}/poll, etc.
+	if s.transportRouter != nil {
+		mux.Handle("/campfire/", s.transportRouter)
+	}
 
 	fmt.Fprintf(os.Stderr, "cf-mcp listening on %s\n", addr)
 	return http.ListenAndServe(addr, mux)
@@ -1809,13 +2016,27 @@ func main() {
 
 	// HTTP+SSE mode when --http is set, otherwise stdio.
 	if httpAddr != "" {
-		// When --sessions-dir is provided, enable per-session isolation.
+		// When --sessions-dir is provided, enable per-session isolation
+		// with embedded HTTP transport.
 		if sessionsDir != "" {
 			if err := os.MkdirAll(sessionsDir, 0700); err != nil {
 				fmt.Fprintf(os.Stderr, "error: creating sessions dir: %v\n", err)
 				os.Exit(1)
 			}
-			srv.sessManager = NewSessionManager(sessionsDir)
+			router := NewTransportRouter()
+			sm := NewSessionManager(sessionsDir)
+			sm.router = router
+			// Build the external address from the listen address.
+			// If the address starts with ":", prepend "http://localhost".
+			externalAddr := httpAddr
+			if strings.HasPrefix(externalAddr, ":") {
+				externalAddr = "http://localhost" + externalAddr
+			} else if !strings.HasPrefix(externalAddr, "http") {
+				externalAddr = "http://" + externalAddr
+			}
+			sm.externalAddr = externalAddr
+			srv.sessManager = sm
+			srv.transportRouter = router
 		}
 		if err := srv.serveHTTP(httpAddr); err != nil {
 			fmt.Fprintf(os.Stderr, "http server error: %v\n", err)

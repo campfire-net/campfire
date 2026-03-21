@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/store"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // idleTimeout is the duration after which an inactive session closes its store.
@@ -18,23 +19,34 @@ const idleTimeout = 10 * time.Minute
 // containing identity.json and store.db, with the store held open in memory.
 // The store opens once when the session is created and remains open until the
 // session goes idle (no MCP calls for idleTimeout).
+//
+// In hosted HTTP mode, each session also holds an HTTP transport instance that
+// handles peer-to-peer communication for campfires created by this agent.
 type Session struct {
-	token        string
-	cfHome       string
-	beaconDir    string
-	st           *store.Store
-	lastActivity time.Time
-	mu           sync.Mutex
+	token         string
+	cfHome        string
+	beaconDir     string
+	st            *store.Store
+	httpTransport *cfhttp.Transport // non-nil in hosted HTTP mode
+	lastActivity  time.Time
+	mu            sync.Mutex
 }
 
 // server returns a *server wired to this session's cfHome and beaconDir.
-// The caller must hold s.mu.
-func (s *Session) server() *server {
-	return &server{
+// If manager is non-nil and has a transport router, the returned server
+// is configured for hosted HTTP mode with the session's transport instance.
+func (s *Session) server(manager *SessionManager) *server {
+	srv := &server{
 		cfHome:         s.cfHome,
 		beaconDir:      s.beaconDir,
 		cfHomeExplicit: true,
 	}
+	if manager != nil && manager.router != nil {
+		srv.httpTransport = s.httpTransport
+		srv.transportRouter = manager.router
+		srv.externalAddr = manager.externalAddr
+	}
+	return srv
 }
 
 // touch updates lastActivity under the session lock.
@@ -44,10 +56,13 @@ func (s *Session) touch() {
 	s.mu.Unlock()
 }
 
-// Close closes the session's store if it is open.
+// Close closes the session's store and transport if open.
 func (s *Session) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.httpTransport != nil {
+		s.httpTransport.StopNoncePruner()
+	}
 	if s.st != nil {
 		s.st.Close()
 		s.st = nil
@@ -60,6 +75,12 @@ type SessionManager struct {
 	sessionsDir string
 	sessions    sync.Map // token → *Session
 	stopCh      chan struct{}
+	// router is non-nil in hosted HTTP mode. It maps campfire IDs to the
+	// session's HTTP transport instance so external peers can reach hosted agents.
+	router *TransportRouter
+	// externalAddr is the public URL of the hosted server (e.g. "http://localhost:8080").
+	// Used as the HTTP transport endpoint in beacon transport configs.
+	externalAddr string
 }
 
 // NewSessionManager creates a SessionManager rooted at sessionsDir and
@@ -80,7 +101,8 @@ func (m *SessionManager) Stop() {
 
 // getOrCreate returns the existing Session for token, or creates a new one.
 // On first call for a given token it creates the per-session directory tree
-// and opens the SQLite store.
+// and opens the SQLite store. In hosted HTTP mode (router non-nil), it also
+// creates a per-session HTTP transport instance.
 func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 	if v, ok := m.sessions.Load(token); ok {
 		sess := v.(*Session)
@@ -110,9 +132,20 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 		lastActivity: time.Now(),
 	}
 
+	// In hosted HTTP mode, create a per-session HTTP transport.
+	if m.router != nil {
+		t := cfhttp.New("", st)
+		t.StartNoncePruner()
+		sess.httpTransport = t
+		m.router.RegisterSession(token, t)
+	}
+
 	actual, loaded := m.sessions.LoadOrStore(token, sess)
 	if loaded {
 		// Another goroutine created the session first; clean up ours.
+		if sess.httpTransport != nil {
+			sess.httpTransport.StopNoncePruner()
+		}
 		st.Close()
 		return actual.(*Session), nil
 	}
