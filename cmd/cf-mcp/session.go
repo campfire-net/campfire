@@ -28,6 +28,7 @@ type Session struct {
 	beaconDir     string
 	st            *store.Store
 	httpTransport *cfhttp.Transport // non-nil in hosted HTTP mode
+	router        *TransportRouter  // non-nil in hosted HTTP mode; used by Close to unregister routes
 	lastActivity  time.Time
 	mu            sync.Mutex
 }
@@ -40,6 +41,8 @@ func (s *Session) server(manager *SessionManager) *server {
 		cfHome:         s.cfHome,
 		beaconDir:      s.beaconDir,
 		cfHomeExplicit: true,
+		sessionToken:   s.token,
+		st:             s.st,
 	}
 	if manager != nil && manager.router != nil {
 		srv.httpTransport = s.httpTransport
@@ -56,10 +59,16 @@ func (s *Session) touch() {
 	s.mu.Unlock()
 }
 
-// Close closes the session's store and transport if open.
+// Close closes the session's store and transport if open. In hosted HTTP mode,
+// it also unregisters all campfire routes and the session transport from the
+// router so that subsequent /campfire/{id}/deliver requests return 404 instead
+// of hitting a stopped transport.
 func (s *Session) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.router != nil {
+		s.router.UnregisterSession(s.token)
+	}
 	if s.httpTransport != nil {
 		s.httpTransport.StopNoncePruner()
 	}
@@ -73,7 +82,8 @@ func (s *Session) Close() {
 // All sessions are isolated: each has its own directory tree under sessionsDir.
 type SessionManager struct {
 	sessionsDir string
-	sessions    sync.Map // token → *Session
+	sessions    sync.Map   // token → *Session
+	createMu    sync.Mutex // serializes first-call creation to prevent concurrent SQLite opens for the same token
 	stopCh      chan struct{}
 	// router is non-nil in hosted HTTP mode. It maps campfire IDs to the
 	// session's HTTP transport instance so external peers can reach hosted agents.
@@ -107,15 +117,25 @@ func (m *SessionManager) Stop() {
 // and opens the SQLite store. In hosted HTTP mode (router non-nil), it also
 // creates a per-session HTTP transport instance.
 func (m *SessionManager) getOrCreate(token string) (*Session, error) {
+	// Fast path: session already exists.
 	if v, ok := m.sessions.Load(token); ok {
 		sess := v.(*Session)
 		sess.touch()
 		return sess, nil
 	}
 
-	// Create under a new-session lock keyed by token (optimistic: two concurrent
-	// firsts for the same token are harmless because LoadOrStore atomically
-	// decides which one wins).
+	// Slow path: serialize creation to prevent concurrent goroutines for the
+	// same token from each trying to open the same SQLite store (SQLITE_BUSY).
+	m.createMu.Lock()
+	defer m.createMu.Unlock()
+
+	// Re-check under the lock — another goroutine may have created it.
+	if v, ok := m.sessions.Load(token); ok {
+		sess := v.(*Session)
+		sess.touch()
+		return sess, nil
+	}
+
 	cfHome := filepath.Join(m.sessionsDir, token)
 	beaconDir := filepath.Join(cfHome, "beacons")
 	if err := os.MkdirAll(beaconDir, 0700); err != nil {
@@ -140,18 +160,11 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 		t := cfhttp.New("", st)
 		t.StartNoncePruner()
 		sess.httpTransport = t
+		sess.router = m.router
 		m.router.RegisterSession(token, t)
 	}
 
-	actual, loaded := m.sessions.LoadOrStore(token, sess)
-	if loaded {
-		// Another goroutine created the session first; clean up ours.
-		if sess.httpTransport != nil {
-			sess.httpTransport.StopNoncePruner()
-		}
-		st.Close()
-		return actual.(*Session), nil
-	}
+	m.sessions.Store(token, sess)
 	return sess, nil
 }
 
