@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -551,5 +553,118 @@ func TestSession_ConcurrentGetOrCreateOneTransport(t *testing.T) {
 	}
 	if registeredConcurrent != winner.httpTransport {
 		t.Error("router has a stale transport — loser registered before LoadOrStore decided the winner")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: max-sessions limit blocks new session creation
+// ---------------------------------------------------------------------------
+
+// TestSession_MaxSessionsLimit verifies that getOrCreate returns a
+// sessionLimitError when the number of active sessions reaches maxSessions,
+// and that no directory is created for the rejected session.
+func TestSession_MaxSessionsLimit(t *testing.T) {
+	dir := t.TempDir()
+	const limit = 3
+	m := &SessionManager{
+		sessionsDir: dir,
+		stopCh:      make(chan struct{}),
+		maxSessions: limit,
+	}
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	// Create exactly limit sessions — all must succeed.
+	for i := 0; i < limit; i++ {
+		tok, err := generateToken()
+		if err != nil {
+			t.Fatalf("generateToken: %v", err)
+		}
+		if _, err := m.getOrCreate(tok); err != nil {
+			t.Fatalf("getOrCreate session %d of %d failed: %v", i+1, limit, err)
+		}
+	}
+
+	// The next (limit+1) session must be rejected with sessionLimitError.
+	extraTok, err := generateToken()
+	if err != nil {
+		t.Fatalf("generateToken for extra session: %v", err)
+	}
+	_, gotErr := m.getOrCreate(extraTok)
+	if gotErr == nil {
+		t.Fatal("expected error when exceeding max sessions, got nil")
+	}
+	var limitErr *sessionLimitError
+	if !errors.As(gotErr, &limitErr) {
+		t.Fatalf("expected *sessionLimitError, got %T: %v", gotErr, gotErr)
+	}
+
+	// No directory must have been created for the rejected token.
+	expectedDir := fmt.Sprintf("%s/%s", dir, extraTok)
+	if _, statErr := os.Stat(expectedDir); statErr == nil {
+		t.Errorf("directory was created for rejected session: %s", expectedDir)
+	}
+
+	// Fast path (existing session reuse) must still work for a session that
+	// is already in the map — the limit only blocks new allocations.
+	var anyTok string
+	m.sessions.Range(func(k, _ interface{}) bool {
+		anyTok = k.(string)
+		return false // stop after first
+	})
+	if _, err := m.getOrCreate(anyTok); err != nil {
+		t.Errorf("reuse of existing session should not be blocked by limit: %v", err)
+	}
+}
+
+// TestSession_MaxSessionsHTTP503 verifies that handleMCPSessioned returns HTTP
+// 503 when the session limit is reached.
+func TestSession_MaxSessionsHTTP503(t *testing.T) {
+	dir := t.TempDir()
+	const limit = 2
+	m := &SessionManager{
+		sessionsDir: dir,
+		stopCh:      make(chan struct{}),
+		maxSessions: limit,
+	}
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	srv := &server{
+		cfHome:         t.TempDir(),
+		beaconDir:      t.TempDir(),
+		cfHomeExplicit: true,
+		sessManager:    m,
+	}
+
+	// Fill up to the limit using campfire_init (each call generates a new token).
+	for i := 0; i < limit; i++ {
+		resp := postMCP(t, srv, mcpInitBody, "")
+		if resp.Error != nil {
+			t.Fatalf("campfire_init %d of %d failed: code=%d msg=%s", i+1, limit, resp.Error.Code, resp.Error.Message)
+		}
+	}
+
+	// The next campfire_init must return HTTP 503 with a -32000 JSON-RPC error.
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpInitBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.handleMCPSessioned(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected HTTP 503, got %d", w.Code)
+	}
+	var resp jsonRPCResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error in 503 response")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "session limit reached") {
+		t.Errorf("expected 'session limit reached' in error message, got %q", resp.Error.Message)
 	}
 }
