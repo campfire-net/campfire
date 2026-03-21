@@ -1,10 +1,12 @@
 package http_test
 
-// Tests for relay delivery in handleDeliver (workspace-iwc2.2).
+// Tests for relay delivery in handleDeliver (workspace-iwc2.2, workspace-t6vv).
 //
 // Scenarios covered:
 //   - Member A signs a message; Member B (deliverer) relays it via POST /deliver → 200.
+//   - Relay stores message with A's sender key (not B's deliverer key).
 //   - Non-member C attempts to relay a message signed by Member A → 403.
+//   - Observer member C attempts to relay a message signed by full member A → 403.
 //   - Direct delivery (sender == deliverer) still works → 200.
 //
 // Port block: 440-459 (handler_message_test.go)
@@ -64,6 +66,66 @@ func TestRelayDeliverMemberAllowed(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200 for member relay deliver, got %d: %s", resp.StatusCode, respBody)
+	}
+}
+
+// TestRelayDeliverSenderAttributed verifies that when member B relays a message
+// signed by member A, the stored message is attributed to A (the original author),
+// not to B (the HTTP deliverer). This is the core relay correctness property:
+// relaying preserves authorship.
+func TestRelayDeliverSenderAttributed(t *testing.T) {
+	campfireID := "relay-sender-attributed"
+	idA := tempIdentity(t) // message author
+	idB := tempIdentity(t) // relay deliverer
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, idA.PublicKeyHex())
+	addPeerEndpoint(t, s, campfireID, idB.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+444)
+	startTransportWithSelf(t, addr, s, idA)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	// A signs the message.
+	msg := newTestMessage(t, idA)
+	body, err := cfencoding.Marshal(msg)
+	if err != nil {
+		t.Fatalf("encoding message: %v", err)
+	}
+
+	// B delivers it on behalf of A.
+	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	signTestRequest(req, idB, body)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("relay deliver request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for member relay deliver, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	// Sync back messages — the stored sender must be A, not B.
+	msgs, err := cfhttp.Sync(ep, campfireID, 0, idA)
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message after relay deliver, got %d", len(msgs))
+	}
+	if msgs[0].SenderHex() != idA.PublicKeyHex() {
+		t.Errorf("relay message stored with wrong sender: got %s, want %s (author A)", msgs[0].SenderHex(), idA.PublicKeyHex())
+	}
+	if msgs[0].ID != msg.ID {
+		t.Errorf("relay message ID mismatch: got %s, want %s", msgs[0].ID, msg.ID)
 	}
 }
 
