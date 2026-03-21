@@ -1932,6 +1932,368 @@
 </script>
 
 <script>
+/* ── Panel 01: Production coordination demo ── */
+(function() {
+
+  var AGENT_NAMES4 = { 1: 'Architect', 2: 'Impl A', 3: 'Impl B' };
+
+  var TIMELINE4 = [
+    // Phase 1: Orchestrator creates swarm campfire, Architect blocks
+    { delay: 0,     panel: 1, type: 'cmd', prompt: '$', text: 'cf swarm start --description "api-feature" \\\n  --require gate-human --require schema-change' },
+    { delay: 700,   panel: 1, type: 'out', text: 'a3f9c1 · api-feature\n  gate-human → propagates to root\n  schema-change → propagates to root' },
+    { delay: 1000,  panel: 0, type: 'beacon', text: 'beacon published · api-feature' },
+    { delay: 1200,  panel: 0, type: 'members', text: '1 member' },
+    { delay: 1800,  panel: 1, type: 'cmd', prompt: '$', text: 'cf read a3f9c1 --follow --tag escalation' },
+    { delay: 2100,  panel: 1, type: 'out', text: 'blocking · waiting for escalation...' },
+    { delay: 2300,  panel: 0, type: 'members', text: '2 members' },
+
+    // Phase 2: Implementer A — baseline green
+    { delay: 3000,  panel: 2, type: 'cmd', prompt: '$', text: 'cf join a3f9c1' },
+    { delay: 3300,  panel: 2, type: 'out', text: 'Joined: api-feature' },
+    { delay: 3500,  panel: 0, type: 'members', text: '3 members' },
+    { delay: 3800,  panel: 2, type: 'cmd', prompt: '$', text: 'go test ./... 2>&1 | tail -3' },
+    { delay: 4200,  panel: 2, type: 'out', text: 'ok  pkg/auth   0.412s\nok  pkg/api    0.531s\nok  pkg/store  0.388s' },
+    { delay: 4600,  panel: 2, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "baseline green. starting auth middleware." \\\n  --tag status' },
+    { delay: 4900,  panel: 2, type: 'out', text: 'c1a8f3' },
+    { delay: 5000,  panel: 0, type: 'log', text: 'Impl A: baseline green', color: 'teal', agent: 2 },
+
+    // Phase 3: Implementer B — baseline RED, escalates
+    { delay: 5700,  panel: 3, type: 'cmd', prompt: '$', text: 'cf join a3f9c1' },
+    { delay: 6000,  panel: 3, type: 'out', text: 'Joined: api-feature' },
+    { delay: 6100,  panel: 0, type: 'members', text: '4 members' },
+    { delay: 6400,  panel: 3, type: 'cmd', prompt: '$', text: 'go test ./pkg/auth/... 2>&1 | tail -4' },
+    { delay: 6800,  panel: 3, type: 'out', text: '--- FAIL: TestTokenRefresh (0.003s)\n    want 200, got 401\nFAIL\npkg/auth [build failed]' },
+    { delay: 7200,  panel: 3, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "[RED-BASELINE] pkg/auth: TestTokenRefresh\n  want 200, got 401. Need fix before I can proceed." \\\n  --tag red-baseline --tag gate-human --future' },
+    { delay: 7700,  panel: 3, type: 'out', text: 'e2c7f5' },
+    { delay: 7900,  panel: 0, type: 'flight', from: 3, to: 0 },
+    { delay: 8100,  panel: 0, type: 'log', text: '[RED-BASELINE] propagating to root', color: 'amber', agent: 3 },
+
+    // Phase 4: Fix lands, Impl B resumes
+    { delay: 9000,  panel: 3, type: 'cmd', prompt: '$', text: 'cf await a3f9c1 --fulfills e2c7f5' },
+    { delay: 9200,  panel: 3, type: 'out', text: 'blocking · waiting for fulfillment...' },
+    { delay: 10500, panel: 0, type: 'log', text: 'fix dispatched → pkg/auth token refresh', color: 'teal' },
+    { delay: 12000, panel: 3, type: 'out', text: '[a3f9c1] orchestrator · fulfills: e2c7f5\n  Fix merged. git pull && retry.' },
+    { delay: 12500, panel: 3, type: 'cmd', prompt: '$', text: 'git pull && go test ./pkg/auth/... 2>&1 | tail -1' },
+    { delay: 13000, panel: 3, type: 'out', text: 'ok  pkg/auth  0.398s' },
+    { delay: 13200, panel: 0, type: 'log', text: 'red baseline fixed · Impl B resuming', color: 'teal', agent: 3 },
+
+    // Phase 5: Impl B hits design question, escalates, blocks
+    { delay: 14000, panel: 3, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "Design Q: token refresh — optimistic\n  (retry on conflict) or pessimistic (lock on read)?" \\\n  --tag escalation --future' },
+    { delay: 14600, panel: 3, type: 'out', text: 'f4b1d8' },
+    { delay: 14800, panel: 3, type: 'cmd', prompt: '$', text: 'cf await a3f9c1 --fulfills f4b1d8' },
+    { delay: 15000, panel: 3, type: 'out', text: 'blocking · waiting for ruling...' },
+    { delay: 15100, panel: 0, type: 'flight', from: 3, to: 0 },
+    { delay: 15200, panel: 0, type: 'log', text: '[escalation] design Q → Architect waking', color: 'amber', agent: 3 },
+
+    // Phase 6: Architect wakes, reads, rules
+    { delay: 15800, panel: 1, type: 'out', text: '[a3f9c1] impl-b · escalation · f4b1d8\n  Design Q: optimistic or pessimistic locking?' },
+    { delay: 16400, panel: 1, type: 'cmd', prompt: '$', text: 'cf read a3f9c1 --tag decision --all' },
+    { delay: 16800, panel: 1, type: 'out', text: 'no prior rulings on locking strategy' },
+    { delay: 17400, panel: 1, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "Ruling: pessimistic locking.\n  Design §3.2: concurrent balance checks require it.\n  Lock on read — not retry on conflict." \\\n  --tag decision --fulfills f4b1d8' },
+    { delay: 17900, panel: 1, type: 'out', text: 'a9e3c2' },
+    { delay: 18100, panel: 0, type: 'flight', from: 1, to: 0 },
+    { delay: 18200, panel: 0, type: 'log', text: 'ruling: pessimistic locking · §3.2', color: 'teal', agent: 1 },
+
+    // Phase 7: Impl B resumes; both signal merge-ready
+    { delay: 18800, panel: 3, type: 'out', text: '[a3f9c1] architect · fulfills: f4b1d8\n  Ruling: pessimistic. Design §3.2.' },
+    { delay: 19500, panel: 2, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "PR #42 ready. auth middleware.\n  Touches: pkg/auth/, pkg/middleware/" \\\n  --tag merge-ready' },
+    { delay: 19900, panel: 2, type: 'out', text: 'd8c2f6' },
+    { delay: 20000, panel: 0, type: 'log', text: 'merge-ready: PR #42', color: 'teal', agent: 2 },
+    { delay: 20800, panel: 3, type: 'cmd', prompt: '$', text: 'cf send a3f9c1 "PR #43 ready. pessimistic locking.\n  SCHEMA CHANGE: AuthToken — added LockVersion." \\\n  --tag merge-ready --tag schema-change' },
+    { delay: 21300, panel: 3, type: 'out', text: 'e5a9c7' },
+    { delay: 21500, panel: 0, type: 'flight', from: 3, to: 0 },
+    { delay: 21700, panel: 0, type: 'log', text: 'schema-change propagating to root', color: 'amber', agent: 3 },
+
+    // Finale
+    { delay: 22700, panel: 0, type: 'complete' },
+    { delay: 23400, panel: 0, type: 'summary' },
+  ];
+
+  function Demo4Animation(stageEl) {
+    this.stage = stageEl;
+    this.panels = {
+      1: stageEl.querySelector('.demo-panel-1 .demo-panel-body'),
+      2: stageEl.querySelector('.demo-panel-2 .demo-panel-body'),
+      3: stageEl.querySelector('.demo-panel-3 .demo-panel-body'),
+    };
+    this.campfireEl = stageEl.querySelector('.demo-campfire');
+    this.logEl = document.getElementById('demo4-log');
+    this.membersEl = document.getElementById('demo4-cf-members');
+    this.progressBar = document.getElementById('demo4-progress-bar');
+    this.progressEl = document.getElementById('demo4-progress');
+    this.stepCount = document.getElementById('demo4-step-count');
+    this.summaryEl = document.getElementById('demo4-summary');
+    this.tabs = stageEl.querySelectorAll('.demo-agent-tab');
+    this.panelEls = stageEl.querySelectorAll('.demo-panel');
+    this.timers = [];
+    this.started = false;
+    this.paused = false;
+    this.speed = 1;
+    this.currentStep = 0;
+    this.totalSteps = TIMELINE4.length;
+    this.totalDuration = TIMELINE4[TIMELINE4.length - 1].delay + 1500;
+    this.activeAgent = 1;
+    this.initTabs();
+  }
+
+  Demo4Animation.prototype.initTabs = function() {
+    var self = this;
+    this.tabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        self.switchToAgent(parseInt(tab.getAttribute('data-agent')));
+      });
+    });
+  };
+
+  Demo4Animation.prototype.switchToAgent = function(agentNum) {
+    this.activeAgent = agentNum;
+    this.tabs.forEach(function(tab) {
+      var isActive = parseInt(tab.getAttribute('data-agent')) === agentNum;
+      tab.classList.toggle('active', isActive);
+      tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+    this.panelEls.forEach(function(panel) {
+      var isActive = parseInt(panel.getAttribute('data-agent')) === agentNum;
+      panel.classList.toggle('active', isActive);
+    });
+    var body = this.panels[agentNum];
+    if (body) body.scrollTop = body.scrollHeight;
+  };
+
+  Demo4Animation.prototype.start = function() {
+    if (this.started) return;
+    this.started = true; this.paused = false; this.currentStep = 0;
+    this.scheduleSteps(0);
+  };
+
+  Demo4Animation.prototype.scheduleSteps = function(fromIndex) {
+    var self = this;
+    var baseDelay = fromIndex > 0 ? TIMELINE4[fromIndex - 1].delay : 0;
+    for (var i = fromIndex; i < TIMELINE4.length; i++) {
+      (function(step, idx) {
+        var t = setTimeout(function() {
+          if (self.paused) return;
+          self.execute(step);
+          self.currentStep = idx + 1;
+          self.updateProgress(idx + 1, step.delay);
+        }, (step.delay - baseDelay) / self.speed);
+        self.timers.push(t);
+      })(TIMELINE4[i], i);
+    }
+  };
+
+  Demo4Animation.prototype.pause = function() {
+    this.paused = true;
+    this.timers.forEach(function(t) { clearTimeout(t); });
+    this.timers = [];
+  };
+
+  Demo4Animation.prototype.resume = function() { this.paused = false; this.scheduleSteps(this.currentStep); };
+  Demo4Animation.prototype.togglePause = function() { if (this.paused) this.resume(); else this.pause(); };
+
+  Demo4Animation.prototype.setSpeed = function(speed) {
+    var wasPaused = this.paused;
+    if (!wasPaused && this.started) this.pause();
+    this.speed = speed;
+    if (!wasPaused && this.started) this.resume();
+  };
+
+  Demo4Animation.prototype.reset = function() {
+    this.timers.forEach(function(t) { clearTimeout(t); }); this.timers = [];
+    this.started = false; this.paused = false; this.currentStep = 0;
+    var self = this;
+    Object.values(this.panels).forEach(function(p) { if (p) p.innerHTML = ''; });
+    if (this.logEl) this.logEl.innerHTML = '';
+    if (this.membersEl) this.membersEl.textContent = '';
+    if (this.summaryEl) this.summaryEl.classList.remove('visible');
+    this.stage.querySelectorAll('.demo-panel').forEach(function(p) { p.classList.remove('complete'); });
+    this.tabs.forEach(function(tab) { tab.classList.remove('has-activity'); });
+    if (this.progressBar) this.progressBar.style.width = '0%';
+    if (this.progressEl) this.progressEl.setAttribute('aria-valuenow', '0');
+    if (this.stepCount) this.stepCount.textContent = 'Step 0/' + this.totalSteps;
+    this.switchToAgent(1);
+  };
+
+  Demo4Animation.prototype.execute = function(step) {
+    switch (step.type) {
+      case 'cmd':
+        this.addLine(step.panel, 'cmd', step.prompt || '$', step.text);
+        this.autoSwitchAndNotify(step.panel);
+        break;
+      case 'out':
+        this.addLine(step.panel, 'out', '', step.text);
+        break;
+      case 'beacon':
+        this.pulseFlame();
+        this.addLogEntry(step.text, 'amber');
+        break;
+      case 'members':
+        if (this.membersEl) this.membersEl.textContent = step.text;
+        break;
+      case 'flight':
+        this.showFlightInLog(step.from, step.to);
+        break;
+      case 'log':
+        this.addLogEntry(step.text, step.color, step.agent);
+        break;
+      case 'complete':
+        this.stage.querySelectorAll('.demo-panel').forEach(function(p) { p.classList.add('complete'); });
+        this.pulseFlame();
+        break;
+      case 'summary':
+        if (this.summaryEl) this.summaryEl.classList.add('visible');
+        break;
+    }
+  };
+
+  Demo4Animation.prototype.autoSwitchAndNotify = function(panelNum) {
+    if (!panelNum || panelNum === 0) return;
+    this.switchToAgent(panelNum);
+    this.tabs.forEach(function(tab) {
+      if (parseInt(tab.getAttribute('data-agent')) === panelNum) {
+        tab.classList.add('has-activity');
+        setTimeout(function() { tab.classList.remove('has-activity'); }, 600);
+      }
+    });
+  };
+
+  Demo4Animation.prototype.showFlightInLog = function(from, to) {
+    var fromName = from === 0 ? 'campfire' : AGENT_NAMES4[from] || 'agent';
+    var toName = to === 0 ? 'campfire' : AGENT_NAMES4[to] || 'agent';
+    var div = document.createElement('div');
+    div.className = 'demo-log-entry demo-log-flight';
+    div.textContent = fromName + ' \u2192 ' + toName;
+    if (this.logEl) { this.logEl.appendChild(div); this.logEl.scrollTop = this.logEl.scrollHeight; }
+    this.pulseFlame();
+  };
+
+  Demo4Animation.prototype.addLine = function(panelNum, type, prompt, text) {
+    var panel = this.panels[panelNum];
+    if (!panel) return;
+    text.split('\n').forEach(function(line, i) {
+      var div = document.createElement('div');
+      div.className = 'demo-line-entry demo-line-' + type;
+      if (i === 0 && prompt) {
+        var ps = document.createElement('span');
+        ps.className = 'demo-prompt';
+        ps.textContent = prompt + ' ';
+        div.appendChild(ps);
+      } else if (i > 0) {
+        div.classList.add('demo-line-cont');
+      }
+      var ts = document.createElement('span');
+      ts.className = type === 'cmd' ? 'demo-cmd-text' : 'demo-out-text';
+      ts.textContent = line;
+      div.appendChild(ts);
+      panel.appendChild(div);
+    });
+    panel.scrollTop = panel.scrollHeight;
+  };
+
+  Demo4Animation.prototype.addLogEntry = function(text, color, agentNum) {
+    if (!this.logEl) return;
+    var div = document.createElement('div');
+    div.className = 'demo-log-entry demo-log-' + color;
+    if (agentNum && AGENT_NAMES4[agentNum]) {
+      var s = document.createElement('span');
+      s.className = 'demo-log-agent';
+      s.textContent = AGENT_NAMES4[agentNum];
+      div.appendChild(s);
+      div.appendChild(document.createTextNode(' '));
+    }
+    div.appendChild(document.createTextNode(text));
+    this.logEl.appendChild(div);
+    this.logEl.scrollTop = this.logEl.scrollHeight;
+  };
+
+  Demo4Animation.prototype.pulseFlame = function() {
+    if (!this.campfireEl) return;
+    var flame = this.campfireEl.querySelector('.demo-campfire-flame');
+    if (!flame) return;
+    flame.classList.remove('pulse'); void flame.offsetWidth; flame.classList.add('pulse');
+  };
+
+  Demo4Animation.prototype.updateProgress = function(step, delay) {
+    var pct = Math.round((delay / this.totalDuration) * 100);
+    if (this.progressBar) this.progressBar.style.width = pct + '%';
+    if (this.progressEl) this.progressEl.setAttribute('aria-valuenow', pct);
+    if (this.stepCount) this.stepCount.textContent = 'Step ' + step + '/' + this.totalSteps;
+  };
+
+  document.addEventListener('DOMContentLoaded', function() {
+    var stage4 = document.getElementById('demo4-stage');
+    if (!stage4) return;
+
+    var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var demo4 = new Demo4Animation(stage4);
+
+    if (reducedMotion) {
+      TIMELINE4.forEach(function(step) {
+        if (step.type === 'cmd' || step.type === 'out') demo4.addLine(step.panel, step.type, step.prompt || '$', step.text);
+        else if (step.type === 'members' && demo4.membersEl) demo4.membersEl.textContent = step.text;
+        else if (step.type === 'log') demo4.addLogEntry(step.text, step.color, step.agent);
+        else if (step.type === 'beacon') demo4.addLogEntry(step.text, 'amber');
+        else if (step.type === 'complete') stage4.querySelectorAll('.demo-panel').forEach(function(p) { p.classList.add('complete'); });
+      });
+      if (demo4.summaryEl) demo4.summaryEl.classList.add('visible');
+      var cEl4 = document.getElementById('demo4-controls');
+      if (cEl4) cEl4.style.display = 'none';
+      return;
+    }
+
+    var playBtn4 = document.getElementById('demo4-play');
+    var iconPause4 = playBtn4 && playBtn4.querySelector('.demo-icon-pause');
+    var iconPlay4  = playBtn4 && playBtn4.querySelector('.demo-icon-play');
+    if (playBtn4) {
+      playBtn4.addEventListener('click', function() {
+        if (!demo4.started) demo4.start(); else demo4.togglePause();
+        var isPaused = demo4.paused;
+        if (iconPause4) iconPause4.style.display = isPaused ? 'none' : '';
+        if (iconPlay4)  iconPlay4.style.display  = isPaused ? '' : 'none';
+        playBtn4.setAttribute('aria-label', isPaused ? 'Play animation' : 'Pause animation');
+      });
+    }
+
+    var restartBtn4 = document.getElementById('demo4-restart');
+    if (restartBtn4) {
+      restartBtn4.addEventListener('click', function() {
+        demo4.reset();
+        if (iconPause4) iconPause4.style.display = '';
+        if (iconPlay4)  iconPlay4.style.display  = 'none';
+        if (playBtn4) playBtn4.setAttribute('aria-label', 'Pause animation');
+        setTimeout(function() { demo4.start(); }, 100);
+      });
+    }
+
+    var speedBtns4 = document.querySelectorAll('#demo4-speed .demo-speed-btn');
+    speedBtns4.forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        demo4.setSpeed(parseFloat(btn.getAttribute('data-speed')));
+        speedBtns4.forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+      });
+    });
+
+    var acc1Radio = document.getElementById('acc-1');
+    if (acc1Radio) {
+      acc1Radio.addEventListener('change', function() {
+        if (acc1Radio.checked && !demo4.started) setTimeout(function() { demo4.start(); }, 200);
+      });
+    }
+
+    // Auto-start on scroll into view
+    var observer4 = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) { demo4.start(); observer4.unobserve(entry.target); }
+      });
+    }, { threshold: 0.15 });
+    observer4.observe(stage4);
+  });
+
+})();
+</script>
+
+<script>
 (function() {
   var orbital = document.querySelector('.why-orbital');
   if (!orbital || window.innerWidth <= 768) return;
