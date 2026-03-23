@@ -8,7 +8,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"strings"
 	"os"
 	"os/signal"
 	"syscall"
@@ -81,13 +84,9 @@ func main() {
 
 	log.Printf("bridge ready — campfires: %v", campfireIDs(cfg))
 
-	// Build poller configs for campfires that have a webhook URL.
+	// Build poller configs for all configured campfires.
 	var pollerCfgs []poller.Config
 	for _, route := range cfg.Campfire {
-		if route.WebhookURL == "" {
-			log.Printf("skipping campfire %s: no webhook_url configured", route.ID)
-			continue
-		}
 		pollerCfgs = append(pollerCfgs, poller.Config{
 			CampfireID:         route.ID,
 			PollInterval:       route.PollInterval,
@@ -151,7 +150,99 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
-	_ = id // used by Teams→campfire flow in later phases
+	// Build campfire channel→ID lookup for conversation ref bootstrap.
+	channelToCampfire := make(map[string]string)
+	for _, route := range cfg.Campfire {
+		if route.TeamsChannel != "" {
+			channelToCampfire[route.TeamsChannel] = route.ID
+		}
+	}
+
+	// Set up inbound (Teams→campfire) handler.
+	validator := botframework.NewValidator(cfg.Azure.AppID, false)
+	inbound := teams.NewInboundHandler(id, cs, bdb, nil, validator)
+	if bfClient != nil {
+		inbound = inbound.WithBFClient(bfClient)
+	}
+
+	// HTTP handler for Bot Framework activities.
+	http.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Printf("inbound: read body: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		// Parse the activity to extract conversation ref.
+		activity, parseErr := botframework.ParseActivity(body)
+		if parseErr != nil {
+			log.Printf("inbound: parse activity: %v", parseErr)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("inbound: activity type=%s from=%s conv=%s", activity.Type, activity.From.ID, activity.Conversation.ID)
+
+		// Bootstrap conversation ref from any inbound activity.
+		// Strip ";messageid=..." suffix — we want the channel-level conversation ID
+		// so outbound messages land as top-level posts, not thread replies.
+		convID := activity.Conversation.ID
+		if idx := strings.Index(convID, ";messageid="); idx != -1 {
+			convID = convID[:idx]
+		}
+		for channel, cfID := range channelToCampfire {
+			if containsChannel(convID, channel) {
+				ref := state.ConversationRef{
+					CampfireID:  cfID,
+					TeamsConvID: convID,
+					ServiceURL:  activity.ServiceURL,
+					TenantID:    activity.Conversation.TenantID,
+					ChannelID:   channel,
+					BotID:       activity.Recipient.ID,
+				}
+				if err := bdb.UpsertConversationRef(ref); err != nil {
+					log.Printf("inbound: upsert conv ref: %v", err)
+				} else {
+					log.Printf("inbound: conversation ref stored for campfire %s (conv=%s)", cfID, convID)
+				}
+				break
+			}
+		}
+
+		// Handle message and invoke activities.
+		authHeader := r.Header.Get("Authorization")
+		switch activity.Type {
+		case botframework.ActivityTypeMessage, botframework.ActivityTypeInvoke:
+			msgID, err := inbound.HandleActivity(r.Context(), authHeader, body)
+			if err != nil {
+				log.Printf("inbound: handle activity: %v", err)
+				// Return 200 anyway — Bot Framework retries on non-2xx.
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			log.Printf("inbound: created campfire message %s", msgID)
+			w.WriteHeader(http.StatusOK)
+		default:
+			// conversationUpdate, typing, etc. — acknowledge.
+			log.Printf("inbound: ignoring activity type %s", activity.Type)
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+
+	// Start HTTP server.
+	go func() {
+		log.Printf("HTTP server listening on %s", cfg.Listen)
+		if err := http.ListenAndServe(cfg.Listen, nil); err != nil {
+			log.Fatalf("http server: %v", err)
+		}
+	}()
 
 	select {
 	case <-sig:
@@ -160,6 +251,11 @@ func main() {
 		log.Printf("poller error: %v", err)
 	}
 	cancel()
+}
+
+// containsChannel checks if a Teams conversation ID contains the channel identifier.
+func containsChannel(convID, channel string) bool {
+	return len(convID) >= len(channel) && (convID == channel || len(convID) > len(channel) && convID[:len(channel)] == channel)
 }
 
 func campfireIDs(cfg *bridge.Config) []string {

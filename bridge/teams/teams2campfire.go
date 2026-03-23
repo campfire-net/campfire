@@ -121,6 +121,7 @@ type InboundHandler struct {
 }
 
 // NewInboundHandler creates an InboundHandler.
+// fsTransport is optional — if nil, messages are written to the store only.
 func NewInboundHandler(
 	ident *identity.Identity,
 	cfStore *store.Store,
@@ -178,6 +179,10 @@ func (h *InboundHandler) HandleActivity(ctx context.Context, authHeader string, 
 
 	fromID := activity.From.ID
 	convID := activity.Conversation.ID
+	// Strip ";messageid=..." suffix — Teams appends it for channel messages.
+	if idx := strings.Index(convID, ";messageid="); idx != -1 {
+		convID = convID[:idx]
+	}
 	activityID := activity.ID
 	replyToID := activity.ReplyToID
 
@@ -246,9 +251,9 @@ func (h *InboundHandler) HandleActivity(ctx context.Context, authHeader string, 
 		return "", fmt.Errorf("recording dedup: %w", err)
 	}
 
-	// 12. Write via filesystem transport.
-	if err := h.fsTransport.WriteMessage(campfireID, msg); err != nil {
-		return "", fmt.Errorf("writing message to fs transport: %w", err)
+	// 12. Write to campfire — prefer store (poller reads from it), fall back to fs transport.
+	if err := h.writeMessage(campfireID, msg, payload, tags, antecedents); err != nil {
+		return "", err
 	}
 
 	// 13. Record message_map for future antecedent resolution.
@@ -257,6 +262,34 @@ func (h *InboundHandler) HandleActivity(ctx context.Context, authHeader string, 
 	}
 
 	return msg.ID, nil
+}
+
+// writeMessage writes a campfire message via the store (preferred) or fs transport (fallback).
+func (h *InboundHandler) writeMessage(campfireID string, msg *message.Message, payload []byte, tags, antecedents []string) error {
+	if h.cfStore != nil {
+		rec := store.MessageRecord{
+			ID:          msg.ID,
+			CampfireID:  campfireID,
+			Sender:      fmt.Sprintf("%x", h.ident.PublicKey),
+			Payload:     payload,
+			Tags:        tags,
+			Antecedents: antecedents,
+			Timestamp:   msg.Timestamp,
+			Signature:   msg.Signature,
+			Instance:    msg.Instance,
+			ReceivedAt:  msg.Timestamp,
+		}
+		if _, err := h.cfStore.AddMessage(rec); err == nil {
+			return nil
+		}
+	}
+	if h.fsTransport != nil {
+		if err := h.fsTransport.WriteMessage(campfireID, msg); err != nil {
+			return fmt.Errorf("writing message to fs transport: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("no write path available (store and fs transport both nil/failed)")
 }
 
 // resolveCampfire looks up the campfire ID for a Teams conversation ID.
@@ -371,8 +404,8 @@ func (h *InboundHandler) handleGateInvoke(ctx context.Context, authHeader string
 	}
 	msg.Instance = "teams-bridge"
 
-	if err := h.fsTransport.WriteMessage(trustedCampfireID, msg); err != nil {
-		return "", fmt.Errorf("writing gate response: %w", err)
+	if err := h.writeMessage(trustedCampfireID, msg, []byte(payload), tags, antecedents); err != nil {
+		return "", err
 	}
 
 	// 7. Update the original Teams card to reflect the decision.
