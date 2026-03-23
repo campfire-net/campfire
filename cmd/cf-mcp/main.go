@@ -10,9 +10,6 @@
 //	cf-mcp [--cf-home <path>] [--beacon-dir <path>] [--http <addr>]
 package main
 
-// Version is set at build time via ldflags.
-var Version = "dev"
-
 import (
 	"archive/tar"
 	"bufio"
@@ -38,6 +35,9 @@ import (
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
+
+// Version is set at build time via ldflags.
+var Version = "dev"
 
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 types
