@@ -265,7 +265,9 @@ A campfire is a signed, authenticated message channel. All messages are cryptogr
   - Status broadcasting (one agent posts, many read)
   - Escalation channels (ask a question with future/await pattern)
 
-Use 'require' to enforce that only messages with specific tags are accepted — useful for filtering (e.g. require: ["status", "blocker"] means only those tagged messages get through).`,
+Use 'require' to enforce that only messages with specific tags are accepted — useful for filtering (e.g. require: ["status", "blocker"] means only those tagged messages get through).
+
+Use 'encrypted: true' to create an E2E encrypted campfire. When encrypted, the hosted service joins as a blind relay and cannot decrypt message payloads. Full confidentiality requires at least one self-hosted member (see design-mcp-security.md §5.c).`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -282,6 +284,10 @@ Use 'require' to enforce that only messages with specific tags are accepted — 
 					"description": map[string]interface{}{
 						"type":        "string",
 						"description": "Human-readable description of the campfire's purpose. Shown when other agents discover or list it.",
+					},
+					"encrypted": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Enable E2E payload encryption (spec-encryption.md v0.2). When true, the hosted service joins as a blind relay and cannot decrypt message payloads. Requires self-hosted members for full confidentiality (design-mcp-security.md §5.c). Default: false.",
 					},
 				},
 				"required": []string{},
@@ -910,6 +916,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	}
 	require := getStringSlice(params, "require")
 	description := getStr(params, "description")
+	encrypted := getBool(params, "encrypted")
 
 	agentID, err := identity.Load(s.identityPath())
 	if err != nil {
@@ -921,12 +928,22 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		return errResponse(id, -32000, fmt.Sprintf("creating campfire: %v", err))
 	}
 
+	cf.Encrypted = encrypted
+
+	// When the campfire is encrypted, the hosted service joins as a blind relay
+	// (spec-encryption.md v0.2 §2.5, design-mcp-security.md §5.c). The service
+	// stores/forwards ciphertext but does not hold the epoch key.
+	serviceRole := ""
+	if encrypted {
+		serviceRole = campfire.RoleBlindRelay
+	}
+
 	cf.AddMember(agentID.PublicKey)
 
 	// In hosted HTTP mode, use the session's local fs for campfire state and
 	// the HTTP transport for message delivery. Beacons point to the server URL.
 	if s.httpTransport != nil {
-		return s.handleCreateHTTP(id, cf, agentID, description)
+		return s.handleCreateHTTP(id, cf, agentID, description, serviceRole)
 	}
 
 	transport := s.fsTransport()
@@ -937,6 +954,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	if err := transport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
 		PublicKey: agentID.PublicKey,
 		JoinedAt:  time.Now().UnixNano(),
+		Role:      serviceRole,
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
 	}
@@ -973,8 +991,9 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		CampfireID:   cf.PublicKeyHex(),
 		TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
 		JoinProtocol: cf.JoinProtocol,
-		Role:         store.PeerRoleCreator,
+		Role:         serviceRole,
 		JoinedAt:     store.NowNano(),
+		Encrypted:    encrypted,
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
 	}
@@ -1005,7 +1024,10 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 // It stores campfire state in the session's local filesystem, publishes an
 // HTTP transport beacon, registers the campfire with the transport router,
 // and sets up the HTTP transport so external peers can reach this campfire.
-func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID *identity.Identity, description string) jsonRPCResponse {
+//
+// serviceRole is the campfire membership role the hosted service should use.
+// For encrypted campfires, this is campfire.RoleBlindRelay (spec §5.c).
+func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID *identity.Identity, description string, serviceRole string) jsonRPCResponse {
 	// Use the session's cfHome as the fs transport base for state storage.
 	fsTransport := fs.New(s.cfHome)
 	if err := fsTransport.Init(cf); err != nil {
@@ -1016,6 +1038,7 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 	if err := fsTransport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
 		PublicKey: agentID.PublicKey,
 		JoinedAt:  now,
+		Role:      serviceRole,
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
 	}
@@ -1158,6 +1181,15 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 
 	now := time.Now().UnixNano()
 
+	// When the campfire is encrypted, the hosted service joins as a blind relay
+	// (spec-encryption.md v0.2 §2.5, design-mcp-security.md §5.c). The service
+	// stores/forwards ciphertext but is excluded from epoch key deliveries and
+	// cannot decrypt message payloads.
+	serviceRole := ""
+	if state.Encrypted {
+		serviceRole = campfire.RoleBlindRelay
+	}
+
 	if alreadyOnDisk {
 		now = existingJoinedAt
 	} else {
@@ -1195,6 +1227,7 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		if err := transport.WriteMember(campfireID, campfire.MemberRecord{
 			PublicKey: agentID.PublicKey,
 			JoinedAt:  now,
+			Role:      serviceRole,
 		}); err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
 		}
@@ -1230,8 +1263,9 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		CampfireID:   campfireID,
 		TransportDir: transport.CampfireDir(campfireID),
 		JoinProtocol: state.JoinProtocol,
-		Role:         campfire.RoleFull,
+		Role:         serviceRole,
 		JoinedAt:     now,
+		Encrypted:    state.Encrypted,
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
 	}
