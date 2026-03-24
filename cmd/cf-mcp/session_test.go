@@ -1562,3 +1562,112 @@ func TestSession_ReaperCloseBeforeDelete(t *testing.T) {
 		t.Fatal("all goroutines failed to getOrCreate after reap — expected at least one success")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Audit: campfire_revoke_session writes an audit entry before closing session
+// ---------------------------------------------------------------------------
+
+// TestAudit_RevokeSessionWritesEntry verifies that campfire_revoke_session
+// logs a "revoke_session" audit entry before the session is torn down (§5.e).
+func TestAudit_RevokeSessionWritesEntry(t *testing.T) {
+	srv := newTestServerWithSessions(t)
+
+	// Init to create identity and establish the audit campfire.
+	initResp := postMCP(t, srv, mcpInitBody, "")
+	token := extractTokenFromInit(t, initResp)
+	if token == "" {
+		t.Fatal("expected token from campfire_init")
+	}
+
+	// Grab the session and its auditWriter before revoking.
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
+		t.Fatal("expected session to exist after campfire_init")
+	}
+	sess.mu.Lock()
+	aw := sess.auditWriter
+	sess.mu.Unlock()
+	if aw == nil {
+		t.Skip("auditWriter is nil (audit campfire setup failed in test env); skipping")
+	}
+
+	// Capture written count before revoke.
+	beforeRevoke := aw.Written()
+
+	// Revoke the session — this should log the entry then close the session.
+	revokeBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"campfire_revoke_session","arguments":{}}}`
+	revokeResp := postMCP(t, srv, revokeBody, token)
+	if revokeResp.Error != nil {
+		t.Fatalf("campfire_revoke_session failed: %v", revokeResp.Error.Message)
+	}
+
+	// After revoke, aw.Close() was called (drains channel). Written count must have
+	// increased by at least 1 (the revoke_session entry).
+	afterRevoke := aw.Written()
+	if afterRevoke <= beforeRevoke {
+		t.Errorf("expected audit entry for revoke_session: written count before=%d after=%d", beforeRevoke, afterRevoke)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Audit: campfire_rotate_token writes an audit entry
+// ---------------------------------------------------------------------------
+
+// TestAudit_RotateTokenWritesEntry verifies that campfire_rotate_token logs
+// a "rotate_token" audit entry after successful rotation (§5.e).
+func TestAudit_RotateTokenWritesEntry(t *testing.T) {
+	dir := t.TempDir()
+	m := &SessionManager{
+		sessionsDir:         dir,
+		stopCh:              make(chan struct{}),
+		maxSessions:         defaultMaxSessions,
+		rotationGracePeriod: 50 * time.Millisecond,
+	}
+	m.registry = newTokenRegistry()
+	m.initLimiter = newInitRateLimiter(defaultInitRateLimit, initRateWindow)
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	srv := &server{
+		cfHome:         t.TempDir(),
+		beaconDir:      t.TempDir(),
+		cfHomeExplicit: true,
+		sessManager:    m,
+	}
+
+	// Init to create identity and establish the audit campfire.
+	initResp := postMCP(t, srv, mcpInitBody, "")
+	token := extractTokenFromInit(t, initResp)
+	if token == "" {
+		t.Fatal("expected token from campfire_init")
+	}
+
+	// Grab the auditWriter before rotation.
+	sess := m.getSession(token)
+	if sess == nil {
+		t.Fatal("expected session after campfire_init")
+	}
+	sess.mu.Lock()
+	aw := sess.auditWriter
+	sess.mu.Unlock()
+	if aw == nil {
+		t.Skip("auditWriter is nil (audit campfire setup failed in test env); skipping")
+	}
+
+	beforeRotate := aw.Written()
+
+	// Rotate the token.
+	rotateBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"campfire_rotate_token","arguments":{}}}`
+	rotateResp := postMCP(t, srv, rotateBody, token)
+	if rotateResp.Error != nil {
+		t.Fatalf("campfire_rotate_token failed: %v", rotateResp.Error.Message)
+	}
+
+	// Flush so async writes complete.
+	aw.Flush()
+
+	afterRotate := aw.Written()
+	if afterRotate <= beforeRotate {
+		t.Errorf("expected audit entry for rotate_token: written count before=%d after=%d", beforeRotate, afterRotate)
+	}
+}
