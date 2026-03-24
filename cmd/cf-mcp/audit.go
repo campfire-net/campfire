@@ -302,7 +302,9 @@ func computeMerkleRoot(entries []AuditEntry) string {
 		var next [][]byte
 		for i := 0; i < len(hashes); i += 2 {
 			if i+1 < len(hashes) {
-				combined := append(hashes[i], hashes[i+1]...)
+				combined := make([]byte, len(hashes[i])+len(hashes[i+1]))
+				copy(combined, hashes[i])
+				copy(combined[len(hashes[i]):], hashes[i+1])
 				h := sha256.Sum256(combined)
 				next = append(next, h[:])
 			} else {
