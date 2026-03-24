@@ -751,6 +751,89 @@ func TestInvite_MemberCanCreateAndRevokeInvite(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests for campfire-agent-z29: campfire_join resolves campfire from invite_code alone
+// (design-mcp-security.md §5.a: campfire_id is optional when invite_code is provided)
+// ---------------------------------------------------------------------------
+
+// TestJoin_InviteCodeOnly_HostedMode verifies that campfire_join succeeds when
+// only invite_code is provided (no campfire_id). The server must resolve the
+// campfire from the invite code using LookupInviteAcrossAllStores.
+func TestJoin_InviteCodeOnly_HostedMode(t *testing.T) {
+	router := NewTransportRouter()
+
+	// srvA creates a campfire. invite_code is returned in the create response.
+	srvA, stA := newTestServerWithStore(t)
+	doInit(t, srvA)
+	tA := cfhttp.New("", stA)
+	t.Cleanup(tA.StopNoncePruner)
+	tA.StartNoncePruner()
+	srvA.httpTransport = tA
+	srvA.transportRouter = router
+
+	createResp := srvA.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+	inviteCode, _ := fields["invite_code"].(string)
+	if campfireID == "" || inviteCode == "" {
+		t.Fatalf("missing campfire_id or invite_code in create response: %v", fields)
+	}
+
+	// srvB: fresh identity and store. Gets only the invite code — not the campfire ID.
+	srvB, stB := newTestServerWithStore(t)
+	respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if respB.Error != nil {
+		t.Fatalf("init srvB: code=%d msg=%s", respB.Error.Code, respB.Error.Message)
+	}
+
+	// Copy campfire state from srvA so srvB can read the campfire data.
+	if err := copyDir(t,
+		filepath.Join(srvA.cfHome, campfireID),
+		filepath.Join(srvB.cfHome, campfireID),
+	); err != nil {
+		t.Fatalf("copying campfire state: %v", err)
+	}
+
+	srvB.st = stB
+	srvB.transportRouter = router
+	srvB.httpTransport = cfhttp.New("", stB)
+
+	// srvB joins with invite_code only — no campfire_id provided.
+	// The server must resolve the campfire from the invite code.
+	joinArgs, _ := json.Marshal(map[string]interface{}{
+		"invite_code": inviteCode,
+		// campfire_id intentionally omitted
+	})
+	resp := srvB.dispatch(makeReq("tools/call",
+		`{"name":"campfire_join","arguments":`+string(joinArgs)+`}`))
+	if resp.Error != nil {
+		t.Fatalf("campfire_join with invite_code only failed: code=%d msg=%s",
+			resp.Error.Code, resp.Error.Message)
+	}
+
+	// Verify srvB is now a member of the correct campfire.
+	membership, err := stB.GetMembership(campfireID)
+	if err != nil || membership == nil {
+		t.Fatalf("expected membership for campfire %s after invite-code-only join: err=%v membership=%v",
+			campfireID, err, membership)
+	}
+}
+
+// TestJoin_NeitherParam_ReturnsError verifies that campfire_join with neither
+// campfire_id nor invite_code returns -32602 (invalid params).
+func TestJoin_NeitherParam_ReturnsError(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	resp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_join","arguments":{}}`))
+	if resp.Error == nil {
+		t.Fatal("expected error when neither campfire_id nor invite_code provided")
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("expected -32602, got %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test 8: campfire_revoke_invite tool revokes a code
 // ---------------------------------------------------------------------------
 
