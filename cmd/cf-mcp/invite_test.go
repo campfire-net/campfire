@@ -87,12 +87,22 @@ func extractCreateResult(t *testing.T, resp jsonRPCResponse) map[string]interfac
 	return fields
 }
 
-// doInit initialises an identity on the server.
+// doInit initialises an identity on the server and registers a cleanup to
+// stop the AuditWriter background goroutine before the store and TempDir are
+// removed. t.Cleanup is LIFO, so this cleanup runs before any cleanup already
+// registered by newTestServerWithStore (e.g. rawStore.Close()), preventing the
+// goroutine from writing to a closed store or a removed TempDir.
 func doInit(t *testing.T, srv *server) {
 	t.Helper()
 	resp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
 	if resp.Error != nil {
 		t.Fatalf("campfire_init failed: code=%d msg=%s", resp.Error.Code, resp.Error.Message)
+	}
+	// Close the AuditWriter (if created) before the store and TempDir are torn
+	// down. Close() flushes pending entries and waits for the background
+	// goroutine to exit, so there are no writes in flight when cleanup runs.
+	if aw := srv.auditWriter; aw != nil {
+		t.Cleanup(aw.Close)
 	}
 }
 
