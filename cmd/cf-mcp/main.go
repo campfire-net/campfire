@@ -3104,6 +3104,25 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 	// Handle session management tools before getOrCreate (they operate on the
 	// registry directly and don't need a live session object for revocation).
 	if toolName == "campfire_revoke_session" {
+		// Audit: record revoke_session before closing the session so the
+		// auditWriter is still open when Log is called (§5.e).
+		if sess := s.sessManager.getSession(token); sess != nil {
+			sess.mu.Lock()
+			aw := sess.auditWriter
+			cfHome := sess.cfHome
+			sess.mu.Unlock()
+			if aw != nil {
+				agentKey := ""
+				if aid, err := identity.Load(filepath.Join(cfHome, "identity.json")); err == nil {
+					agentKey = aid.PublicKeyHex()
+				}
+				aw.Log(AuditEntry{
+					Timestamp: time.Now().UnixNano(),
+					Action:    "revoke_session",
+					AgentKey:  agentKey,
+				})
+			}
+		}
 		s.sessManager.revokeSession(token)
 		w.Header().Set("Content-Type", "application/json")
 		resp := okResponse(req.ID, map[string]interface{}{
@@ -3121,6 +3140,25 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("rotating token: %v", rotErr))) //nolint:errcheck
 			return
+		}
+		// Audit: record rotate_token after successful rotation. Use the new
+		// token to look up the session (rotateToken updates sess.token) (§5.e).
+		if sess := s.sessManager.getSession(newToken); sess != nil {
+			sess.mu.Lock()
+			aw := sess.auditWriter
+			cfHome := sess.cfHome
+			sess.mu.Unlock()
+			if aw != nil {
+				agentKey := ""
+				if aid, err := identity.Load(filepath.Join(cfHome, "identity.json")); err == nil {
+					agentKey = aid.PublicKeyHex()
+				}
+				aw.Log(AuditEntry{
+					Timestamp: time.Now().UnixNano(),
+					Action:    "rotate_token",
+					AgentKey:  agentKey,
+				})
+			}
 		}
 		graceSec := int(s.sessManager.gracePeriod().Seconds())
 		w.Header().Set("Content-Type", "application/json")
