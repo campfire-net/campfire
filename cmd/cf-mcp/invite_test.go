@@ -600,6 +600,157 @@ func TestInvite_HostedModeBypassBlocked(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test PLR: membership authorization for campfire_invite and campfire_revoke_invite
+// (security fix campfire-agent-plr — privilege escalation: non-members could
+//  create/revoke invite codes for any campfire)
+// ---------------------------------------------------------------------------
+
+// TestInvite_NonMemberCannotCreateInvite verifies that an agent with no membership
+// record for a campfire cannot create an invite code for it.
+func TestInvite_NonMemberCannotCreateInvite(t *testing.T) {
+	// srvA creates a campfire and owns it.
+	srvA, _ := newTestServerWithStore(t)
+	doInit(t, srvA)
+
+	createResp := srvA.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+	if campfireID == "" {
+		t.Fatalf("missing campfire_id in create response: %v", fields)
+	}
+
+	// srvB has its own identity and store — no membership for campfireID.
+	srvB, _ := newTestServerWithStore(t)
+	if respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`)); respB.Error != nil {
+		t.Fatalf("init srvB: code=%d msg=%s", respB.Error.Code, respB.Error.Message)
+	}
+
+	// srvB attempts to create an invite code for srvA's campfire — must be rejected.
+	inviteArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+	})
+	resp := srvB.dispatch(makeReq("tools/call",
+		`{"name":"campfire_invite","arguments":`+string(inviteArgs)+`}`))
+	if resp.Error == nil {
+		t.Fatal("security: non-member was allowed to create an invite code")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected -32000, got %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+}
+
+// TestInvite_NonMemberCannotRevokeInvite verifies that an agent with no membership
+// record for a campfire cannot revoke an invite code for it.
+func TestInvite_NonMemberCannotRevokeInvite(t *testing.T) {
+	// srvA creates a campfire and owns it.
+	srvA, stA := newTestServerWithStore(t)
+	doInit(t, srvA)
+
+	createResp := srvA.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+	inviteCode, _ := fields["invite_code"].(string)
+	if campfireID == "" || inviteCode == "" {
+		t.Fatalf("missing campfire_id or invite_code in create response: %v", fields)
+	}
+
+	// srvB: its own identity and store — no membership for campfireID.
+	srvB, stB := newTestServerWithStore(t)
+	if respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`)); respB.Error != nil {
+		t.Fatalf("init srvB: code=%d msg=%s", respB.Error.Code, respB.Error.Message)
+	}
+	_ = stB
+
+	// Copy the invite record to stB so the revoke attempt at least reaches the
+	// membership check (rather than failing on a missing invite lookup).
+	inv, err := stA.LookupInvite(inviteCode)
+	if err != nil || inv == nil {
+		t.Fatalf("lookup invite from srvA store: err=%v inv=%v", err, inv)
+	}
+	if err := stB.CreateInvite(*inv); err != nil {
+		t.Fatalf("copying invite to srvB store: %v", err)
+	}
+
+	// srvB attempts to revoke srvA's invite code — must be rejected.
+	revokeArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+		"invite_code": inviteCode,
+	})
+	resp := srvB.dispatch(makeReq("tools/call",
+		`{"name":"campfire_revoke_invite","arguments":`+string(revokeArgs)+`}`))
+	if resp.Error == nil {
+		t.Fatal("security: non-member was allowed to revoke an invite code")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected -32000, got %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+}
+
+// TestInvite_MemberCanCreateAndRevokeInvite verifies the positive path: a campfire
+// member (creator) can both create additional invite codes and revoke them.
+func TestInvite_MemberCanCreateAndRevokeInvite(t *testing.T) {
+	srv, st := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+	if campfireID == "" {
+		t.Fatalf("missing campfire_id in create response: %v", fields)
+	}
+
+	// Create a new invite code — must succeed for the member.
+	inviteArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+		"label":       "plr-test",
+	})
+	createInvResp := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_invite","arguments":`+string(inviteArgs)+`}`))
+	if createInvResp.Error != nil {
+		t.Fatalf("member could not create invite: code=%d msg=%s",
+			createInvResp.Error.Code, createInvResp.Error.Message)
+	}
+
+	// Extract the new code from the response.
+	b, _ := json.Marshal(createInvResp.Result)
+	var outer struct {
+		Content []struct{ Text string `json:"text"` } `json:"content"`
+	}
+	if err := json.Unmarshal(b, &outer); err != nil || len(outer.Content) == 0 {
+		t.Fatalf("bad campfire_invite result shape: %s", string(b))
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(outer.Content[0].Text), &result); err != nil {
+		t.Fatalf("parsing campfire_invite result: %v", err)
+	}
+	newCode, _ := result["invite_code"].(string)
+	if newCode == "" {
+		t.Fatalf("expected invite_code in response, got: %v", result)
+	}
+
+	// Revoke the new code — must succeed for the member.
+	revokeArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+		"invite_code": newCode,
+	})
+	revokeResp := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_revoke_invite","arguments":`+string(revokeArgs)+`}`))
+	if revokeResp.Error != nil {
+		t.Fatalf("member could not revoke invite: code=%d msg=%s",
+			revokeResp.Error.Code, revokeResp.Error.Message)
+	}
+
+	// Confirm revoked in store.
+	inv, err := st.LookupInvite(newCode)
+	if err != nil {
+		t.Fatalf("LookupInvite: %v", err)
+	}
+	if inv == nil || !inv.Revoked {
+		t.Error("expected invite to be revoked in store")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test 8: campfire_revoke_invite tool revokes a code
 // ---------------------------------------------------------------------------
 

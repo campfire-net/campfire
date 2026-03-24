@@ -306,7 +306,10 @@ func (f *fakeStoreForRateLimit) RevokeInvite(campfireID, inviteCode string) erro
 func (f *fakeStoreForRateLimit) ListInvites(campfireID string) ([]store.InviteRecord, error)  { return nil, nil }
 func (f *fakeStoreForRateLimit) LookupInvite(inviteCode string) (*store.InviteRecord, error) { return nil, nil }
 func (f *fakeStoreForRateLimit) HasAnyInvites(campfireID string) (bool, error)               { return false, nil }
-func (f *fakeStoreForRateLimit) IncrementInviteUse(inviteCode string) error                  { return nil }
+func (f *fakeStoreForRateLimit) IncrementInviteUse(inviteCode string) error { return nil }
+func (f *fakeStoreForRateLimit) ValidateAndUseInvite(campfireID, inviteCode string) (*store.InviteRecord, error) {
+	return nil, nil
+}
 func (f *fakeStoreForRateLimit) UpsertEpochSecret(secret store.EpochSecret) error            { return nil }
 func (f *fakeStoreForRateLimit) GetEpochSecret(campfireID string, epoch uint64) (*store.EpochSecret, error) {
 	return nil, nil

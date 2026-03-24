@@ -296,20 +296,20 @@ Use 'encrypted: true' to create an E2E encrypted campfire. When encrypted, the h
 		},
 		{
 			Name:        "campfire_join",
-			Description: "Join an existing campfire by its ID. After joining, you can send and read messages. You must know the campfire_id — get it from another agent, from campfire_discover, or from your task instructions. If the campfire requires an invite code, pass it as invite_code — you can get one from the campfire creator via campfire_invite.",
+			Description: "Join an existing campfire. You may provide campfire_id, invite_code, or both. If you only have an invite code (e.g. received in conversation), pass just invite_code — the server resolves the campfire from it (design-mcp-security.md §5.a). If you only have a campfire_id (e.g. from campfire_discover), pass just campfire_id. If both are provided, the server validates they refer to the same campfire.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"campfire_id": map[string]interface{}{
 						"type":        "string",
-						"description": "Campfire ID to join (64-char hex string). You can also use a unique prefix (e.g. first 8-12 chars) and the server will resolve it.",
+						"description": "Campfire ID to join (64-char hex string). Optional when invite_code is provided — the server will resolve the campfire from the invite code.",
 					},
 					"invite_code": map[string]interface{}{
 						"type":        "string",
-						"description": "Invite code required to join campfires that have invite-code enforcement enabled. Obtain from the campfire creator via campfire_invite. Omit if the campfire has no invite codes.",
+						"description": "Invite code for the campfire. When provided without campfire_id, the server resolves the campfire automatically. Required for campfires that have invite-code enforcement enabled.",
 					},
 				},
-				"required": []string{"campfire_id"},
+				"required": []string{},
 			}),
 		},
 		{
@@ -1198,9 +1198,7 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 
 func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonRPCResponse {
 	campfireID := getStr(params, "campfire_id")
-	if campfireID == "" {
-		return errResponse(id, -32602, "campfire_id is required")
-	}
+	inviteCodeForResolution := getStr(params, "invite_code")
 
 	agentID, err := identity.Load(s.identityPath())
 	if err != nil {
@@ -1217,6 +1215,32 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
 		}
 		defer st.Close()
+	}
+
+	// Design-mcp-security.md §5.a: campfire_id is optional when invite_code is
+	// provided. The server resolves the campfire from the invite code alone.
+	// If both campfire_id and invite_code are provided, ValidateInvite below
+	// will enforce that the code belongs to the given campfire_id.
+	if campfireID == "" {
+		if inviteCodeForResolution == "" {
+			return errResponse(id, -32602, "campfire_id or invite_code is required")
+		}
+		// Resolve campfire_id from invite_code.
+		// In hosted mode, search all session stores via the transport router.
+		// In CLI/single-store mode, search the already-open store.
+		if s.transportRouter != nil {
+			_, resolved := s.transportRouter.LookupInviteAcrossAllStores(inviteCodeForResolution)
+			if resolved == "" {
+				return errResponse(id, -32000, "invite code not found on this server")
+			}
+			campfireID = resolved
+		} else {
+			inv, lookupErr := st.LookupInvite(inviteCodeForResolution)
+			if lookupErr != nil || inv == nil {
+				return errResponse(id, -32000, "invite code not found")
+			}
+			campfireID = inv.CampfireID
+		}
 	}
 
 	transport := s.fsTransport()
@@ -1291,13 +1315,10 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 			if inviteCode == "" {
 				return errResponse(id, -32000, "invite code required to join this campfire")
 			}
-			inv, validateErr := inviteSt.ValidateInvite(campfireID, inviteCode)
-			if validateErr != nil {
+			// ValidateAndUseInvite atomically validates and increments the use count,
+			// eliminating the TOCTOU race between validation and increment.
+			if _, validateErr := inviteSt.ValidateAndUseInvite(campfireID, inviteCode); validateErr != nil {
 				return errResponse(id, -32000, fmt.Sprintf("invalid invite code: %v", validateErr))
-			}
-			// Increment use count after successful validation.
-			if incErr := inviteSt.IncrementInviteUse(inv.InviteCode); incErr != nil {
-				return errResponse(id, -32000, fmt.Sprintf("recording invite use: %v", incErr))
 			}
 		}
 
@@ -2576,6 +2597,15 @@ func (s *server) handleCreateInvite(id interface{}, params map[string]interface{
 		defer st.Close()
 	}
 
+	// Membership authorization check: only members may create invite codes.
+	membership, err := st.GetMembership(campfireID)
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("querying membership: %v", err))
+	}
+	if membership == nil {
+		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", campfireID[:12]))
+	}
+
 	inviteCode := uuid.New().String()
 	if err := st.CreateInvite(store.InviteRecord{
 		CampfireID: campfireID,
@@ -2625,6 +2655,15 @@ func (s *server) handleRevokeInvite(id interface{}, params map[string]interface{
 			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
 		}
 		defer st.Close()
+	}
+
+	// Membership authorization check: only members may revoke invite codes.
+	membership, memberErr := st.GetMembership(campfireID)
+	if memberErr != nil {
+		return errResponse(id, -32000, fmt.Sprintf("querying membership: %v", memberErr))
+	}
+	if membership == nil {
+		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", campfireID[:12]))
 	}
 
 	if err := st.RevokeInvite(campfireID, inviteCode); err != nil {
