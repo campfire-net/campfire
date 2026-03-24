@@ -185,44 +185,78 @@ func TestAutoProvision_MemberRegistered(t *testing.T) {
 // Test: free-tier rate limiting enforced
 // ---------------------------------------------------------------------------
 
-// TestAutoProvision_FreeTierRateLimit verifies that the session store is
-// wrapped with a ratelimit.Wrapper after auto-provisioning, enforcing the
-// 1000 msg/month default cap.
+// TestAutoProvision_FreeTierRateLimit verifies that the production session
+// creation path in session.go (SessionManager.getOrCreate) wraps the store
+// with a *ratelimit.Wrapper, and that the wrapper enforces the 1000 msg/month
+// default cap.
+//
+// This test exercises the REAL production path — it does NOT pre-inject a
+// wrapper. It creates a session via SessionManager.getOrCreate (the same
+// code path that runs in production for every MCP request), then asserts
+// that the resulting session store is a *ratelimit.Wrapper, and that
+// AddMessage on the session store is rejected with ErrMonthlyCapExceeded
+// once the monthly cap is reached.
 func TestAutoProvision_FreeTierRateLimit(t *testing.T) {
-	srv, st := newTestServerWithStore(t)
+	// Use the production session manager (same code path as hosted cf-mcp).
+	m := newTestSessionManager(t)
 
-	resp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{"campfire_id":"ratelimit-test"}}`))
-	payload := extractInitResult(t, resp)
-	cfID, _ := payload["campfire_id"].(string)
-	if len(cfID) != 64 {
-		t.Fatalf("expected 64-char hex campfire_id, got %q", cfID)
+	// Create a session via the real production path.
+	token, err := generateToken()
+	if err != nil {
+		t.Fatalf("generateToken: %v", err)
+	}
+	sess, err := m.getOrCreate(token)
+	if err != nil {
+		t.Fatalf("getOrCreate: %v", err)
 	}
 
-	// The store must be a ratelimit.Wrapper.
-	rl, ok := st.(*ratelimit.Wrapper)
+	// The session store MUST be a *ratelimit.Wrapper — this is what
+	// session.go is supposed to create. If it isn't, the production path
+	// does not apply rate limiting.
+	rl, ok := sess.st.(*ratelimit.Wrapper)
 	if !ok {
-		t.Fatal("session store is not a *ratelimit.Wrapper; free-tier rate limiting is not applied")
+		t.Fatalf("session.go getOrCreate did not wrap store with *ratelimit.Wrapper; "+
+			"got %T — free-tier rate limiting is NOT applied on the production path", sess.st)
 	}
 
-	// Monthly count should be zero (no messages sent yet).
-	if count := rl.MonthlyCount(cfID); count != 0 {
-		t.Errorf("expected monthly count=0, got %d", count)
+	// Use a synthetic campfire ID for message operations (the rate limiter
+	// tracks per-campfire counts in memory; no real campfire needs to exist
+	// in the store for AddMessage to exercise the limit enforcement path).
+	const campfireID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	// Monthly count must start at zero for a fresh session.
+	if count := rl.MonthlyCount(campfireID); count != 0 {
+		t.Errorf("expected monthly count=0 for fresh session, got %d", count)
 	}
 
-	// Confirm the monthly cap is DefaultMonthlyMessageCap (1000).
-	// We do this by setting the count to the cap and verifying AddMessage fails.
-	rl.SetMonthlyCount(cfID, ratelimit.DefaultMonthlyMessageCap)
+	// Seed the monthly counter to one below the cap so we can test the
+	// boundary with two AddMessage calls instead of 1000.
+	// This mirrors how an external metering system would restore state on
+	// process restart (via SetMonthlyCount).
+	rl.SetMonthlyCount(campfireID, ratelimit.DefaultMonthlyMessageCap-1)
 
-	// Attempt to add a message — must fail with ErrMonthlyCapExceeded.
-	_, err := rl.AddMessage(store.MessageRecord{
-		CampfireID: cfID,
+	msg := store.MessageRecord{
+		CampfireID: campfireID,
 		Sender:     "test",
 		Payload:    []byte("hello"),
 		Timestamp:  1,
 		ReceivedAt: 1,
-	})
+	}
+
+	// Message #1000 (count was 999) — must succeed.
+	if _, err := rl.AddMessage(msg); err != nil {
+		t.Fatalf("message at count=%d should succeed, got: %v",
+			ratelimit.DefaultMonthlyMessageCap-1, err)
+	}
+	if count := rl.MonthlyCount(campfireID); count != ratelimit.DefaultMonthlyMessageCap {
+		t.Errorf("expected monthly count=%d after message 1000, got %d",
+			ratelimit.DefaultMonthlyMessageCap, count)
+	}
+
+	// Message #1001 — must be rejected with ErrMonthlyCapExceeded.
+	_, err = rl.AddMessage(msg)
 	if !ratelimit.IsMonthlyCapExceeded(err) {
-		t.Errorf("expected ErrMonthlyCapExceeded after setting count to cap, got: %v", err)
+		t.Errorf("message #1001 should be rejected with ErrMonthlyCapExceeded, got: %v", err)
 	}
 }
 
