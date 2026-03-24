@@ -1263,8 +1263,25 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		// Invite code enforcement (security model §5.a).
 		// Grace period: if the campfire has NO registered invite codes (e.g. old campfires),
 		// we allow the join without a code. If at least one code exists, a valid code is required.
+		//
+		// IMPORTANT: invite records live in the campfire creator's session store, not the
+		// joining session's store. In hosted (multi-session) mode, HasAnyInvites on the
+		// local session store always returns false for campfires created by other sessions,
+		// which would allow bypass. We must query the campfire owner's store via the
+		// transport router. In CLI/single-store mode there is only one store, so the
+		// local store is always correct.
 		inviteCode := getStr(params, "invite_code")
-		hasInvites, inviteCheckErr := st.HasAnyInvites(campfireID)
+		inviteSt := store.InviteStore(st) // default: session-local store (CLI mode)
+		if s.transportRouter != nil {
+			if ownerTransport := s.transportRouter.GetCampfireTransport(campfireID); ownerTransport != nil {
+				inviteSt = ownerTransport.Store()
+			}
+			// If no owner transport is found, the campfire was not created via this hosted
+			// service in this process (e.g. pre-existing campfire on disk). The grace period
+			// applies: HasAnyInvites on the local store returns false → join is allowed.
+			// This is safe because pre-existing campfires have no invite records anywhere.
+		}
+		hasInvites, inviteCheckErr := inviteSt.HasAnyInvites(campfireID)
 		if inviteCheckErr != nil {
 			return errResponse(id, -32000, fmt.Sprintf("checking invite codes: %v", inviteCheckErr))
 		}
@@ -1272,12 +1289,12 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 			if inviteCode == "" {
 				return errResponse(id, -32000, "invite code required to join this campfire")
 			}
-			inv, validateErr := st.ValidateInvite(campfireID, inviteCode)
+			inv, validateErr := inviteSt.ValidateInvite(campfireID, inviteCode)
 			if validateErr != nil {
 				return errResponse(id, -32000, fmt.Sprintf("invalid invite code: %v", validateErr))
 			}
 			// Increment use count after successful validation.
-			if incErr := st.IncrementInviteUse(inv.InviteCode); incErr != nil {
+			if incErr := inviteSt.IncrementInviteUse(inv.InviteCode); incErr != nil {
 				return errResponse(id, -32000, fmt.Sprintf("recording invite use: %v", incErr))
 			}
 		}
