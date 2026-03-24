@@ -22,6 +22,146 @@ const idleTimeout = 10 * time.Minute
 // when no override is provided to NewSessionManager.
 const defaultMaxSessions = 1000
 
+// defaultTokenTTL is the default time-to-live for session tokens.
+const defaultTokenTTL = 1 * time.Hour
+
+// defaultRotationGracePeriod is the grace period for old tokens after rotation.
+const defaultRotationGracePeriod = 30 * time.Second
+
+// ---------------------------------------------------------------------------
+// TokenRegistry
+// ---------------------------------------------------------------------------
+
+// tokenEntry holds metadata for an issued token.
+type tokenEntry struct {
+	internalID string
+	issuedAt   time.Time
+	revoked    bool
+	// gracePeriodUntil is non-zero for tokens that have been rotated out:
+	// they remain valid until this time to allow in-flight requests to drain.
+	gracePeriodUntil time.Time
+}
+
+// TokenRegistry maps external bearer tokens to internal session IDs.
+// It is the issuance authority: only tokens in the registry are valid.
+type TokenRegistry struct {
+	mu     sync.RWMutex
+	tokens map[string]*tokenEntry // token → entry
+}
+
+func newTokenRegistry() *TokenRegistry {
+	return &TokenRegistry{
+		tokens: make(map[string]*tokenEntry),
+	}
+}
+
+// issue generates a new token and assigns it a fresh internalID.
+// Returns (token, error).
+func (r *TokenRegistry) issue() (string, error) {
+	tok, err := generateToken()
+	if err != nil {
+		return "", err
+	}
+	id, err := generateToken() // use as internalID (UUID-like opaque string)
+	if err != nil {
+		return "", err
+	}
+	r.mu.Lock()
+	r.tokens[tok] = &tokenEntry{
+		internalID: id,
+		issuedAt:   time.Now(),
+	}
+	r.mu.Unlock()
+	return tok, nil
+}
+
+// issueFor issues a new token that maps to an existing internalID.
+// Used for token rotation: same session, new external credential.
+func (r *TokenRegistry) issueFor(internalID string) (string, error) {
+	tok, err := generateToken()
+	if err != nil {
+		return "", err
+	}
+	r.mu.Lock()
+	r.tokens[tok] = &tokenEntry{
+		internalID: internalID,
+		issuedAt:   time.Now(),
+	}
+	r.mu.Unlock()
+	return tok, nil
+}
+
+// lookup validates a token and returns its internalID.
+// Returns an error for tokens not in the registry, revoked, or expired (ttl=0 means no expiry check).
+// Returns tokenExpiredError if expired, tokenRevokedError if revoked, tokenUnknownError if not found.
+func (r *TokenRegistry) lookup(token string, ttl time.Duration) (string, error) {
+	r.mu.RLock()
+	entry, ok := r.tokens[token]
+	r.mu.RUnlock()
+	if !ok {
+		return "", &tokenUnknownError{}
+	}
+	if entry.revoked {
+		// Check grace period for rotated tokens.
+		if !entry.gracePeriodUntil.IsZero() && time.Now().Before(entry.gracePeriodUntil) {
+			return entry.internalID, nil
+		}
+		return "", &tokenRevokedError{}
+	}
+	if ttl > 0 && time.Since(entry.issuedAt) > ttl {
+		return "", &tokenExpiredError{}
+	}
+	return entry.internalID, nil
+}
+
+// revoke marks a token as revoked immediately.
+func (r *TokenRegistry) revoke(token string) {
+	r.mu.Lock()
+	if entry, ok := r.tokens[token]; ok {
+		entry.revoked = true
+		entry.gracePeriodUntil = time.Time{} // no grace period for explicit revoke
+	}
+	r.mu.Unlock()
+}
+
+// revokeWithGrace marks a token as revoked but keeps it valid until gracePeriodUntil.
+// Used for token rotation so in-flight requests can drain.
+func (r *TokenRegistry) revokeWithGrace(token string, gracePeriodUntil time.Time) {
+	r.mu.Lock()
+	if entry, ok := r.tokens[token]; ok {
+		entry.revoked = true
+		entry.gracePeriodUntil = gracePeriodUntil
+	}
+	r.mu.Unlock()
+}
+
+// delete removes a token entry entirely. Used after grace period expires.
+func (r *TokenRegistry) delete(token string) {
+	r.mu.Lock()
+	delete(r.tokens, token)
+	r.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// Token error types
+// ---------------------------------------------------------------------------
+
+type tokenUnknownError struct{}
+
+func (e *tokenUnknownError) Error() string { return "token not recognized" }
+
+type tokenRevokedError struct{}
+
+func (e *tokenRevokedError) Error() string { return "token has been revoked" }
+
+type tokenExpiredError struct{}
+
+func (e *tokenExpiredError) Error() string { return "token has expired" }
+
+// ---------------------------------------------------------------------------
+// Session
+// ---------------------------------------------------------------------------
+
 // Session represents one agent's isolated state: a per-session directory
 // containing identity.json and store.db, with the store held open in memory.
 // The store opens once when the session is created and remains open until the
@@ -30,10 +170,11 @@ const defaultMaxSessions = 1000
 // In hosted HTTP mode, each session also holds an HTTP transport instance that
 // handles peer-to-peer communication for campfires created by this agent.
 type Session struct {
-	token         string
-	cfHome        string
-	beaconDir     string
-	st            store.Store
+	token        string // external: current valid Bearer token
+	internalID   string // internal: stable filesystem directory name
+	cfHome       string // filepath.Join(sessionsDir, internalID)
+	beaconDir    string
+	st           store.Store
 	httpTransport *cfhttp.Transport // non-nil in hosted HTTP mode
 	router        *TransportRouter  // non-nil in hosted HTTP mode; used by Close to unregister routes
 	lastActivity  time.Time
@@ -85,13 +226,18 @@ func (s *Session) Close() {
 	}
 }
 
-// SessionManager maps Bearer tokens to active Sessions.
+// ---------------------------------------------------------------------------
+// SessionManager
+// ---------------------------------------------------------------------------
+
+// SessionManager maps Bearer tokens to active Sessions via the token registry.
 // All sessions are isolated: each has its own directory tree under sessionsDir.
 type SessionManager struct {
 	sessionsDir string
-	sessions    sync.Map   // token → *Session
+	sessions    sync.Map   // internalID → *Session
 	createMu    sync.Mutex // serializes first-call creation to prevent concurrent SQLite opens for the same token
 	stopCh      chan struct{}
+	registry    *TokenRegistry
 	// router is non-nil in hosted HTTP mode. It maps campfire IDs to the
 	// session's HTTP transport instance so external peers can reach hosted agents.
 	router *TransportRouter
@@ -105,6 +251,11 @@ type SessionManager struct {
 	// getOrCreate returns an error when this limit is reached.
 	// Zero means use defaultMaxSessions.
 	maxSessions int
+	// tokenTTL is the time-to-live for session tokens. Zero uses defaultTokenTTL.
+	tokenTTL time.Duration
+	// rotationGracePeriod is the grace period for old tokens after rotation.
+	// Zero uses defaultRotationGracePeriod.
+	rotationGracePeriod time.Duration
 }
 
 // NewSessionManager creates a SessionManager rooted at sessionsDir and
@@ -116,6 +267,7 @@ func NewSessionManager(sessionsDir string) *SessionManager {
 		sessionsDir: sessionsDir,
 		stopCh:      make(chan struct{}),
 		maxSessions: defaultMaxSessions,
+		registry:    newTokenRegistry(),
 	}
 	go m.reaper()
 	return m
@@ -126,13 +278,113 @@ func (m *SessionManager) Stop() {
 	close(m.stopCh)
 }
 
-// getOrCreate returns the existing Session for token, or creates a new one.
-// On first call for a given token it creates the per-session directory tree
-// and opens the SQLite store. In hosted HTTP mode (router non-nil), it also
-// creates a per-session HTTP transport instance.
+// ttl returns the effective token TTL.
+func (m *SessionManager) ttl() time.Duration {
+	if m.tokenTTL > 0 {
+		return m.tokenTTL
+	}
+	return defaultTokenTTL
+}
+
+// gracePeriod returns the effective rotation grace period.
+func (m *SessionManager) gracePeriod() time.Duration {
+	if m.rotationGracePeriod > 0 {
+		return m.rotationGracePeriod
+	}
+	return defaultRotationGracePeriod
+}
+
+// issueToken issues a new token and registers it in the registry.
+// Called by handleMCPSessioned on campfire_init with no existing token.
+func (m *SessionManager) issueToken() (string, error) {
+	return m.registry.issue()
+}
+
+// validateToken validates a bearer token and returns its internalID.
+// Returns a typed error (tokenExpiredError, tokenRevokedError, tokenUnknownError) on failure.
+func (m *SessionManager) validateToken(token string) (string, error) {
+	return m.registry.lookup(token, m.ttl())
+}
+
+// getSession returns the active Session for a token, or nil if not found.
+// The token is validated against the registry (with TTL check); if invalid, nil is returned.
+// This is a read-only lookup — it does not create new sessions.
+func (m *SessionManager) getSession(token string) *Session {
+	internalID, err := m.registry.lookup(token, m.ttl())
+	if err != nil {
+		return nil
+	}
+	if v, ok := m.sessions.Load(internalID); ok {
+		return v.(*Session)
+	}
+	return nil
+}
+
+// revokeSession revokes a session by token: removes from registry, closes session.
+func (m *SessionManager) revokeSession(token string) {
+	// Look up internalID before revoking (lookup still works since we haven't revoked yet).
+	internalID, err := m.registry.lookup(token, 0)
+	m.registry.revoke(token)
+	if err != nil {
+		return
+	}
+	if v, ok := m.sessions.Load(internalID); ok {
+		m.sessions.Delete(internalID)
+		v.(*Session).Close()
+	}
+}
+
+// rotateToken issues a new token mapped to the same internalID as oldToken.
+// oldToken is placed in grace period. Returns new token.
+func (m *SessionManager) rotateToken(oldToken string) (string, error) {
+	internalID, err := m.registry.lookup(oldToken, m.ttl())
+	if err != nil {
+		return "", err
+	}
+	newToken, err := m.registry.issueFor(internalID)
+	if err != nil {
+		return "", err
+	}
+	// Place old token in grace period.
+	m.registry.revokeWithGrace(oldToken, time.Now().Add(m.gracePeriod()))
+	// Schedule cleanup of old token after grace period.
+	go func() {
+		timer := time.NewTimer(m.gracePeriod())
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			m.registry.delete(oldToken)
+		case <-m.stopCh:
+		}
+	}()
+
+	// Update the session's token field so router registration stays correct.
+	if v, ok := m.sessions.Load(internalID); ok {
+		sess := v.(*Session)
+		sess.mu.Lock()
+		sess.token = newToken
+		// Update router registration: old token → new token.
+		if sess.router != nil {
+			sess.router.UnregisterSession(oldToken)
+			sess.router.RegisterSession(newToken, sess.httpTransport)
+		}
+		sess.mu.Unlock()
+	}
+
+	return newToken, nil
+}
+
+// getOrCreate returns the existing Session for the given internalID, or creates
+// a new one. The token must have already been validated by validateToken.
 func (m *SessionManager) getOrCreate(token string) (*Session, error) {
+	// Validate token against registry and get internalID.
+	internalID, err := m.registry.lookup(token, m.ttl())
+	if err != nil {
+		return nil, err
+	}
+
 	// Fast path: session already exists.
-	if v, ok := m.sessions.Load(token); ok {
+	if v, ok := m.sessions.Load(internalID); ok {
 		sess := v.(*Session)
 		sess.touch()
 		return sess, nil
@@ -144,7 +396,7 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 	defer m.createMu.Unlock()
 
 	// Re-check under the lock — another goroutine may have created it.
-	if v, ok := m.sessions.Load(token); ok {
+	if v, ok := m.sessions.Load(internalID); ok {
 		sess := v.(*Session)
 		sess.touch()
 		return sess, nil
@@ -164,7 +416,8 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 		return nil, &sessionLimitError{limit: limit}
 	}
 
-	cfHome := filepath.Join(m.sessionsDir, token)
+	// Use internalID as the directory name (NOT the token).
+	cfHome := filepath.Join(m.sessionsDir, internalID)
 	beaconDir := filepath.Join(cfHome, "beacons")
 	if err := os.MkdirAll(beaconDir, 0700); err != nil {
 		return nil, err
@@ -180,6 +433,7 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 
 	sess := &Session{
 		token:        token,
+		internalID:   internalID,
 		cfHome:       cfHome,
 		beaconDir:    beaconDir,
 		st:           st,
@@ -207,7 +461,7 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 		m.router.RegisterSession(token, t)
 	}
 
-	m.sessions.Store(token, sess)
+	m.sessions.Store(internalID, sess)
 	return sess, nil
 }
 
