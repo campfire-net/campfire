@@ -2405,6 +2405,18 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 		}
 	}
 
+	// Audit: record dm action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "dm",
+			AgentKey:    agentID.PublicKeyHex(),
+			CampfireID:  campfireID,
+			RequestHash: requestHash(paramBytes),
+		})
+	}
+
 	result, _ := toolResultJSON(map[string]interface{}{
 		"id":          msg.ID,
 		"campfire_id": campfireID,
@@ -3302,6 +3314,9 @@ func main() {
 	sessionsDir := ""
 	externalAddrFlag := ""
 	cfHomeExplicit := false
+	tokenTTLFlag := ""
+	maxSessionsFlag := ""
+	rotationGracePeriodFlag := ""
 	for i, arg := range os.Args[1:] {
 		switch {
 		case arg == "--cf-home" && i+1 < len(os.Args[1:]):
@@ -3326,6 +3341,18 @@ func main() {
 			externalAddrFlag = os.Args[i+2]
 		case strings.HasPrefix(arg, "--external-addr="):
 			externalAddrFlag = strings.TrimPrefix(arg, "--external-addr=")
+		case arg == "--token-ttl" && i+1 < len(os.Args[1:]):
+			tokenTTLFlag = os.Args[i+2]
+		case strings.HasPrefix(arg, "--token-ttl="):
+			tokenTTLFlag = strings.TrimPrefix(arg, "--token-ttl=")
+		case arg == "--max-sessions" && i+1 < len(os.Args[1:]):
+			maxSessionsFlag = os.Args[i+2]
+		case strings.HasPrefix(arg, "--max-sessions="):
+			maxSessionsFlag = strings.TrimPrefix(arg, "--max-sessions=")
+		case arg == "--rotation-grace-period" && i+1 < len(os.Args[1:]):
+			rotationGracePeriodFlag = os.Args[i+2]
+		case strings.HasPrefix(arg, "--rotation-grace-period="):
+			rotationGracePeriodFlag = strings.TrimPrefix(arg, "--rotation-grace-period=")
 		}
 	}
 
@@ -3356,6 +3383,43 @@ func main() {
 		externalAddr = os.Getenv("CF_EXTERNAL_URL")
 	}
 
+	// Resolve session tuning: flag > env > built-in default (zero = use package default).
+	if tokenTTLFlag == "" {
+		tokenTTLFlag = os.Getenv("CF_TOKEN_TTL")
+	}
+	if maxSessionsFlag == "" {
+		maxSessionsFlag = os.Getenv("CF_MAX_SESSIONS")
+	}
+	if rotationGracePeriodFlag == "" {
+		rotationGracePeriodFlag = os.Getenv("CF_ROTATION_GRACE_PERIOD")
+	}
+	var tokenTTL time.Duration
+	if tokenTTLFlag != "" {
+		d, err := time.ParseDuration(tokenTTLFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid --token-ttl value %q: %v\n", tokenTTLFlag, err)
+			os.Exit(1)
+		}
+		tokenTTL = d
+	}
+	var maxSessions int
+	if maxSessionsFlag != "" {
+		n, err := fmt.Sscanf(maxSessionsFlag, "%d", &maxSessions)
+		if err != nil || n != 1 || maxSessions <= 0 {
+			fmt.Fprintf(os.Stderr, "error: invalid --max-sessions value %q: must be a positive integer\n", maxSessionsFlag)
+			os.Exit(1)
+		}
+	}
+	var rotationGracePeriod time.Duration
+	if rotationGracePeriodFlag != "" {
+		d, err := time.ParseDuration(rotationGracePeriodFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid --rotation-grace-period value %q: %v\n", rotationGracePeriodFlag, err)
+			os.Exit(1)
+		}
+		rotationGracePeriod = d
+	}
+
 	srv := &server{
 		cfHome:         cfHome,
 		beaconDir:      beaconDir,
@@ -3373,6 +3437,16 @@ func main() {
 			}
 			router := NewTransportRouter()
 			sm := NewSessionManager(sessionsDir)
+			// Apply operator-configurable session tuning (zero values keep package defaults).
+			if tokenTTL > 0 {
+				sm.tokenTTL = tokenTTL
+			}
+			if maxSessions > 0 {
+				sm.maxSessions = maxSessions
+			}
+			if rotationGracePeriod > 0 {
+				sm.rotationGracePeriod = rotationGracePeriod
+			}
 			sm.router = router
 			// If external address not provided via flag/env, derive from listen address.
 			// If the address starts with ":", prepend "http://localhost".

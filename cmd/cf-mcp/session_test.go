@@ -1671,3 +1671,104 @@ func TestAudit_RotateTokenWritesEntry(t *testing.T) {
 		t.Errorf("expected audit entry for rotate_token: written count before=%d after=%d", beforeRotate, afterRotate)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Session tuning: tokenTTL / maxSessions / rotationGracePeriod wiring
+// ---------------------------------------------------------------------------
+
+// TestSessionManagerTuning verifies that the three operator-tunable session
+// configuration fields (tokenTTL, maxSessions, rotationGracePeriod) are
+// respected when set on the SessionManager.
+func TestSessionManagerTuning(t *testing.T) {
+	t.Run("tokenTTL enforced", func(t *testing.T) {
+		dir := t.TempDir()
+		sm := NewSessionManager(dir)
+		defer sm.Stop()
+		sm.tokenTTL = 1 * time.Millisecond // very short TTL
+
+		// Issue a token and wait for it to expire.
+		tok, err := sm.issueToken()
+		if err != nil {
+			t.Fatalf("issueToken: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+
+		_, err = sm.validateToken(tok)
+		if err == nil {
+			t.Fatal("expected expired error, got nil")
+		}
+		var expErr *tokenExpiredError
+		if !errors.As(err, &expErr) {
+			t.Fatalf("expected tokenExpiredError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("maxSessions enforced", func(t *testing.T) {
+		dir := t.TempDir()
+		sm := NewSessionManager(dir)
+		defer sm.Stop()
+		sm.maxSessions = 1
+
+		// First session must succeed.
+		tok1, err := sm.issueToken()
+		if err != nil {
+			t.Fatalf("issueToken 1: %v", err)
+		}
+		if _, err := sm.getOrCreate(tok1); err != nil {
+			t.Fatalf("getOrCreate 1: %v", err)
+		}
+
+		// Second session must be rejected.
+		tok2, err := sm.issueToken()
+		if err != nil {
+			t.Fatalf("issueToken 2: %v", err)
+		}
+		_, err = sm.getOrCreate(tok2)
+		if err == nil {
+			t.Fatal("expected session limit error, got nil")
+		}
+		var limitErr *sessionLimitError
+		if !errors.As(err, &limitErr) {
+			t.Fatalf("expected sessionLimitError, got %T: %v", err, err)
+		}
+		if limitErr.limit != 1 {
+			t.Errorf("expected limit=1, got %d", limitErr.limit)
+		}
+	})
+
+	t.Run("rotationGracePeriod enforced", func(t *testing.T) {
+		dir := t.TempDir()
+		sm := NewSessionManager(dir)
+		defer sm.Stop()
+		sm.rotationGracePeriod = 50 * time.Millisecond
+
+		tok, err := sm.issueToken()
+		if err != nil {
+			t.Fatalf("issueToken: %v", err)
+		}
+
+		newTok, err := sm.rotateToken(tok)
+		if err != nil {
+			t.Fatalf("rotateToken: %v", err)
+		}
+
+		// Old token should still be valid during grace period.
+		if _, err := sm.validateToken(tok); err != nil {
+			t.Errorf("old token should be valid during grace period, got: %v", err)
+		}
+
+		// New token must be valid.
+		if _, err := sm.validateToken(newTok); err != nil {
+			t.Errorf("new token should be valid, got: %v", err)
+		}
+
+		// Wait for grace period to expire.
+		time.Sleep(100 * time.Millisecond)
+
+		// Old token should now be gone from the registry (deleted by background goroutine).
+		_, err = sm.validateToken(tok)
+		if err == nil {
+			t.Error("old token should be invalid after grace period")
+		}
+	})
+}
