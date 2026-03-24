@@ -88,6 +88,9 @@ func (f *fakeStore) GetLatestEpochSecret(campfireID string) (*store.EpochSecret,
 	return nil, nil
 }
 func (f *fakeStore) SetMembershipEncrypted(campfireID string, encrypted bool) error { return nil }
+func (f *fakeStore) ApplyMembershipCommitAtomically(campfireID string, newMember *store.Membership, secret store.EpochSecret) error {
+	return nil
+}
 
 // --- Helpers ---
 
