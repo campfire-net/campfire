@@ -82,8 +82,10 @@ func setupHTTPAwaitSession(t *testing.T) (tsURL, token, campfireID string, cliID
 		MemberPubkey: id.PublicKeyHex(),
 		Role:         store.PeerRoleMember,
 	})
-	v, _ := srv.sessManager.sessions.Load(tok)
-	sess := v.(*Session)
+	sess := srv.sessManager.getSession(tok)
+	if sess == nil {
+		t.Fatal("session not found for token")
+	}
 	fsT := fs.New(sess.cfHome)
 	fsT.WriteMember(createResult.CampfireID, campfire.MemberRecord{
 		PublicKey: id.PublicKey,

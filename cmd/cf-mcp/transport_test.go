@@ -208,8 +208,10 @@ func TestTransport_CLISendHTTPHostedRead(t *testing.T) {
 	})
 
 	// Write CLI agent as a member to the session's fs transport.
-	v, _ := srv.sessManager.sessions.Load(token)
-	sess := v.(*Session)
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
+		t.Fatal("session not found for token")
+	}
 	fsT := fs.New(sess.cfHome)
 	fsT.WriteMember(campfireID, campfire.MemberRecord{
 		PublicKey: cliID.PublicKey,
@@ -312,8 +314,10 @@ func TestTransport_HostedSendCLIPoll(t *testing.T) {
 	})
 
 	// Write member to fs transport.
-	v, _ := srv.sessManager.sessions.Load(token)
-	sess := v.(*Session)
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
+		t.Fatal("session not found for token")
+	}
 	fsT := fs.New(sess.cfHome)
 	fsT.WriteMember(campfireID, campfire.MemberRecord{
 		PublicKey: cliID.PublicKey,
@@ -384,8 +388,10 @@ func TestTransport_PollBrokerWakesOnExternalMessage(t *testing.T) {
 	})
 
 	// Write member to fs transport.
-	v, _ := srv.sessManager.sessions.Load(token)
-	sess := v.(*Session)
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
+		t.Fatal("session not found for token")
+	}
 	fsT := fs.New(sess.cfHome)
 	fsT.WriteMember(campfireID, campfire.MemberRecord{
 		PublicKey: cliID.PublicKey,

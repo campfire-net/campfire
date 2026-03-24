@@ -79,6 +79,17 @@ func (f *fakeStore) ClaimPendingThresholdShare(campfireID string) (uint32, []byt
 func (f *fakeStore) UpdateCampfireID(oldID, newID string) error { return nil }
 func (f *fakeStore) Close() error                               { return nil }
 
+// InviteStore stubs — required by store.Store interface, not exercised by rate limit tests.
+func (f *fakeStore) CreateInvite(inv store.InviteRecord) error                     { return nil }
+func (f *fakeStore) ValidateInvite(campfireID, inviteCode string) (*store.InviteRecord, error) {
+	return nil, nil
+}
+func (f *fakeStore) RevokeInvite(campfireID, inviteCode string) error              { return nil }
+func (f *fakeStore) ListInvites(campfireID string) ([]store.InviteRecord, error)   { return nil, nil }
+func (f *fakeStore) LookupInvite(inviteCode string) (*store.InviteRecord, error)   { return nil, nil }
+func (f *fakeStore) HasAnyInvites(campfireID string) (bool, error)                 { return false, nil }
+func (f *fakeStore) IncrementInviteUse(inviteCode string) error                    { return nil }
+
 // EpochSecretStore stubs — required by store.Store interface, not exercised by rate limit tests.
 func (f *fakeStore) UpsertEpochSecret(secret store.EpochSecret) error { return nil }
 func (f *fakeStore) GetEpochSecret(campfireID string, epoch uint64) (*store.EpochSecret, error) {
