@@ -65,6 +65,10 @@ type Config struct {
 	// MonthlyMessageCap is the free-tier monthly message cap per campfire.
 	// Default (0) uses DefaultMonthlyMessageCap.
 	MonthlyMessageCap int
+
+	// Now is the clock function used for sliding-window expiry.
+	// Defaults to time.Now if nil. Override in tests to control time.
+	Now func() time.Time
 }
 
 const (
@@ -92,6 +96,13 @@ func (c *Config) monthlyCap() int {
 		return DefaultMonthlyMessageCap
 	}
 	return c.MonthlyMessageCap
+}
+
+func (c *Config) now() func() time.Time {
+	if c.Now != nil {
+		return c.Now
+	}
+	return time.Now
 }
 
 // campfireState holds per-campfire rate limit state.
@@ -164,7 +175,7 @@ func (w *Wrapper) AddMessage(m store.MessageRecord) (bool, error) {
 	}
 
 	// 3. Sliding-window per-minute rate check.
-	now := time.Now()
+	now := w.cfg.now()()
 	cutoff := now.Add(-time.Minute)
 	// Evict timestamps older than 1 minute.
 	fresh := s.minuteWindow[:0]

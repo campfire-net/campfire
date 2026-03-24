@@ -79,6 +79,16 @@ func (f *fakeStore) ClaimPendingThresholdShare(campfireID string) (uint32, []byt
 func (f *fakeStore) UpdateCampfireID(oldID, newID string) error { return nil }
 func (f *fakeStore) Close() error                               { return nil }
 
+// EpochSecretStore stubs — required by store.Store interface, not exercised by rate limit tests.
+func (f *fakeStore) UpsertEpochSecret(secret store.EpochSecret) error { return nil }
+func (f *fakeStore) GetEpochSecret(campfireID string, epoch uint64) (*store.EpochSecret, error) {
+	return nil, nil
+}
+func (f *fakeStore) GetLatestEpochSecret(campfireID string) (*store.EpochSecret, error) {
+	return nil, nil
+}
+func (f *fakeStore) SetMembershipEncrypted(campfireID string, encrypted bool) error { return nil }
+
 // --- Helpers ---
 
 func makeRecord(campfireID string, payloadSize int) store.MessageRecord {
@@ -400,6 +410,55 @@ func TestInnerStoreErrorPropagated(t *testing.T) {
 // TestWrapperImplementsStore verifies the compile-time assertion that *Wrapper
 // satisfies store.Store (the decorator contract).
 var _ store.Store = (*ratelimit.Wrapper)(nil)
+
+
+// TestRateLimitWindowExpiryWithFakeClock verifies that old timestamps are evicted
+// when the clock advances past the 1-minute window boundary. Uses an injectable
+// clock so this test runs in CI without sleeping.
+func TestRateLimitWindowExpiryWithFakeClock(t *testing.T) {
+	fake := newFakeStore()
+
+	// Start the fake clock at an arbitrary point in time.
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	cfg := ratelimit.Config{
+		MaxMessagesPerMinute: 2,
+		MaxMessageBytes:      1024,
+		MonthlyMessageCap:    10000,
+		Now:                  func() time.Time { return now },
+	}
+	w := ratelimit.New(fake, cfg)
+
+	// Send 2 messages — fill the window at T=0.
+	for i := 0; i < 2; i++ {
+		if _, err := w.AddMessage(makeRecord("fire1", 10)); err != nil {
+			t.Fatalf("message %d should pass: %v", i, err)
+		}
+	}
+
+	// 3rd message at the same time should be rate-limited.
+	if _, err := w.AddMessage(makeRecord("fire1", 10)); !errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Fatal("3rd message at T=0 should be rate-limited")
+	}
+
+	// Advance clock past the window boundary (61 seconds).
+	now = now.Add(61 * time.Second)
+
+	// The first two timestamps are now outside the 1-minute window and should
+	// be evicted, allowing new messages through.
+	if _, err := w.AddMessage(makeRecord("fire1", 10)); err != nil {
+		t.Fatalf("after window expiry, message should pass: %v", err)
+	}
+
+	// Window now has 1 entry (the message just sent). One more should pass.
+	if _, err := w.AddMessage(makeRecord("fire1", 10)); err != nil {
+		t.Fatalf("second message after window expiry should pass: %v", err)
+	}
+
+	// Window now full again. Next message should be rate-limited.
+	if _, err := w.AddMessage(makeRecord("fire1", 10)); !errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Fatal("should be rate-limited again after refilling window")
+	}
+}
 
 // TestRateLimitedAfterWindowExpiry is a timing-sensitive test that verifies
 // the sliding window correctly expires old entries. It uses a 1-second window
