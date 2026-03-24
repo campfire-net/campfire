@@ -1149,9 +1149,10 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		TransportDir:  s.externalAddr,
 		TransportType: "p2p-http",
 		JoinProtocol:  cf.JoinProtocol,
-		Role:          store.PeerRoleCreator,
+		Role:          serviceRole,
 		JoinedAt:      now,
 		CreatorPubkey: agentID.PublicKeyHex(),
+		Encrypted:     cf.Encrypted,
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
 	}
@@ -1334,6 +1335,14 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 			// eliminating the TOCTOU race between validation and increment.
 			if _, validateErr := inviteSt.ValidateAndUseInvite(campfireID, inviteCode); validateErr != nil {
 				return errResponse(id, -32000, fmt.Sprintf("invalid invite code: %v", validateErr))
+			}
+			// Re-check revocation after the atomic use to close the race window
+			// between ValidateAndUseInvite and WriteMember. If a concurrent
+			// RevokeInvite fired in that gap, the invite was revoked mid-join:
+			// deny the join. The use_count increment is harmless — the code is
+			// revoked and cannot be used by any future joiner regardless.
+			if postUseInv, recheckErr := inviteSt.LookupInvite(inviteCode); recheckErr == nil && postUseInv != nil && postUseInv.Revoked {
+				return errResponse(id, -32000, "invite code was revoked")
 			}
 		}
 

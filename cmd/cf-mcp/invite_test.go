@@ -834,6 +834,97 @@ func TestJoin_NeitherParam_ReturnsError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test r8m: revocation mid-join race window (campfire-agent-r8m)
+// ---------------------------------------------------------------------------
+//
+// Regression test for the race window between ValidateAndUseInvite and
+// WriteMember: a concurrent RevokeInvite call landing in that gap would
+// allow the join to complete even though the invite was revoked.
+//
+// The fix adds a post-use LookupInvite re-check in handleJoin.
+//
+// Sub-test A: pre-revoked code is still blocked (no regression on existing path).
+// Sub-test B: the post-use store state (Revoked=true after successful
+//   ValidateAndUseInvite + concurrent RevokeInvite) is correctly detected by
+//   LookupInvite — confirming the re-check guard has the right data to trigger.
+
+func TestInvite_RevocationMidJoinRaceWindowBlocked(t *testing.T) {
+	// --- Sub-test A: pre-revoked codes are still blocked ---
+	t.Run("pre-revoked", func(t *testing.T) {
+		srv, st := newTestServerWithStore(t)
+		doInit(t, srv)
+
+		createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+		fields := extractCreateResult(t, createResp)
+		campfireID, _ := fields["campfire_id"].(string)
+		inviteCode, _ := fields["invite_code"].(string)
+
+		if err := st.RevokeInvite(campfireID, inviteCode); err != nil {
+			t.Fatalf("revoking invite: %v", err)
+		}
+
+		srvB := newTestServer(t)
+		srvB.beaconDir = srv.beaconDir
+		if respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`)); respB.Error != nil {
+			t.Fatalf("init srvB: %v", respB.Error)
+		}
+		srvB.cfHome = srv.cfHome
+
+		joinArgs, _ := json.Marshal(map[string]interface{}{
+			"campfire_id": campfireID,
+			"invite_code": inviteCode,
+		})
+		resp := srvB.dispatch(makeReq("tools/call",
+			`{"name":"campfire_join","arguments":`+string(joinArgs)+`}`))
+		if resp.Error == nil {
+			t.Fatal("expected error joining with pre-revoked code")
+		}
+	})
+
+	// --- Sub-test B: post-use re-check catches mid-join revocation ---
+	// Confirms the store state produced by (ValidateAndUseInvite succeeds) +
+	// (concurrent RevokeInvite) is exactly what the handleJoin re-check reads.
+	// The race itself requires true concurrency; this test verifies the guard's
+	// precondition is satisfied so LookupInvite returns Revoked=true.
+	t.Run("post-use-revoke-recheck-store-state", func(t *testing.T) {
+		_, st := newTestServerWithStore(t)
+
+		campfireID := "test-race-campfire-id"
+		inviteCode := "race0000-0000-0000-0000-000000000001"
+		if err := st.CreateInvite(store.InviteRecord{
+			CampfireID: campfireID,
+			InviteCode: inviteCode,
+			CreatedBy:  "test",
+			CreatedAt:  0,
+			Revoked:    false,
+			MaxUses:    0,
+			UseCount:   0,
+		}); err != nil {
+			t.Fatalf("CreateInvite: %v", err)
+		}
+
+		// Simulate the atomic use (ValidateAndUseInvite succeeds — increments use_count).
+		if _, err := st.ValidateAndUseInvite(campfireID, inviteCode); err != nil {
+			t.Fatalf("ValidateAndUseInvite: %v", err)
+		}
+		// Simulate concurrent revocation landing before WriteMember.
+		if err := st.RevokeInvite(campfireID, inviteCode); err != nil {
+			t.Fatalf("RevokeInvite: %v", err)
+		}
+
+		// The re-check in handleJoin calls LookupInvite and tests inv.Revoked.
+		// Confirm the store returns Revoked=true at this point.
+		inv, err := st.LookupInvite(inviteCode)
+		if err != nil || inv == nil {
+			t.Fatalf("LookupInvite: err=%v inv=%v", err, inv)
+		}
+		if !inv.Revoked {
+			t.Error("post-use re-check: LookupInvite must return Revoked=true after concurrent RevokeInvite so handleJoin denies the join")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Test 8: campfire_revoke_invite tool revokes a code
 // ---------------------------------------------------------------------------
 
