@@ -73,6 +73,29 @@ func (r *TransportRouter) UnregisterSession(token string) {
 	delete(r.transports, token)
 }
 
+// RotateSession transfers all campfire routes and the transport from oldToken
+// to newToken without removing the campfire→transport mappings. This is the
+// correct operation for token rotation: the session's identity and campfire
+// ownership are preserved; only the external credential changes.
+//
+// After this call, GetCampfireTransport and LookupInviteAcrossAllStores
+// continue to return the correct transport for all campfires previously owned
+// by oldToken, and GetTransport(newToken) returns the session's transport.
+func (r *TransportRouter) RotateSession(oldToken, newToken string, t *cfhttp.Transport) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Transfer campfire ownership: move all campfire IDs from old token to new
+	// token. The campfires map entries remain unchanged — the routes are intact.
+	campfires := r.sessionCampfires[oldToken]
+	delete(r.sessionCampfires, oldToken)
+	if len(campfires) > 0 {
+		r.sessionCampfires[newToken] = campfires
+	}
+	// Rotate the transport registration.
+	delete(r.transports, oldToken)
+	r.transports[newToken] = t
+}
+
 // RegisterSession associates a session token with its transport instance.
 // Called when a session's transport is first created.
 func (r *TransportRouter) RegisterSession(token string, t *cfhttp.Transport) {

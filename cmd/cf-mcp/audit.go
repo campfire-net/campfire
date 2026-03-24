@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
@@ -65,13 +64,13 @@ type AuditWriter struct {
 	agentID    *identity.Identity
 	st         store.Store
 
-	seq      atomic.Uint64
 	ch       chan AuditEntry
 	done     chan struct{}
 	wg       sync.WaitGroup
 	flushReq chan chan struct{}
 
-	// Merkle state — accessed only by the background goroutine.
+	// Merkle state and sequence counter — accessed only by the background goroutine.
+	seq            uint64
 	pendingEntries []AuditEntry
 	lastRootAt     time.Time
 }
@@ -128,9 +127,14 @@ func (aw *AuditWriter) CampfireID() string {
 
 // Log enqueues an audit entry for async writing. Non-blocking: if the channel
 // is full the entry is dropped (audit writes must not block the request path).
+//
+// Sequence numbers are assigned by the write goroutine (consumer side) so that
+// only entries that are actually written receive a sequence number. Pre-assigning
+// here would consume sequence numbers for dropped entries, creating gaps
+// indistinguishable from log tampering.
 func (aw *AuditWriter) Log(entry AuditEntry) {
-	// Assign sequence number.
-	entry.Sequence = aw.seq.Add(1)
+	// Clear any caller-supplied sequence — the write goroutine owns assignment.
+	entry.Sequence = 0
 	if entry.Timestamp == 0 {
 		entry.Timestamp = time.Now().UnixNano()
 	}
@@ -198,7 +202,11 @@ func (aw *AuditWriter) loop() {
 }
 
 // writeEntry serialises entry as JSON and posts it to the audit campfire.
+// Sequence numbers are assigned here (consumer side) so that only written
+// entries consume a sequence number — dropped entries never do.
 func (aw *AuditWriter) writeEntry(entry AuditEntry) {
+	aw.seq++
+	entry.Sequence = aw.seq
 	aw.pendingEntries = append(aw.pendingEntries, entry)
 
 	payload, err := json.Marshal(entry)

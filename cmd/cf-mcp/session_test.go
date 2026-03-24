@@ -1469,3 +1469,96 @@ func TestInitRateLimit_XForwardedFor(t *testing.T) {
 		t.Errorf("different real IP via XFF should be allowed, got %d", w.Code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test: reaper close-before-delete ordering (campfire-agent-3bn)
+// ---------------------------------------------------------------------------
+
+// TestSession_ReaperCloseBeforeDelete verifies that the reaper calls Close()
+// before Delete() so that a concurrent getOrCreate cannot observe a session
+// that has been removed from the map but is still being closed.
+//
+// The bug: Delete(k) then Close() — a concurrent getOrCreate that runs between
+// Delete and Close would create a new *Session for the same internalID, storing
+// it in the map, and then Close() on the old session would tear down the store
+// that the new session shares (they use the same cfHome on disk).
+//
+// The fix: Close() then Delete(k) — the session is fully torn down before it
+// disappears from the map.  getOrCreate will not find it in the map, create a
+// fresh session, and store that.
+//
+// This test runs with -race to catch the data race between the simulated reaper
+// goroutine and the concurrent getOrCreate goroutines.
+func TestSession_ReaperCloseBeforeDelete(t *testing.T) {
+	dir := t.TempDir()
+	m := &SessionManager{
+		sessionsDir:         dir,
+		stopCh:              make(chan struct{}),
+		maxSessions:         defaultMaxSessions,
+		idleTimeoutOverride: 50 * time.Millisecond,
+	}
+	m.registry = newTokenRegistry()
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	// Create a session.
+	token, err := m.issueToken()
+	if err != nil {
+		t.Fatalf("issueToken: %v", err)
+	}
+	origSess, err := m.getOrCreate(token)
+	if err != nil {
+		t.Fatalf("getOrCreate (initial): %v", err)
+	}
+
+	// Back-date to trigger idle reap.
+	origSess.mu.Lock()
+	origSess.lastActivity = time.Now().Add(-(idleTimeout + time.Second))
+	origSess.mu.Unlock()
+
+	// Launch many concurrent getOrCreate goroutines that race with the reaper.
+	// After the reaper fires, every successful getOrCreate must return a session
+	// with a non-nil store (not a half-closed session).
+	const goroutines = 20
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+	sessions := make([]*Session, goroutines)
+
+	// Give the reaper time to fire (it runs every idleTimeoutOverride/2 = 25ms).
+	time.Sleep(75 * time.Millisecond)
+
+	for i := 0; i < goroutines; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, e := m.getOrCreate(token)
+			sessions[i] = s
+			errs[i] = e
+		}()
+	}
+	wg.Wait()
+
+	// At least one goroutine must succeed.
+	var anySuccess bool
+	for i := 0; i < goroutines; i++ {
+		if errs[i] == nil {
+			anySuccess = true
+			sess := sessions[i]
+			// The returned session must have a live (non-nil) store.
+			sess.mu.Lock()
+			st := sess.st
+			sess.mu.Unlock()
+			if st == nil {
+				t.Errorf("goroutine %d: getOrCreate returned a session with nil store (close-before-delete bug)", i)
+			}
+			// Must not be the original (reaped) session.
+			if sess == origSess {
+				t.Errorf("goroutine %d: getOrCreate returned the reaped session object", i)
+			}
+		}
+	}
+	if !anySuccess {
+		t.Fatal("all goroutines failed to getOrCreate after reap — expected at least one success")
+	}
+}
