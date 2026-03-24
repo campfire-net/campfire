@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"encoding/json"
 	"fmt"
@@ -2596,5 +2597,143 @@ func TestMaxMessageTimestamp_IgnoresFilters(t *testing.T) {
 	}
 	if maxTS != 4 {
 		t.Errorf("MaxMessageTimestamp = %d, want 4 (unfiltered; m4 has no tags but highest ts)", maxTS)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Invite store tests
+// ---------------------------------------------------------------------------
+
+// TestValidateAndUseInvite_Basic verifies that ValidateAndUseInvite succeeds for a
+// valid code and increments the use count.
+func TestValidateAndUseInvite_Basic(t *testing.T) {
+	s := testStore(t)
+	cfID := "campfire-basic-invite"
+	code := "code-abc"
+	if err := s.CreateInvite(InviteRecord{
+		CampfireID: cfID,
+		InviteCode: code,
+		CreatedBy:  "owner",
+		CreatedAt:  1,
+		MaxUses:    5,
+	}); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+	inv, err := s.ValidateAndUseInvite(cfID, code)
+	if err != nil {
+		t.Fatalf("ValidateAndUseInvite: %v", err)
+	}
+	if inv.UseCount != 1 {
+		t.Errorf("UseCount = %d, want 1", inv.UseCount)
+	}
+}
+
+// TestValidateAndUseInvite_ExhaustedReturnsError verifies that using an invite beyond
+// max_uses returns ErrInviteExhausted.
+func TestValidateAndUseInvite_ExhaustedReturnsError(t *testing.T) {
+	s := testStore(t)
+	cfID := "campfire-exhaust"
+	code := "code-exhaust"
+	if err := s.CreateInvite(InviteRecord{
+		CampfireID: cfID,
+		InviteCode: code,
+		CreatedBy:  "owner",
+		CreatedAt:  1,
+		MaxUses:    2,
+	}); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+	if _, err := s.ValidateAndUseInvite(cfID, code); err != nil {
+		t.Fatalf("first use: %v", err)
+	}
+	if _, err := s.ValidateAndUseInvite(cfID, code); err != nil {
+		t.Fatalf("second use: %v", err)
+	}
+	_, err := s.ValidateAndUseInvite(cfID, code)
+	if !errors.Is(err, ErrInviteExhausted) {
+		t.Errorf("third use: got %v, want ErrInviteExhausted", err)
+	}
+}
+
+// TestValidateAndUseInvite_UnlimitedMaxUses verifies that a code with max_uses=0
+// (unlimited) can be used many times.
+func TestValidateAndUseInvite_UnlimitedMaxUses(t *testing.T) {
+	s := testStore(t)
+	cfID := "campfire-unlimited"
+	code := "code-unlimited"
+	if err := s.CreateInvite(InviteRecord{
+		CampfireID: cfID,
+		InviteCode: code,
+		CreatedBy:  "owner",
+		CreatedAt:  1,
+		MaxUses:    0, // unlimited
+	}); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := s.ValidateAndUseInvite(cfID, code); err != nil {
+			t.Fatalf("use %d: %v", i+1, err)
+		}
+	}
+}
+
+// TestValidateAndUseInvite_Concurrent verifies that concurrent callers racing to use
+// a max_uses=1 invite code result in exactly one success and the rest receiving
+// ErrInviteExhausted.  This is the core TOCTOU regression test.
+func TestValidateAndUseInvite_Concurrent(t *testing.T) {
+	s := testStore(t)
+	cfID := "campfire-concurrent"
+	code := "code-race"
+	if err := s.CreateInvite(InviteRecord{
+		CampfireID: cfID,
+		InviteCode: code,
+		CreatedBy:  "owner",
+		CreatedAt:  1,
+		MaxUses:    1,
+	}); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	successes := make([]int, goroutines)
+	errs := make([]error, goroutines)
+
+	// Barrier so all goroutines attempt ValidateAndUseInvite simultaneously.
+	ready := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-ready
+			_, errs[idx] = s.ValidateAndUseInvite(cfID, code)
+			if errs[idx] == nil {
+				successes[idx] = 1
+			}
+		}(i)
+	}
+	close(ready)
+	wg.Wait()
+
+	totalSuccess := 0
+	for _, v := range successes {
+		totalSuccess += v
+	}
+	if totalSuccess != 1 {
+		t.Errorf("concurrent ValidateAndUseInvite: %d successes, want exactly 1", totalSuccess)
+	}
+	for i, err := range errs {
+		if successes[i] == 0 && !errors.Is(err, ErrInviteExhausted) {
+			t.Errorf("goroutine %d: got %v, want ErrInviteExhausted", i, err)
+		}
+	}
+
+	// Confirm the use_count is exactly 1 in the store.
+	inv, err := s.LookupInvite(code)
+	if err != nil {
+		t.Fatalf("LookupInvite: %v", err)
+	}
+	if inv.UseCount != 1 {
+		t.Errorf("use_count = %d after concurrent joins, want 1", inv.UseCount)
 	}
 }
