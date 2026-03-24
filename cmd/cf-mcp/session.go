@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,14 @@ const idleTimeout = 10 * time.Minute
 // defaultMaxSessions is the maximum number of concurrent active sessions
 // when no override is provided to NewSessionManager.
 const defaultMaxSessions = 1000
+
+// defaultInitRateLimit is the maximum number of campfire_init calls (new
+// session creations) allowed per IP address per initRateWindow.
+// Design doc §5.b / adversary finding S9: 10 sessions per IP per minute.
+const defaultInitRateLimit = 10
+
+// initRateWindow is the sliding window duration for per-IP init rate limiting.
+const initRateWindow = 1 * time.Minute
 
 // defaultTokenTTL is the default time-to-live for session tokens.
 const defaultTokenTTL = 1 * time.Hour
@@ -45,14 +54,103 @@ type tokenEntry struct {
 // TokenRegistry maps external bearer tokens to internal session IDs.
 // It is the issuance authority: only tokens in the registry are valid.
 type TokenRegistry struct {
-	mu     sync.RWMutex
-	tokens map[string]*tokenEntry // token → entry
+	mu          sync.RWMutex
+	tokens      map[string]*tokenEntry // token → entry
+	persistPath string                 // if non-empty, registry is persisted to this file
 }
 
+// tokenEntryJSON is the on-disk representation of a tokenEntry.
+type tokenEntryJSON struct {
+	InternalID       string    `json:"internal_id"`
+	IssuedAt         time.Time `json:"issued_at"`
+	Revoked          bool      `json:"revoked"`
+	GracePeriodUntil time.Time `json:"grace_period_until,omitempty"`
+}
+
+// tokenRegistryJSON is the on-disk representation of the full registry.
+type tokenRegistryJSON struct {
+	Tokens map[string]*tokenEntryJSON `json:"tokens"`
+}
+
+// newTokenRegistry creates a new in-memory TokenRegistry (no persistence).
 func newTokenRegistry() *TokenRegistry {
 	return &TokenRegistry{
 		tokens: make(map[string]*tokenEntry),
 	}
+}
+
+// newTokenRegistryFromFile creates a TokenRegistry backed by a JSON file.
+// If the file exists, its contents are loaded. If it does not exist, an empty
+// registry is created. Mutations are automatically persisted to the file.
+func newTokenRegistryFromFile(path string) (*TokenRegistry, error) {
+	r := &TokenRegistry{
+		tokens:      make(map[string]*tokenEntry),
+		persistPath: path,
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return r, nil // fresh registry, file will be created on first mutation
+		}
+		return nil, fmt.Errorf("token registry: read %s: %w", path, err)
+	}
+	var reg tokenRegistryJSON
+	if err := json.Unmarshal(data, &reg); err != nil {
+		return nil, fmt.Errorf("token registry: parse %s: %w", path, err)
+	}
+	for tok, e := range reg.Tokens {
+		r.tokens[tok] = &tokenEntry{
+			internalID:       e.InternalID,
+			issuedAt:         e.IssuedAt,
+			revoked:          e.Revoked,
+			gracePeriodUntil: e.GracePeriodUntil,
+		}
+	}
+	return r, nil
+}
+
+// save atomically writes the registry to r.persistPath.
+// Must be called with r.mu held (at least read-locked).
+// Uses a temp file + rename for atomicity.
+func (r *TokenRegistry) save() error {
+	if r.persistPath == "" {
+		return nil
+	}
+	reg := tokenRegistryJSON{
+		Tokens: make(map[string]*tokenEntryJSON, len(r.tokens)),
+	}
+	for tok, e := range r.tokens {
+		reg.Tokens[tok] = &tokenEntryJSON{
+			InternalID:       e.internalID,
+			IssuedAt:         e.issuedAt,
+			Revoked:          e.revoked,
+			GracePeriodUntil: e.gracePeriodUntil,
+		}
+	}
+	data, err := json.Marshal(reg)
+	if err != nil {
+		return fmt.Errorf("token registry: marshal: %w", err)
+	}
+	dir := filepath.Dir(r.persistPath)
+	tmp, err := os.CreateTemp(dir, "token-registry-*.tmp")
+	if err != nil {
+		return fmt.Errorf("token registry: create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("token registry: write temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("token registry: close temp: %w", err)
+	}
+	if err := os.Rename(tmpName, r.persistPath); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("token registry: rename: %w", err)
+	}
+	return nil
 }
 
 // issue generates a new token and assigns it a fresh internalID.
@@ -71,6 +169,7 @@ func (r *TokenRegistry) issue() (string, error) {
 		internalID: id,
 		issuedAt:   time.Now(),
 	}
+	r.save() //nolint:errcheck // persist best-effort; mutation already applied in memory
 	r.mu.Unlock()
 	return tok, nil
 }
@@ -87,6 +186,7 @@ func (r *TokenRegistry) issueFor(internalID string) (string, error) {
 		internalID: internalID,
 		issuedAt:   time.Now(),
 	}
+	r.save() //nolint:errcheck // persist best-effort
 	r.mu.Unlock()
 	return tok, nil
 }
@@ -134,6 +234,7 @@ func (r *TokenRegistry) revoke(token string) {
 		entry.revoked = true
 		entry.gracePeriodUntil = time.Time{} // no grace period for explicit revoke
 	}
+	r.save() //nolint:errcheck // persist best-effort
 	r.mu.Unlock()
 }
 
@@ -145,6 +246,7 @@ func (r *TokenRegistry) revokeWithGrace(token string, gracePeriodUntil time.Time
 		entry.revoked = true
 		entry.gracePeriodUntil = gracePeriodUntil
 	}
+	r.save() //nolint:errcheck // persist best-effort
 	r.mu.Unlock()
 }
 
@@ -152,6 +254,7 @@ func (r *TokenRegistry) revokeWithGrace(token string, gracePeriodUntil time.Time
 func (r *TokenRegistry) delete(token string) {
 	r.mu.Lock()
 	delete(r.tokens, token)
+	r.save() //nolint:errcheck // persist best-effort
 	r.mu.Unlock()
 }
 
@@ -240,6 +343,55 @@ func (s *Session) Close() {
 }
 
 // ---------------------------------------------------------------------------
+// initRateLimiter — per-IP sliding window for campfire_init
+// ---------------------------------------------------------------------------
+
+// initRateLimiter enforces a sliding-window rate limit on campfire_init calls
+// (new session creation) keyed by client IP address. It is safe for concurrent
+// use. Zero value is not useful — use newInitRateLimiter.
+type initRateLimiter struct {
+	mu      sync.Mutex
+	entries map[string][]time.Time // IP → timestamps of recent init calls
+	limit   int
+	window  time.Duration
+}
+
+// newInitRateLimiter creates a limiter allowing at most limit calls per window.
+func newInitRateLimiter(limit int, window time.Duration) *initRateLimiter {
+	return &initRateLimiter{
+		entries: make(map[string][]time.Time),
+		limit:   limit,
+		window:  window,
+	}
+}
+
+// allow returns true if the IP is below the rate limit, recording the attempt.
+// Returns false (without recording) if the limit has been reached.
+func (l *initRateLimiter) allow(ip string) bool {
+	now := time.Now()
+	cutoff := now.Add(-l.window)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Trim stale timestamps outside the window.
+	times := l.entries[ip]
+	start := 0
+	for start < len(times) && times[start].Before(cutoff) {
+		start++
+	}
+	times = times[start:]
+
+	if len(times) >= l.limit {
+		l.entries[ip] = times
+		return false
+	}
+
+	l.entries[ip] = append(times, now)
+	return true
+}
+
+// ---------------------------------------------------------------------------
 // SessionManager
 // ---------------------------------------------------------------------------
 
@@ -269,21 +421,50 @@ type SessionManager struct {
 	// rotationGracePeriod is the grace period for old tokens after rotation.
 	// Zero uses defaultRotationGracePeriod.
 	rotationGracePeriod time.Duration
+	// initLimiter enforces per-IP rate limiting on campfire_init (new session
+	// creation). Never nil after NewSessionManager.
+	initLimiter *initRateLimiter
 }
 
 // NewSessionManager creates a SessionManager rooted at sessionsDir and
 // starts the background idle-session reaper. The session limit defaults to
 // defaultMaxSessions; use SessionManager.maxSessions directly in tests to
 // override.
+//
+// The token registry is persisted to sessionsDir/token-registry.json so that
+// active tokens survive server restarts.
 func NewSessionManager(sessionsDir string) *SessionManager {
+	registryPath := filepath.Join(sessionsDir, "token-registry.json")
+	reg, err := newTokenRegistryFromFile(registryPath)
+	if err != nil {
+		// Log but continue with an empty in-memory registry rather than
+		// failing to start. A corrupt registry is recoverable: clients
+		// will re-init and receive new tokens.
+		fmt.Fprintf(os.Stderr, "warning: token registry load failed (%v); starting fresh\n", err)
+		reg = newTokenRegistry()
+	}
 	m := &SessionManager{
 		sessionsDir: sessionsDir,
 		stopCh:      make(chan struct{}),
 		maxSessions: defaultMaxSessions,
-		registry:    newTokenRegistry(),
+		registry:    reg,
+		initLimiter: newInitRateLimiter(defaultInitRateLimit, initRateWindow),
 	}
 	go m.reaper()
 	return m
+}
+
+// checkInitRateLimit returns true if the given IP is allowed to create a new
+// session. Returns false and an initRateLimitError if the per-IP limit is
+// exceeded. ip should be the bare IP (no port).
+func (m *SessionManager) checkInitRateLimit(ip string) error {
+	if m.initLimiter == nil {
+		return nil
+	}
+	if !m.initLimiter.allow(ip) {
+		return &initRateLimitError{ip: ip, limit: m.initLimiter.limit, window: m.initLimiter.window}
+	}
+	return nil
 }
 
 // Stop shuts down the background reaper.
@@ -515,6 +696,18 @@ type sessionLimitError struct {
 
 func (e *sessionLimitError) Error() string {
 	return fmt.Sprintf("session limit reached (%d active sessions)", e.limit)
+}
+
+// initRateLimitError is returned by checkInitRateLimit when the per-IP limit
+// is exceeded. Callers translate this to HTTP 429 Too Many Requests.
+type initRateLimitError struct {
+	ip     string
+	limit  int
+	window time.Duration
+}
+
+func (e *initRateLimitError) Error() string {
+	return fmt.Sprintf("rate limit exceeded: %d new sessions per %s per IP (from %s)", e.limit, e.window, e.ip)
 }
 
 // generateToken returns a random 32-byte hex session token.
