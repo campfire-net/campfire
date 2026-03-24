@@ -10,6 +10,11 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    services:
+      azurite:
+        image: mcr.microsoft.com/azure-storage/azurite
+        ports:
+          - 10002:10002
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,6 +26,9 @@ jobs:
 
       - name: Run tests
         run: go test ./...
+
+      - name: Run Azurite integration tests
+        run: go test -tags azurite -v ./pkg/store/aztable/...
 
       - name: Build check
         run: go build ./cmd/cf ./cmd/cf-mcp ./cmd/cf-functions
