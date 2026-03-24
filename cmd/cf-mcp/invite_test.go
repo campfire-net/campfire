@@ -277,49 +277,64 @@ func TestInvite_JoinWithExhaustedCodeFails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: grace period — campfire with NO invite records allows join without code
+// Test 6: grace period — handleJoin allows join without invite_code when the
+// joining agent's store has no invite records for the campfire.
 // ---------------------------------------------------------------------------
+//
+// This exercises the full handler path:
+//   campfire_join → HasAnyInvites=false (srvB's store has no codes) → allow join
+//
+// srvA creates the campfire (writes fs state + stores invite in srvA's store).
+// srvB has a completely independent store with no invite records for that campfire.
+// srvB shares srvA's cfHome so it can read the campfire fs state.
+// srvB dispatches campfire_join without an invite_code — must succeed.
 
 func TestInvite_GracePeriodAllowsJoinWithoutCode(t *testing.T) {
-	// Create a campfire that has zero invite records (simulates old campfires or
-	// campfires created before invite enforcement was deployed).
-	srv, st := newTestServerWithStore(t)
-	doInit(t, srv)
+	// srvA: creates the campfire. Its store holds the auto-generated invite code.
+	srvA, _ := newTestServerWithStore(t)
+	doInit(t, srvA)
 
-	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	createResp := srvA.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
 	fields := extractCreateResult(t, createResp)
 	campfireID, _ := fields["campfire_id"].(string)
-	autoCode, _ := fields["invite_code"].(string)
-
-	// Delete the auto-generated invite to simulate zero-invite campfire.
-	// We can't DELETE via the store interface, but we can verify the grace-period
-	// check separately: test that HasAnyInvites returns false for a campfire
-	// that never had invites inserted.
-	//
-	// Use a raw SQLite store opened on a fresh path.
-	freshStore, err := store.Open(store.StorePath(t.TempDir()))
-	if err != nil {
-		t.Fatalf("opening fresh store: %v", err)
+	if campfireID == "" {
+		t.Fatalf("missing campfire_id in create response: %v", fields)
 	}
-	defer freshStore.Close()
 
-	hasAny, err := freshStore.HasAnyInvites("nonexistent-campfire-id")
+	// srvB: fresh store with its own identity. No invite records for campfireID.
+	srvB, stB := newTestServerWithStore(t)
+	respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if respB.Error != nil {
+		t.Fatalf("init srvB: code=%d msg=%s", respB.Error.Code, respB.Error.Message)
+	}
+
+	// Verify stB has no invites for this campfire — this is the grace-period condition.
+	hasAny, err := stB.HasAnyInvites(campfireID)
 	if err != nil {
-		t.Fatalf("HasAnyInvites: %v", err)
+		t.Fatalf("HasAnyInvites on srvB store: %v", err)
 	}
 	if hasAny {
-		t.Error("expected HasAnyInvites=false for campfire with no invites")
+		t.Fatal("test precondition failed: srvB store already has invites for campfireID")
 	}
 
-	// Confirm the real campfire has an invite (grace period does NOT apply).
-	hasAny2, err := st.HasAnyInvites(campfireID)
-	if err != nil {
-		t.Fatalf("HasAnyInvites for created campfire: %v", err)
+	// Point srvB at srvA's campfire fs state so ReadState / ListMembers succeeds.
+	// srvB keeps its own identity (already written to srvBIdentityHome during init).
+	srvBIdentityHome := srvB.cfHome
+	srvB.cfHome = srvA.cfHome // read campfire state from srvA's fs transport
+	srvB.st = stB             // but use srvB's store (no invites)
+	_ = srvBIdentityHome      // identity was written there; srvA's cfHome has srvA's identity,
+	// which is fine — handleJoin only needs to load *an* identity to get a public key.
+
+	joinArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+		// deliberately no invite_code — grace period must allow this
+	})
+	joinResp := srvB.dispatch(makeReq("tools/call",
+		`{"name":"campfire_join","arguments":`+string(joinArgs)+`}`))
+	if joinResp.Error != nil {
+		t.Fatalf("campfire_join without invite_code on no-invite campfire failed: code=%d msg=%s",
+			joinResp.Error.Code, joinResp.Error.Message)
 	}
-	if !hasAny2 {
-		t.Error("expected HasAnyInvites=true after campfire_create auto-generates a code")
-	}
-	_ = autoCode // suppress unused
 }
 
 // ---------------------------------------------------------------------------
