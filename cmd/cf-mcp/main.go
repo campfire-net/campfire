@@ -101,7 +101,8 @@ type server struct {
 	externalAddr    string            // public URL of the hosted server (e.g. "http://localhost:8080")
 	auditWriter     *AuditWriter      // non-nil when transparency logging is enabled (§5.e)
 	sessionToken    string            // non-empty in session mode; used for campfire ownership tracking in the router
-	st              store.Store      // non-nil in session mode; already-open store shared from Session
+	st              store.Store       // non-nil in session mode; already-open store shared from Session
+	sess            *Session          // non-nil in session mode; back-reference used to persist auditWriter across requests
 }
 
 func (s *server) identityPath() string {
@@ -807,10 +808,23 @@ Identity model:
 
 	// Transparency log: create audit campfire for this session (§5.e).
 	// Best-effort — audit failure does not block init.
+	//
+	// AuditWriter is persisted in the Session (s.sess.auditWriter) rather than
+	// on this per-request server struct. Without this, repeated campfire_init
+	// calls on the same session each get a fresh *server with nil auditWriter,
+	// causing a new AuditWriter (and its background goroutine) to be created
+	// every call while the previous one is abandoned without Close().
 	auditCampfireID := ""
 	if s.auditWriter == nil {
 		if aw, awErr := NewAuditWriter(s); awErr == nil {
 			s.auditWriter = aw
+			// Persist into the session so subsequent requests on this session
+			// reuse the same AuditWriter instead of creating a new one.
+			if s.sess != nil {
+				s.sess.mu.Lock()
+				s.sess.auditWriter = aw
+				s.sess.mu.Unlock()
+			}
 			auditCampfireID = aw.CampfireID()
 		}
 	} else {
@@ -3343,5 +3357,12 @@ func main() {
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "stdin error: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Flush and close the audit writer so all buffered entries are written
+	// before the process exits. Without this, entries queued in the channel
+	// after the last dispatch would be silently dropped.
+	if srv.auditWriter != nil {
+		srv.auditWriter.Close()
 	}
 }

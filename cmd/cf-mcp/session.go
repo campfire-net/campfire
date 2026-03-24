@@ -293,6 +293,7 @@ type Session struct {
 	st           store.Store
 	httpTransport *cfhttp.Transport // non-nil in hosted HTTP mode
 	router        *TransportRouter  // non-nil in hosted HTTP mode; used by Close to unregister routes
+	auditWriter   *AuditWriter      // non-nil after first campfire_init; persisted across per-request server instances
 	lastActivity  time.Time
 	mu            sync.Mutex
 }
@@ -300,6 +301,9 @@ type Session struct {
 // server returns a *server wired to this session's cfHome and beaconDir.
 // If manager is non-nil and has a transport router, the returned server
 // is configured for hosted HTTP mode with the session's transport instance.
+// The session's auditWriter (if any) is propagated so that repeated
+// campfire_init calls reuse the same AuditWriter rather than leaking
+// goroutines by creating a new one each time.
 func (s *Session) server(manager *SessionManager) *server {
 	srv := &server{
 		cfHome:         s.cfHome,
@@ -307,6 +311,8 @@ func (s *Session) server(manager *SessionManager) *server {
 		cfHomeExplicit: true,
 		sessionToken:   s.token,
 		st:             s.st,
+		sess:           s,
+		auditWriter:    s.auditWriter,
 	}
 	if manager != nil && manager.router != nil {
 		srv.httpTransport = s.httpTransport
@@ -323,13 +329,17 @@ func (s *Session) touch() {
 	s.mu.Unlock()
 }
 
-// Close closes the session's store and transport if open. In hosted HTTP mode,
-// it also unregisters all campfire routes and the session transport from the
-// router so that subsequent /campfire/{id}/deliver requests return 404 instead
-// of hitting a stopped transport.
+// Close closes the session's store, audit writer, and transport if open.
+// In hosted HTTP mode, it also unregisters all campfire routes and the session
+// transport from the router so that subsequent /campfire/{id}/deliver requests
+// return 404 instead of hitting a stopped transport.
 func (s *Session) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.auditWriter != nil {
+		s.auditWriter.Close()
+		s.auditWriter = nil
+	}
 	if s.router != nil {
 		s.router.UnregisterSession(s.token)
 	}
