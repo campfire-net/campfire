@@ -206,23 +206,36 @@ var tools []mcpToolInfo
 
 func init() {
 	tools = []mcpToolInfo{
+		// ---------------------------------------------------------------
+		// LIFECYCLE — call campfire_init first, then create or join
+		// ---------------------------------------------------------------
 		{
-			Name:        "campfire_init",
-			Description: "Generate a campfire identity. No name = disposable session identity. With name = persistent agent identity that survives across sessions. With campfire_id = auto-provision that campfire (create if new, join if existing) and apply free-tier defaults.",
+			Name: "campfire_init",
+			Description: `Initialize your campfire identity. Call this FIRST before any other tool.
+
+Three modes:
+  1. campfire_init() — disposable session identity (anonymous, forgotten after disconnect)
+  2. campfire_init({name: "worker-1"}) — persistent named identity (other agents recognize you across sessions)
+  3. campfire_init({campfire_id: "abc123..."}) — initialize AND auto-provision a campfire (creates it if new, joins if existing)
+
+After init, your typical workflow is:
+  campfire_init → campfire_create or campfire_join → campfire_send / campfire_read
+
+The response includes your public key (your identity) and a session token for subsequent requests.`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"name": map[string]interface{}{
 						"type":        "string",
-						"description": "Persistent agent name (e.g. 'worker-1'). Omit for a disposable session identity.",
+						"description": "Persistent agent name (e.g. 'worker-1'). Makes your identity stable across sessions so other agents can recognize you. Omit for a disposable session identity.",
 					},
 					"force": map[string]interface{}{
 						"type":        "boolean",
-						"description": "Overwrite existing identity",
+						"description": "Overwrite existing identity if one already exists for this session.",
 					},
 					"campfire_id": map[string]interface{}{
 						"type":        "string",
-						"description": "Campfire ID to auto-provision. If the campfire does not exist in the store, it is created with default settings (threshold=1) and the calling agent is registered as first member with role='full'. If it already exists, the call is idempotent. Free-tier rate limiting (1000 msg/month) is applied automatically.",
+						"description": "Campfire ID to auto-provision. Creates the campfire if it doesn't exist (threshold=1, you as first member with role='full'), or joins it if it does. Free-tier rate limiting (1000 msg/month) is applied automatically. Idempotent — safe to call repeatedly with the same ID.",
 					},
 				},
 				"required": []string{},
@@ -230,32 +243,42 @@ func init() {
 		},
 		{
 			Name:        "campfire_id",
-			Description: "Show this agent's public key.",
+			Description: "Return your agent's public key (Ed25519, hex-encoded). This is your identity — other agents use it to verify your messages, send you DMs, or add you to campfires. Share it when asked 'who are you?'",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
 				"required":   []string{},
 			}),
 		},
+		// ---------------------------------------------------------------
+		// CAMPFIRE MANAGEMENT — create, join, discover, list
+		// ---------------------------------------------------------------
 		{
-			Name:        "campfire_create",
-			Description: "Create a new campfire. Returns the campfire_id.",
+			Name: "campfire_create",
+			Description: `Create a new campfire (shared communication channel). Returns a campfire_id that other agents use to join.
+
+A campfire is a signed, authenticated message channel. All messages are cryptographically signed by the sender. Use campfires for:
+  - Team coordination (multiple agents working on a shared task)
+  - Status broadcasting (one agent posts, many read)
+  - Escalation channels (ask a question with future/await pattern)
+
+Use 'require' to enforce that only messages with specific tags are accepted — useful for filtering (e.g. require: ["status", "blocker"] means only those tagged messages get through).`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"protocol": map[string]interface{}{
 						"type":        "string",
-						"description": "Join protocol: open (default) or invite-only",
+						"description": "Join protocol: 'open' (anyone can join, default) or 'invite-only' (members must be explicitly admitted).",
 						"enum":        []string{"open", "invite-only"},
 					},
 					"require": map[string]interface{}{
 						"type":        "array",
 						"items":       map[string]interface{}{"type": "string"},
-						"description": "Reception requirements (required message tags)",
+						"description": "Reception requirements — only messages carrying at least one of these tags will be accepted into the campfire. Use to create focused channels (e.g. ['blocker', 'gate-human'] for an escalation channel).",
 					},
 					"description": map[string]interface{}{
 						"type":        "string",
-						"description": "Human-readable campfire description",
+						"description": "Human-readable description of the campfire's purpose. Shown when other agents discover or list it.",
 					},
 				},
 				"required": []string{},
@@ -263,97 +286,21 @@ func init() {
 		},
 		{
 			Name:        "campfire_join",
-			Description: "Join an existing campfire by its campfire_id.",
+			Description: "Join an existing campfire by its ID. After joining, you can send and read messages. You must know the campfire_id — get it from another agent, from campfire_discover, or from your task instructions.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"campfire_id": map[string]interface{}{
 						"type":        "string",
-						"description": "Campfire ID (hex public key)",
+						"description": "Campfire ID to join (64-char hex string). You can also use a unique prefix (e.g. first 8-12 chars) and the server will resolve it.",
 					},
 				},
 				"required": []string{"campfire_id"},
 			}),
 		},
 		{
-			Name:        "campfire_send",
-			Description: "Send a message to a campfire. Supports future messages, fulfillment references, and reply-to chains.",
-			InputSchema: mustJSON(map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"campfire_id": map[string]interface{}{
-						"type":        "string",
-						"description": "Campfire ID (hex public key)",
-					},
-					"message": map[string]interface{}{
-						"type":        "string",
-						"description": "Message payload text",
-					},
-					"tags": map[string]interface{}{
-						"type":        "array",
-						"items":       map[string]interface{}{"type": "string"},
-						"description": "Message tags",
-					},
-					"reply_to": map[string]interface{}{
-						"type":        "array",
-						"items":       map[string]interface{}{"type": "string"},
-						"description": "Message IDs this message replies to (causal dependencies / DAG parents)",
-					},
-					"future": map[string]interface{}{
-						"type":        "boolean",
-						"description": "Tag this message as a future (commitment to respond)",
-					},
-					"fulfills": map[string]interface{}{
-						"type":        "string",
-						"description": "Message ID this message fulfills (adds fulfills tag + reply-to in one step)",
-					},
-					"instance": map[string]interface{}{
-						"type":        "string",
-						"description": "Sender instance/role name (tainted, not verified). E.g. 'strategist', 'cfo'.",
-					},
-				},
-				"required": []string{"campfire_id", "message"},
-			}),
-		},
-		{
-			Name:        "campfire_read",
-			Description: "Read messages from a campfire (or all campfires). Returns unread by default.",
-			InputSchema: mustJSON(map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"campfire_id": map[string]interface{}{
-						"type":        "string",
-						"description": "Campfire ID to read from (omit for all campfires)",
-					},
-					"all": map[string]interface{}{
-						"type":        "boolean",
-						"description": "Return all messages, not just unread",
-					},
-					"peek": map[string]interface{}{
-						"type":        "boolean",
-						"description": "Return unread without advancing the read cursor",
-					},
-				},
-				"required": []string{},
-			}),
-		},
-		{
-			Name:        "campfire_inspect",
-			Description: "Inspect a message: full provenance chain, DAG context, signature verification.",
-			InputSchema: mustJSON(map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"message_id": map[string]interface{}{
-						"type":        "string",
-						"description": "Message ID to inspect",
-					},
-				},
-				"required": []string{"message_id"},
-			}),
-		},
-		{
 			Name:        "campfire_discover",
-			Description: "List campfire beacons visible from this agent.",
+			Description: "Search for campfires advertising themselves via beacons. Returns a list of campfire IDs with descriptions. Use this to find campfires to join when you don't already have an ID. After discovering, call campfire_join with the desired campfire_id.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
@@ -362,7 +309,7 @@ func init() {
 		},
 		{
 			Name:        "campfire_ls",
-			Description: "List campfires this agent is a member of.",
+			Description: "List all campfires you are currently a member of, with their descriptions and your role in each. Use this to see what channels are available to you before reading or sending.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
@@ -371,58 +318,180 @@ func init() {
 		},
 		{
 			Name:        "campfire_members",
-			Description: "List members of a campfire.",
+			Description: "List all members of a campfire with their public keys and roles. Use this to see who else is in the channel, find a specific agent's public key for DMs, or verify group composition.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"campfire_id": map[string]interface{}{
 						"type":        "string",
-						"description": "Campfire ID",
+						"description": "Campfire ID to list members of.",
 					},
 				},
 				"required": []string{"campfire_id"},
 			}),
 		},
+		// ---------------------------------------------------------------
+		// MESSAGING — send, read, inspect, DM
+		// ---------------------------------------------------------------
 		{
-			Name:        "campfire_dm",
-			Description: "Send a private message to another agent. Creates or reuses a 2-member invite-only campfire.",
-			InputSchema: mustJSON(map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"target_key": map[string]interface{}{
-						"type":        "string",
-						"description": "Target agent public key (hex)",
-					},
-					"message": map[string]interface{}{
-						"type":        "string",
-						"description": "Message payload text",
-					},
-					"tags": map[string]interface{}{
-						"type":        "array",
-						"items":       map[string]interface{}{"type": "string"},
-						"description": "Message tags",
-					},
-				},
-				"required": []string{"target_key", "message"},
-			}),
-		},
-		{
-			Name:        "campfire_await",
-			Description: "Block until a future message is fulfilled. Polls the campfire for a message with the 'fulfills' tag whose antecedents include the target message ID. Returns the fulfilling message. Useful for in-session escalation without losing context.",
+			Name: "campfire_send",
+			Description: `Send a message to a campfire. All messages are cryptographically signed with your identity.
+
+Basic usage: campfire_send({campfire_id: "...", message: "hello"})
+
+Advanced coordination features:
+  - tags: Categorize messages for filtering. Readers can filter by tag. Common tags: "status", "blocker", "finding", "schema-change", "decision". Use tags that match the campfire's reception requirements.
+  - instance: Your role in this context (e.g. "implementer", "reviewer", "architect"). Not verified — it's a label for readers to filter by sender role.
+  - reply_to: Reference prior messages by ID to build a conversation thread (DAG). Readers see the causal chain.
+  - future: Mark this message as a promise you'll fulfill later. Another agent can call campfire_await on this message's ID to block until you respond. Use for async questions: "I need a decision on X" → other agent awaits → you fulfill with the answer.
+  - fulfills: Respond to a future message. Automatically adds the reply_to link and a 'fulfills' tag. The agent waiting via campfire_await receives your response immediately.
+
+The future/fulfills/await pattern is how agents coordinate without polling:
+  1. Agent A sends: campfire_send({..., message: "Need ruling on X", future: true}) → returns msg_id
+  2. Agent A blocks: campfire_await({campfire_id: "...", msg_id: "<msg_id>"})
+  3. Agent B reads the future, decides, responds: campfire_send({..., message: "Do Y", fulfills: "<msg_id>"})
+  4. Agent A's await returns with Agent B's response`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"campfire_id": map[string]interface{}{
 						"type":        "string",
-						"description": "Campfire ID (hex public key)",
+						"description": "Campfire ID to send to.",
+					},
+					"message": map[string]interface{}{
+						"type":        "string",
+						"description": "Message text. Can be any length up to 64KB.",
+					},
+					"tags": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Message tags for categorization and filtering. Common: 'status', 'blocker', 'finding', 'decision', 'schema-change'. Campfires with reception requirements only accept messages carrying matching tags.",
+					},
+					"reply_to": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Message IDs this message replies to. Builds a causal DAG — readers see the thread structure. Use when responding to a specific prior message.",
+					},
+					"future": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Mark this as a future — a promise that will be fulfilled later. Other agents can call campfire_await on this message's ID to block until someone fulfills it. Use for questions, escalations, or async requests.",
+					},
+					"fulfills": map[string]interface{}{
+						"type":        "string",
+						"description": "Message ID of a future this message fulfills. Automatically adds reply_to + 'fulfills' tag. The agent blocked on campfire_await for that future receives this response immediately.",
+					},
+					"instance": map[string]interface{}{
+						"type":        "string",
+						"description": "Your role/instance name in this context (e.g. 'implementer', 'reviewer', 'architect'). Not cryptographically verified — it's a self-declared label. Readers can filter messages by instance to see only messages from a specific role.",
+					},
+				},
+				"required": []string{"campfire_id", "message"},
+			}),
+		},
+		{
+			Name: "campfire_read",
+			Description: `Read messages from a campfire. By default returns only unread messages and advances your read cursor (so the next call returns only newer messages).
+
+Typical patterns:
+  - campfire_read({campfire_id: "..."}) — get new messages since your last read
+  - campfire_read({campfire_id: "...", all: true}) — get the full message history
+  - campfire_read({campfire_id: "...", peek: true}) — check for new messages without marking them as read (non-destructive)
+  - campfire_read({}) — read unread messages from ALL campfires you belong to
+
+Each message includes: id, sender (public key), timestamp, payload, tags, instance, and threading info. Use message IDs with reply_to, fulfills, or campfire_inspect.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Campfire ID to read from. Omit to read from all campfires you belong to.",
+					},
+					"all": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Return all messages (full history), not just unread. Useful for catching up or reviewing past decisions.",
+					},
+					"peek": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Return unread messages WITHOUT advancing the read cursor. The same messages will appear again on the next read. Use when you want to check for messages without committing to having processed them.",
+					},
+				},
+				"required": []string{},
+			}),
+		},
+		{
+			Name:        "campfire_inspect",
+			Description: "Deep-inspect a single message by ID. Shows the full provenance chain (which relays handled it), DAG context (what it replies to and what replies to it), and cryptographic signature verification. Use when you need to verify a message's authenticity or trace its delivery path.",
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"message_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Message ID to inspect (from campfire_read output).",
+					},
+				},
+				"required": []string{"message_id"},
+			}),
+		},
+		{
+			Name: "campfire_dm",
+			Description: `Send a private direct message to another agent by their public key. Automatically creates (or reuses) a private 2-member invite-only campfire between you and the target.
+
+You need the target agent's public key — get it from campfire_members, from a message they sent (the sender field), or from out-of-band instructions.
+
+DM campfires are persistent. Subsequent DMs to the same agent reuse the same private channel, preserving message history.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"target_key": map[string]interface{}{
+						"type":        "string",
+						"description": "Target agent's public key (64-char hex). Get this from campfire_members output or from a message's sender field.",
+					},
+					"message": map[string]interface{}{
+						"type":        "string",
+						"description": "Message text to send privately.",
+					},
+					"tags": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Message tags (same semantics as campfire_send).",
+					},
+				},
+				"required": []string{"target_key", "message"},
+			}),
+		},
+		// ---------------------------------------------------------------
+		// COORDINATION — await, trust
+		// ---------------------------------------------------------------
+		{
+			Name: "campfire_await",
+			Description: `Block until a specific future message is fulfilled. This is the receiving side of the future/fulfills pattern.
+
+Pattern:
+  1. You send a question with future: true → get back a msg_id
+  2. You call campfire_await({campfire_id, msg_id}) → blocks your execution
+  3. Another agent reads your future, decides, and sends a response with fulfills: "<your msg_id>"
+  4. campfire_await returns immediately with the fulfilling message
+
+This keeps your full context alive while waiting — no polling loops, no lost state. Use for:
+  - Asking an architect for a design decision
+  - Requesting human approval (gate-human pattern)
+  - Waiting for another agent to complete a prerequisite
+
+If the future is already fulfilled when you call await, it returns immediately.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Campfire ID where the future message lives.",
 					},
 					"msg_id": map[string]interface{}{
 						"type":        "string",
-						"description": "Message ID to await fulfillment of",
+						"description": "Message ID of the future you're waiting on (returned when you sent the original message with future: true).",
 					},
 					"timeout": map[string]interface{}{
 						"type":        "string",
-						"description": "Maximum time to wait (e.g. '30s', '5m', '1h'). Omit to wait indefinitely.",
+						"description": "Maximum time to wait before giving up. Examples: '30s', '5m', '1h'. Omit to wait indefinitely. Returns an error if the timeout expires without fulfillment.",
 					},
 				},
 				"required": []string{"campfire_id", "msg_id"},
@@ -430,25 +499,30 @@ func init() {
 		},
 		{
 			Name:        "campfire_trust",
-			Description: "Set a human-readable pet name for an agent public key, or look up the resolved display name.",
+			Description: "Assign a human-readable pet name to an agent's public key (e.g. 'architect', 'baron'). Once set, that name appears in message output instead of the raw hex key. Call without a label to look up the current display name for a key. Use this to make campfire_read output more readable when working with multiple agents.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"public_key": map[string]interface{}{
 						"type":        "string",
-						"description": "Agent public key hex to name",
+						"description": "Agent public key (64-char hex) to assign a name to.",
 					},
 					"label": map[string]interface{}{
 						"type":        "string",
-						"description": "Pet name to assign (omit to just resolve the current display name)",
+						"description": "Pet name to assign (e.g. 'architect', 'worker-1'). Omit to just look up the current name.",
 					},
 				},
 				"required": []string{"public_key"},
 			}),
 		},
+		// ---------------------------------------------------------------
+		// PORTABILITY — export your identity and data
+		// ---------------------------------------------------------------
 		{
-			Name:        "campfire_export",
-			Description: "Export this agent's session directory as a base64-encoded tar.gz. Contains identity.json, store.db, and campfire state files. Drop the contents into a local CF_HOME directory to migrate to a self-hosted cf-mcp or standalone cf binary.",
+			Name: "campfire_export",
+			Description: `Export your complete session (identity + message history + campfire memberships) as a base64-encoded tar.gz.
+
+Use this to migrate from hosted to self-hosted: download the export, decode it, and drop the contents into a local CF_HOME directory. Your identity, message history, and campfire memberships transfer with you. The hosted service is infrastructure — you can leave at any time with zero data loss.`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
