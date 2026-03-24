@@ -15,6 +15,8 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -385,8 +387,38 @@ The future/fulfills/await pattern is how agents coordinate without polling:
 						"type":        "string",
 						"description": "Your role/instance name in this context (e.g. 'implementer', 'reviewer', 'architect'). Not cryptographically verified — it's a self-declared label. Readers can filter messages by instance to see only messages from a specific role.",
 					},
+				"commitment": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional SHA256(message + commitment_nonce) hex commitment. Binds the server to your intended payload \u2014 recipients can verify the commitment on read. Use campfire_commitment to compute this if your client cannot do crypto.",
+				},
+				"commitment_nonce": map[string]interface{}{
+					"type":        "string",
+					"description": "Nonce paired with commitment. Must be the same nonce used when computing the commitment. Typically a random hex string.",
+				},
 				},
 				"required": []string{"campfire_id", "message"},
+			}),
+		},
+		{
+			Name: "campfire_commitment",
+			Description: `Compute a blind commit for a message payload. Returns a {commitment, nonce} pair where commitment = SHA256(payload + nonce).
+
+Use this before calling campfire_send when you want payload integrity guarantees:
+  1. campfire_commitment({payload: "your message"}) → {commitment: "...", nonce: "..."}
+  2. campfire_send({..., message: "your message", commitment: "...", commitment_nonce: "..."})
+  3. campfire_read will return commitment_verified: true if the payload was not substituted.
+
+The nonce prevents the server from pre-computing commitments for guessed payloads.
+This is a server-side helper for clients that cannot perform crypto operations.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"payload": map[string]interface{}{
+						"type":        "string",
+						"description": "The message payload to commit to. Must be identical to the message you will pass to campfire_send.",
+					},
+				},
+				"required": []string{"payload"},
 			}),
 		},
 		{
@@ -1227,6 +1259,8 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 	future := getBool(params, "future")
 	fulfills := getStr(params, "fulfills")
 	instance := getStr(params, "instance")
+	commitment := getStr(params, "commitment")
+	commitmentNonce := getStr(params, "commitment_nonce")
 
 	agentID, err := identity.Load(s.identityPath())
 	if err != nil {
@@ -1277,6 +1311,12 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 	if fulfills != "" {
 		tags = append(tags, "fulfills")
 		antecedents = append(antecedents, fulfills)
+	}
+	// Blind commit: include commitment and nonce in signed tags so recipients
+	// can verify SHA256(payload + nonce) == commitment after delivery.
+	if commitment != "" && commitmentNonce != "" {
+		tags = append(tags, "commitment:"+commitment)
+		tags = append(tags, "commitment-nonce:"+commitmentNonce)
 	}
 
 	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, antecedents)
@@ -1330,6 +1370,34 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		"antecedents": msg.Antecedents,
 		"timestamp":   msg.Timestamp,
 		"instance":    msg.Instance,
+	})
+	return okResponse(id, result)
+}
+
+// handleCommitment implements the campfire_commitment helper tool.
+// It generates a random 16-byte nonce and returns {commitment, nonce} where
+// commitment = SHA256(payload + nonce). This is a server-side convenience for
+// MCP clients that cannot perform crypto operations.
+func (s *server) handleCommitment(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	payload := getStr(params, "payload")
+	if payload == "" {
+		return errResponse(id, -32602, "payload is required")
+	}
+
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("generating nonce: %v", err))
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+
+	h := sha256.New()
+	h.Write([]byte(payload))
+	h.Write([]byte(nonce))
+	commitment := hex.EncodeToString(h.Sum(nil))
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"commitment": commitment,
+		"nonce":      nonce,
 	})
 	return okResponse(id, result)
 }
@@ -1394,15 +1462,16 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 	}
 
 	type jsonMsg struct {
-		ID          string                  `json:"id"`
-		CampfireID  string                  `json:"campfire_id"`
-		Sender      string                  `json:"sender"`
-		Instance    string                  `json:"instance,omitempty"`
-		Payload     string                  `json:"payload"`
-		Tags        []string                `json:"tags"`
-		Antecedents []string                `json:"antecedents"`
-		Timestamp   int64                   `json:"timestamp"`
-		Provenance  []message.ProvenanceHop `json:"provenance"`
+		ID                  string                  `json:"id"`
+		CampfireID          string                  `json:"campfire_id"`
+		Sender              string                  `json:"sender"`
+		Instance            string                  `json:"instance,omitempty"`
+		Payload             string                  `json:"payload"`
+		Tags                []string                `json:"tags"`
+		Antecedents         []string                `json:"antecedents"`
+		Timestamp           int64                   `json:"timestamp"`
+		Provenance          []message.ProvenanceHop `json:"provenance"`
+		CommitmentVerified  *bool                   `json:"commitment_verified,omitempty"`
 	}
 	var out []jsonMsg
 	for _, m := range allMessages {
@@ -1418,16 +1487,38 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 		if prov == nil {
 			prov = []message.ProvenanceHop{}
 		}
+
+		// Blind commit verification: if the message carries commitment tags,
+		// verify SHA256(payload + nonce) == commitment and include the result.
+		var commitmentVerified *bool
+		var foundCommitment, foundNonce string
+		for _, tag := range tags {
+			if strings.HasPrefix(tag, "commitment:") {
+				foundCommitment = strings.TrimPrefix(tag, "commitment:")
+			} else if strings.HasPrefix(tag, "commitment-nonce:") {
+				foundNonce = strings.TrimPrefix(tag, "commitment-nonce:")
+			}
+		}
+		if foundCommitment != "" && foundNonce != "" {
+			h := sha256.New()
+			h.Write(m.Payload)
+			h.Write([]byte(foundNonce))
+			computed := hex.EncodeToString(h.Sum(nil))
+			verified := computed == foundCommitment
+			commitmentVerified = &verified
+		}
+
 		out = append(out, jsonMsg{
-			ID:          m.ID,
-			CampfireID:  m.CampfireID,
-			Sender:      m.Sender,
-			Instance:    m.Instance,
-			Payload:     string(m.Payload),
-			Tags:        tags,
-			Antecedents: ants,
-			Timestamp:   m.Timestamp,
-			Provenance:  prov,
+			ID:                 m.ID,
+			CampfireID:         m.CampfireID,
+			Sender:             m.Sender,
+			Instance:           m.Instance,
+			Payload:            string(m.Payload),
+			Tags:               tags,
+			Antecedents:        ants,
+			Timestamp:          m.Timestamp,
+			Provenance:         prov,
+			CommitmentVerified: commitmentVerified,
 		})
 	}
 	if out == nil {
@@ -2420,6 +2511,8 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 			return s.handleJoin(req.ID, callParams.Arguments)
 		case "campfire_send":
 			return s.handleSend(req.ID, callParams.Arguments)
+		case "campfire_commitment":
+			return s.handleCommitment(req.ID, callParams.Arguments)
 		case "campfire_read":
 			return s.handleRead(req.ID, callParams.Arguments)
 		case "campfire_inspect":
