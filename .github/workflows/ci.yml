@@ -23,7 +23,7 @@ jobs:
         run: go test ./...
 
       - name: Build check
-        run: go build ./cmd/cf ./cmd/cf-mcp
+        run: go build ./cmd/cf ./cmd/cf-mcp ./cmd/cf-functions
 
       - name: Vet
         run: go vet ./...
