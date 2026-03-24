@@ -188,6 +188,7 @@ func sendFilesystem(campfireID, payload string, tags, antecedents []string, inst
 		state.PrivateKey, state.PublicKey,
 		cf.MembershipHash(), len(members),
 		state.JoinProtocol, state.ReceptionRequirements,
+		campfire.RoleFull,
 	); err != nil {
 		return nil, fmt.Errorf("adding provenance hop: %w", err)
 	}
@@ -297,6 +298,7 @@ func sendP2PHTTP(campfireID, payload string, tags, antecedents []string, instanc
 			memberCount,
 			cfState.JoinProtocol,
 			reqs,
+			campfire.RoleFull,
 		); err != nil {
 			return nil, fmt.Errorf("adding provenance hop: %w", err)
 		}

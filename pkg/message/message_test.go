@@ -82,7 +82,7 @@ func TestAddHopAndVerify(t *testing.T) {
 	cfPub, cfPriv := testKeypair(t)
 
 	msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
-	err := msg.AddHop(cfPriv, cfPub, []byte("fakehash"), 2, "open", []string{"test"})
+	err := msg.AddHop(cfPriv, cfPub, []byte("fakehash"), 2, "open", []string{"test"}, "full")
 	if err != nil {
 		t.Fatalf("AddHop() error: %v", err)
 	}
@@ -99,12 +99,95 @@ func TestVerifyTamperedHop(t *testing.T) {
 	cfPub, cfPriv := testKeypair(t)
 
 	msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), nil, nil)
-	msg.AddHop(cfPriv, cfPub, []byte("hash"), 1, "open", nil)
+	msg.AddHop(cfPriv, cfPub, []byte("hash"), 1, "open", nil, "full")
 
 	msg.Provenance[0].MemberCount = 999
 	if VerifyHop(msg.ID, msg.Provenance[0]) {
 		t.Error("tampered hop should not verify")
 	}
+}
+
+func TestHopRoleField(t *testing.T) {
+	senderPub, senderPriv := testKeypair(t)
+	cfPub, cfPriv := testKeypair(t)
+
+	t.Run("full role in signed data", func(t *testing.T) {
+		msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+		if err := msg.AddHop(cfPriv, cfPub, []byte("hash"), 2, "open", nil, "full"); err != nil {
+			t.Fatalf("AddHop() error: %v", err)
+		}
+		hop := msg.Provenance[0]
+		if hop.Role != "full" {
+			t.Errorf("hop.Role = %q, want %q", hop.Role, "full")
+		}
+		if !VerifyHop(msg.ID, hop) {
+			t.Error("hop with role=full should verify")
+		}
+	})
+
+	t.Run("blind-relay role in signed data", func(t *testing.T) {
+		msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+		if err := msg.AddHop(cfPriv, cfPub, []byte("hash"), 2, "open", nil, "blind-relay"); err != nil {
+			t.Fatalf("AddHop() error: %v", err)
+		}
+		hop := msg.Provenance[0]
+		if hop.Role != "blind-relay" {
+			t.Errorf("hop.Role = %q, want %q", hop.Role, "blind-relay")
+		}
+		if !VerifyHop(msg.ID, hop) {
+			t.Error("hop with role=blind-relay should verify")
+		}
+	})
+
+	t.Run("tampered role fails verification", func(t *testing.T) {
+		msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+		msg.AddHop(cfPriv, cfPub, []byte("hash"), 2, "open", nil, "full")
+
+		// Tamper the role after signing — verification must fail.
+		msg.Provenance[0].Role = "blind-relay"
+		if VerifyHop(msg.ID, msg.Provenance[0]) {
+			t.Error("tampered role should not verify")
+		}
+	})
+
+	t.Run("empty role wire-compat with legacy hops", func(t *testing.T) {
+		// A hop with Role="" must verify identically to how a pre-Role hop
+		// would verify (omitempty ensures no CBOR field 8 is written).
+		msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+		if err := msg.AddHop(cfPriv, cfPub, []byte("hash"), 2, "open", nil, ""); err != nil {
+			t.Fatalf("AddHop() with empty role error: %v", err)
+		}
+		hop := msg.Provenance[0]
+		if hop.Role != "" {
+			t.Errorf("hop.Role = %q, want empty string", hop.Role)
+		}
+		if !VerifyHop(msg.ID, hop) {
+			t.Error("hop with empty role should verify")
+		}
+	})
+
+	t.Run("CBOR roundtrip preserves role", func(t *testing.T) {
+		msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+		msg.AddHop(cfPriv, cfPub, []byte("hash"), 2, "open", nil, "blind-relay")
+
+		data, err := cborMarshal(msg)
+		if err != nil {
+			t.Fatalf("CBOR marshal error: %v", err)
+		}
+		var decoded Message
+		if err := cborUnmarshal(data, &decoded); err != nil {
+			t.Fatalf("CBOR unmarshal error: %v", err)
+		}
+		if len(decoded.Provenance) != 1 {
+			t.Fatalf("decoded provenance length = %d, want 1", len(decoded.Provenance))
+		}
+		if decoded.Provenance[0].Role != "blind-relay" {
+			t.Errorf("decoded role = %q, want %q", decoded.Provenance[0].Role, "blind-relay")
+		}
+		if !VerifyHop(decoded.ID, decoded.Provenance[0]) {
+			t.Error("decoded hop with blind-relay role should verify")
+		}
+	})
 }
 
 func TestNilTags(t *testing.T) {

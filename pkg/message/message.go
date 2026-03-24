@@ -36,6 +36,11 @@ type ProvenanceHop struct {
 	ReceptionRequirements []string `cbor:"5,keyasint" json:"reception_requirements"`
 	Timestamp             int64    `cbor:"6,keyasint" json:"timestamp"`
 	Signature             []byte   `cbor:"7,keyasint" json:"signature"`
+	// Role is the campfire membership role of the relaying node (e.g. "full",
+	// "blind-relay"). Covered by the hop signature so verifiers can distinguish
+	// a blind-relay hop from a full-member hop. Empty string for legacy hops
+	// (omitted from CBOR, preserving wire compatibility with pre-Role relays).
+	Role string `cbor:"8,keyasint,omitempty" json:"role,omitempty"`
 }
 
 // MessageSignInput is the canonical form for message signing.
@@ -56,6 +61,9 @@ type HopSignInput struct {
 	JoinProtocol          string   `cbor:"5,keyasint"`
 	ReceptionRequirements []string `cbor:"6,keyasint"`
 	Timestamp             int64    `cbor:"7,keyasint"`
+	// Role is omitted when empty so that legacy hops (Role="") produce identical
+	// signed bytes to pre-Role-field implementations (wire-compatible).
+	Role string `cbor:"8,keyasint,omitempty"`
 }
 
 // NewMessage creates a new signed message.
@@ -118,6 +126,10 @@ func (m *Message) VerifySignature() bool {
 }
 
 // AddHop appends a provenance hop signed by the campfire.
+// role is the campfire membership role of the relaying node (e.g. campfire.RoleFull,
+// campfire.RoleBlindRelay). Pass an empty string for hops where role is not
+// applicable or unknown — this produces wire-compatible output with legacy relays
+// that predate the Role field.
 func (m *Message) AddHop(
 	campfirePriv ed25519.PrivateKey,
 	campfirePub ed25519.PublicKey,
@@ -125,6 +137,7 @@ func (m *Message) AddHop(
 	memberCount int,
 	joinProtocol string,
 	receptionReqs []string,
+	role string,
 ) error {
 	if receptionReqs == nil {
 		receptionReqs = []string{}
@@ -137,6 +150,7 @@ func (m *Message) AddHop(
 		JoinProtocol:          joinProtocol,
 		ReceptionRequirements: receptionReqs,
 		Timestamp:             time.Now().UnixNano(),
+		Role:                  role,
 	}
 
 	hopSignInput := HopSignInput{
@@ -147,6 +161,7 @@ func (m *Message) AddHop(
 		JoinProtocol:          hop.JoinProtocol,
 		ReceptionRequirements: hop.ReceptionRequirements,
 		Timestamp:             hop.Timestamp,
+		Role:                  hop.Role,
 	}
 	signBytes, err := cfencoding.Marshal(hopSignInput)
 	if err != nil {
@@ -168,6 +183,7 @@ func VerifyHop(messageID string, hop ProvenanceHop) bool {
 		JoinProtocol:          hop.JoinProtocol,
 		ReceptionRequirements: hop.ReceptionRequirements,
 		Timestamp:             hop.Timestamp,
+		Role:                  hop.Role,
 	}
 	signBytes, err := cfencoding.Marshal(hopSignInput)
 	if err != nil {

@@ -1395,6 +1395,7 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 			state.PrivateKey, state.PublicKey,
 			cf.MembershipHash(), len(updatedMembers),
 			state.JoinProtocol, state.ReceptionRequirements,
+			serviceRole,
 		); err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("adding provenance hop: %v", err))
 		}
@@ -1533,6 +1534,7 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		state.PrivateKey, state.PublicKey,
 		cf.MembershipHash(), len(members),
 		state.JoinProtocol, state.ReceptionRequirements,
+		m.Role,
 	); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("adding provenance hop: %v", err))
 	}
@@ -2386,6 +2388,7 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 		state.PrivateKey, state.PublicKey,
 		cf.MembershipHash(), len(members),
 		state.JoinProtocol, state.ReceptionRequirements,
+		campfire.RoleFull,
 	); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("adding provenance hop: %v", err))
 	}

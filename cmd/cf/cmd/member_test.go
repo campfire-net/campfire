@@ -187,6 +187,7 @@ func memberSetRoleCore(campfireID, targetPubkeyHex, newRole string, callerID *id
 		state.PrivateKey, state.PublicKey,
 		cf.MembershipHash(), len(updatedMembers),
 		state.JoinProtocol, state.ReceptionRequirements,
+		campfire.RoleFull,
 	); err != nil {
 		return fmt.Errorf("adding provenance hop: %w", err)
 	}

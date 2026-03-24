@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
@@ -80,6 +81,7 @@ func TestSendReadP2PThreshold1(t *testing.T) {
 		2,
 		"open",
 		[]string{},
+		campfire.RoleFull,
 	); err != nil {
 		t.Fatalf("adding hop: %v", err)
 	}

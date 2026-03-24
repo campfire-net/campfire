@@ -359,6 +359,7 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 		ed25519.PrivateKey(newCFPriv),
 		ed25519.PublicKey(newCFPub),
 		newCFPub, 2, "open", []string{},
+		campfire.RoleFull,
 	); err != nil {
 		t.Fatalf("adding hop: %v", err)
 	}
