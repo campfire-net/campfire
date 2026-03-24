@@ -228,7 +228,7 @@ func (fs *e2eFakeServer) handleContents(w http.ResponseWriter, r *http.Request, 
 
 // ---- helpers ----
 
-func openE2EStore(t *testing.T) (*store.Store, func()) {
+func openE2EStore(t *testing.T) (store.Store, func()) {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := store.Open(filepath.Join(dir, "test.db"))
@@ -238,7 +238,7 @@ func openE2EStore(t *testing.T) (*store.Store, func()) {
 	return s, func() { s.Close() }
 }
 
-func newTransportForAgent(t *testing.T, srv *httptest.Server, s *store.Store, repo string, issueNum int) *ghtr.Transport {
+func newTransportForAgent(t *testing.T, srv *httptest.Server, s store.Store, repo string, issueNum int) *ghtr.Transport {
 	t.Helper()
 	cfg := ghtr.Config{
 		Repo:        repo,

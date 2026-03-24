@@ -58,7 +58,7 @@ func doPoll(ep, campfireID string, since int64, timeout int, id *identity.Identi
 }
 
 // addPeerEndpoint adds a peer to the store so membership checks pass.
-func addPeerEndpoint(t *testing.T, s *store.Store, campfireID, pubKeyHex string) {
+func addPeerEndpoint(t *testing.T, s store.Store, campfireID, pubKeyHex string) {
 	t.Helper()
 	err := s.UpsertPeerEndpoint(store.PeerEndpoint{
 		CampfireID:   campfireID,
@@ -71,7 +71,7 @@ func addPeerEndpoint(t *testing.T, s *store.Store, campfireID, pubKeyHex string)
 }
 
 // storeMessageRecord inserts a message record directly into the store, returning the record.
-func storeMessageRecord(t *testing.T, s *store.Store, campfireID string, id *identity.Identity) store.MessageRecord {
+func storeMessageRecord(t *testing.T, s store.Store, campfireID string, id *identity.Identity) store.MessageRecord {
 	t.Helper()
 	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("poll test payload"), []string{"test"}, nil)
 	if err != nil {
@@ -96,7 +96,7 @@ func storeMessageRecord(t *testing.T, s *store.Store, campfireID string, id *ide
 }
 
 // startTransportWithSelf starts a transport and sets the self identity.
-func startTransportWithSelf(t *testing.T, addr string, s *store.Store, id *identity.Identity) *cfhttp.Transport {
+func startTransportWithSelf(t *testing.T, addr string, s store.Store, id *identity.Identity) *cfhttp.Transport {
 	t.Helper()
 	tr := cfhttp.New(addr, s)
 	ep := fmt.Sprintf("http://%s", addr)

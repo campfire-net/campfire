@@ -18,7 +18,7 @@ import (
 
 // setupMemberSetRoleEnv creates a minimal campfire environment for set-role tests.
 // Returns campfireID, caller identity (full role), target identity, store, and fs transport.
-func setupMemberSetRoleEnv(t *testing.T) (campfireID string, caller *identity.Identity, target *identity.Identity, s *store.Store, fsT *fs.Transport) {
+func setupMemberSetRoleEnv(t *testing.T) (campfireID string, caller *identity.Identity, target *identity.Identity, s store.Store, fsT *fs.Transport) {
 	t.Helper()
 
 	cfHomeDir := t.TempDir()
@@ -106,7 +106,7 @@ func setupMemberSetRoleEnv(t *testing.T) (campfireID string, caller *identity.Id
 }
 
 // memberSetRoleCore is a testable helper implementing the core set-role logic.
-func memberSetRoleCore(campfireID, targetPubkeyHex, newRole string, callerID *identity.Identity, s *store.Store, fsT *fs.Transport) error {
+func memberSetRoleCore(campfireID, targetPubkeyHex, newRole string, callerID *identity.Identity, s store.Store, fsT *fs.Transport) error {
 	switch newRole {
 	case campfire.RoleObserver, campfire.RoleWriter, campfire.RoleFull:
 		// valid

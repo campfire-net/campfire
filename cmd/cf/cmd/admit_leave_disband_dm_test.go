@@ -17,7 +17,7 @@ import (
 
 // setupBasicEnv creates a temp CF_HOME with an identity and store, and a transport dir.
 // Returns agentID, store, cfHomeDir, transportBaseDir.
-func setupBasicEnv(t *testing.T) (*identity.Identity, *store.Store, string, string) {
+func setupBasicEnv(t *testing.T) (*identity.Identity, store.Store, string, string) {
 	t.Helper()
 	cfHomeDir := t.TempDir()
 	transportBaseDir := t.TempDir()
@@ -43,7 +43,7 @@ func setupBasicEnv(t *testing.T) (*identity.Identity, *store.Store, string, stri
 
 // setupInviteOnlyCampfireForAgent creates an invite-only campfire in the transport directory
 // and records membership for agentID as creator.
-func setupInviteOnlyCampfireForAgent(t *testing.T, agentID *identity.Identity, s *store.Store, transportBaseDir string) string {
+func setupInviteOnlyCampfireForAgent(t *testing.T, agentID *identity.Identity, s store.Store, transportBaseDir string) string {
 	t.Helper()
 
 	cfID, err := identity.Generate()

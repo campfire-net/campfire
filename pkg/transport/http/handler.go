@@ -30,7 +30,7 @@ const maxRequestBodySize = 4 * 1024 * 1024 // 4 MiB
 // MembershipEvent and CampfireKeyProvider are defined in types.go.
 
 type handler struct {
-	store     *store.Store
+	store     store.Store
 	transport *Transport
 	// keyProvider is read from transport.keyProvider at call time.
 	// Kept here for backward-compat test construction; transport takes precedence.

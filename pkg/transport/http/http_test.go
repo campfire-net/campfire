@@ -18,7 +18,7 @@ import (
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
-func tempStore(t *testing.T) *store.Store {
+func tempStore(t *testing.T) store.Store {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := store.Open(filepath.Join(dir, "store.db"))
@@ -40,7 +40,7 @@ func tempIdentity(t *testing.T) *identity.Identity {
 
 // addMembership inserts a campfire membership so messages have a valid campfire_id.
 // SQLite FK enforcement is off by default, but we add it for correctness.
-func addMembership(t *testing.T, s *store.Store, campfireID string) {
+func addMembership(t *testing.T, s store.Store, campfireID string) {
 	t.Helper()
 	err := s.AddMembership(store.Membership{
 		CampfireID:   campfireID,
@@ -54,7 +54,7 @@ func addMembership(t *testing.T, s *store.Store, campfireID string) {
 	}
 }
 
-func startTransport(t *testing.T, addr string, s *store.Store) *cfhttp.Transport {
+func startTransport(t *testing.T, addr string, s store.Store) *cfhttp.Transport {
 	t.Helper()
 	tr := cfhttp.New(addr, s)
 	if err := tr.Start(); err != nil {

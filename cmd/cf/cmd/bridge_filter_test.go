@@ -16,7 +16,7 @@ import (
 )
 
 // setupBridgeFilterEnv creates a minimal environment for bridge filter tests.
-func setupBridgeFilterEnv(t *testing.T, campfireID string) (*fs.Transport, *store.Store, *identity.Identity, string) {
+func setupBridgeFilterEnv(t *testing.T, campfireID string) (*fs.Transport, store.Store, *identity.Identity, string) {
 	t.Helper()
 
 	// Set up filesystem transport.

@@ -47,7 +47,7 @@ func newMembershipSyncState() *membershipSyncState {
 func syncMembership(
 	campfireID string,
 	fsTransport *fs.Transport,
-	s *store.Store,
+	s store.Store,
 	agentID *identity.Identity,
 	httpEndpoint string,
 	state *membershipSyncState,
@@ -62,7 +62,7 @@ func syncMembership(
 func syncHTTPToFS(
 	campfireID string,
 	fsTransport *fs.Transport,
-	s *store.Store,
+	s store.Store,
 	state *membershipSyncState,
 ) {
 	// Get current fs members to build a lookup set.

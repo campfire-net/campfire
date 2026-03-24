@@ -93,7 +93,7 @@ type compactResult struct {
 // execCompact is the core compaction logic, shared between the cobra command and tests.
 // It builds the compaction payload, sends the campfire:compact message, and stores it locally.
 // beforeMsgID is an exact message ID (not a prefix) or empty to compact all messages.
-func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *identity.Identity, s *store.Store) (*compactResult, error) {
+func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *identity.Identity, s store.Store) (*compactResult, error) {
 	m, err := s.GetMembership(campfireID)
 	if err != nil {
 		return nil, fmt.Errorf("querying membership: %w", err)

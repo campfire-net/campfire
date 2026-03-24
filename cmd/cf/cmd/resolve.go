@@ -11,7 +11,7 @@ import (
 // resolveCampfireID resolves a prefix (or full ID) to a full 64-char hex campfire ID.
 // It searches the membership table and beacon directories.
 // Returns an error if the prefix is ambiguous or matches nothing.
-func resolveCampfireID(prefix string, s *store.Store) (string, error) {
+func resolveCampfireID(prefix string, s store.Store) (string, error) {
 	// Exact match: 64 hex chars
 	if len(prefix) == 64 {
 		return prefix, nil

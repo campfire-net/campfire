@@ -77,7 +77,7 @@ func (m *mockMembershipPeer) getEvents() []cfhttp.MembershipEvent {
 
 // setupMembershipTest creates the common test fixtures: fs transport, store, campfire dir.
 // Returns (tmpDir, campfireID, fsTransport, store, agentID).
-func setupMembershipTest(t *testing.T, campfireIDSuffix string) (string, string, *fs.Transport, *store.Store, *identity.Identity) {
+func setupMembershipTest(t *testing.T, campfireIDSuffix string) (string, string, *fs.Transport, store.Store, *identity.Identity) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	campfireID := "membership-test-" + campfireIDSuffix

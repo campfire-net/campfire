@@ -57,11 +57,11 @@ func setupCampfireState(t *testing.T, priv []byte, pub ed25519.PublicKey, thresh
 }
 
 // addMembershipWithDir adds a campfire membership with a specific TransportDir.
-func addMembershipWithDir(t *testing.T, s *store.Store, campfireID, transportDir string, thresh uint) {
+func addMembershipWithDir(t *testing.T, s store.Store, campfireID, transportDir string, thresh uint) {
 	addMembershipWithDirAndCreator(t, s, campfireID, transportDir, thresh, "")
 }
 
-func addMembershipWithDirAndCreator(t *testing.T, s *store.Store, campfireID, transportDir string, thresh uint, creatorPubkey string) {
+func addMembershipWithDirAndCreator(t *testing.T, s store.Store, campfireID, transportDir string, thresh uint, creatorPubkey string) {
 	t.Helper()
 	err := s.AddMembership(store.Membership{
 		CampfireID:    campfireID,

@@ -113,7 +113,7 @@ func TestViewRead_RespectsCompaction(t *testing.T) {
 }
 
 // addTestMessageRaw adds a message with a raw string payload (for compaction event testing).
-func addTestMessageRaw(t *testing.T, s *store.Store, agentID *identity.Identity, campfireID string, payload string, tags []string, timestamp int64) string {
+func addTestMessageRaw(t *testing.T, s store.Store, agentID *identity.Identity, campfireID string, payload string, tags []string, timestamp int64) string {
 	t.Helper()
 	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, []string{})
 	if err != nil {
@@ -451,7 +451,7 @@ func TestRunNATPoll_SenderFilterApplied(t *testing.T) {
 }
 
 // storeNATTestMessageWithTags stores a signed message for NAT poll filter tests.
-func storeNATTestMessageWithTags(t *testing.T, s *store.Store, campfireID string, id *identity.Identity, payload string, tags []string) store.MessageRecord {
+func storeNATTestMessageWithTags(t *testing.T, s store.Store, campfireID string, id *identity.Identity, payload string, tags []string) store.MessageRecord {
 	t.Helper()
 	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte(payload), tags, nil)
 	if err != nil {

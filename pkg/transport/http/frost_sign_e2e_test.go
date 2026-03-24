@@ -86,7 +86,7 @@ func TestRunFROSTSignEndToEnd(t *testing.T) {
 	sA.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idB.PublicKeyHex(), Endpoint: epB}) //nolint:errcheck
 	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idA.PublicKeyHex(), Endpoint: epA}) //nolint:errcheck
 
-	buildShareProvider := func(s *store.Store) cfhttp.ThresholdShareProvider {
+	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(cfID)
 			if err != nil || share == nil {

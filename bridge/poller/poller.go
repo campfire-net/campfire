@@ -24,13 +24,13 @@ type Config struct {
 
 // Poller polls a campfire store for new messages and dispatches them.
 type Poller struct {
-	store   *store.Store
+	store   store.Store
 	cfg     Config
 	handler MessageHandler
 }
 
 // New creates a poller for a single campfire.
-func New(s *store.Store, cfg Config, handler MessageHandler) *Poller {
+func New(s store.Store, cfg Config, handler MessageHandler) *Poller {
 	return &Poller{store: s, cfg: cfg, handler: handler}
 }
 
@@ -108,7 +108,7 @@ func (p *Poller) hasUrgentTag(msg store.MessageRecord) bool {
 
 // RunAll starts pollers for multiple campfires concurrently.
 // Blocks until ctx is cancelled. Returns the first error from any poller.
-func RunAll(ctx context.Context, s *store.Store, cfgs []Config, handler MessageHandler) error {
+func RunAll(ctx context.Context, s store.Store, cfgs []Config, handler MessageHandler) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

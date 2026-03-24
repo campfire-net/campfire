@@ -47,7 +47,7 @@ type Transport struct {
 	listenAddr string
 	tlsConfig  *TLSConfig
 	server     *http.Server
-	store      *store.Store
+	store      store.Store
 
 	mu    sync.RWMutex
 	peers map[string][]PeerInfo // campfireID → []PeerInfo
@@ -115,7 +115,7 @@ const maxSignSessionsPerCampfire = 32
 const sessionPruneWindow = 5 * time.Minute
 
 // New creates a Transport listening on listenAddr, using the given store.
-func New(listenAddr string, s *store.Store) *Transport {
+func New(listenAddr string, s store.Store) *Transport {
 	t := &Transport{
 		listenAddr:          listenAddr,
 		store:               s,
@@ -436,7 +436,7 @@ func (t *Transport) PollBrokerNotify(campfireID string) {
 
 // Store returns the transport's store. Used by hosted mode to share the store
 // between MCP handlers and transport handlers within the same session.
-func (t *Transport) Store() *store.Store {
+func (t *Transport) Store() store.Store {
 	return t.store
 }
 

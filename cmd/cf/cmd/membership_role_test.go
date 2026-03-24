@@ -21,7 +21,7 @@ import (
 
 // setupCampfireWithRole creates a campfire and adds the agent as a member with the
 // given protocol role in both the transport directory and the local store.
-func setupCampfireWithRole(t *testing.T, agentID *identity.Identity, s *store.Store, transportBaseDir string, protocolRole string) string {
+func setupCampfireWithRole(t *testing.T, agentID *identity.Identity, s store.Store, transportBaseDir string, protocolRole string) string {
 	t.Helper()
 
 	cfID, err := identity.Generate()

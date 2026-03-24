@@ -18,7 +18,7 @@ import (
 
 // ---- helpers ----------------------------------------------------------------
 
-func tempTestStore(t *testing.T) *store.Store {
+func tempTestStore(t *testing.T) store.Store {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := store.Open(filepath.Join(dir, "store.db"))
@@ -38,7 +38,7 @@ func tempTestIdentity(t *testing.T) *identity.Identity {
 	return id
 }
 
-func addTestMembership(t *testing.T, s *store.Store, campfireID string) {
+func addTestMembership(t *testing.T, s store.Store, campfireID string) {
 	t.Helper()
 	err := s.AddMembership(store.Membership{
 		CampfireID:   campfireID,
@@ -55,7 +55,7 @@ func addTestMembership(t *testing.T, s *store.Store, campfireID string) {
 // startTestTransport starts a real HTTP transport with the given identity as
 // self, registers id as a peer in the store so membership checks pass, and
 // returns the endpoint URL and transport.
-func startTestTransport(t *testing.T, campfireID string, id *identity.Identity, s *store.Store) (string, *cfhttp.Transport) {
+func startTestTransport(t *testing.T, campfireID string, id *identity.Identity, s store.Store) (string, *cfhttp.Transport) {
 	t.Helper()
 	// Let the OS pick a free port by binding to :0 — not possible with net/http/httptest.
 	// Use an httptest.Server on random port instead.
@@ -101,7 +101,7 @@ func startTestTransport(t *testing.T, campfireID string, id *identity.Identity, 
 }
 
 // storeTestMessage inserts a message record into the store and returns it.
-func storeTestMessage(t *testing.T, s *store.Store, campfireID string, id *identity.Identity) store.MessageRecord {
+func storeTestMessage(t *testing.T, s store.Store, campfireID string, id *identity.Identity) store.MessageRecord {
 	t.Helper()
 	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("nat test payload"), []string{"test"}, nil)
 	if err != nil {

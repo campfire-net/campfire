@@ -95,7 +95,7 @@ type server struct {
 	transportRouter *TransportRouter  // non-nil in hosted HTTP mode (shared across sessions)
 	externalAddr    string            // public URL of the hosted server (e.g. "http://localhost:8080")
 	sessionToken    string            // non-empty in session mode; used for campfire ownership tracking in the router
-	st              *store.Store      // non-nil in session mode; already-open store shared from Session
+	st              store.Store      // non-nil in session mode; already-open store shared from Session
 }
 
 func (s *server) identityPath() string {
@@ -1195,7 +1195,7 @@ const httpAwaitChunkDuration = 30 * time.Second
 //
 // The agent (or MCP gateway) retries on pending. The full timeout is enforced
 // across retries by passing the decremented timeout on each call.
-func (s *server) handleAwaitHTTP(id interface{}, st *store.Store, campfireID, targetMsgID string, timeout time.Duration) jsonRPCResponse {
+func (s *server) handleAwaitHTTP(id interface{}, st store.Store, campfireID, targetMsgID string, timeout time.Duration) jsonRPCResponse {
 	// Validate that the campfire is registered on this server. This catches
 	// misspelled or non-existent campfire IDs before blocking.
 	if s.transportRouter != nil && s.transportRouter.GetCampfireTransport(campfireID) == nil {
@@ -1301,7 +1301,7 @@ func awaitStatusFulfilled(msg *map[string]interface{}) (map[string]interface{}, 
 
 // findMCPFulfillment searches for a message with the "fulfills" tag whose
 // antecedents contain the target message ID.
-func findMCPFulfillment(st *store.Store, campfireID, targetMsgID string) *map[string]interface{} {
+func findMCPFulfillment(st store.Store, campfireID, targetMsgID string) *map[string]interface{} {
 	msgs, err := st.ListMessages(campfireID, 0, store.MessageFilter{
 		Tags: []string{"fulfills"},
 	})

@@ -30,7 +30,7 @@ func setupProjectEnv(t *testing.T) (
 	agentID *identity.Identity,
 	rootCF *campfire.Campfire,
 	rootTransportDir string,
-	s *store.Store,
+	s store.Store,
 ) {
 	t.Helper()
 

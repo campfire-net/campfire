@@ -130,6 +130,24 @@ var schemaMigrations = []migration{
 		description: "add transport_type column to campfire_memberships",
 		sql:         "ALTER TABLE campfire_memberships ADD COLUMN transport_type TEXT NOT NULL DEFAULT ''",
 	},
+	{
+		version:     6,
+		description: "create campfire_epoch_secrets table for E2E encryption epoch key material",
+		sql: `CREATE TABLE IF NOT EXISTS campfire_epoch_secrets (
+    campfire_id   TEXT    NOT NULL,
+    epoch         INTEGER NOT NULL,
+    root_secret   BLOB    NOT NULL,
+    cek           BLOB    NOT NULL,
+    created_at    INTEGER NOT NULL,
+    PRIMARY KEY (campfire_id, epoch),
+    FOREIGN KEY (campfire_id) REFERENCES campfire_memberships(campfire_id)
+)`,
+	},
+	{
+		version:     7,
+		description: "add encrypted column to campfire_memberships for downgrade prevention",
+		sql:         "ALTER TABLE campfire_memberships ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0",
+	},
 }
 
 // runMigrations applies any unapplied migrations in schemaMigrations to db.
@@ -203,8 +221,9 @@ type supersededCacheEntry struct {
 	superseded      map[string]bool
 }
 
-// Store is the local SQLite database for an agent.
-type Store struct {
+// SQLiteStore is the local SQLite database for an agent.
+// It implements the Store interface.
+type SQLiteStore struct {
 	db *sql.DB
 
 	// supersededCache caches the superseded-ID sets per campfire to avoid
@@ -232,6 +251,20 @@ type Membership struct {
 	// inferTransportType() at insert time (backward-compatible for legacy rows).
 	// transport.ResolveType uses this field directly when non-empty.
 	TransportType string `json:"transport_type,omitempty"`
+	// Encrypted records whether this campfire uses E2E encryption (spec §2.1).
+	// Set on join from the campfire:encrypted-init system message and enforced
+	// on every received message regardless of relay-provided state (downgrade prevention).
+	Encrypted bool `json:"encrypted,omitempty"`
+}
+
+// EpochSecret holds the root secret and derived CEK for a specific (campfire, epoch) pair.
+// Stored in campfire_epoch_secrets for dual-epoch grace period support (spec §3.5).
+type EpochSecret struct {
+	CampfireID  string
+	Epoch       uint64
+	RootSecret  []byte
+	CEK         []byte
+	CreatedAt   int64
 }
 
 // inferTransportType applies the legacy heuristic to determine a transport type
@@ -306,8 +339,15 @@ func backfillTransportTypes(db *sql.DB) error {
 	return nil
 }
 
+// NewSQLite opens or creates the SQLite store at the given path and returns
+// the Store interface. Equivalent to Open.
+func NewSQLite(path string) (Store, error) {
+	return Open(path)
+}
+
 // Open opens or creates the SQLite store at the given path.
-func Open(path string) (*Store, error) {
+// It returns the Store interface backed by the SQLite implementation.
+func Open(path string) (Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("creating store directory: %w", err)
 	}
@@ -337,20 +377,20 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("backfilling transport types: %w", err)
 	}
-	return &Store{
+	return &SQLiteStore{
 		db:              db,
 		supersededCache: make(map[string]supersededCacheEntry),
 	}, nil
 }
 
 // Close closes the database.
-func (s *Store) Close() error {
+func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
 // AddMembership records that this agent is a member of a campfire.
 // If TransportType is empty, it is inferred from TransportDir using inferTransportType.
-func (s *Store) AddMembership(m Membership) error {
+func (s *SQLiteStore) AddMembership(m Membership) error {
 	threshold := m.Threshold
 	if threshold == 0 {
 		threshold = 1
@@ -359,10 +399,14 @@ func (s *Store) AddMembership(m Membership) error {
 	if tt == "" {
 		tt = inferTransportType(m.CampfireID, m.TransportDir)
 	}
+	encrypted := 0
+	if m.Encrypted {
+		encrypted = 1
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description, m.CreatorPubkey, tt,
+		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, encrypted)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description, m.CreatorPubkey, tt, encrypted,
 	)
 	if err != nil {
 		return fmt.Errorf("adding membership: %w", err)
@@ -371,7 +415,7 @@ func (s *Store) AddMembership(m Membership) error {
 }
 
 // UpdateMembershipRole updates the role field for an existing membership.
-func (s *Store) UpdateMembershipRole(campfireID, role string) error {
+func (s *SQLiteStore) UpdateMembershipRole(campfireID, role string) error {
 	res, err := s.db.Exec(`UPDATE campfire_memberships SET role = ? WHERE campfire_id = ?`, role, campfireID)
 	if err != nil {
 		return fmt.Errorf("updating membership role: %w", err)
@@ -387,7 +431,7 @@ func (s *Store) UpdateMembershipRole(campfireID, role string) error {
 }
 
 // RemoveMembership removes a campfire membership.
-func (s *Store) RemoveMembership(campfireID string) error {
+func (s *SQLiteStore) RemoveMembership(campfireID string) error {
 	_, err := s.db.Exec(`DELETE FROM campfire_memberships WHERE campfire_id = ?`, campfireID)
 	if err != nil {
 		return fmt.Errorf("removing membership: %w", err)
@@ -396,26 +440,28 @@ func (s *Store) RemoveMembership(campfireID string) error {
 }
 
 // GetMembership returns a single membership by campfire ID.
-func (s *Store) GetMembership(campfireID string) (*Membership, error) {
+func (s *SQLiteStore) GetMembership(campfireID string) (*Membership, error) {
 	row := s.db.QueryRow(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, COALESCE(encrypted, 0)
 		 FROM campfire_memberships WHERE campfire_id = ?`, campfireID,
 	)
 	var m Membership
-	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey, &m.TransportType)
+	var encryptedInt int
+	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey, &m.TransportType, &encryptedInt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("querying membership: %w", err)
 	}
+	m.Encrypted = encryptedInt != 0
 	return &m, nil
 }
 
 // ListMemberships returns all campfire memberships.
-func (s *Store) ListMemberships() ([]Membership, error) {
+func (s *SQLiteStore) ListMemberships() ([]Membership, error) {
 	rows, err := s.db.Query(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, COALESCE(encrypted, 0)
 		 FROM campfire_memberships ORDER BY joined_at`,
 	)
 	if err != nil {
@@ -426,9 +472,11 @@ func (s *Store) ListMemberships() ([]Membership, error) {
 	var memberships []Membership
 	for rows.Next() {
 		var m Membership
-		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey, &m.TransportType); err != nil {
+		var encryptedInt int
+		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey, &m.TransportType, &encryptedInt); err != nil {
 			return nil, fmt.Errorf("scanning membership: %w", err)
 		}
+		m.Encrypted = encryptedInt != 0
 		memberships = append(memberships, m)
 	}
 	return memberships, rows.Err()
@@ -512,7 +560,7 @@ func scanMessageRecord(scan func(dest ...any) error) (MessageRecord, error) {
 }
 
 // AddMessage inserts a message if not already present. Returns true if inserted.
-func (s *Store) AddMessage(m MessageRecord) (bool, error) {
+func (s *SQLiteStore) AddMessage(m MessageRecord) (bool, error) {
 	if m.Tags == nil {
 		m.Tags = []string{}
 	}
@@ -550,7 +598,7 @@ func (s *Store) AddMessage(m MessageRecord) (bool, error) {
 }
 
 // HasMessage checks if a message ID exists in the store.
-func (s *Store) HasMessage(id string) (bool, error) {
+func (s *SQLiteStore) HasMessage(id string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE id = ?`, id).Scan(&count)
 	if err != nil {
@@ -560,7 +608,7 @@ func (s *Store) HasMessage(id string) (bool, error) {
 }
 
 // GetMessage retrieves a single message by ID.
-func (s *Store) GetMessage(id string) (*MessageRecord, error) {
+func (s *SQLiteStore) GetMessage(id string) (*MessageRecord, error) {
 	row := s.db.QueryRow(
 		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
 		 FROM messages WHERE id = ?`, id,
@@ -585,7 +633,7 @@ func (s *Store) GetMessage(id string) (*MessageRecord, error) {
 // 2 are needed to detect ambiguity. When ambiguous, rows.Close() is called
 // explicitly before returning so the cursor is released immediately rather than
 // waiting for the GC to finalize the rows object (workspace-0eu).
-func (s *Store) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
+func (s *SQLiteStore) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 	escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(prefix)
 	rows, err := s.db.Query(
 		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
@@ -643,7 +691,7 @@ type MessageFilter struct {
 // An optional MessageFilter applies tag and sender filtering at the SQL level.
 // When filter.RespectCompaction is true, superseded messages are excluded.
 // When filter.AfterReceivedAt > 0, filters by received_at instead of timestamp.
-func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...MessageFilter) ([]MessageRecord, error) {
+func (s *SQLiteStore) ListMessages(campfireID string, afterTimestamp int64, filter ...MessageFilter) ([]MessageRecord, error) {
 	var f MessageFilter
 	if len(filter) > 0 {
 		f = filter[0]
@@ -738,7 +786,7 @@ func (s *Store) ListMessages(campfireID string, afterTimestamp int64, filter ...
 
 // maxCompactionTimestamp returns the maximum timestamp among campfire:compact events
 // for the given campfire. Returns 0 if there are none.
-func (s *Store) maxCompactionTimestamp(campfireID string) (int64, error) {
+func (s *SQLiteStore) maxCompactionTimestamp(campfireID string) (int64, error) {
 	var conditions []string
 	var args []any
 	conditions = append(conditions, `EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) = 'campfire:compact')`)
@@ -782,7 +830,7 @@ func (s *Store) maxCompactionTimestamp(campfireID string) (int64, error) {
 // holding sync.RWMutex across any DB I/O. If the timestamp advanced, skip caching —
 // the invalidation already happened and the next call will rebuild with the correct
 // maxTS. If the cache entry was already populated by a concurrent goroutine, leave it.
-func (s *Store) collectSupersededIDs(campfireID string) (map[string]bool, error) {
+func (s *SQLiteStore) collectSupersededIDs(campfireID string) (map[string]bool, error) {
 	if campfireID != "" {
 		maxTS, err := s.maxCompactionTimestamp(campfireID)
 		if err != nil {
@@ -888,7 +936,7 @@ func unmarshalCompactionPayload(payload []byte, out *CompactionPayload) error {
 
 // ListCompactionEvents returns all campfire:compact messages for a campfire.
 // If campfireID is empty, returns compaction events across all campfires.
-func (s *Store) ListCompactionEvents(campfireID string) ([]MessageRecord, error) {
+func (s *SQLiteStore) ListCompactionEvents(campfireID string) ([]MessageRecord, error) {
 	var conditions []string
 	var args []any
 
@@ -920,7 +968,7 @@ func (s *Store) ListCompactionEvents(campfireID string) ([]MessageRecord, error)
 }
 
 // GetReadCursor returns the last-read timestamp for a campfire. Returns 0 if no cursor exists.
-func (s *Store) GetReadCursor(campfireID string) (int64, error) {
+func (s *SQLiteStore) GetReadCursor(campfireID string) (int64, error) {
 	var ts int64
 	err := s.db.QueryRow(`SELECT last_read_at FROM read_cursors WHERE campfire_id = ?`, campfireID).Scan(&ts)
 	if err == sql.ErrNoRows {
@@ -933,7 +981,7 @@ func (s *Store) GetReadCursor(campfireID string) (int64, error) {
 }
 
 // SetReadCursor updates the read cursor for a campfire.
-func (s *Store) SetReadCursor(campfireID string, timestamp int64) error {
+func (s *SQLiteStore) SetReadCursor(campfireID string, timestamp int64) error {
 	_, err := s.db.Exec(
 		`INSERT INTO read_cursors (campfire_id, last_read_at) VALUES (?, ?)
 		 ON CONFLICT(campfire_id) DO UPDATE SET last_read_at = ?`,
@@ -950,7 +998,7 @@ func (s *Store) SetReadCursor(campfireID string, timestamp int64) error {
 // This is a lightweight cursor-only query — it reads no payloads and is intended to
 // replace the full unfiltered ListMessages call in runOneShotMode when only the max
 // timestamp is needed for cursor advancement. (Fix for workspace-pm9m.5.15.)
-func (s *Store) MaxMessageTimestamp(campfireID string, afterTS int64) (int64, error) {
+func (s *SQLiteStore) MaxMessageTimestamp(campfireID string, afterTS int64) (int64, error) {
 	var maxTS int64
 	err := s.db.QueryRow(
 		`SELECT COALESCE(MAX(timestamp), 0) FROM messages WHERE campfire_id = ? AND timestamp > ?`,
@@ -965,7 +1013,7 @@ func (s *Store) MaxMessageTimestamp(campfireID string, afterTS int64) (int64, er
 // ListReferencingMessages finds messages whose antecedents contain the given message ID.
 // Uses json_each to perform an exact element match, avoiding LIKE wildcard injection
 // from IDs that contain '%' or '_' characters. (Security fix for workspace-kw9.)
-func (s *Store) ListReferencingMessages(messageID string) ([]MessageRecord, error) {
+func (s *SQLiteStore) ListReferencingMessages(messageID string) ([]MessageRecord, error) {
 	rows, err := s.db.Query(
 		`SELECT m.id, m.campfire_id, m.sender, m.payload, m.tags, m.antecedents, m.timestamp, m.signature, m.provenance, m.received_at, m.instance
 		 FROM messages m
@@ -1005,7 +1053,7 @@ type PeerEndpoint struct {
 
 // UpsertPeerEndpoint inserts or replaces a peer endpoint record.
 // If Role is empty, it defaults to PeerRoleMember.
-func (s *Store) UpsertPeerEndpoint(e PeerEndpoint) error {
+func (s *SQLiteStore) UpsertPeerEndpoint(e PeerEndpoint) error {
 	role := e.Role
 	if role == "" {
 		role = PeerRoleMember
@@ -1026,7 +1074,7 @@ func (s *Store) UpsertPeerEndpoint(e PeerEndpoint) error {
 }
 
 // DeletePeerEndpoint removes a peer endpoint record.
-func (s *Store) DeletePeerEndpoint(campfireID, memberPubkey string) error {
+func (s *SQLiteStore) DeletePeerEndpoint(campfireID, memberPubkey string) error {
 	_, err := s.db.Exec(
 		`DELETE FROM peer_endpoints WHERE campfire_id = ? AND member_pubkey = ?`,
 		campfireID, memberPubkey,
@@ -1038,7 +1086,7 @@ func (s *Store) DeletePeerEndpoint(campfireID, memberPubkey string) error {
 }
 
 // ListPeerEndpoints returns all known peer endpoints for a campfire.
-func (s *Store) ListPeerEndpoints(campfireID string) ([]PeerEndpoint, error) {
+func (s *SQLiteStore) ListPeerEndpoints(campfireID string) ([]PeerEndpoint, error) {
 	rows, err := s.db.Query(
 		`SELECT campfire_id, member_pubkey, endpoint, participant_id, role FROM peer_endpoints WHERE campfire_id = ?`,
 		campfireID,
@@ -1064,7 +1112,7 @@ func (s *Store) ListPeerEndpoints(campfireID string) ([]PeerEndpoint, error) {
 
 // GetPeerRole returns the role of a specific member in a campfire.
 // Returns PeerRoleMember if the peer is not found (backward-compatible default).
-func (s *Store) GetPeerRole(campfireID, memberPubkey string) (string, error) {
+func (s *SQLiteStore) GetPeerRole(campfireID, memberPubkey string) (string, error) {
 	var role string
 	err := s.db.QueryRow(
 		`SELECT role FROM peer_endpoints WHERE campfire_id = ? AND member_pubkey = ?`,
@@ -1091,7 +1139,7 @@ type ThresholdShare struct {
 }
 
 // UpsertThresholdShare stores or replaces FROST DKG share data for a campfire.
-func (s *Store) UpsertThresholdShare(share ThresholdShare) error {
+func (s *SQLiteStore) UpsertThresholdShare(share ThresholdShare) error {
 	_, err := s.db.Exec(
 		`INSERT INTO threshold_shares (campfire_id, participant_id, secret_share, public_data)
 		 VALUES (?, ?, ?, ?)
@@ -1109,7 +1157,7 @@ func (s *Store) UpsertThresholdShare(share ThresholdShare) error {
 
 // GetThresholdShare retrieves FROST DKG share data for a campfire.
 // Returns nil if not found.
-func (s *Store) GetThresholdShare(campfireID string) (*ThresholdShare, error) {
+func (s *SQLiteStore) GetThresholdShare(campfireID string) (*ThresholdShare, error) {
 	row := s.db.QueryRow(
 		`SELECT campfire_id, participant_id, secret_share, public_data
 		 FROM threshold_shares WHERE campfire_id = ?`, campfireID,
@@ -1126,7 +1174,7 @@ func (s *Store) GetThresholdShare(campfireID string) (*ThresholdShare, error) {
 }
 
 // StorePendingThresholdShare stores a DKG share for a future joiner.
-func (s *Store) StorePendingThresholdShare(campfireID string, participantID uint32, shareData []byte) error {
+func (s *SQLiteStore) StorePendingThresholdShare(campfireID string, participantID uint32, shareData []byte) error {
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO pending_threshold_shares (campfire_id, participant_id, share_data)
 		 VALUES (?, ?, ?)`,
@@ -1140,7 +1188,7 @@ func (s *Store) StorePendingThresholdShare(campfireID string, participantID uint
 
 // ClaimPendingThresholdShare retrieves and removes the next available pending
 // DKG share for a campfire. Returns nil if none available.
-func (s *Store) ClaimPendingThresholdShare(campfireID string) (participantID uint32, shareData []byte, err error) {
+func (s *SQLiteStore) ClaimPendingThresholdShare(campfireID string) (participantID uint32, shareData []byte, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, nil, fmt.Errorf("beginning transaction: %w", err)
@@ -1176,7 +1224,7 @@ func (s *Store) ClaimPendingThresholdShare(campfireID string) (participantID uin
 
 // UpdateCampfireID changes the campfire_id for all records belonging to oldID,
 // renaming the campfire to newID. This is used during rekey after eviction.
-func (s *Store) UpdateCampfireID(oldID, newID string) error {
+func (s *SQLiteStore) UpdateCampfireID(oldID, newID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -1193,6 +1241,10 @@ func (s *Store) UpdateCampfireID(oldID, newID string) error {
 		{"peer_endpoints", "campfire_id"},
 		{"threshold_shares", "campfire_id"},
 		{"pending_threshold_shares", "campfire_id"},
+		// CRITICAL (spec §3.6): epoch secrets MUST be migrated to the new campfire ID.
+		// Failure to include this table causes silent decryption failure for all historical
+		// messages after a campfire rekey (UpdateCampfireID is called from handler_rekey.go).
+		{"campfire_epoch_secrets", "campfire_id"},
 	}
 	for _, t := range tables {
 		q := fmt.Sprintf("UPDATE %s SET %s = ? WHERE %s = ?", t.table, t.col, t.col)
@@ -1217,6 +1269,83 @@ func (s *Store) UpdateCampfireID(oldID, newID string) error {
 	delete(s.supersededCache, newID)
 	s.supersededMu.Unlock()
 
+	return nil
+}
+
+// UpsertEpochSecret stores or updates the root secret and CEK for (campfire, epoch).
+// Called when a new epoch is installed via campfire:membership-commit or on join.
+func (s *SQLiteStore) UpsertEpochSecret(secret EpochSecret) error {
+	_, err := s.db.Exec(
+		`INSERT INTO campfire_epoch_secrets (campfire_id, epoch, root_secret, cek, created_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(campfire_id, epoch) DO UPDATE SET
+		   root_secret = excluded.root_secret,
+		   cek         = excluded.cek,
+		   created_at  = excluded.created_at`,
+		secret.CampfireID, secret.Epoch, secret.RootSecret, secret.CEK, secret.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upserting epoch secret: %w", err)
+	}
+	return nil
+}
+
+// GetEpochSecret retrieves the epoch secret for (campfireID, epoch).
+// Returns nil, nil if not found.
+func (s *SQLiteStore) GetEpochSecret(campfireID string, epoch uint64) (*EpochSecret, error) {
+	row := s.db.QueryRow(
+		`SELECT campfire_id, epoch, root_secret, cek, created_at
+		 FROM campfire_epoch_secrets WHERE campfire_id = ? AND epoch = ?`,
+		campfireID, epoch,
+	)
+	var es EpochSecret
+	if err := row.Scan(&es.CampfireID, &es.Epoch, &es.RootSecret, &es.CEK, &es.CreatedAt); err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("querying epoch secret: %w", err)
+	}
+	return &es, nil
+}
+
+// GetLatestEpochSecret returns the highest-epoch secret for campfireID.
+// Returns nil, nil if none found.
+func (s *SQLiteStore) GetLatestEpochSecret(campfireID string) (*EpochSecret, error) {
+	row := s.db.QueryRow(
+		`SELECT campfire_id, epoch, root_secret, cek, created_at
+		 FROM campfire_epoch_secrets WHERE campfire_id = ? ORDER BY epoch DESC LIMIT 1`,
+		campfireID,
+	)
+	var es EpochSecret
+	if err := row.Scan(&es.CampfireID, &es.Epoch, &es.RootSecret, &es.CEK, &es.CreatedAt); err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("querying latest epoch secret: %w", err)
+	}
+	return &es, nil
+}
+
+// SetMembershipEncrypted sets the encrypted flag for a campfire membership.
+// This is the downgrade prevention mechanism (spec §2.1): the local flag takes
+// precedence over any relay-provided state. Once set, plaintext payloads are rejected.
+func (s *SQLiteStore) SetMembershipEncrypted(campfireID string, encrypted bool) error {
+	encryptedInt := 0
+	if encrypted {
+		encryptedInt = 1
+	}
+	res, err := s.db.Exec(
+		`UPDATE campfire_memberships SET encrypted = ? WHERE campfire_id = ?`,
+		encryptedInt, campfireID,
+	)
+	if err != nil {
+		return fmt.Errorf("setting membership encrypted: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("membership not found: %s", campfireID)
+	}
 	return nil
 }
 

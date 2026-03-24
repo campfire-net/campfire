@@ -176,7 +176,7 @@ func TestSendReadP2PThreshold2(t *testing.T) {
 	addPeerEndpoint(t, sC, campfireID, idA.PublicKeyHex())
 
 	// Store DKG shares in each agent's store.
-	storeShare := func(s *store.Store, id string, pid uint32, shareData []byte) {
+	storeShare := func(s store.Store, id string, pid uint32, shareData []byte) {
 		t.Helper()
 		err := s.UpsertThresholdShare(store.ThresholdShare{
 			CampfireID:    id,
@@ -199,7 +199,7 @@ func TestSendReadP2PThreshold2(t *testing.T) {
 	epB := fmt.Sprintf("http://%s", addrB)
 	epC := fmt.Sprintf("http://%s", addrC)
 
-	buildShareProvider := func(s *store.Store) cfhttp.ThresholdShareProvider {
+	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(cfID)
 			if err != nil {
@@ -376,7 +376,7 @@ func TestSignEndpointRoundTrip(t *testing.T) {
 	epA := fmt.Sprintf("http://%s", addrA)
 	epB := fmt.Sprintf("http://%s", addrB)
 
-	buildShareProvider := func(s *store.Store) cfhttp.ThresholdShareProvider {
+	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(cfID)
 			if err != nil || share == nil {

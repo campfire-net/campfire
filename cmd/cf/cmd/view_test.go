@@ -16,7 +16,7 @@ import (
 )
 
 // setupViewTestEnv creates a test environment with an agent, store, and campfire membership.
-func setupViewTestEnv(t *testing.T, role string) (*identity.Identity, *store.Store, string) {
+func setupViewTestEnv(t *testing.T, role string) (*identity.Identity, store.Store, string) {
 	t.Helper()
 	cfHomeDir := t.TempDir()
 	transportBaseDir := t.TempDir()
@@ -41,7 +41,7 @@ func setupViewTestEnv(t *testing.T, role string) (*identity.Identity, *store.Sto
 }
 
 // addTestMessage adds a message directly to the store for view evaluation tests.
-func addTestMessage(t *testing.T, s *store.Store, agentID *identity.Identity, campfireID string, payload string, tags []string, timestamp int64) string {
+func addTestMessage(t *testing.T, s store.Store, agentID *identity.Identity, campfireID string, payload string, tags []string, timestamp int64) string {
 	t.Helper()
 	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, []string{})
 	if err != nil {
@@ -57,7 +57,7 @@ func addTestMessage(t *testing.T, s *store.Store, agentID *identity.Identity, ca
 }
 
 // addViewMessage adds a campfire:view message to the store.
-func addViewMessage(t *testing.T, s *store.Store, agentID *identity.Identity, campfireID string, def viewDefinition) string {
+func addViewMessage(t *testing.T, s store.Store, agentID *identity.Identity, campfireID string, def viewDefinition) string {
 	t.Helper()
 	payload, err := json.Marshal(def)
 	if err != nil {

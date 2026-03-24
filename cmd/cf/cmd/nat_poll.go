@@ -25,7 +25,7 @@ type natPollConfig struct {
 	id          *identity.Identity
 	timeoutSecs int
 	// st is used to resolve key display names. May be nil (falls back to unknown://).
-	st *store.Store
+	st store.Store
 	// stopCh receives a signal to terminate the loop. If nil, runNATPoll
 	// registers its own SIGINT/SIGTERM handler.
 	stopCh chan os.Signal

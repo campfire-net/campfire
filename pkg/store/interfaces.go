@@ -1,7 +1,7 @@
 package store
 
 // MembershipStore manages campfire membership records.
-// Implemented by *Store.
+// Implemented by *SQLiteStore.
 type MembershipStore interface {
 	AddMembership(m Membership) error
 	UpdateMembershipRole(campfireID, role string) error
@@ -11,7 +11,7 @@ type MembershipStore interface {
 }
 
 // MessageStore manages campfire messages and read cursors.
-// Implemented by *Store.
+// Implemented by *SQLiteStore.
 type MessageStore interface {
 	AddMessage(m MessageRecord) (bool, error)
 	HasMessage(id string) (bool, error)
@@ -26,7 +26,7 @@ type MessageStore interface {
 }
 
 // PeerStore manages peer endpoint records.
-// Implemented by *Store.
+// Implemented by *SQLiteStore.
 type PeerStore interface {
 	UpsertPeerEndpoint(e PeerEndpoint) error
 	DeletePeerEndpoint(campfireID, memberPubkey string) error
@@ -35,10 +35,38 @@ type PeerStore interface {
 }
 
 // ThresholdStore manages FROST DKG threshold share records.
-// Implemented by *Store.
+// Implemented by *SQLiteStore.
 type ThresholdStore interface {
 	UpsertThresholdShare(share ThresholdShare) error
 	GetThresholdShare(campfireID string) (*ThresholdShare, error)
 	StorePendingThresholdShare(campfireID string, participantID uint32, shareData []byte) error
 	ClaimPendingThresholdShare(campfireID string) (participantID uint32, shareData []byte, err error)
+}
+
+// EpochSecretStore manages per-epoch CEK root secrets for E2E encryption.
+// Implemented by *SQLiteStore. Supports dual-epoch grace period (spec §3.5).
+type EpochSecretStore interface {
+	// UpsertEpochSecret stores or updates the root secret and CEK for (campfire, epoch).
+	UpsertEpochSecret(secret EpochSecret) error
+	// GetEpochSecret retrieves the epoch secret for (campfireID, epoch).
+	// Returns nil, nil if not found.
+	GetEpochSecret(campfireID string, epoch uint64) (*EpochSecret, error)
+	// GetLatestEpochSecret returns the highest-epoch secret for campfireID.
+	// Returns nil, nil if none found.
+	GetLatestEpochSecret(campfireID string) (*EpochSecret, error)
+	// SetMembershipEncrypted sets the encrypted flag for a campfire membership.
+	// Used for downgrade prevention (spec §2.1): local flag takes precedence over relay state.
+	SetMembershipEncrypted(campfireID string, encrypted bool) error
+}
+
+// Store is the unified interface covering all store capabilities.
+// The SQLite-backed implementation is returned by Open and NewSQLite.
+type Store interface {
+	MembershipStore
+	MessageStore
+	PeerStore
+	ThresholdStore
+	EpochSecretStore
+	UpdateCampfireID(oldID, newID string) error
+	Close() error
 }

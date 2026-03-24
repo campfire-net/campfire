@@ -156,7 +156,7 @@ var evictCmd = &cobra.Command{
 // evictThreshold1 handles eviction when threshold=1 (shared private key).
 func evictThreshold1(
 	agentID *identity.Identity,
-	s *store.Store,
+	s store.Store,
 	stateDir string,
 	oldCampfireID, newCampfireID string,
 	oldCFState *campfire.CampfireState,
@@ -243,7 +243,7 @@ func evictThreshold1(
 // Returns the new campfire ID (the FROST group public key hex).
 func evictThresholdN(
 	agentID *identity.Identity,
-	s *store.Store,
+	s store.Store,
 	stateDir string,
 	oldCampfireID string,
 	oldCFState *campfire.CampfireState,
@@ -445,7 +445,7 @@ func buildRekeyPayload(oldKey, newKey, reason string) []byte {
 // Returns the CBOR-encoded signed message.
 func buildAndSignRekeyMessage(
 	agentID *identity.Identity,
-	s *store.Store,
+	s store.Store,
 	oldCampfireID string,
 	oldCFState *campfire.CampfireState,
 	payload []byte,
@@ -618,7 +618,7 @@ func deliverRekey(
 }
 
 // storeRekeyMessage decodes and stores a CBOR-encoded rekey message in the local store.
-func storeRekeyMessage(s *store.Store, campfireID string, rekeyMsgCBOR []byte) error {
+func storeRekeyMessage(s store.Store, campfireID string, rekeyMsgCBOR []byte) error {
 	if len(rekeyMsgCBOR) == 0 {
 		return nil
 	}

@@ -89,7 +89,7 @@ func init() {
 // runBridge runs a bidirectional message pump for a single campfire.
 // It blocks until done is closed.
 // tagFilters, when non-empty, restricts relay to messages matching any of the given tags.
-func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *identity.Identity, s *store.Store, httpEndpoint string, tagFilters []string) error {
+func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *identity.Identity, s store.Store, httpEndpoint string, tagFilters []string) error {
 	baseDir := fs.DefaultBaseDir()
 	if transportDir != "" {
 		baseDir = filepath.Dir(transportDir)
@@ -128,7 +128,7 @@ func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *i
 
 // runBridgeAll discovers all filesystem campfires and bridges them.
 // tagFilters, when non-empty, restricts relay to messages matching any of the given tags.
-func runBridgeAll(done <-chan struct{}, agentID *identity.Identity, s *store.Store, httpEndpoint string, tagFilters []string) error {
+func runBridgeAll(done <-chan struct{}, agentID *identity.Identity, s store.Store, httpEndpoint string, tagFilters []string) error {
 	type bridgeState struct {
 		forwarded   map[string]bool
 		httpCursor  int64
@@ -184,7 +184,7 @@ func runBridgeAll(done <-chan struct{}, agentID *identity.Identity, s *store.Sto
 // tagFilters, when non-empty, applies OR semantics: only messages carrying at least one
 // of the specified tags are relayed. Messages that don't match are still stored locally
 // (so the cursor advances and they aren't reprocessed) but are not forwarded to HTTP.
-func pumpFSToHTTP(campfireID string, fsTransport *fs.Transport, s *store.Store, agentID *identity.Identity, httpEndpoint string, forwarded map[string]bool, tagFilters []string) {
+func pumpFSToHTTP(campfireID string, fsTransport *fs.Transport, s store.Store, agentID *identity.Identity, httpEndpoint string, forwarded map[string]bool, tagFilters []string) {
 	fsMessages, err := fsTransport.ListMessages(campfireID)
 	if err != nil {
 		return
@@ -243,7 +243,7 @@ func messageMatchesAnyTag(msg *message.Message, tagFilters []string) bool {
 // not store.NowNano(). handleSync interprets 'since' as afterTimestamp (creation time),
 // so the cursor must live in that same space to avoid missing messages whose creation
 // timestamp is earlier than the bridge's local wall clock.
-func pumpHTTPToFS(campfireID string, fsTransport *fs.Transport, s *store.Store, agentID *identity.Identity, httpEndpoint string, cursor int64) int64 {
+func pumpHTTPToFS(campfireID string, fsTransport *fs.Transport, s store.Store, agentID *identity.Identity, httpEndpoint string, cursor int64) int64 {
 	msgs, err := cfhttp.Sync(httpEndpoint, campfireID, cursor, agentID)
 	if err != nil {
 		return cursor
@@ -273,7 +273,7 @@ func pumpHTTPToFS(campfireID string, fsTransport *fs.Transport, s *store.Store, 
 
 // buildForwardedSet scans existing fs messages and returns a set of IDs
 // that are already in the store (i.e., have already been processed).
-func buildForwardedSet(campfireID string, fsTransport *fs.Transport, s *store.Store) map[string]bool {
+func buildForwardedSet(campfireID string, fsTransport *fs.Transport, s store.Store) map[string]bool {
 	forwarded := make(map[string]bool)
 	fsMessages, err := fsTransport.ListMessages(campfireID)
 	if err != nil {

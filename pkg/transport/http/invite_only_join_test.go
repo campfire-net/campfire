@@ -26,7 +26,7 @@ import (
 
 // setupInviteOnlyServer starts a transport with an invite-only campfire and
 // returns the campfire ID, server endpoint, and store.
-func setupInviteOnlyServer(t *testing.T, portOffset int) (campfireID, ep string, sHost *store.Store) {
+func setupInviteOnlyServer(t *testing.T, portOffset int) (campfireID, ep string, sHost store.Store) {
 	t.Helper()
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {

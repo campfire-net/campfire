@@ -71,7 +71,7 @@ func TestFROSTSign2of3OverHTTP(t *testing.T) {
 	addMembership(t, sB, campfireID)
 	addMembership(t, sC, campfireID)
 
-	storeShare := func(s *store.Store, pid uint32, shareData []byte) {
+	storeShare := func(s store.Store, pid uint32, shareData []byte) {
 		t.Helper()
 		if err := s.UpsertThresholdShare(store.ThresholdShare{
 			CampfireID:    campfireID,
@@ -86,7 +86,7 @@ func TestFROSTSign2of3OverHTTP(t *testing.T) {
 	storeShare(sC, 3, shareC)
 
 	// Register each participant as a peer on the others' stores (membership checks).
-	addPeer := func(s *store.Store, pubHex, ep string) {
+	addPeer := func(s store.Store, pubHex, ep string) {
 		s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: pubHex, Endpoint: ep}) //nolint:errcheck
 	}
 	addPeer(sB, idA.PublicKeyHex(), "http://127.0.0.1:1")
@@ -104,7 +104,7 @@ func TestFROSTSign2of3OverHTTP(t *testing.T) {
 	epB := fmt.Sprintf("http://%s", addrB)
 	epC := fmt.Sprintf("http://%s", addrC)
 
-	buildShareProvider := func(s *store.Store) cfhttp.ThresholdShareProvider {
+	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(cfID)
 			if err != nil || share == nil {
