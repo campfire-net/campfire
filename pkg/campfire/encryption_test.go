@@ -160,3 +160,78 @@ func TestMembershipCommitReason_Values(t *testing.T) {
 		}
 	}
 }
+
+// TestNewMembershipCommitPayload_BlindRelayExcluded verifies that
+// NewMembershipCommitPayload excludes blind-relay members from the Deliveries
+// map (spec §6.1, security invariant). Blind relays must not receive the new
+// root secret via key delivery since they only forward ciphertext.
+func TestNewMembershipCommitPayload_BlindRelayExcluded(t *testing.T) {
+	// Build 3 members: 2 full + 1 blind-relay.
+	fullMember1 := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20}
+	fullMember2 := []byte{0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+		0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
+		0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+		0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40}
+	blindRelayMember := []byte{0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+		0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50,
+		0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
+		0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f, 0x60}
+
+	members := []Member{
+		{PublicKey: fullMember1, Role: RoleFull},
+		{PublicKey: fullMember2, Role: RoleFull},
+		{PublicKey: blindRelayMember, Role: RoleBlindRelay},
+	}
+
+	// Caller-supplied deliveries include all 3 keys (the caller may have mistakenly
+	// included the blind relay). NewMembershipCommitPayload must filter it out.
+	full1Hex := encodePubKey(fullMember1)
+	full2Hex := encodePubKey(fullMember2)
+	blindHex := encodePubKey(blindRelayMember)
+	deliveries := map[string][]byte{
+		full1Hex: []byte("encrypted-secret-for-full1"),
+		full2Hex: []byte("encrypted-secret-for-full2"),
+		blindHex: []byte("encrypted-secret-for-blind-relay"), // must be excluded
+	}
+
+	payload := NewMembershipCommitPayload(
+		MembershipCommitEvict,
+		"",
+		2,
+		[]byte("membership-hash"),
+		members,
+		deliveries,
+	)
+
+	// Deliveries must have exactly 2 entries (full members only).
+	if len(payload.Deliveries) != 2 {
+		t.Errorf("Deliveries has %d entries, want 2 (full members only)", len(payload.Deliveries))
+	}
+
+	// The blind-relay pubkey must NOT be in Deliveries.
+	if _, ok := payload.Deliveries[blindHex]; ok {
+		t.Error("blind-relay member pubkey must NOT be in Deliveries map (security invariant)")
+	}
+
+	// The two full members must be in Deliveries.
+	if _, ok := payload.Deliveries[full1Hex]; !ok {
+		t.Error("full member 1 must be in Deliveries map")
+	}
+	if _, ok := payload.Deliveries[full2Hex]; !ok {
+		t.Error("full member 2 must be in Deliveries map")
+	}
+
+	// Payload metadata must be correct.
+	if payload.Type != MembershipCommitEvict {
+		t.Errorf("Type = %q, want %q", payload.Type, MembershipCommitEvict)
+	}
+	if payload.NewEpoch != 2 {
+		t.Errorf("NewEpoch = %d, want 2", payload.NewEpoch)
+	}
+	if payload.ChainDerived {
+		t.Error("ChainDerived must be false for eviction (fresh random root secret)")
+	}
+}

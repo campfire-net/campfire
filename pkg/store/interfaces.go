@@ -57,6 +57,11 @@ type EpochSecretStore interface {
 	// SetMembershipEncrypted sets the encrypted flag for a campfire membership.
 	// Used for downgrade prevention (spec §2.1): local flag takes precedence over relay state.
 	SetMembershipEncrypted(campfireID string, encrypted bool) error
+	// ApplyMembershipCommitAtomically installs an epoch secret and optionally upserts
+	// a membership record in a single DB transaction. This enforces the atomicity
+	// requirement from spec §6.1: membership change and epoch rotation are committed
+	// together, or not at all. Pass nil newMember for rotations without membership change.
+	ApplyMembershipCommitAtomically(campfireID string, newMember *Membership, secret EpochSecret) error
 }
 
 // Store is the unified interface covering all store capabilities.

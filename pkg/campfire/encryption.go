@@ -99,3 +99,56 @@ func NewEncryptedInitPayload() EncryptedInitPayload {
 		Info:      "campfire-message-key-v1",
 	}
 }
+
+// NewMembershipCommitPayload constructs a MembershipCommitPayload for an eviction
+// or leave event (ChainDerived=false), automatically excluding blind-relay members
+// from the Deliveries map (spec §6.1).
+//
+// members is the full membership set. deliveries maps full-member pubkey hex →
+// hybrid-encrypted new root secret. Blind-relay members MUST NOT be included in
+// deliveries; this constructor enforces that invariant by filtering out any
+// blind-relay keys from the provided deliveries map.
+func NewMembershipCommitPayload(
+	reason MembershipCommitReason,
+	member string,
+	newEpoch uint64,
+	newMembershipHash []byte,
+	members []Member,
+	deliveries map[string][]byte,
+) MembershipCommitPayload {
+	// Build a set of blind-relay pubkey hex strings.
+	blindRelays := make(map[string]struct{})
+	for _, m := range members {
+		if IsBlindRelay(m.Role) {
+			blindRelays[encodePubKey(m.PublicKey)] = struct{}{}
+		}
+	}
+
+	// Filter deliveries: exclude blind-relay members (security invariant).
+	filtered := make(map[string][]byte, len(deliveries))
+	for pk, enc := range deliveries {
+		if _, isBlind := blindRelays[pk]; !isBlind {
+			filtered[pk] = enc
+		}
+	}
+
+	return MembershipCommitPayload{
+		Type:              reason,
+		Member:            member,
+		NewEpoch:          newEpoch,
+		NewMembershipHash: newMembershipHash,
+		ChainDerived:      false,
+		Deliveries:        filtered,
+	}
+}
+
+// encodePubKey hex-encodes a public key slice for use as a Deliveries map key.
+func encodePubKey(key []byte) string {
+	const hextable = "0123456789abcdef"
+	buf := make([]byte, len(key)*2)
+	for i, b := range key {
+		buf[i*2] = hextable[b>>4]
+		buf[i*2+1] = hextable[b&0xf]
+	}
+	return string(buf)
+}
