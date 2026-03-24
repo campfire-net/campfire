@@ -1,5 +1,11 @@
 package store
 
+import "errors"
+
+// ErrInviteExhausted is returned by ValidateAndUseInvite when the invite code
+// has already reached its maximum number of uses.
+var ErrInviteExhausted = errors.New("invite code has reached its maximum uses")
+
 // MembershipStore manages campfire membership records.
 // Implemented by *SQLiteStore.
 type MembershipStore interface {
@@ -94,6 +100,12 @@ type InviteStore interface {
 	HasAnyInvites(campfireID string) (bool, error)
 	// IncrementInviteUse increments the use_count for the given code.
 	IncrementInviteUse(inviteCode string) error
+	// ValidateAndUseInvite atomically validates the invite code and increments its
+	// use_count in a single operation, preventing TOCTOU races under concurrent joins.
+	// Returns the updated invite record on success. Returns ErrInviteExhausted
+	// (errors.Is compatible) when max_uses is reached. Returns a descriptive error
+	// for revoked, not-found, or wrong-campfire codes.
+	ValidateAndUseInvite(campfireID, inviteCode string) (*InviteRecord, error)
 }
 
 // Store is the unified interface covering all store capabilities.

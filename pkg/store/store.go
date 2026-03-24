@@ -372,7 +372,11 @@ func Open(path string) (Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("creating store directory: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	// _pragma=busy_timeout%3d5000 sets a 5-second busy timeout so concurrent
+	// writers retry internally on SQLITE_BUSY rather than returning an error
+	// immediately. This is required for ValidateAndUseInvite's atomic UPDATE to
+	// work correctly under concurrent join requests.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout%3d5000")
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -1641,4 +1645,50 @@ func (s *SQLiteStore) IncrementInviteUse(inviteCode string) error {
 		return fmt.Errorf("IncrementInviteUse: %w", err)
 	}
 	return nil
+}
+
+// ValidateAndUseInvite atomically validates and increments the invite code in a
+// single SQL statement, eliminating the TOCTOU race between ValidateInvite and
+// IncrementInviteUse.  The UPDATE only fires when all validity conditions hold,
+// so concurrent callers that race to use the last slot will see RowsAffected==0
+// and receive ErrInviteExhausted rather than over-consuming the code.
+func (s *SQLiteStore) ValidateAndUseInvite(campfireID, inviteCode string) (*InviteRecord, error) {
+	res, err := s.db.Exec(
+		`UPDATE campfire_invites
+		    SET use_count = use_count + 1
+		  WHERE invite_code  = ?
+		    AND campfire_id  = ?
+		    AND revoked      = 0
+		    AND (max_uses = 0 OR use_count < max_uses)`,
+		inviteCode, campfireID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ValidateAndUseInvite: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		// Success — return the updated record.
+		inv, err := s.LookupInvite(inviteCode)
+		if err != nil {
+			return nil, fmt.Errorf("ValidateAndUseInvite lookup: %w", err)
+		}
+		return inv, nil
+	}
+
+	// Zero rows affected — determine the precise failure reason.
+	inv, err := s.LookupInvite(inviteCode)
+	if err != nil {
+		return nil, fmt.Errorf("ValidateAndUseInvite: %w", err)
+	}
+	if inv == nil {
+		return nil, fmt.Errorf("invite code not found")
+	}
+	if inv.CampfireID != campfireID {
+		return nil, fmt.Errorf("invite code not valid for this campfire")
+	}
+	if inv.Revoked {
+		return nil, fmt.Errorf("invite code has been revoked")
+	}
+	// Only remaining reason: use_count >= max_uses.
+	return nil, ErrInviteExhausted
 }

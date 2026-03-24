@@ -1411,6 +1411,17 @@ func isConflictError(err error) bool {
 	return strings.Contains(s, "EntityAlreadyExists") || strings.Contains(s, "409")
 }
 
+// isPreconditionFailedError returns true if err is an Azure "precondition failed" (412)
+// error, which occurs when UpdateEntity is called with an ETag that no longer matches
+// (i.e. the entity was modified by a concurrent writer).
+func isPreconditionFailedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "UpdateConditionNotSatisfied") || strings.Contains(s, "412")
+}
+
 // NowNano returns the current time in nanoseconds (mirrors store.NowNano).
 func NowNano() int64 {
 	return time.Now().UnixNano()
@@ -1550,6 +1561,68 @@ func (ts *TableStore) IncrementInviteUse(inviteCode string) error {
 	}
 	inv.UseCount++
 	return ts.CreateInvite(*inv)
+}
+
+// ValidateAndUseInvite atomically validates and increments the invite code using
+// ETag-based optimistic concurrency. It reads the entity (capturing the ETag),
+// validates it, then updates with IfMatch to ensure no concurrent writer has
+// modified the record between the read and the write. On a 412 Precondition
+// Failed, it retries (up to maxInviteRetries attempts) before giving up.
+func (ts *TableStore) ValidateAndUseInvite(campfireID, inviteCode string) (*store.InviteRecord, error) {
+	const maxRetries = 5
+	ctx := context.Background()
+	pk := encodeKey(inviteCode)
+	rk := encodeKey(campfireID)
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Fetch the entity with its current ETag.
+		resp, err := ts.invites.GetEntity(ctx, pk, rk, nil)
+		if err != nil {
+			if isNotFoundError(err) {
+				return nil, fmt.Errorf("invite code not found")
+			}
+			return nil, fmt.Errorf("ValidateAndUseInvite: %w", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(resp.Value, &m); err != nil {
+			return nil, fmt.Errorf("ValidateAndUseInvite unmarshal: %w", err)
+		}
+		inv := inviteFromEntity(m)
+
+		// Validate.
+		if inv.CampfireID != campfireID {
+			return nil, fmt.Errorf("invite code not valid for this campfire")
+		}
+		if inv.Revoked {
+			return nil, fmt.Errorf("invite code has been revoked")
+		}
+		if inv.MaxUses > 0 && inv.UseCount >= inv.MaxUses {
+			return nil, store.ErrInviteExhausted
+		}
+
+		// Increment and write back with ETag guard.
+		inv.UseCount++
+		m["UseCount"] = int64(inv.UseCount)
+		data, err := json.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("ValidateAndUseInvite marshal: %w", err)
+		}
+		etag := resp.ETag
+		_, err = ts.invites.UpdateEntity(ctx, data, &aztables.UpdateEntityOptions{
+			UpdateMode: aztables.UpdateModeReplace,
+			IfMatch:    &etag,
+		})
+		if err == nil {
+			return inv, nil
+		}
+		if isPreconditionFailedError(err) {
+			// Another writer modified the entity concurrently — retry.
+			continue
+		}
+		return nil, fmt.Errorf("ValidateAndUseInvite update: %w", err)
+	}
+	// All retries exhausted — treat as contention-driven exhaustion.
+	return nil, store.ErrInviteExhausted
 }
 
 // inviteFromEntity converts an Azure Table Storage entity map to a store.InviteRecord.
