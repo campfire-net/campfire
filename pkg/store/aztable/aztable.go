@@ -20,9 +20,11 @@ package aztable
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,10 +35,11 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
-// chunkSize is the maximum byte size per chunk property (60 KB).
-// Azure Table Storage supports up to 64 KB per Edm.Binary property;
-// we leave a 4 KB margin for safety and base64 overhead on the wire.
-const chunkSize = 60 * 1024
+// chunkSize is the maximum raw byte size per chunk property (45 KB).
+// Azure Table Storage supports up to 64 KB per property value. Binary data
+// is base64-encoded in JSON, expanding by ~4/3 (45 KB → ~60 KB base64),
+// safely under the 64 KB limit.
+const chunkSize = 45 * 1024
 
 // epochPadWidth is the zero-padding width for epoch strings used as row keys.
 // uint64 max is 18446744073709551615 (20 digits).
@@ -519,6 +522,12 @@ func (ts *TableStore) GetReadCursor(campfireID string) (int64, error) {
 	if raw == nil {
 		return 0, nil
 	}
+	// Stored as string to avoid float64 precision loss for nanosecond timestamps.
+	if s, ok := raw["LastReadAt"].(string); ok {
+		v, _ := strconv.ParseInt(s, 10, 64)
+		return v, nil
+	}
+	// Legacy: handle numeric values from older writes.
 	ts64, _ := raw["LastReadAt"].(float64)
 	return int64(ts64), nil
 }
@@ -529,7 +538,7 @@ func (ts *TableStore) SetReadCursor(campfireID string, timestamp int64) error {
 		"PartitionKey": encodeKey(campfireID),
 		"RowKey":       "cursor",
 		"CampfireID":   campfireID,
-		"LastReadAt":   timestamp,
+		"LastReadAt":   strconv.FormatInt(timestamp, 10),
 	}
 	return upsertEntity(context.Background(), ts.cursors, entity)
 }
@@ -1221,7 +1230,12 @@ func getChunked(entity map[string]any, prefix string) []byte {
 		case []byte:
 			result = append(result, v...)
 		case string:
-			result = append(result, []byte(v)...)
+			// Azure Table SDK returns binary properties as base64 strings.
+			if decoded, err := base64.StdEncoding.DecodeString(v); err == nil {
+				result = append(result, decoded...)
+			} else {
+				result = append(result, []byte(v)...)
+			}
 		}
 	}
 	return result
