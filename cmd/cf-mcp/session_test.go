@@ -1045,3 +1045,427 @@ func TestTokenRegistry_LookupRace(t *testing.T) {
 
 	wg.Wait()
 }
+
+// ---------------------------------------------------------------------------
+// Tests: TokenRegistry disk persistence
+// ---------------------------------------------------------------------------
+
+// TestTokenRegistry_PersistSurvivesRestart verifies that tokens written to
+// disk by one TokenRegistry instance are loaded correctly by a new instance
+// pointed at the same file. This is the core restart-survival scenario from
+// design §5.b.
+func TestTokenRegistry_PersistSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+
+	// Instance 1: issue two tokens and revoke one.
+	r1, err := newTokenRegistryFromFile(path)
+	if err != nil {
+		t.Fatalf("newTokenRegistryFromFile (r1): %v", err)
+	}
+
+	tok1, err := r1.issue()
+	if err != nil {
+		t.Fatalf("r1.issue tok1: %v", err)
+	}
+	tok2, err := r1.issue()
+	if err != nil {
+		t.Fatalf("r1.issue tok2: %v", err)
+	}
+	r1.revoke(tok2)
+
+	// Verify file was written.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("registry file not created after issue: %v", err)
+	}
+
+	// Capture internalID of tok1 from r1.
+	internalID1, err := r1.lookup(tok1, 0)
+	if err != nil {
+		t.Fatalf("r1.lookup tok1: %v", err)
+	}
+
+	// Instance 2: load from same file — simulates server restart.
+	r2, err := newTokenRegistryFromFile(path)
+	if err != nil {
+		t.Fatalf("newTokenRegistryFromFile (r2): %v", err)
+	}
+
+	// tok1 must survive and map to the same internalID.
+	id2, err := r2.lookup(tok1, 0)
+	if err != nil {
+		t.Fatalf("r2.lookup tok1 after restart: %v", err)
+	}
+	if id2 != internalID1 {
+		t.Errorf("internalID changed after restart: before=%q after=%q", internalID1, id2)
+	}
+
+	// tok2 was revoked — must still be revoked after restart.
+	_, err = r2.lookup(tok2, 0)
+	if err == nil {
+		t.Error("revoked tok2 should be rejected after restart, but lookup succeeded")
+	}
+	var revokedErr *tokenRevokedError
+	if !errors.As(err, &revokedErr) {
+		t.Errorf("expected tokenRevokedError for tok2, got: %v", err)
+	}
+}
+
+// TestTokenRegistry_PersistRotation verifies that token rotation state
+// (revokeWithGrace) is preserved across a simulated restart.
+func TestTokenRegistry_PersistRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+
+	r1, err := newTokenRegistryFromFile(path)
+	if err != nil {
+		t.Fatalf("newTokenRegistryFromFile: %v", err)
+	}
+
+	oldTok, err := r1.issue()
+	if err != nil {
+		t.Fatalf("issue old token: %v", err)
+	}
+	oldInternalID, _ := r1.lookup(oldTok, 0)
+
+	newTok, err := r1.issueFor(oldInternalID)
+	if err != nil {
+		t.Fatalf("issueFor new token: %v", err)
+	}
+
+	// Revoke old token with a far-future grace period (so it's still in grace on reload).
+	gracePeriod := time.Now().Add(10 * time.Minute)
+	r1.revokeWithGrace(oldTok, gracePeriod)
+
+	// Reload.
+	r2, err := newTokenRegistryFromFile(path)
+	if err != nil {
+		t.Fatalf("newTokenRegistryFromFile (r2): %v", err)
+	}
+
+	// New token must work and map to same internalID.
+	id, err := r2.lookup(newTok, 0)
+	if err != nil {
+		t.Fatalf("lookup new token after restart: %v", err)
+	}
+	if id != oldInternalID {
+		t.Errorf("new token internalID changed: want %q got %q", oldInternalID, id)
+	}
+
+	// Old token is in grace period — must still be valid (grace not yet expired).
+	_, err = r2.lookup(oldTok, 0)
+	if err != nil {
+		t.Errorf("old token in grace period should still be valid after restart: %v", err)
+	}
+}
+
+// TestTokenRegistry_PersistDelete verifies that delete() is persisted so that
+// a deleted token does not reappear after restart.
+func TestTokenRegistry_PersistDelete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+
+	r1, err := newTokenRegistryFromFile(path)
+	if err != nil {
+		t.Fatalf("newTokenRegistryFromFile: %v", err)
+	}
+
+	tok, err := r1.issue()
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	r1.delete(tok)
+
+	// Reload.
+	r2, err := newTokenRegistryFromFile(path)
+	if err != nil {
+		t.Fatalf("newTokenRegistryFromFile (r2): %v", err)
+	}
+
+	_, err = r2.lookup(tok, 0)
+	if err == nil {
+		t.Error("deleted token should not be present after restart")
+	}
+	var unknownErr *tokenUnknownError
+	if !errors.As(err, &unknownErr) {
+		t.Errorf("expected tokenUnknownError for deleted token, got: %v", err)
+	}
+}
+
+// TestSessionManager_RegistryPersistOnNewSessionManager verifies the
+// end-to-end wiring: NewSessionManager loads an existing registry file from
+// sessionsDir, so tokens issued before a restart are still valid.
+func TestSessionManager_RegistryPersistOnNewSessionManager(t *testing.T) {
+	dir := t.TempDir()
+
+	// First SessionManager: issue a token, create a session.
+	m1 := NewSessionManager(dir)
+	tok, err := m1.issueToken()
+	if err != nil {
+		t.Fatalf("m1.issueToken: %v", err)
+	}
+	id1, err := m1.validateToken(tok)
+	if err != nil {
+		t.Fatalf("m1.validateToken: %v", err)
+	}
+	m1.Stop()
+
+	// Second SessionManager pointing at the same dir (simulates restart).
+	m2 := NewSessionManager(dir)
+	defer m2.Stop()
+
+	// Token must still be valid and map to the same internalID.
+	id2, err := m2.validateToken(tok)
+	if err != nil {
+		t.Fatalf("m2.validateToken after restart: %v", err)
+	}
+	if id1 != id2 {
+		t.Errorf("internalID changed after restart: before=%q after=%q", id1, id2)
+	}
+}
+
+// TestTokenRegistry_FreshDirCreatesEmptyRegistry verifies that pointing a
+// registry at a non-existent file starts with an empty registry (no error).
+func TestTokenRegistry_FreshDirCreatesEmptyRegistry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subdir", "registry.json")
+
+	// Create parent dir (in production this is done by NewSessionManager via
+	// os.MkdirAll before the registry is loaded).
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	r, err := newTokenRegistryFromFile(path)
+	if err != nil {
+		t.Fatalf("expected no error for missing file, got: %v", err)
+	}
+
+	// Must be empty — issuing a token works.
+	tok, err := r.issue()
+	if err != nil {
+		t.Fatalf("issue on fresh registry: %v", err)
+	}
+	if tok == "" {
+		t.Error("expected non-empty token")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: per-IP rate limiting on campfire_init (design doc §5.b / S9)
+// ---------------------------------------------------------------------------
+
+// postMCPFromIP is like postMCP but sets the request's RemoteAddr so that
+// the rate limiter sees the given IP.
+func postMCPFromIP(t *testing.T, srv *server, body, token, ip string) (jsonRPCResponse, int) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = ip + ":12345"
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	srv.handleMCPSessioned(w, req)
+
+	result := w.Result()
+	var resp jsonRPCResponse
+	if err := json.NewDecoder(result.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp, result.StatusCode
+}
+
+// TestInitRateLimit_SameIPBlocked verifies that rapid campfire_init calls from
+// the same IP are rate-limited after the per-IP limit is exhausted, returning
+// HTTP 429 with a -32000 JSON-RPC error. (Design doc §5.b / adversary finding S9)
+func TestInitRateLimit_SameIPBlocked(t *testing.T) {
+	dir := t.TempDir()
+	const rateLimit = 3
+	m := &SessionManager{
+		sessionsDir: dir,
+		stopCh:      make(chan struct{}),
+		maxSessions: defaultMaxSessions,
+		initLimiter: newInitRateLimiter(rateLimit, initRateWindow),
+	}
+	m.registry = newTokenRegistry()
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	srv := &server{
+		cfHome:         t.TempDir(),
+		beaconDir:      t.TempDir(),
+		cfHomeExplicit: true,
+		sessManager:    m,
+	}
+
+	ip := "10.0.0.1"
+
+	// First rateLimit calls must succeed.
+	for i := 0; i < rateLimit; i++ {
+		resp, code := postMCPFromIP(t, srv, mcpInitBody, "", ip)
+		if code != http.StatusOK {
+			t.Fatalf("init %d of %d: expected HTTP 200, got %d", i+1, rateLimit, code)
+		}
+		if resp.Error != nil {
+			t.Fatalf("init %d of %d: unexpected error: code=%d msg=%s", i+1, rateLimit, resp.Error.Code, resp.Error.Message)
+		}
+	}
+
+	// The (rateLimit+1)th call must be rejected with HTTP 429.
+	resp, code := postMCPFromIP(t, srv, mcpInitBody, "", ip)
+	if code != http.StatusTooManyRequests {
+		t.Errorf("expected HTTP 429 after rate limit exhausted, got %d", code)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error in 429 response")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "rate limit exceeded") {
+		t.Errorf("expected 'rate limit exceeded' in error message, got %q", resp.Error.Message)
+	}
+}
+
+// TestInitRateLimit_DifferentIPsIndependent verifies that rate limiting is
+// per-IP: one IP hitting the limit does not block a different IP.
+func TestInitRateLimit_DifferentIPsIndependent(t *testing.T) {
+	dir := t.TempDir()
+	const rateLimit = 2
+	m := &SessionManager{
+		sessionsDir: dir,
+		stopCh:      make(chan struct{}),
+		maxSessions: defaultMaxSessions,
+		initLimiter: newInitRateLimiter(rateLimit, initRateWindow),
+	}
+	m.registry = newTokenRegistry()
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	srv := &server{
+		cfHome:         t.TempDir(),
+		beaconDir:      t.TempDir(),
+		cfHomeExplicit: true,
+		sessManager:    m,
+	}
+
+	ipA := "10.0.0.1"
+	ipB := "10.0.0.2"
+
+	// Exhaust the limit for ipA.
+	for i := 0; i < rateLimit; i++ {
+		_, code := postMCPFromIP(t, srv, mcpInitBody, "", ipA)
+		if code != http.StatusOK {
+			t.Fatalf("ipA init %d: expected 200, got %d", i+1, code)
+		}
+	}
+	_, code := postMCPFromIP(t, srv, mcpInitBody, "", ipA)
+	if code != http.StatusTooManyRequests {
+		t.Errorf("ipA: expected 429 after limit, got %d", code)
+	}
+
+	// ipB must still be allowed — its window is independent.
+	for i := 0; i < rateLimit; i++ {
+		resp, code := postMCPFromIP(t, srv, mcpInitBody, "", ipB)
+		if code != http.StatusOK {
+			t.Errorf("ipB init %d: expected 200, got %d (ipA exhaustion must not block ipB)", i+1, code)
+		}
+		if resp.Error != nil {
+			t.Errorf("ipB init %d: unexpected error: %s", i+1, resp.Error.Message)
+		}
+	}
+}
+
+// TestInitRateLimit_SlidingWindowExpiry verifies that the sliding window
+// expires old timestamps so that an IP can create sessions again after the
+// window elapses.
+func TestInitRateLimit_SlidingWindowExpiry(t *testing.T) {
+	const limit = 2
+	window := 50 * time.Millisecond
+	l := newInitRateLimiter(limit, window)
+
+	ip := "10.0.0.1"
+
+	// Consume the limit.
+	for i := 0; i < limit; i++ {
+		if !l.allow(ip) {
+			t.Fatalf("allow %d of %d: expected true", i+1, limit)
+		}
+	}
+	// Immediately blocked.
+	if l.allow(ip) {
+		t.Error("expected false after limit reached, got true")
+	}
+
+	// Wait for window to expire.
+	time.Sleep(window + 10*time.Millisecond)
+
+	// Must be allowed again.
+	if !l.allow(ip) {
+		t.Error("expected allow after window expired, got false")
+	}
+}
+
+// TestInitRateLimit_XForwardedFor verifies that X-Forwarded-For is used as
+// the client IP when present, so requests proxied through Fly.io's edge are
+// rate-limited by the actual client IP, not the proxy IP.
+func TestInitRateLimit_XForwardedFor(t *testing.T) {
+	dir := t.TempDir()
+	const rateLimit = 2
+	m := &SessionManager{
+		sessionsDir: dir,
+		stopCh:      make(chan struct{}),
+		maxSessions: defaultMaxSessions,
+		initLimiter: newInitRateLimiter(rateLimit, initRateWindow),
+	}
+	m.registry = newTokenRegistry()
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	srv := &server{
+		cfHome:         t.TempDir(),
+		beaconDir:      t.TempDir(),
+		cfHomeExplicit: true,
+		sessManager:    m,
+	}
+
+	realIP := "203.0.113.5"
+	proxyIP := "10.0.0.99" // proxy's RemoteAddr
+
+	makeInitReqWithXFF := func() (jsonRPCResponse, int) {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpInitBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = proxyIP + ":8080"
+		req.Header.Set("X-Forwarded-For", realIP)
+		w := httptest.NewRecorder()
+		srv.handleMCPSessioned(w, req)
+		var resp jsonRPCResponse
+		if err := json.NewDecoder(w.Result().Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp, w.Code
+	}
+
+	// Exhaust the limit using the real IP via X-Forwarded-For.
+	for i := 0; i < rateLimit; i++ {
+		_, code := makeInitReqWithXFF()
+		if code != http.StatusOK {
+			t.Fatalf("init %d: expected 200, got %d", i+1, code)
+		}
+	}
+
+	// Next request must be rate-limited.
+	_, code := makeInitReqWithXFF()
+	if code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 for real IP via X-Forwarded-For, got %d", code)
+	}
+
+	// A request from a different real IP (same proxy) must still be allowed.
+	otherRealIP := "203.0.113.6"
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpInitBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = proxyIP + ":8080"
+	req.Header.Set("X-Forwarded-For", otherRealIP)
+	w := httptest.NewRecorder()
+	srv.handleMCPSessioned(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("different real IP via XFF should be allowed, got %d", w.Code)
+	}
+}
