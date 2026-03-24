@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -244,5 +245,150 @@ func TestAudit_EntryIncludesRequestHash(t *testing.T) {
 	readText := extractResultText(t, readResp)
 	if !strings.Contains(readText, expectedHash) {
 		t.Errorf("expected request_hash %s in audit entry, got: %s", expectedHash, readText)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: Close() drains channel — no entries lost on shutdown
+// ---------------------------------------------------------------------------
+
+// TestAudit_CloseFlushesChannel verifies that entries enqueued via Log() are
+// written to the audit campfire even when the process is shutting down.
+// Before this fix, Close() was never called so entries in the buffered channel
+// were silently dropped.
+func TestAudit_CloseFlushesChannel(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	aw, err := NewAuditWriter(srv)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	srv.auditWriter = aw
+
+	// Enqueue several entries rapidly (they will sit in the buffered channel
+	// until the background goroutine drains them).
+	const n = 5
+	for i := 0; i < n; i++ {
+		aw.Log(AuditEntry{
+			Timestamp: time.Now().UnixNano(),
+			Action:    "send",
+			AgentKey:  fmt.Sprintf("key%d", i),
+		})
+	}
+
+	// Close() must drain the channel before returning — no entries lost.
+	aw.Close()
+
+	// Read all messages from the audit campfire and count audit entries.
+	auditID := aw.CampfireID()
+	readArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": auditID,
+		"all":         true,
+	})
+	readResp := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_read","arguments":`+string(readArgs)+`}`))
+	if readResp.Error != nil {
+		t.Fatalf("campfire_read: %s", readResp.Error.Message)
+	}
+
+	readText := extractResultText(t, readResp)
+
+	// The payload is stored as an escaped JSON string inside the outer JSON, so
+	// "action" appears as the escaped form \"action\". Count those — each audit
+	// entry contributes one.
+	count := strings.Count(readText, `\"action\"`)
+	if count < n {
+		t.Errorf("expected at least %d audit entries after Close(), found %d in: %s", n, count, readText)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: repeated campfire_init on the same session does not leak goroutines
+// ---------------------------------------------------------------------------
+
+// TestAudit_NoGoroutineLeakOnRepeatedInit verifies that calling campfire_init
+// multiple times on the same session reuses the existing AuditWriter rather
+// than creating a new one (and leaking its background goroutine).
+//
+// Before the fix: each campfire_init call on a session created a fresh *server
+// with nil auditWriter, so handleInit spawned a new AuditWriter goroutine
+// every call while the previous one was abandoned without Close().
+//
+// After the fix: the AuditWriter is stored in the Session and propagated to
+// each per-request server, so only one goroutine is ever running per session.
+func TestAudit_NoGoroutineLeakOnRepeatedInit(t *testing.T) {
+	srv := newTestServerWithSessions(t)
+
+	// First init — issues a session token.
+	initResp1 := postMCP(t, srv, mcpInitBody, "")
+	token := extractTokenFromInit(t, initResp1)
+	if token == "" {
+		t.Fatal("expected non-empty session token")
+	}
+
+	// Let goroutines settle and record baseline.
+	runtime.GC()
+	time.Sleep(10 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	// Call campfire_init N more times on the same session.
+	const extraInits = 5
+	for i := 0; i < extraInits; i++ {
+		resp := postMCP(t, srv, mcpInitBody, token)
+		if resp.Error != nil {
+			t.Fatalf("campfire_init[%d] failed: code=%d msg=%s", i+1, resp.Error.Code, resp.Error.Message)
+		}
+	}
+
+	// Allow any goroutines to start and settle.
+	runtime.GC()
+	time.Sleep(10 * time.Millisecond)
+	after := runtime.NumGoroutine()
+
+	// If the AuditWriter is being re-created on each init, goroutine count
+	// would grow by at least extraInits. Allow a small slack for unrelated
+	// background goroutines that may start/stop during the test.
+	const maxGrowth = 2
+	growth := after - baseline
+	if growth > maxGrowth {
+		t.Errorf("goroutine count grew by %d after %d repeated campfire_init calls (baseline=%d after=%d); "+
+			"expected growth <= %d — possible AuditWriter goroutine leak",
+			growth, extraInits, baseline, after, maxGrowth)
+	}
+
+	// Also verify that the session's AuditWriter is stable: the same audit
+	// campfire ID should be returned on every init call.
+	extractAuditID := func(resp jsonRPCResponse) string {
+		b, _ := json.Marshal(resp.Result)
+		var outer struct {
+			Content []struct{ Text string `json:"text"` } `json:"content"`
+		}
+		if err := json.Unmarshal(b, &outer); err != nil || len(outer.Content) == 0 {
+			return ""
+		}
+		var ir struct {
+			AuditCampfireID string `json:"audit_campfire_id"`
+		}
+		json.Unmarshal([]byte(outer.Content[0].Text), &ir) //nolint:errcheck
+		return ir.AuditCampfireID
+	}
+
+	firstID := extractAuditID(initResp1)
+	if firstID == "" {
+		// Audit is best-effort; if the first call didn't produce an audit ID,
+		// skip the stability check (environment may lack required deps).
+		t.Log("audit_campfire_id not present in first init response; skipping audit ID stability check")
+		return
+	}
+
+	// All subsequent inits should return the same audit campfire ID.
+	for i := 0; i < 3; i++ {
+		resp := postMCP(t, srv, mcpInitBody, token)
+		gotID := extractAuditID(resp)
+		if gotID != "" && gotID != firstID {
+			t.Errorf("init[%d]: audit_campfire_id changed from %s to %s; AuditWriter is being re-created",
+				i+1, firstID, gotID)
+		}
 	}
 }
