@@ -679,3 +679,76 @@ func TestAudit_InitResponseIncludesAuditStatusDisabled(t *testing.T) {
 		t.Errorf("expected non-empty audit_error when audit_status=disabled, got empty string")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestAudit_DMCreatesAuditEntry: campfire_dm writes a "dm" audit entry (§5.e)
+// ---------------------------------------------------------------------------
+
+// TestAudit_DMCreatesAuditEntry verifies that campfire_dm logs a "dm" audit
+// entry after successfully sending a direct message.
+func TestAudit_DMCreatesAuditEntry(t *testing.T) {
+	// Sender server.
+	sender, _ := newTestServerWithStore(t)
+	doInit(t, sender)
+
+	aw, err := NewAuditWriter(sender)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	sender.auditWriter = aw
+
+	// Receiver server: separate cfHome so it has its own identity.
+	receiver := newTestServer(t)
+	doInit(t, receiver)
+
+	// Get receiver's public key via campfire_id.
+	idResp := receiver.dispatch(makeReq("tools/call", `{"name":"campfire_id","arguments":{}}`))
+	if idResp.Error != nil {
+		t.Fatalf("campfire_id failed: code=%d msg=%s", idResp.Error.Code, idResp.Error.Message)
+	}
+	idText := extractResultText(t, idResp)
+	var idResult map[string]string
+	if err := json.Unmarshal([]byte(idText), &idResult); err != nil {
+		t.Fatalf("parsing campfire_id result: %v", err)
+	}
+	targetKey := idResult["public_key"]
+	if len(targetKey) != 64 {
+		t.Fatalf("expected 64-char hex public_key from receiver, got %q", targetKey)
+	}
+
+	// Send a DM from sender to receiver.
+	dmArgs, _ := json.Marshal(map[string]interface{}{
+		"target_key": targetKey,
+		"message":    "hello via dm audit test",
+	})
+	dmResp := sender.dispatch(makeReq("tools/call",
+		`{"name":"campfire_dm","arguments":`+string(dmArgs)+`}`))
+	if dmResp.Error != nil {
+		t.Fatalf("campfire_dm failed: code=%d msg=%s", dmResp.Error.Code, dmResp.Error.Message)
+	}
+
+	// Flush audit entries.
+	aw.Flush()
+
+	// Read the audit campfire and confirm a "dm" entry was written.
+	auditID := aw.CampfireID()
+	if auditID == "" {
+		t.Fatal("audit campfire ID is empty")
+	}
+
+	readArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": auditID,
+		"all":         true,
+	})
+	readResp := sender.dispatch(makeReq("tools/call",
+		`{"name":"campfire_read","arguments":`+string(readArgs)+`}`))
+	if readResp.Error != nil {
+		t.Fatalf("campfire_read on audit campfire failed: code=%d msg=%s",
+			readResp.Error.Code, readResp.Error.Message)
+	}
+
+	readText := extractResultText(t, readResp)
+	if !strings.Contains(readText, `action`) || !strings.Contains(readText, `dm`) {
+		t.Errorf("expected audit entry with action=dm in audit campfire, got: %s", readText)
+	}
+}
