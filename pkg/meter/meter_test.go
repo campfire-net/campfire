@@ -265,6 +265,8 @@ func TestEmitterEmitsOnInterval(t *testing.T) {
 
 	client := meter.NewMarketplaceClient(meter.MarketplaceClientConfig{APIURL: ts.URL})
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	fired := make(chan struct{}, 1)
 	emitter := meter.NewEmitter(meter.EmitterConfig{
 		Collector:  collector,
@@ -277,11 +279,13 @@ func TestEmitterEmitsOnInterval(t *testing.T) {
 			return time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 		},
 		OnError: func(campfireID string, err error) {
+			// Ignore errors from in-flight requests after context cancellation.
+			if ctx.Err() != nil {
+				return
+			}
 			t.Errorf("unexpected error for %s: %v", campfireID, err)
 		},
 	})
-
-	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		emitter.Run(ctx)
 		close(fired)
