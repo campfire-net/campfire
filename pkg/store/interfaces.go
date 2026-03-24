@@ -64,6 +64,38 @@ type EpochSecretStore interface {
 	ApplyMembershipCommitAtomically(campfireID string, newMember *Membership, secret EpochSecret) error
 }
 
+// InviteRecord holds a single invite code for a campfire.
+type InviteRecord struct {
+	CampfireID string
+	InviteCode string
+	CreatedBy  string // pubkey of the agent who created the invite
+	CreatedAt  int64  // unix nanoseconds
+	Revoked    bool
+	MaxUses    int    // 0 = unlimited
+	UseCount   int
+	Label      string
+}
+
+// InviteStore manages per-campfire invite codes (security model §5.a).
+// Implemented by *SQLiteStore and *TableStore.
+type InviteStore interface {
+	// CreateInvite inserts a new invite record.
+	CreateInvite(inv InviteRecord) error
+	// ValidateInvite checks that the code is valid (not revoked, not exhausted).
+	// Returns the matching record on success, or an error describing why it failed.
+	ValidateInvite(campfireID, inviteCode string) (*InviteRecord, error)
+	// RevokeInvite marks a code as revoked. Returns an error if not found.
+	RevokeInvite(campfireID, inviteCode string) error
+	// ListInvites returns all invite records for a campfire.
+	ListInvites(campfireID string) ([]InviteRecord, error)
+	// LookupInvite returns a single invite by code or nil if not found.
+	LookupInvite(inviteCode string) (*InviteRecord, error)
+	// HasAnyInvites returns true if the campfire has at least one registered invite code.
+	HasAnyInvites(campfireID string) (bool, error)
+	// IncrementInviteUse increments the use_count for the given code.
+	IncrementInviteUse(inviteCode string) error
+}
+
 // Store is the unified interface covering all store capabilities.
 // The SQLite-backed implementation is returned by Open and NewSQLite.
 type Store interface {
@@ -72,6 +104,7 @@ type Store interface {
 	PeerStore
 	ThresholdStore
 	EpochSecretStore
+	InviteStore
 	UpdateCampfireID(oldID, newID string) error
 	Close() error
 }

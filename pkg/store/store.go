@@ -92,6 +92,20 @@ CREATE TABLE IF NOT EXISTS pending_threshold_shares (
     PRIMARY KEY (campfire_id, participant_id)
 );
 
+-- Invite codes for campfire access control (security model §5.a).
+-- invite_code is unique across all campfires.
+CREATE TABLE IF NOT EXISTS campfire_invites (
+    campfire_id  TEXT    NOT NULL,
+    invite_code  TEXT    NOT NULL UNIQUE,
+    created_by   TEXT    NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL,
+    revoked      INTEGER NOT NULL DEFAULT 0,
+    max_uses     INTEGER NOT NULL DEFAULT 0,
+    use_count    INTEGER NOT NULL DEFAULT 0,
+    label        TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (campfire_id, invite_code)
+);
+
 -- Migration tracking: one row per applied migration, in order.
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version     INTEGER PRIMARY KEY,
@@ -1285,6 +1299,8 @@ func (s *SQLiteStore) UpdateCampfireID(oldID, newID string) error {
 		// Failure to include this table causes silent decryption failure for all historical
 		// messages after a campfire rekey (UpdateCampfireID is called from handler_rekey.go).
 		{"campfire_epoch_secrets", "campfire_id"},
+		// Invite codes must follow the campfire ID on rekey so existing codes remain valid.
+		{"campfire_invites", "campfire_id"},
 	}
 	for _, t := range tables {
 		q := fmt.Sprintf("UPDATE %s SET %s = ? WHERE %s = ?", t.table, t.col, t.col)
@@ -1483,6 +1499,146 @@ func (s *SQLiteStore) ApplyMembershipCommitAtomically(campfireID string, newMemb
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("ApplyMembershipCommitAtomically: commit: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// InviteStore — SQLite implementation
+// ---------------------------------------------------------------------------
+
+// CreateInvite inserts a new invite record.
+func (s *SQLiteStore) CreateInvite(inv InviteRecord) error {
+	revoked := 0
+	if inv.Revoked {
+		revoked = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO campfire_invites
+		 (campfire_id, invite_code, created_by, created_at, revoked, max_uses, use_count, label)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		inv.CampfireID, inv.InviteCode, inv.CreatedBy, inv.CreatedAt,
+		revoked, inv.MaxUses, inv.UseCount, inv.Label,
+	)
+	if err != nil {
+		return fmt.Errorf("CreateInvite: %w", err)
+	}
+	return nil
+}
+
+// scanInvite scans a single campfire_invites row.
+func scanInvite(rows interface {
+	Scan(dest ...interface{}) error
+}) (*InviteRecord, error) {
+	var inv InviteRecord
+	var revoked int
+	if err := rows.Scan(
+		&inv.CampfireID, &inv.InviteCode, &inv.CreatedBy, &inv.CreatedAt,
+		&revoked, &inv.MaxUses, &inv.UseCount, &inv.Label,
+	); err != nil {
+		return nil, err
+	}
+	inv.Revoked = revoked != 0
+	return &inv, nil
+}
+
+// LookupInvite returns a single invite by code or nil if not found.
+func (s *SQLiteStore) LookupInvite(inviteCode string) (*InviteRecord, error) {
+	row := s.db.QueryRow(
+		`SELECT campfire_id, invite_code, created_by, created_at, revoked, max_uses, use_count, label
+		 FROM campfire_invites WHERE invite_code = ?`,
+		inviteCode,
+	)
+	inv, err := scanInvite(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("LookupInvite: %w", err)
+	}
+	return inv, nil
+}
+
+// ValidateInvite checks that the code belongs to campfireID and is usable.
+func (s *SQLiteStore) ValidateInvite(campfireID, inviteCode string) (*InviteRecord, error) {
+	inv, err := s.LookupInvite(inviteCode)
+	if err != nil {
+		return nil, err
+	}
+	if inv == nil {
+		return nil, fmt.Errorf("invite code not found")
+	}
+	if inv.CampfireID != campfireID {
+		return nil, fmt.Errorf("invite code not valid for this campfire")
+	}
+	if inv.Revoked {
+		return nil, fmt.Errorf("invite code has been revoked")
+	}
+	if inv.MaxUses > 0 && inv.UseCount >= inv.MaxUses {
+		return nil, fmt.Errorf("invite code has reached its maximum uses")
+	}
+	return inv, nil
+}
+
+// RevokeInvite marks a code as revoked.
+func (s *SQLiteStore) RevokeInvite(campfireID, inviteCode string) error {
+	res, err := s.db.Exec(
+		`UPDATE campfire_invites SET revoked = 1 WHERE campfire_id = ? AND invite_code = ?`,
+		campfireID, inviteCode,
+	)
+	if err != nil {
+		return fmt.Errorf("RevokeInvite: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("invite code not found: %s", inviteCode)
+	}
+	return nil
+}
+
+// ListInvites returns all invite records for a campfire.
+func (s *SQLiteStore) ListInvites(campfireID string) ([]InviteRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT campfire_id, invite_code, created_by, created_at, revoked, max_uses, use_count, label
+		 FROM campfire_invites WHERE campfire_id = ? ORDER BY created_at`,
+		campfireID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ListInvites: %w", err)
+	}
+	defer rows.Close()
+	var result []InviteRecord
+	for rows.Next() {
+		inv, err := scanInvite(rows)
+		if err != nil {
+			return nil, fmt.Errorf("ListInvites scan: %w", err)
+		}
+		result = append(result, *inv)
+	}
+	return result, rows.Err()
+}
+
+// HasAnyInvites returns true if the campfire has at least one registered invite code.
+func (s *SQLiteStore) HasAnyInvites(campfireID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM campfire_invites WHERE campfire_id = ?`,
+		campfireID,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("HasAnyInvites: %w", err)
+	}
+	return count > 0, nil
+}
+
+// IncrementInviteUse increments the use_count for the given code.
+func (s *SQLiteStore) IncrementInviteUse(inviteCode string) error {
+	_, err := s.db.Exec(
+		`UPDATE campfire_invites SET use_count = use_count + 1 WHERE invite_code = ?`,
+		inviteCode,
+	)
+	if err != nil {
+		return fmt.Errorf("IncrementInviteUse: %w", err)
 	}
 	return nil
 }
