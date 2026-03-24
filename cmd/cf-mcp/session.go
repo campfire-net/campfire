@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
@@ -169,10 +170,13 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 		return nil, err
 	}
 
-	st, err := store.Open(store.StorePath(cfHome))
+	rawStore, err := store.Open(store.StorePath(cfHome))
 	if err != nil {
 		return nil, err
 	}
+	// Wrap the raw store with free-tier rate limiting (1000 msg/month by default).
+	// The wrapper implements store.Store, so it is drop-in for all operations.
+	st := ratelimit.New(rawStore, ratelimit.Config{})
 
 	sess := &Session{
 		token:        token,

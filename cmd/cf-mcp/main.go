@@ -31,6 +31,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
@@ -207,7 +208,7 @@ func init() {
 	tools = []mcpToolInfo{
 		{
 			Name:        "campfire_init",
-			Description: "Generate a campfire identity. No name = disposable session identity. With name = persistent agent identity that survives across sessions.",
+			Description: "Generate a campfire identity. No name = disposable session identity. With name = persistent agent identity that survives across sessions. With campfire_id = auto-provision that campfire (create if new, join if existing) and apply free-tier defaults.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -218,6 +219,10 @@ func init() {
 					"force": map[string]interface{}{
 						"type":        "boolean",
 						"description": "Overwrite existing identity",
+					},
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Campfire ID to auto-provision. If the campfire does not exist in the store, it is created with default settings (threshold=1) and the calling agent is registered as first member with role='full'. If it already exists, the call is idempotent. Free-tier rate limiting (1000 msg/month) is applied automatically.",
 					},
 				},
 				"required": []string{},
@@ -543,6 +548,37 @@ func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonR
 		identityType = fmt.Sprintf("persistent agent '%s'", name)
 	}
 
+	// Auto-provision campfire if campfire_id is provided.
+	// If the campfire does not exist in the session store it is created.
+	// If it already exists the call is idempotent (existing state is returned).
+	// Free-tier rate limiting (1000 msg/month) is applied via the session store wrapper.
+	campfireIDParam := getStr(params, "campfire_id")
+	if campfireIDParam != "" {
+		provResult, provErr := s.autoProvisionCampfire(id, campfireIDParam, agentID)
+		if provErr != nil {
+			return *provErr
+		}
+		guide := fmt.Sprintf(`Identity %s: %s
+Type: %s
+Location: %s
+Campfire: %s (status: %s, free tier: 1000 msg/month)
+
+You are ready to communicate. Use campfire_send / campfire_read with the campfire_id above.`,
+			status, agentID.PublicKeyHex(), identityType, s.cfHome,
+			provResult.campfireID, provResult.campfireStatus)
+		result, _ := toolResultJSON(map[string]interface{}{
+			"public_key":   agentID.PublicKeyHex(),
+			"campfire_id":  provResult.campfireID,
+			"campfire_status": provResult.campfireStatus,
+			"threshold":    provResult.threshold,
+			"role":         campfire.RoleFull,
+			"free_tier":    true,
+			"monthly_cap":  ratelimit.DefaultMonthlyMessageCap,
+			"guide":        guide,
+		})
+		return okResponse(id, result)
+	}
+
 	guide := fmt.Sprintf(`Identity %s: %s
 Type: %s
 Location: %s
@@ -559,6 +595,123 @@ Identity model:
 		status, agentID.PublicKeyHex(), identityType, s.cfHome)
 
 	return okResponse(id, toolResult(guide))
+}
+
+// autoProvisionResult holds the result of autoProvisionCampfire.
+type autoProvisionResult struct {
+	campfireID     string
+	campfireStatus string // "created" or "exists"
+	threshold      uint
+}
+
+// autoProvisionCampfire creates or retrieves a campfire for the given campfireID.
+// If campfireID is not in the session store, a new campfire is created with
+// default settings (threshold=1, open protocol) and the agent is registered as
+// the first member with role="full". If campfireID already exists in the store,
+// the call is idempotent and returns the existing membership.
+//
+// Free-tier rate limiting (1000 msg/month) is enforced via the session store
+// wrapper (applied at session creation time in session.go).
+//
+// Returns a non-nil *jsonRPCResponse pointer on error (ready to return to caller).
+func (s *server) autoProvisionCampfire(id interface{}, campfireID string, agentID *identity.Identity) (*autoProvisionResult, *jsonRPCResponse) {
+	// Resolve the store: prefer the already-open session store, otherwise open one.
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			resp := errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+			return nil, &resp
+		}
+		defer st.Close()
+	}
+
+	// Idempotency: if the campfire already exists in the store, return existing state.
+	existing, err := st.GetMembership(campfireID)
+	if err != nil {
+		resp := errResponse(id, -32000, fmt.Sprintf("checking campfire membership: %v", err))
+		return nil, &resp
+	}
+	if existing != nil {
+		return &autoProvisionResult{
+			campfireID:     existing.CampfireID,
+			campfireStatus: "exists",
+			threshold:      existing.Threshold,
+		}, nil
+	}
+
+	// New campfire: create it with default parameters.
+	cf, err := campfire.New("open", nil, 1)
+	if err != nil {
+		resp := errResponse(id, -32000, fmt.Sprintf("creating campfire: %v", err))
+		return nil, &resp
+	}
+	cf.AddMember(agentID.PublicKey)
+
+	// Persist campfire state to the session's local filesystem.
+	fsTransport := fs.New(s.cfHome)
+	if err := fsTransport.Init(cf); err != nil {
+		resp := errResponse(id, -32000, fmt.Sprintf("initializing campfire state: %v", err))
+		return nil, &resp
+	}
+
+	now := time.Now().UnixNano()
+	if err := fsTransport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
+		PublicKey: agentID.PublicKey,
+		JoinedAt:  now,
+	}); err != nil {
+		resp := errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
+		return nil, &resp
+	}
+
+	// Record membership in the store under the real (system-generated) campfire ID.
+	// In hosted HTTP mode, use the HTTP transport type; otherwise filesystem.
+	transportDir := fsTransport.CampfireDir(cf.PublicKeyHex())
+	transportType := "filesystem"
+	if s.httpTransport != nil {
+		transportDir = s.externalAddr
+		transportType = "p2p-http"
+	}
+
+	if err := st.AddMembership(store.Membership{
+		CampfireID:    cf.PublicKeyHex(),
+		TransportDir:  transportDir,
+		TransportType: transportType,
+		JoinProtocol:  "open",
+		Role:          campfire.RoleFull,
+		JoinedAt:      now,
+		Threshold:     1,
+		Description:   fmt.Sprintf("auto-provisioned from campfire_init (requested: %s)", campfireID),
+		CreatorPubkey: agentID.PublicKeyHex(),
+	}); err != nil {
+		resp := errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
+		return nil, &resp
+	}
+
+	// In hosted HTTP mode, register with the transport router so external
+	// peers can reach this campfire, and set self info on the HTTP transport.
+	if s.httpTransport != nil {
+		s.httpTransport.SetSelfInfo(agentID.PublicKeyHex(), s.externalAddr)
+		if err := st.UpsertPeerEndpoint(store.PeerEndpoint{
+			CampfireID:   cf.PublicKeyHex(),
+			MemberPubkey: agentID.PublicKeyHex(),
+			Endpoint:     s.externalAddr,
+			Role:         store.PeerRoleCreator,
+		}); err != nil {
+			resp := errResponse(id, -32000, fmt.Sprintf("registering self as peer: %v", err))
+			return nil, &resp
+		}
+		if s.transportRouter != nil {
+			s.transportRouter.RegisterForSession(cf.PublicKeyHex(), s.sessionToken, s.httpTransport)
+		}
+	}
+
+	return &autoProvisionResult{
+		campfireID:     cf.PublicKeyHex(),
+		campfireStatus: "created",
+		threshold:      1,
+	}, nil
 }
 
 func (s *server) handleID(id interface{}, _ map[string]interface{}) jsonRPCResponse {
