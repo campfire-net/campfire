@@ -201,9 +201,9 @@ func TestAutoProvision_FreeTierRateLimit(t *testing.T) {
 	m := newTestSessionManager(t)
 
 	// Create a session via the real production path.
-	token, err := generateToken()
+	token, err := m.issueToken()
 	if err != nil {
-		t.Fatalf("generateToken: %v", err)
+		t.Fatalf("issueToken: %v", err)
 	}
 	sess, err := m.getOrCreate(token)
 	if err != nil {

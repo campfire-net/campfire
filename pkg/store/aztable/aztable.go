@@ -64,6 +64,7 @@ type TableStore struct {
 	pending     *aztables.Client
 	epochs      *aztables.Client
 	filters     *aztables.Client
+	invites     *aztables.Client
 
 	// mu protects supersededCache.
 	mu              sync.RWMutex
@@ -98,6 +99,7 @@ func NewTableStore(connectionString string) (store.Store, error) {
 		{"CampfirePendingShares", &ts.pending},
 		{"CampfireEpochs", &ts.epochs},
 		{"CampfireFilters", &ts.filters},
+		{"CampfireInvites", &ts.invites},
 	}
 	ctx := context.Background()
 	for _, t := range tables {
@@ -1412,4 +1414,155 @@ func isConflictError(err error) bool {
 // NowNano returns the current time in nanoseconds (mirrors store.NowNano).
 func NowNano() int64 {
 	return time.Now().UnixNano()
+}
+
+// ---------------------------------------------------------------------------
+// InviteStore — Azure Table Storage implementation
+//
+// Table: CampfireInvites  PK=invite_code  RK=campfire_id
+// Using invite_code as PK enables global lookup without knowing campfire_id.
+// ---------------------------------------------------------------------------
+
+// CreateInvite inserts a new invite record.
+func (ts *TableStore) CreateInvite(inv store.InviteRecord) error {
+	revoked := 0
+	if inv.Revoked {
+		revoked = 1
+	}
+	entity := map[string]any{
+		"PartitionKey": encodeKey(inv.InviteCode),
+		"RowKey":       encodeKey(inv.CampfireID),
+		"CampfireID":   inv.CampfireID,
+		"InviteCode":   inv.InviteCode,
+		"CreatedBy":    inv.CreatedBy,
+		"CreatedAt":    inv.CreatedAt,
+		"Revoked":      int64(revoked),
+		"MaxUses":      int64(inv.MaxUses),
+		"UseCount":     int64(inv.UseCount),
+		"Label":        inv.Label,
+	}
+	return upsertEntity(context.Background(), ts.invites, entity)
+}
+
+// LookupInvite returns a single invite by code or nil if not found.
+func (ts *TableStore) LookupInvite(inviteCode string) (*store.InviteRecord, error) {
+	// List all rows with PK=inviteCode (should be exactly one).
+	filter := fmt.Sprintf("PartitionKey eq '%s'", encodeKey(inviteCode))
+	opts := &aztables.ListEntitiesOptions{Filter: &filter}
+	pager := ts.invites.NewListEntitiesPager(opts)
+	ctx := context.Background()
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("aztable: LookupInvite: %w", err)
+		}
+		for _, raw := range page.Entities {
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return nil, fmt.Errorf("aztable: LookupInvite unmarshal: %w", err)
+			}
+			return inviteFromEntity(m), nil
+		}
+	}
+	return nil, nil
+}
+
+// ValidateInvite checks that the code belongs to campfireID and is usable.
+func (ts *TableStore) ValidateInvite(campfireID, inviteCode string) (*store.InviteRecord, error) {
+	inv, err := ts.LookupInvite(inviteCode)
+	if err != nil {
+		return nil, err
+	}
+	if inv == nil {
+		return nil, fmt.Errorf("invite code not found")
+	}
+	if inv.CampfireID != campfireID {
+		return nil, fmt.Errorf("invite code not valid for this campfire")
+	}
+	if inv.Revoked {
+		return nil, fmt.Errorf("invite code has been revoked")
+	}
+	if inv.MaxUses > 0 && inv.UseCount >= inv.MaxUses {
+		return nil, fmt.Errorf("invite code has reached its maximum uses")
+	}
+	return inv, nil
+}
+
+// RevokeInvite marks a code as revoked.
+func (ts *TableStore) RevokeInvite(campfireID, inviteCode string) error {
+	inv, err := ts.LookupInvite(inviteCode)
+	if err != nil {
+		return err
+	}
+	if inv == nil {
+		return fmt.Errorf("invite code not found: %s", inviteCode)
+	}
+	inv.Revoked = true
+	return ts.CreateInvite(*inv)
+}
+
+// ListInvites returns all invite records for a campfire.
+func (ts *TableStore) ListInvites(campfireID string) ([]store.InviteRecord, error) {
+	// Scan all rows and filter by CampfireID (no secondary index in Table Storage).
+	opts := &aztables.ListEntitiesOptions{}
+	pager := ts.invites.NewListEntitiesPager(opts)
+	var result []store.InviteRecord
+	ctx := context.Background()
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("aztable: ListInvites: %w", err)
+		}
+		for _, raw := range page.Entities {
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return nil, fmt.Errorf("aztable: ListInvites unmarshal: %w", err)
+			}
+			inv := inviteFromEntity(m)
+			if inv.CampfireID == campfireID {
+				result = append(result, *inv)
+			}
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].CreatedAt < result[j].CreatedAt
+	})
+	return result, nil
+}
+
+// HasAnyInvites returns true if the campfire has at least one registered invite code.
+func (ts *TableStore) HasAnyInvites(campfireID string) (bool, error) {
+	invites, err := ts.ListInvites(campfireID)
+	if err != nil {
+		return false, err
+	}
+	return len(invites) > 0, nil
+}
+
+// IncrementInviteUse increments the use_count for the given invite code.
+func (ts *TableStore) IncrementInviteUse(inviteCode string) error {
+	inv, err := ts.LookupInvite(inviteCode)
+	if err != nil {
+		return err
+	}
+	if inv == nil {
+		return fmt.Errorf("invite code not found: %s", inviteCode)
+	}
+	inv.UseCount++
+	return ts.CreateInvite(*inv)
+}
+
+// inviteFromEntity converts an Azure Table Storage entity map to a store.InviteRecord.
+func inviteFromEntity(m map[string]any) *store.InviteRecord {
+	revoked := toInt64(m["Revoked"]) != 0
+	return &store.InviteRecord{
+		CampfireID: str(m, "CampfireID"),
+		InviteCode: str(m, "InviteCode"),
+		CreatedBy:  str(m, "CreatedBy"),
+		CreatedAt:  toInt64(m["CreatedAt"]),
+		Revoked:    revoked,
+		MaxUses:    int(toInt64(m["MaxUses"])),
+		UseCount:   int(toInt64(m["UseCount"])),
+		Label:      str(m, "Label"),
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -194,7 +195,9 @@ func TestSession_IdleTimeoutClosesStore(t *testing.T) {
 		sessionsDir:         dir,
 		stopCh:              make(chan struct{}),
 		idleTimeoutOverride: testTimeout,
+		maxSessions:         defaultMaxSessions,
 	}
+	m.registry = newTokenRegistry()
 	go m.reaper()
 	t.Cleanup(m.Stop)
 
@@ -210,11 +213,10 @@ func TestSession_IdleTimeoutClosesStore(t *testing.T) {
 	token := extractTokenFromInit(t, initResp)
 
 	// Retrieve the session and back-date its lastActivity past testTimeout.
-	v, ok := srv.sessManager.sessions.Load(token)
-	if !ok {
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
 		t.Fatal("session not found in manager after init")
 	}
-	sess := v.(*Session)
 
 	sess.mu.Lock()
 	sess.lastActivity = time.Now().Add(-(testTimeout + time.Millisecond))
@@ -257,15 +259,18 @@ func TestSession_IdleTimeoutClosesStore(t *testing.T) {
 func TestSession_ReaperDeletesFromMap(t *testing.T) {
 	m := newTestSessionManager(t)
 
-	// Create session directly via getOrCreate.
-	token, err := generateToken()
+	// Create session via issueToken + getOrCreate (production path).
+	token, err := m.issueToken()
 	if err != nil {
-		t.Fatalf("generateToken: %v", err)
+		t.Fatalf("issueToken: %v", err)
 	}
 	sess1, err := m.getOrCreate(token)
 	if err != nil {
 		t.Fatalf("getOrCreate (first): %v", err)
 	}
+
+	// Capture internalID for later map check.
+	internalID := sess1.internalID
 
 	// Back-date lastActivity so the reaper considers it idle.
 	sess1.mu.Lock()
@@ -285,8 +290,8 @@ func TestSession_ReaperDeletesFromMap(t *testing.T) {
 		return true
 	})
 
-	// Session must no longer be in the map.
-	if _, ok := m.sessions.Load(token); ok {
+	// Session must no longer be in the map (keyed by internalID).
+	if _, ok := m.sessions.Load(internalID); ok {
 		t.Fatal("reaper did not remove session from sync.Map")
 	}
 
@@ -353,11 +358,10 @@ func TestSession_StoreOpenOnce(t *testing.T) {
 	initResp := postMCP(t, srv, mcpInitBody, "")
 	token := extractTokenFromInit(t, initResp)
 
-	v, ok := srv.sessManager.sessions.Load(token)
-	if !ok {
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
 		t.Fatal("session not found in manager")
 	}
-	sess := v.(*Session)
 
 	// Capture store pointer after init.
 	sess.mu.Lock()
@@ -398,13 +402,15 @@ func TestSession_ReapedSessionCampfire404(t *testing.T) {
 		stopCh:       make(chan struct{}),
 		router:       router,
 		externalAddr: "http://test-server",
+		maxSessions:  defaultMaxSessions,
 	}
+	sm.registry = newTokenRegistry()
 	go sm.reaper()
 	t.Cleanup(sm.Stop)
 
-	token, err := generateToken()
+	token, err := sm.issueToken()
 	if err != nil {
-		t.Fatalf("generateToken: %v", err)
+		t.Fatalf("issueToken: %v", err)
 	}
 
 	sess, err := sm.getOrCreate(token)
@@ -465,11 +471,16 @@ func TestSession_ConcurrentGetOrCreateOneTransport(t *testing.T) {
 		sessionsDir: dir,
 		stopCh:      make(chan struct{}),
 		router:      NewTransportRouter(),
+		maxSessions: defaultMaxSessions,
 	}
+	m.registry = newTokenRegistry()
 	go m.reaper()
 	t.Cleanup(m.Stop)
 
-	const token = "race-token-abc123"
+	token, err := m.issueToken()
+	if err != nil {
+		t.Fatalf("issueToken: %v", err)
+	}
 
 	// --- Sequential path: first call creates, second call reuses ---
 	sess1, err := m.getOrCreate(token)
@@ -481,6 +492,7 @@ func TestSession_ConcurrentGetOrCreateOneTransport(t *testing.T) {
 	}
 
 	// Router must point at the winner's transport immediately after the first call.
+	// The router is keyed by token, not internalID.
 	registered := m.router.GetTransport(token)
 	if registered == nil {
 		t.Fatal("no transport registered in router after first getOrCreate")
@@ -505,7 +517,10 @@ func TestSession_ConcurrentGetOrCreateOneTransport(t *testing.T) {
 	}
 
 	// --- Concurrent path: goroutines race on a fresh token ---
-	const token2 = "race-token-concurrent"
+	token2, err := m.issueToken()
+	if err != nil {
+		t.Fatalf("issueToken for concurrent test: %v", err)
+	}
 
 	var wg sync.WaitGroup
 	type result struct {
@@ -571,24 +586,29 @@ func TestSession_MaxSessionsLimit(t *testing.T) {
 		stopCh:      make(chan struct{}),
 		maxSessions: limit,
 	}
+	m.registry = newTokenRegistry()
 	go m.reaper()
 	t.Cleanup(m.Stop)
 
 	// Create exactly limit sessions — all must succeed.
+	var firstTok string
 	for i := 0; i < limit; i++ {
-		tok, err := generateToken()
+		tok, err := m.issueToken()
 		if err != nil {
-			t.Fatalf("generateToken: %v", err)
+			t.Fatalf("issueToken: %v", err)
 		}
 		if _, err := m.getOrCreate(tok); err != nil {
 			t.Fatalf("getOrCreate session %d of %d failed: %v", i+1, limit, err)
 		}
+		if i == 0 {
+			firstTok = tok
+		}
 	}
 
 	// The next (limit+1) session must be rejected with sessionLimitError.
-	extraTok, err := generateToken()
+	extraTok, err := m.issueToken()
 	if err != nil {
-		t.Fatalf("generateToken for extra session: %v", err)
+		t.Fatalf("issueToken for extra session: %v", err)
 	}
 	_, gotErr := m.getOrCreate(extraTok)
 	if gotErr == nil {
@@ -600,19 +620,19 @@ func TestSession_MaxSessionsLimit(t *testing.T) {
 	}
 
 	// No directory must have been created for the rejected token.
-	expectedDir := fmt.Sprintf("%s/%s", dir, extraTok)
-	if _, statErr := os.Stat(expectedDir); statErr == nil {
-		t.Errorf("directory was created for rejected session: %s", expectedDir)
+	// The directory is named by internalID (not token), but if no internalID
+	// was allocated, no directory exists anywhere in the sessions dir for this token.
+	internalID, _ := m.registry.lookup(extraTok, 0)
+	if internalID != "" {
+		expectedDir := filepath.Join(dir, internalID)
+		if _, statErr := os.Stat(expectedDir); statErr == nil {
+			t.Errorf("directory was created for rejected session: %s", expectedDir)
+		}
 	}
 
 	// Fast path (existing session reuse) must still work for a session that
 	// is already in the map — the limit only blocks new allocations.
-	var anyTok string
-	m.sessions.Range(func(k, _ interface{}) bool {
-		anyTok = k.(string)
-		return false // stop after first
-	})
-	if _, err := m.getOrCreate(anyTok); err != nil {
+	if _, err := m.getOrCreate(firstTok); err != nil {
 		t.Errorf("reuse of existing session should not be blocked by limit: %v", err)
 	}
 }
@@ -627,6 +647,7 @@ func TestSession_MaxSessionsHTTP503(t *testing.T) {
 		stopCh:      make(chan struct{}),
 		maxSessions: limit,
 	}
+	m.registry = newTokenRegistry()
 	go m.reaper()
 	t.Cleanup(m.Stop)
 
@@ -667,4 +688,360 @@ func TestSession_MaxSessionsHTTP503(t *testing.T) {
 	if !strings.Contains(resp.Error.Message, "session limit reached") {
 		t.Errorf("expected 'session limit reached' in error message, got %q", resp.Error.Message)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: token-path separation — session directory uses internal UUID, not token
+// ---------------------------------------------------------------------------
+
+// TestSession_TokenPathSeparation verifies that the session directory is named
+// using the internal UUID (internalID), not the bearer token. The token must
+// NOT appear as a path component in the filesystem.
+func TestSession_TokenPathSeparation(t *testing.T) {
+	dir := t.TempDir()
+	m := NewSessionManager(dir)
+	t.Cleanup(m.Stop)
+
+	tok, err := m.registry.issue()
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	sess, err := m.getOrCreate(tok)
+	if err != nil {
+		t.Fatalf("getOrCreate: %v", err)
+	}
+
+	// The cfHome must NOT contain the token string.
+	if strings.Contains(sess.cfHome, tok) {
+		t.Errorf("session cfHome contains token: cfHome=%q token=%q", sess.cfHome, tok)
+	}
+
+	// The cfHome must exist on disk.
+	if _, err := os.Stat(sess.cfHome); err != nil {
+		t.Errorf("session directory does not exist: %v", err)
+	}
+
+	// The directory name must be the internalID.
+	dirName := filepath.Base(sess.cfHome)
+	if dirName == tok {
+		t.Errorf("session directory is named by token; expected internalID")
+	}
+	if dirName != sess.internalID {
+		t.Errorf("session directory name %q != internalID %q", dirName, sess.internalID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: arbitrary token string rejected with error
+// ---------------------------------------------------------------------------
+
+// TestSession_ArbitraryTokenRejected verifies that getOrCreate rejects tokens
+// that were not issued by the registry (arbitrary / not registered tokens).
+func TestSession_ArbitraryTokenRejected(t *testing.T) {
+	m := newTestSessionManager(t)
+
+	// An externally-generated token that was never registered.
+	arbitraryToken := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	_, err := m.getOrCreate(arbitraryToken)
+	if err == nil {
+		t.Fatal("expected error for unregistered token, got nil")
+	}
+	// Error message must not contain the token itself.
+	if strings.Contains(err.Error(), arbitraryToken) {
+		t.Errorf("error message leaks token: %q", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: campfire_revoke_session → token rejected on next request
+// ---------------------------------------------------------------------------
+
+// TestSession_RevokeSession verifies that after calling campfire_revoke_session,
+// the session token is invalidated and subsequent requests with that token are
+// rejected with HTTP 401.
+func TestSession_RevokeSession(t *testing.T) {
+	srv := newTestServerWithSessions(t)
+
+	// Init → get token.
+	initResp := postMCP(t, srv, mcpInitBody, "")
+	token := extractTokenFromInit(t, initResp)
+	if token == "" {
+		t.Fatal("expected token from campfire_init")
+	}
+
+	// Verify session is usable.
+	idBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"campfire_id","arguments":{}}}`
+	resp := postMCP(t, srv, idBody, token)
+	if resp.Error != nil {
+		t.Fatalf("pre-revoke campfire_id failed: %v", resp.Error.Message)
+	}
+
+	// Revoke the session.
+	revokeBody := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"campfire_revoke_session","arguments":{}}}`
+	revokeResp := postMCP(t, srv, revokeBody, token)
+	if revokeResp.Error != nil {
+		t.Fatalf("campfire_revoke_session failed: %v", revokeResp.Error.Message)
+	}
+
+	// After revoke: same token must be rejected.
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(idBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.handleMCPSessioned(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected HTTP 401 after revoke, got %d", w.Code)
+	}
+	var postRevokeResp jsonRPCResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&postRevokeResp); err != nil {
+		t.Fatalf("decode post-revoke response: %v", err)
+	}
+	if postRevokeResp.Error == nil {
+		t.Fatal("expected error after revoke, got nil")
+	}
+	// Token must not appear in the error message.
+	if strings.Contains(postRevokeResp.Error.Message, token) {
+		t.Errorf("error message leaks token: %q", postRevokeResp.Error.Message)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: campfire_rotate_token → new token works, old token fails after grace
+// ---------------------------------------------------------------------------
+
+// TestSession_RotateToken verifies that after campfire_rotate_token:
+// 1. The new token is returned and works immediately.
+// 2. The old token fails after the grace period expires.
+// 3. Session state (identity) is preserved — same public key on new token.
+func TestSession_RotateToken(t *testing.T) {
+	dir := t.TempDir()
+	m := &SessionManager{
+		sessionsDir:        dir,
+		stopCh:             make(chan struct{}),
+		maxSessions:        defaultMaxSessions,
+		rotationGracePeriod: 50 * time.Millisecond, // very short for testing
+	}
+	m.registry = newTokenRegistry()
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	srv := &server{
+		cfHome:         t.TempDir(),
+		beaconDir:      t.TempDir(),
+		cfHomeExplicit: true,
+		sessManager:    m,
+	}
+
+	// Init → get token.
+	initResp := postMCP(t, srv, mcpInitBody, "")
+	oldToken := extractTokenFromInit(t, initResp)
+
+	// Get identity with old token.
+	idBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"campfire_id","arguments":{}}}`
+	pkBefore := extractPublicKey(t, postMCP(t, srv, idBody, oldToken))
+
+	// Rotate token.
+	rotateBody := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"campfire_rotate_token","arguments":{}}}`
+	rotateResp := postMCP(t, srv, rotateBody, oldToken)
+	if rotateResp.Error != nil {
+		t.Fatalf("campfire_rotate_token failed: %v", rotateResp.Error.Message)
+	}
+
+	// Extract new token from rotate response.
+	newToken := extractNewTokenFromRotate(t, rotateResp)
+	if newToken == "" {
+		t.Fatal("expected new token from campfire_rotate_token")
+	}
+	if newToken == oldToken {
+		t.Fatal("rotate returned same token as before")
+	}
+
+	// New token works immediately.
+	pkAfter := extractPublicKey(t, postMCP(t, srv, idBody, newToken))
+	if pkBefore != pkAfter {
+		t.Errorf("public key changed after rotation: before=%q after=%q", pkBefore, pkAfter)
+	}
+
+	// Wait for grace period to expire.
+	time.Sleep(100 * time.Millisecond)
+
+	// Old token must now fail.
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(idBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+oldToken)
+	w := httptest.NewRecorder()
+	srv.handleMCPSessioned(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected HTTP 401 for old token after grace period, got %d", w.Code)
+	}
+}
+
+// extractNewTokenFromRotate pulls the new_token from a campfire_rotate_token response.
+func extractNewTokenFromRotate(t *testing.T, resp jsonRPCResponse) string {
+	t.Helper()
+	if resp.Error != nil {
+		t.Fatalf("rotate error: %v", resp.Error.Message)
+	}
+	b, _ := json.Marshal(resp.Result)
+	var result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(b, &result); err != nil || len(result.Content) == 0 {
+		t.Fatalf("cannot extract content: %s", string(b))
+	}
+	text := result.Content[0].Text
+	const marker = "New session token: "
+	idx := strings.Index(text, marker)
+	if idx == -1 {
+		t.Fatalf("new token not found in rotate response: %q", text)
+	}
+	rest := text[idx+len(marker):]
+	if nl := strings.IndexByte(rest, '\n'); nl != -1 {
+		return rest[:nl]
+	}
+	return rest
+}
+
+// ---------------------------------------------------------------------------
+// Test: token older than 1 hour rejected
+// ---------------------------------------------------------------------------
+
+// TestSession_TokenExpiry verifies that tokens older than the TTL are rejected
+// with HTTP 401 and a structured error indicating expiry.
+// Strategy: issue a token with a normal TTL, then backdate its issuedAt via
+// the registry internals so it appears expired on the next request.
+func TestSession_TokenExpiry(t *testing.T) {
+	srv := newTestServerWithSessions(t)
+
+	// Init → get token.
+	initResp := postMCP(t, srv, mcpInitBody, "")
+	token := extractTokenFromInit(t, initResp)
+
+	// Token works immediately.
+	idBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"campfire_id","arguments":{}}}`
+	resp := postMCP(t, srv, idBody, token)
+	if resp.Error != nil {
+		t.Fatalf("pre-expiry request failed: %v", resp.Error.Message)
+	}
+
+	// Backdate the token's issuedAt so it appears expired.
+	srv.sessManager.registry.mu.Lock()
+	if entry, ok := srv.sessManager.registry.tokens[token]; ok {
+		entry.issuedAt = time.Now().Add(-(defaultTokenTTL + time.Second))
+	}
+	srv.sessManager.registry.mu.Unlock()
+
+	// Token must now be rejected with expiry error.
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(idBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.handleMCPSessioned(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected HTTP 401 for expired token, got %d", w.Code)
+	}
+	var expiredResp jsonRPCResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&expiredResp); err != nil {
+		t.Fatalf("decode expired response: %v", err)
+	}
+	if expiredResp.Error == nil {
+		t.Fatal("expected error for expired token")
+	}
+	// Must indicate expiry (not just generic error).
+	if !strings.Contains(expiredResp.Error.Message, "expired") {
+		t.Errorf("expected 'expired' in error message, got %q", expiredResp.Error.Message)
+	}
+	// Token must not appear in error message.
+	if strings.Contains(expiredResp.Error.Message, token) {
+		t.Errorf("error message leaks token: %q", expiredResp.Error.Message)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: token never appears in error messages
+// ---------------------------------------------------------------------------
+
+// TestSession_TokenNotInErrors verifies that error responses never contain
+// the bearer token string.
+func TestSession_TokenNotInErrors(t *testing.T) {
+	srv := newTestServerWithSessions(t)
+
+	// Init → get token.
+	initResp := postMCP(t, srv, mcpInitBody, "")
+	token := extractTokenFromInit(t, initResp)
+
+	// Send a request with an invalid tool name to trigger an error response.
+	badBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"nonexistent_tool","arguments":{}}}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(badBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.handleMCPSessioned(w, req)
+
+	body := w.Body.String()
+	if strings.Contains(body, token) {
+		t.Errorf("response body contains session token: %q", body)
+	}
+}
+
+// TestTokenRegistry_LookupRace exercises the data race that existed when
+// lookup() read tokenEntry fields after releasing the RWMutex. The -race
+// detector should report no issues with the fixed implementation.
+//
+// The race: concurrent goroutines call lookup() while another goroutine
+// calls revoke() and revokeWithGrace() on the same token, which mutates
+// the entry's fields (revoked, gracePeriodUntil, internalID).
+func TestTokenRegistry_LookupRace(t *testing.T) {
+	r := newTokenRegistry()
+
+	// Issue a token that will be continuously mutated by writers.
+	tok, err := r.issue()
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	const goroutines = 20
+	const iterations = 500
+
+	var wg sync.WaitGroup
+
+	// Readers: concurrent lookup() calls — this is where the race manifests.
+	for i := 0; i < goroutines/2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				// Result doesn't matter; we're exercising the race detector.
+				_, _ = r.lookup(tok, 0)
+			}
+		}()
+	}
+
+	// Writers: concurrent revoke / revokeWithGrace / re-issue to mutate the
+	// entry fields that lookup() reads after releasing the lock in the old code.
+	for i := 0; i < goroutines/4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				r.revokeWithGrace(tok, time.Now().Add(100*time.Millisecond))
+			}
+		}()
+	}
+	for i := 0; i < goroutines/4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				r.revoke(tok)
+			}
+		}()
+	}
+
+	wg.Wait()
 }

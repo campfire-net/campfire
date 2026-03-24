@@ -15,6 +15,8 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -35,6 +37,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/google/uuid"
 )
 
 // Version is set at build time via ldflags.
@@ -95,6 +98,7 @@ type server struct {
 	httpTransport   *cfhttp.Transport // non-nil when this server has an embedded HTTP transport
 	transportRouter *TransportRouter  // non-nil in hosted HTTP mode (shared across sessions)
 	externalAddr    string            // public URL of the hosted server (e.g. "http://localhost:8080")
+	auditWriter     *AuditWriter      // non-nil when transparency logging is enabled (§5.e)
 	sessionToken    string            // non-empty in session mode; used for campfire ownership tracking in the router
 	st              store.Store      // non-nil in session mode; already-open store shared from Session
 }
@@ -262,7 +266,9 @@ A campfire is a signed, authenticated message channel. All messages are cryptogr
   - Status broadcasting (one agent posts, many read)
   - Escalation channels (ask a question with future/await pattern)
 
-Use 'require' to enforce that only messages with specific tags are accepted — useful for filtering (e.g. require: ["status", "blocker"] means only those tagged messages get through).`,
+Use 'require' to enforce that only messages with specific tags are accepted — useful for filtering (e.g. require: ["status", "blocker"] means only those tagged messages get through).
+
+Use 'encrypted: true' to create an E2E encrypted campfire. When encrypted, the hosted service joins as a blind relay and cannot decrypt message payloads. Full confidentiality requires at least one self-hosted member (see design-mcp-security.md §5.c).`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -280,19 +286,27 @@ Use 'require' to enforce that only messages with specific tags are accepted — 
 						"type":        "string",
 						"description": "Human-readable description of the campfire's purpose. Shown when other agents discover or list it.",
 					},
+					"encrypted": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Enable E2E payload encryption (spec-encryption.md v0.2). When true, the hosted service joins as a blind relay and cannot decrypt message payloads. Requires self-hosted members for full confidentiality (design-mcp-security.md §5.c). Default: false.",
+					},
 				},
 				"required": []string{},
 			}),
 		},
 		{
 			Name:        "campfire_join",
-			Description: "Join an existing campfire by its ID. After joining, you can send and read messages. You must know the campfire_id — get it from another agent, from campfire_discover, or from your task instructions.",
+			Description: "Join an existing campfire by its ID. After joining, you can send and read messages. You must know the campfire_id — get it from another agent, from campfire_discover, or from your task instructions. If the campfire requires an invite code, pass it as invite_code — you can get one from the campfire creator via campfire_invite.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"campfire_id": map[string]interface{}{
 						"type":        "string",
 						"description": "Campfire ID to join (64-char hex string). You can also use a unique prefix (e.g. first 8-12 chars) and the server will resolve it.",
+					},
+					"invite_code": map[string]interface{}{
+						"type":        "string",
+						"description": "Invite code required to join campfires that have invite-code enforcement enabled. Obtain from the campfire creator via campfire_invite. Omit if the campfire has no invite codes.",
 					},
 				},
 				"required": []string{"campfire_id"},
@@ -384,8 +398,38 @@ The future/fulfills/await pattern is how agents coordinate without polling:
 						"type":        "string",
 						"description": "Your role/instance name in this context (e.g. 'implementer', 'reviewer', 'architect'). Not cryptographically verified — it's a self-declared label. Readers can filter messages by instance to see only messages from a specific role.",
 					},
+				"commitment": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional SHA256(message + commitment_nonce) hex commitment. Binds the server to your intended payload \u2014 recipients can verify the commitment on read. Use campfire_commitment to compute this if your client cannot do crypto.",
+				},
+				"commitment_nonce": map[string]interface{}{
+					"type":        "string",
+					"description": "Nonce paired with commitment. Must be the same nonce used when computing the commitment. Typically a random hex string.",
+				},
 				},
 				"required": []string{"campfire_id", "message"},
+			}),
+		},
+		{
+			Name: "campfire_commitment",
+			Description: `Compute a blind commit for a message payload. Returns a {commitment, nonce} pair where commitment = SHA256(payload + nonce).
+
+Use this before calling campfire_send when you want payload integrity guarantees:
+  1. campfire_commitment({payload: "your message"}) → {commitment: "...", nonce: "..."}
+  2. campfire_send({..., message: "your message", commitment: "...", commitment_nonce: "..."})
+  3. campfire_read will return commitment_verified: true if the payload was not substituted.
+
+The nonce prevents the server from pre-computing commitments for guessed payloads.
+This is a server-side helper for clients that cannot perform crypto operations.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"payload": map[string]interface{}{
+						"type":        "string",
+						"description": "The message payload to commit to. Must be identical to the message you will pass to campfire_send.",
+					},
+				},
+				"required": []string{"payload"},
 			}),
 		},
 		{
@@ -523,6 +567,98 @@ If the future is already fulfilled when you call await, it returns immediately.`
 			Description: `Export your complete session (identity + message history + campfire memberships) as a base64-encoded tar.gz.
 
 Use this to migrate from hosted to self-hosted: download the export, decode it, and drop the contents into a local CF_HOME directory. Your identity, message history, and campfire memberships transfer with you. The hosted service is infrastructure — you can leave at any time with zero data loss.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+				"required":   []string{},
+			}),
+		},
+		// ---------------------------------------------------------------
+		// INVITE CODES — campfire access control (security model §5.a)
+		// ---------------------------------------------------------------
+		{
+			Name: "campfire_invite",
+			Description: `Create an additional invite code for a campfire you own.
+
+Returns a new invite_code that can be shared with agents you want to admit. Codes can have optional
+max_uses limits and human-readable labels for tracking.
+
+Note: campfire_create automatically generates a default invite code. Use campfire_invite to
+create additional codes (e.g. per-agent codes, time-limited codes with max_uses).`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The campfire ID to create an invite code for.",
+					},
+					"max_uses": map[string]interface{}{
+						"type":        "integer",
+						"description": "Maximum number of times this code can be used (0 = unlimited).",
+					},
+					"label": map[string]interface{}{
+						"type":        "string",
+						"description": "Human-readable label for this code (e.g. 'team-access', 'agent-7').",
+					},
+				},
+				"required": []string{"campfire_id"},
+			}),
+		},
+		{
+			Name: "campfire_revoke_invite",
+			Description: `Revoke an invite code, preventing further use.
+
+After revocation the code is permanently invalid. Agents who joined with this code retain their
+membership — revocation only prevents new joins using this code.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The campfire ID.",
+					},
+					"invite_code": map[string]interface{}{
+						"type":        "string",
+						"description": "The invite code to revoke.",
+					},
+				},
+				"required": []string{"campfire_id", "invite_code"},
+			}),
+		},
+		// ---------------------------------------------------------------
+		// SESSION MANAGEMENT — revoke and rotate session tokens
+		// ---------------------------------------------------------------
+		{
+			Name:        "campfire_revoke_session",
+			Description: "Revoke your current session token immediately. The session is closed and all state is cleared. You must call campfire_init to get a new token. Use this if you believe your token has been compromised.",
+			InputSchema: mustJSON(map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+				"required":   []string{},
+			}),
+		},
+		{
+			Name:        "campfire_rotate_token",
+			Description: "Rotate your session token. Returns a new token that maps to the same session identity and state. The old token remains valid for 30 seconds to allow in-flight requests to complete, then it is invalidated. Use this to limit the blast radius of a leaked token.",
+			InputSchema: mustJSON(map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+				"required":   []string{},
+			}),
+		},
+		// ---------------------------------------------------------------
+		// TRANSPARENCY LOG — per-agent audit campfire (security model §5.e)
+		// ---------------------------------------------------------------
+		{
+			Name: "campfire_audit",
+			Description: `Show a summary of your agent's transparency log.
+
+Every action this server takes on your behalf (send, join, create, export, invite, revoke) is
+recorded in a dedicated per-agent audit campfire. The log can be read by you or any party you
+share the audit_campfire_id with, providing an independent record of server activity for
+detecting operator abuse.
+
+Returns: total actions, actions by type, latest Merkle root (if computed), and audit_campfire_id.`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
@@ -668,6 +804,27 @@ Identity model:
 - Named identity (name: "worker-1"): persistent, survives across sessions. Use when others need to recognize you.`,
 		status, agentID.PublicKeyHex(), identityType, s.cfHome)
 
+	// Transparency log: create audit campfire for this session (§5.e).
+	// Best-effort — audit failure does not block init.
+	auditCampfireID := ""
+	if s.auditWriter == nil {
+		if aw, awErr := NewAuditWriter(s); awErr == nil {
+			s.auditWriter = aw
+			auditCampfireID = aw.CampfireID()
+		}
+	} else {
+		auditCampfireID = s.auditWriter.CampfireID()
+	}
+
+	if auditCampfireID != "" {
+		result, _ := toolResultJSON(map[string]interface{}{
+			"public_key":        agentID.PublicKeyHex(),
+			"audit_campfire_id": auditCampfireID,
+			"guide":             guide,
+		})
+		return okResponse(id, result)
+	}
+
 	return okResponse(id, toolResult(guide))
 }
 
@@ -804,6 +961,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	}
 	require := getStringSlice(params, "require")
 	description := getStr(params, "description")
+	encrypted := getBool(params, "encrypted")
 
 	agentID, err := identity.Load(s.identityPath())
 	if err != nil {
@@ -815,12 +973,22 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		return errResponse(id, -32000, fmt.Sprintf("creating campfire: %v", err))
 	}
 
+	cf.Encrypted = encrypted
+
+	// When the campfire is encrypted, the hosted service joins as a blind relay
+	// (spec-encryption.md v0.2 §2.5, design-mcp-security.md §5.c). The service
+	// stores/forwards ciphertext but does not hold the epoch key.
+	serviceRole := ""
+	if encrypted {
+		serviceRole = campfire.RoleBlindRelay
+	}
+
 	cf.AddMember(agentID.PublicKey)
 
 	// In hosted HTTP mode, use the session's local fs for campfire state and
 	// the HTTP transport for message delivery. Beacons point to the server URL.
 	if s.httpTransport != nil {
-		return s.handleCreateHTTP(id, cf, agentID, description)
+		return s.handleCreateHTTP(id, cf, agentID, description, serviceRole)
 	}
 
 	transport := s.fsTransport()
@@ -831,6 +999,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	if err := transport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
 		PublicKey: agentID.PublicKey,
 		JoinedAt:  time.Now().UnixNano(),
+		Role:      serviceRole,
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
 	}
@@ -867,10 +1036,35 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		CampfireID:   cf.PublicKeyHex(),
 		TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
 		JoinProtocol: cf.JoinProtocol,
-		Role:         store.PeerRoleCreator,
+		Role:         serviceRole,
 		JoinedAt:     store.NowNano(),
+		Encrypted:    encrypted,
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
+	}
+
+	// Generate a default invite code for this campfire (security model §5.a).
+	inviteCode := uuid.New().String()
+	if err := st.CreateInvite(store.InviteRecord{
+		CampfireID: cf.PublicKeyHex(),
+		InviteCode: inviteCode,
+		CreatedBy:  agentID.PublicKeyHex(),
+		CreatedAt:  store.NowNano(),
+		Label:      "default",
+	}); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
+	}
+
+	// Audit: record create action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "create",
+			AgentKey:    agentID.PublicKeyHex(),
+			CampfireID:  cf.PublicKeyHex(),
+			RequestHash: requestHash(paramBytes),
+		})
 	}
 
 	result, _ := toolResultJSON(map[string]interface{}{
@@ -878,6 +1072,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		"join_protocol":          cf.JoinProtocol,
 		"reception_requirements": cf.ReceptionRequirements,
 		"transport_dir":          transport.CampfireDir(cf.PublicKeyHex()),
+		"invite_code":            inviteCode,
 	})
 	return okResponse(id, result)
 }
@@ -886,7 +1081,10 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 // It stores campfire state in the session's local filesystem, publishes an
 // HTTP transport beacon, registers the campfire with the transport router,
 // and sets up the HTTP transport so external peers can reach this campfire.
-func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID *identity.Identity, description string) jsonRPCResponse {
+//
+// serviceRole is the campfire membership role the hosted service should use.
+// For encrypted campfires, this is campfire.RoleBlindRelay (spec §5.c).
+func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID *identity.Identity, description string, serviceRole string) jsonRPCResponse {
 	// Use the session's cfHome as the fs transport base for state storage.
 	fsTransport := fs.New(s.cfHome)
 	if err := fsTransport.Init(cf); err != nil {
@@ -897,6 +1095,7 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 	if err := fsTransport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
 		PublicKey: agentID.PublicKey,
 		JoinedAt:  now,
+		Role:      serviceRole,
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
 	}
@@ -964,12 +1163,35 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		s.transportRouter.RegisterForSession(cf.PublicKeyHex(), s.sessionToken, s.httpTransport)
 	}
 
+	// Generate a default invite code for this campfire (security model §5.a).
+	inviteCode := uuid.New().String()
+	if err := st.CreateInvite(store.InviteRecord{
+		CampfireID: cf.PublicKeyHex(),
+		InviteCode: inviteCode,
+		CreatedBy:  agentID.PublicKeyHex(),
+		CreatedAt:  store.NowNano(),
+		Label:      "default",
+	}); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
+	}
+
+	// Audit: record create action for HTTP mode (§5.e).
+	if s.auditWriter != nil {
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:  time.Now().UnixNano(),
+			Action:     "create",
+			AgentKey:   agentID.PublicKeyHex(),
+			CampfireID: cf.PublicKeyHex(),
+		})
+	}
+
 	result, _ := toolResultJSON(map[string]interface{}{
 		"campfire_id":            cf.PublicKeyHex(),
 		"join_protocol":          cf.JoinProtocol,
 		"reception_requirements": cf.ReceptionRequirements,
 		"transport":              "p2p-http",
 		"endpoint":               s.externalAddr,
+		"invite_code":            inviteCode,
 	})
 	return okResponse(id, result)
 }
@@ -1026,9 +1248,57 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 
 	now := time.Now().UnixNano()
 
+	// When the campfire is encrypted, the hosted service joins as a blind relay
+	// (spec-encryption.md v0.2 §2.5, design-mcp-security.md §5.c). The service
+	// stores/forwards ciphertext but is excluded from epoch key deliveries and
+	// cannot decrypt message payloads.
+	serviceRole := ""
+	if state.Encrypted {
+		serviceRole = campfire.RoleBlindRelay
+	}
+
 	if alreadyOnDisk {
 		now = existingJoinedAt
 	} else {
+		// Invite code enforcement (security model §5.a).
+		// Grace period: if the campfire has NO registered invite codes (e.g. old campfires),
+		// we allow the join without a code. If at least one code exists, a valid code is required.
+		//
+		// IMPORTANT: invite records live in the campfire creator's session store, not the
+		// joining session's store. In hosted (multi-session) mode, HasAnyInvites on the
+		// local session store always returns false for campfires created by other sessions,
+		// which would allow bypass. We must query the campfire owner's store via the
+		// transport router. In CLI/single-store mode there is only one store, so the
+		// local store is always correct.
+		inviteCode := getStr(params, "invite_code")
+		inviteSt := store.InviteStore(st) // default: session-local store (CLI mode)
+		if s.transportRouter != nil {
+			if ownerTransport := s.transportRouter.GetCampfireTransport(campfireID); ownerTransport != nil {
+				inviteSt = ownerTransport.Store()
+			}
+			// If no owner transport is found, the campfire was not created via this hosted
+			// service in this process (e.g. pre-existing campfire on disk). The grace period
+			// applies: HasAnyInvites on the local store returns false → join is allowed.
+			// This is safe because pre-existing campfires have no invite records anywhere.
+		}
+		hasInvites, inviteCheckErr := inviteSt.HasAnyInvites(campfireID)
+		if inviteCheckErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("checking invite codes: %v", inviteCheckErr))
+		}
+		if hasInvites {
+			if inviteCode == "" {
+				return errResponse(id, -32000, "invite code required to join this campfire")
+			}
+			inv, validateErr := inviteSt.ValidateInvite(campfireID, inviteCode)
+			if validateErr != nil {
+				return errResponse(id, -32000, fmt.Sprintf("invalid invite code: %v", validateErr))
+			}
+			// Increment use count after successful validation.
+			if incErr := inviteSt.IncrementInviteUse(inv.InviteCode); incErr != nil {
+				return errResponse(id, -32000, fmt.Sprintf("recording invite use: %v", incErr))
+			}
+		}
+
 		switch state.JoinProtocol {
 		case "open":
 			// immediately admitted
@@ -1041,6 +1311,7 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		if err := transport.WriteMember(campfireID, campfire.MemberRecord{
 			PublicKey: agentID.PublicKey,
 			JoinedAt:  now,
+			Role:      serviceRole,
 		}); err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
 		}
@@ -1076,10 +1347,23 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		CampfireID:   campfireID,
 		TransportDir: transport.CampfireDir(campfireID),
 		JoinProtocol: state.JoinProtocol,
-		Role:         campfire.RoleFull,
+		Role:         serviceRole,
 		JoinedAt:     now,
+		Encrypted:    state.Encrypted,
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
+	}
+
+	// Audit: record join action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "join",
+			AgentKey:    agentID.PublicKeyHex(),
+			CampfireID:  campfireID,
+			RequestHash: requestHash(paramBytes),
+		})
 	}
 
 	result, _ := toolResultJSON(map[string]string{
@@ -1105,6 +1389,8 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 	future := getBool(params, "future")
 	fulfills := getStr(params, "fulfills")
 	instance := getStr(params, "instance")
+	commitment := getStr(params, "commitment")
+	commitmentNonce := getStr(params, "commitment_nonce")
 
 	agentID, err := identity.Load(s.identityPath())
 	if err != nil {
@@ -1156,6 +1442,12 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		tags = append(tags, "fulfills")
 		antecedents = append(antecedents, fulfills)
 	}
+	// Blind commit: include commitment and nonce in signed tags so recipients
+	// can verify SHA256(payload + nonce) == commitment after delivery.
+	if commitment != "" && commitmentNonce != "" {
+		tags = append(tags, "commitment:"+commitment)
+		tags = append(tags, "commitment-nonce:"+commitmentNonce)
+	}
 
 	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, antecedents)
 	if err != nil {
@@ -1199,6 +1491,19 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		}
 	}
 
+	// Audit: record send action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "send",
+			AgentKey:    agentID.PublicKeyHex(),
+			CampfireID:  campfireID,
+			RequestHash: requestHash(paramBytes),
+			Commitment:  commitment,
+		})
+	}
+
 	result, _ := toolResultJSON(map[string]interface{}{
 		"id":          msg.ID,
 		"campfire_id": campfireID,
@@ -1208,6 +1513,34 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		"antecedents": msg.Antecedents,
 		"timestamp":   msg.Timestamp,
 		"instance":    msg.Instance,
+	})
+	return okResponse(id, result)
+}
+
+// handleCommitment implements the campfire_commitment helper tool.
+// It generates a random 16-byte nonce and returns {commitment, nonce} where
+// commitment = SHA256(payload + nonce). This is a server-side convenience for
+// MCP clients that cannot perform crypto operations.
+func (s *server) handleCommitment(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	payload := getStr(params, "payload")
+	if payload == "" {
+		return errResponse(id, -32602, "payload is required")
+	}
+
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("generating nonce: %v", err))
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+
+	h := sha256.New()
+	h.Write([]byte(payload))
+	h.Write([]byte(nonce))
+	commitment := hex.EncodeToString(h.Sum(nil))
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"commitment": commitment,
+		"nonce":      nonce,
 	})
 	return okResponse(id, result)
 }
@@ -1272,15 +1605,16 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 	}
 
 	type jsonMsg struct {
-		ID          string                  `json:"id"`
-		CampfireID  string                  `json:"campfire_id"`
-		Sender      string                  `json:"sender"`
-		Instance    string                  `json:"instance,omitempty"`
-		Payload     string                  `json:"payload"`
-		Tags        []string                `json:"tags"`
-		Antecedents []string                `json:"antecedents"`
-		Timestamp   int64                   `json:"timestamp"`
-		Provenance  []message.ProvenanceHop `json:"provenance"`
+		ID                  string                  `json:"id"`
+		CampfireID          string                  `json:"campfire_id"`
+		Sender              string                  `json:"sender"`
+		Instance            string                  `json:"instance,omitempty"`
+		Payload             string                  `json:"payload"`
+		Tags                []string                `json:"tags"`
+		Antecedents         []string                `json:"antecedents"`
+		Timestamp           int64                   `json:"timestamp"`
+		Provenance          []message.ProvenanceHop `json:"provenance"`
+		CommitmentVerified  *bool                   `json:"commitment_verified,omitempty"`
 	}
 	var out []jsonMsg
 	for _, m := range allMessages {
@@ -1296,16 +1630,38 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 		if prov == nil {
 			prov = []message.ProvenanceHop{}
 		}
+
+		// Blind commit verification: if the message carries commitment tags,
+		// verify SHA256(payload + nonce) == commitment and include the result.
+		var commitmentVerified *bool
+		var foundCommitment, foundNonce string
+		for _, tag := range tags {
+			if strings.HasPrefix(tag, "commitment:") {
+				foundCommitment = strings.TrimPrefix(tag, "commitment:")
+			} else if strings.HasPrefix(tag, "commitment-nonce:") {
+				foundNonce = strings.TrimPrefix(tag, "commitment-nonce:")
+			}
+		}
+		if foundCommitment != "" && foundNonce != "" {
+			h := sha256.New()
+			h.Write(m.Payload)
+			h.Write([]byte(foundNonce))
+			computed := hex.EncodeToString(h.Sum(nil))
+			verified := computed == foundCommitment
+			commitmentVerified = &verified
+		}
+
 		out = append(out, jsonMsg{
-			ID:          m.ID,
-			CampfireID:  m.CampfireID,
-			Sender:      m.Sender,
-			Instance:    m.Instance,
-			Payload:     string(m.Payload),
-			Tags:        tags,
-			Antecedents: ants,
-			Timestamp:   m.Timestamp,
-			Provenance:  prov,
+			ID:                 m.ID,
+			CampfireID:         m.CampfireID,
+			Sender:             m.Sender,
+			Instance:           m.Instance,
+			Payload:            string(m.Payload),
+			Tags:               tags,
+			Antecedents:        ants,
+			Timestamp:          m.Timestamp,
+			Provenance:         prov,
+			CommitmentVerified: commitmentVerified,
 		})
 	}
 	if out == nil {
@@ -2163,6 +2519,20 @@ func (s *server) handleExport(id interface{}, _ map[string]interface{}) jsonRPCR
 		return errResponse(id, -32000, fmt.Sprintf("closing gzip writer: %v", err))
 	}
 
+	// Audit: record export action (§5.e).
+	if s.auditWriter != nil {
+		agentID, _ := identity.Load(s.identityPath())
+		agentKey := ""
+		if agentID != nil {
+			agentKey = agentID.PublicKeyHex()
+		}
+		s.auditWriter.Log(AuditEntry{
+			Timestamp: time.Now().UnixNano(),
+			Action:    "export",
+			AgentKey:  agentKey,
+		})
+	}
+
 	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
 	result, _ := toolResultJSON(map[string]interface{}{
 		"tarball":     encoded,
@@ -2170,6 +2540,193 @@ func (s *server) handleExport(id interface{}, _ map[string]interface{}) jsonRPCR
 		"compression": "gzip",
 		"instructions": "Decode the tarball and extract into a local CF_HOME directory. " +
 			"Then run `cf id` to verify the same public key appears.",
+	})
+	return okResponse(id, result)
+}
+
+// ---------------------------------------------------------------------------
+// Invite code handlers (security model §5.a)
+// ---------------------------------------------------------------------------
+
+// handleCreateInvite creates a new invite code for the given campfire.
+func (s *server) handleCreateInvite(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	campfireID := getStr(params, "campfire_id")
+	if campfireID == "" {
+		return errResponse(id, -32602, "campfire_id is required")
+	}
+
+	agentID, err := identity.Load(s.identityPath())
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("loading identity (run campfire_init first): %v", err))
+	}
+
+	maxUsesFloat, _ := params["max_uses"].(float64)
+	maxUses := int(maxUsesFloat)
+	label := getStr(params, "label")
+
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		defer st.Close()
+	}
+
+	inviteCode := uuid.New().String()
+	if err := st.CreateInvite(store.InviteRecord{
+		CampfireID: campfireID,
+		InviteCode: inviteCode,
+		CreatedBy:  agentID.PublicKeyHex(),
+		CreatedAt:  store.NowNano(),
+		MaxUses:    maxUses,
+		Label:      label,
+	}); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
+	}
+
+	// Audit: record invite action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "invite",
+			AgentKey:    agentID.PublicKeyHex(),
+			CampfireID:  campfireID,
+			RequestHash: requestHash(paramBytes),
+		})
+	}
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"campfire_id": campfireID,
+		"invite_code": inviteCode,
+		"max_uses":    maxUses,
+		"label":       label,
+	})
+	return okResponse(id, result)
+}
+
+// handleRevokeInvite revokes an invite code for the given campfire.
+func (s *server) handleRevokeInvite(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	campfireID := getStr(params, "campfire_id")
+	inviteCode := getStr(params, "invite_code")
+	if campfireID == "" || inviteCode == "" {
+		return errResponse(id, -32602, "campfire_id and invite_code are required")
+	}
+
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		defer st.Close()
+	}
+
+	if err := st.RevokeInvite(campfireID, inviteCode); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("revoking invite code: %v", err))
+	}
+
+	// Audit: record revoke action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "revoke",
+			CampfireID:  campfireID,
+			RequestHash: requestHash(paramBytes),
+		})
+	}
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"campfire_id": campfireID,
+		"invite_code": inviteCode,
+		"status":      "revoked",
+	})
+	return okResponse(id, result)
+}
+
+// ---------------------------------------------------------------------------
+// Audit handler (transparency log §5.e)
+// ---------------------------------------------------------------------------
+
+// handleAudit implements the campfire_audit tool. It reads all messages from
+// the agent's audit campfire, counts actions by type, and returns a summary
+// including the latest Merkle root if one has been published.
+func (s *server) handleAudit(id interface{}, _ map[string]interface{}) jsonRPCResponse {
+	if s.auditWriter == nil {
+		result, _ := toolResultJSON(map[string]interface{}{
+			"audit_campfire_id": "",
+			"total_actions":     0,
+			"actions_by_type":   map[string]int{},
+			"latest_root":       "",
+			"note":              "Transparency logging is not enabled for this session.",
+		})
+		return okResponse(id, result)
+	}
+
+	auditID := s.auditWriter.CampfireID()
+
+	// Read all audit campfire messages.
+	st := s.st
+	var ownStore bool
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
+		ownStore = true
+	}
+	_ = ownStore
+
+	fsT := s.fsTransport()
+	messages, err := fsT.ListMessages(auditID)
+	if err != nil {
+		// Audit campfire might not exist yet (no actions logged). Return empty summary.
+		result, _ := toolResultJSON(map[string]interface{}{
+			"audit_campfire_id": auditID,
+			"total_actions":     0,
+			"actions_by_type":   map[string]int{},
+			"latest_root":       "",
+		})
+		return okResponse(id, result)
+	}
+
+	totalActions := 0
+	actionsByType := map[string]int{}
+	latestRoot := ""
+
+	for _, msg := range messages {
+		// Parse the payload.
+		var entry map[string]interface{}
+		if err := json.Unmarshal(msg.Payload, &entry); err != nil {
+			continue
+		}
+		// Check for audit-root messages.
+		for _, tag := range msg.Tags {
+			if tag == "campfire:audit-root" {
+				if root, ok := entry["merkle_root"].(string); ok {
+					latestRoot = root
+				}
+			}
+			if tag == "campfire:audit" {
+				if action, ok := entry["action"].(string); ok {
+					totalActions++
+					actionsByType[action]++
+				}
+			}
+		}
+	}
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"audit_campfire_id": auditID,
+		"total_actions":     totalActions,
+		"actions_by_type":   actionsByType,
+		"latest_root":       latestRoot,
 	})
 	return okResponse(id, result)
 }
@@ -2217,6 +2774,8 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 			return s.handleJoin(req.ID, callParams.Arguments)
 		case "campfire_send":
 			return s.handleSend(req.ID, callParams.Arguments)
+		case "campfire_commitment":
+			return s.handleCommitment(req.ID, callParams.Arguments)
 		case "campfire_read":
 			return s.handleRead(req.ID, callParams.Arguments)
 		case "campfire_inspect":
@@ -2235,6 +2794,12 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 			return s.handleTrust(req.ID, callParams.Arguments)
 		case "campfire_export":
 			return s.handleExport(req.ID, callParams.Arguments)
+		case "campfire_invite":
+			return s.handleCreateInvite(req.ID, callParams.Arguments)
+		case "campfire_revoke_invite":
+			return s.handleRevokeInvite(req.ID, callParams.Arguments)
+		case "campfire_audit":
+			return s.handleAudit(req.ID, callParams.Arguments)
 		default:
 			return errResponse(req.ID, -32601, fmt.Sprintf("unknown tool: %s", callParams.Name))
 		}
@@ -2335,13 +2900,16 @@ func (s *server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 // handleMCPSessioned is the session-aware MCP handler used in hosted HTTP mode.
 //
-// Protocol:
-//   - No Authorization header + campfire_init call: generate a token, create a
-//     session, dispatch using the session's server, inject "session_token" into
-//     the campfire_init result text.
+// Auth dispatch:
+//   - No Authorization header + campfire_init call: issue a new token via the
+//     registry, create a session, dispatch using the session's server, inject
+//     "session_token" into the campfire_init result text.
 //   - No Authorization header + any other call: reject with -32000 (session
 //     required).
-//   - Authorization: Bearer <token>: look up the session and dispatch.
+//   - Authorization: Bearer <token>: validate token against registry (rejects
+//     unregistered, revoked, and expired tokens), look up session, dispatch.
+//   - Authorization: Signed <pubkey>:<sig>: dispatch point reserved for future
+//     client-side crypto (P1). Currently returns 401 "unsupported auth scheme".
 func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2371,22 +2939,32 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract Bearer token.
+	// Auth middleware: parse Authorization header and dispatch by scheme.
+	// Supported: "Bearer <token>" — validated against issuance registry.
+	// Prepared: "Signed <pubkey>:<sig>" — reserved for future P1 (client-side crypto).
 	token := ""
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		token = strings.TrimPrefix(auth, "Bearer ")
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	} else if strings.HasPrefix(authHeader, "Signed ") {
+		// Future: client-side Ed25519 auth. Not yet implemented.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "auth scheme 'Signed' not yet supported; use Bearer")) //nolint:errcheck
+		return
 	}
 
 	// Determine if this is a campfire_init call.
-	isInit := false
+	toolName := ""
 	if req.Method == "tools/call" && req.Params != nil {
 		var cp struct {
 			Name string `json:"name"`
 		}
 		if json.Unmarshal(req.Params, &cp) == nil {
-			isInit = cp.Name == "campfire_init"
+			toolName = cp.Name
 		}
 	}
+	isInit := toolName == "campfire_init"
 
 	if token == "" && !isInit {
 		// Non-init request with no session token.
@@ -2396,14 +2974,59 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if token == "" {
-		// campfire_init with no token: create a new session.
-		var genErr error
-		token, genErr = generateToken()
-		if genErr != nil {
+		// campfire_init with no token: issue a new registered token.
+		var issueErr error
+		token, issueErr = s.sessManager.issueToken()
+		if issueErr != nil {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("generating session token: %v", genErr))) //nolint:errcheck
+			json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("issuing session token: %v", issueErr))) //nolint:errcheck
 			return
 		}
+	} else {
+		// Validate token against registry before doing anything else.
+		if _, err := s.sessManager.validateToken(token); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			var expErr *tokenExpiredError
+			if errors.As(err, &expErr) {
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "session token has expired: call campfire_init to get a new token")) //nolint:errcheck
+			} else {
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "invalid or revoked session token: call campfire_init to get a new token")) //nolint:errcheck
+			}
+			return
+		}
+	}
+
+	// Handle session management tools before getOrCreate (they operate on the
+	// registry directly and don't need a live session object for revocation).
+	if toolName == "campfire_revoke_session" {
+		s.sessManager.revokeSession(token)
+		w.Header().Set("Content-Type", "application/json")
+		resp := okResponse(req.ID, map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "Session revoked. Call campfire_init to start a new session."},
+			},
+		})
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+		return
+	}
+
+	if toolName == "campfire_rotate_token" {
+		newToken, rotErr := s.sessManager.rotateToken(token)
+		if rotErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("rotating token: %v", rotErr))) //nolint:errcheck
+			return
+		}
+		graceSec := int(s.sessManager.gracePeriod().Seconds())
+		w.Header().Set("Content-Type", "application/json")
+		resp := okResponse(req.ID, map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": fmt.Sprintf("New session token: %s\nOld token valid for %d more seconds. Update your Authorization header immediately.", newToken, graceSec)},
+			},
+		})
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+		return
 	}
 
 	sess, err := s.sessManager.getOrCreate(token)
