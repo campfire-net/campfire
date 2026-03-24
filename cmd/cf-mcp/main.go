@@ -1716,8 +1716,8 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 			h := sha256.New()
 			h.Write(m.Payload)
 			h.Write([]byte(foundNonce))
-			computed := hex.EncodeToString(h.Sum(nil))
-			verified := computed == foundCommitment
+			computed := strings.ToLower(hex.EncodeToString(h.Sum(nil)))
+			verified := computed == strings.ToLower(foundCommitment)
 			commitmentVerified = &verified
 		}
 
@@ -2695,6 +2695,11 @@ func (s *server) handleRevokeInvite(id interface{}, params map[string]interface{
 		return errResponse(id, -32602, "campfire_id and invite_code are required")
 	}
 
+	agentID, err := identity.Load(s.identityPath())
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("loading identity (run campfire_init first): %v", err))
+	}
+
 	st := s.st
 	if st == nil {
 		var openErr error
@@ -2724,6 +2729,7 @@ func (s *server) handleRevokeInvite(id interface{}, params map[string]interface{
 		s.auditWriter.Log(AuditEntry{
 			Timestamp:   time.Now().UnixNano(),
 			Action:      "revoke",
+			AgentKey:    agentID.PublicKeyHex(),
 			CampfireID:  campfireID,
 			RequestHash: requestHash(paramBytes),
 		})
