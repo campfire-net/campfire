@@ -752,3 +752,266 @@ func TestAudit_DMCreatesAuditEntry(t *testing.T) {
 		t.Errorf("expected audit entry with action=dm in audit campfire, got: %s", readText)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tests for detectSequenceGaps and campfire_audit anomalies field
+// ---------------------------------------------------------------------------
+
+// TestDetectSequenceGaps_NoGap verifies no anomalies are reported for a
+// contiguous sequence.
+func TestDetectSequenceGaps_NoGap(t *testing.T) {
+	anomalies := detectSequenceGaps([]uint64{1, 2, 3, 4, 5})
+	if len(anomalies) != 0 {
+		t.Errorf("expected no anomalies for contiguous sequence, got: %v", anomalies)
+	}
+}
+
+// TestDetectSequenceGaps_SingleGap verifies a single gap is detected.
+func TestDetectSequenceGaps_SingleGap(t *testing.T) {
+	// Missing seq 3.
+	anomalies := detectSequenceGaps([]uint64{1, 2, 4, 5})
+	if len(anomalies) != 1 {
+		t.Fatalf("expected 1 anomaly for one gap, got %d: %v", len(anomalies), anomalies)
+	}
+	if !strings.Contains(anomalies[0], "gap") {
+		t.Errorf("anomaly should describe a gap, got: %s", anomalies[0])
+	}
+}
+
+// TestDetectSequenceGaps_MultipleGaps verifies multiple gaps are each reported.
+func TestDetectSequenceGaps_MultipleGaps(t *testing.T) {
+	// Missing 3, 4 (gap of 2), and missing 7 (gap of 1).
+	anomalies := detectSequenceGaps([]uint64{1, 2, 5, 6, 8})
+	if len(anomalies) != 2 {
+		t.Fatalf("expected 2 anomalies, got %d: %v", len(anomalies), anomalies)
+	}
+}
+
+// TestDetectSequenceGaps_EmptyAndSingle verifies edge cases return no anomalies.
+func TestDetectSequenceGaps_EmptyAndSingle(t *testing.T) {
+	if a := detectSequenceGaps(nil); len(a) != 0 {
+		t.Errorf("nil input: expected empty anomalies, got %v", a)
+	}
+	if a := detectSequenceGaps([]uint64{5}); len(a) != 0 {
+		t.Errorf("single entry: expected empty anomalies, got %v", a)
+	}
+}
+
+// TestDetectSequenceGaps_Unsorted verifies gaps are detected even when
+// sequence numbers are provided out of order.
+func TestDetectSequenceGaps_Unsorted(t *testing.T) {
+	// Out-of-order but contiguous: should produce no gaps.
+	anomalies := detectSequenceGaps([]uint64{5, 3, 1, 4, 2})
+	if len(anomalies) != 0 {
+		t.Errorf("expected no anomalies for unsorted contiguous sequence, got: %v", anomalies)
+	}
+
+	// Out-of-order with a gap.
+	anomalies = detectSequenceGaps([]uint64{5, 3, 1, 6, 2})
+	if len(anomalies) != 1 {
+		t.Fatalf("expected 1 anomaly for unsorted sequence with gap, got %d: %v", len(anomalies), anomalies)
+	}
+}
+
+// TestAudit_AnomaliesFieldPresent verifies that campfire_audit always includes
+// an "anomalies" array in its response (even when there are no anomalies).
+func TestAudit_AnomaliesFieldPresent(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	aw, err := NewAuditWriter(srv)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	srv.auditWriter = aw
+
+	// Create a campfire and send two messages to populate the audit log.
+	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+
+	for i := 0; i < 3; i++ {
+		sendArgs, _ := json.Marshal(map[string]interface{}{
+			"campfire_id": campfireID,
+			"message":     fmt.Sprintf("msg %d", i),
+		})
+		srv.dispatch(makeReq("tools/call",
+			`{"name":"campfire_send","arguments":`+string(sendArgs)+`}`))
+	}
+	aw.Flush()
+
+	auditResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_audit","arguments":{}}`))
+	if auditResp.Error != nil {
+		t.Fatalf("campfire_audit failed: %s", auditResp.Error.Message)
+	}
+
+	auditText := extractResultText(t, auditResp)
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(auditText), &result); err != nil {
+		t.Fatalf("parsing campfire_audit result: %v — raw: %s", err, auditText)
+	}
+
+	// "anomalies" must be present as a JSON array (even if empty).
+	anomaliesRaw, ok := result["anomalies"]
+	if !ok {
+		t.Fatalf("campfire_audit response missing 'anomalies' field; got keys: %v", result)
+	}
+	// Must be a slice (JSON array).
+	if _, ok := anomaliesRaw.([]interface{}); !ok {
+		t.Errorf("'anomalies' should be a JSON array, got: %T — %v", anomaliesRaw, anomaliesRaw)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests for campfire_audit 'since' parameter (design-mcp-security §5.e)
+// ---------------------------------------------------------------------------
+
+// TestAudit_Since_FiltersOldEntries verifies that the 'since' parameter causes
+// campfire_audit to exclude audit entries older than the given timestamp.
+func TestAudit_Since_FiltersOldEntries(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	aw, err := NewAuditWriter(srv)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	srv.auditWriter = aw
+
+	// Create a campfire so we have something to send to.
+	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+	if campfireID == "" {
+		t.Fatalf("missing campfire_id")
+	}
+
+	// Send a first message — this will be the "old" entry.
+	sendArgs1, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+		"message":     "old message",
+	})
+	if r := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_send","arguments":`+string(sendArgs1)+`}`)); r.Error != nil {
+		t.Fatalf("first send failed: %s", r.Error.Message)
+	}
+	aw.Flush()
+
+	// Record the cut-off: anything before this moment should be excluded.
+	// Add a small sleep to ensure the second send gets a strictly later timestamp.
+	time.Sleep(2 * time.Millisecond)
+	cutoff := time.Now()
+
+	// Send a second message — this will be the "new" entry.
+	sendArgs2, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+		"message":     "new message",
+	})
+	if r := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_send","arguments":`+string(sendArgs2)+`}`)); r.Error != nil {
+		t.Fatalf("second send failed: %s", r.Error.Message)
+	}
+	aw.Flush()
+
+	// Without since: should see all actions (create + 2 sends = at least 3).
+	auditAll := srv.dispatch(makeReq("tools/call", `{"name":"campfire_audit","arguments":{}}`))
+	if auditAll.Error != nil {
+		t.Fatalf("campfire_audit (no since) failed: %s", auditAll.Error.Message)
+	}
+	allText := extractResultText(t, auditAll)
+	var allResult map[string]interface{}
+	if err := json.Unmarshal([]byte(allText), &allResult); err != nil {
+		t.Fatalf("parsing all-result: %v — raw: %s", err, allText)
+	}
+	totalAll, _ := allResult["total_actions"].(float64)
+	if totalAll < 3 {
+		t.Fatalf("expected >= 3 total actions without since filter, got %.0f", totalAll)
+	}
+
+	// With since=cutoff: should see fewer actions (only the second send, possibly).
+	// Use RFC3339Nano for sub-second precision so the filter is effective even
+	// when all messages land in the same second.
+	sinceArg := cutoff.UTC().Format(time.RFC3339Nano)
+	sinceArgs, _ := json.Marshal(map[string]interface{}{
+		"since": sinceArg,
+	})
+	auditSince := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_audit","arguments":`+string(sinceArgs)+`}`))
+	if auditSince.Error != nil {
+		t.Fatalf("campfire_audit (with since) failed: %s", auditSince.Error.Message)
+	}
+	sinceText := extractResultText(t, auditSince)
+	var sinceResult map[string]interface{}
+	if err := json.Unmarshal([]byte(sinceText), &sinceResult); err != nil {
+		t.Fatalf("parsing since-result: %v — raw: %s", err, sinceText)
+	}
+	totalSince, _ := sinceResult["total_actions"].(float64)
+	if totalSince >= totalAll {
+		t.Errorf("expected since filter to reduce action count: all=%.0f since=%.0f", totalAll, totalSince)
+	}
+}
+
+// TestAudit_Since_InvalidTimestamp verifies that an invalid 'since' value
+// returns a -32602 error (invalid params).
+func TestAudit_Since_InvalidTimestamp(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	aw, err := NewAuditWriter(srv)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	srv.auditWriter = aw
+
+	badArgs, _ := json.Marshal(map[string]interface{}{
+		"since": "not-a-timestamp",
+	})
+	resp := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_audit","arguments":`+string(badArgs)+`}`))
+	if resp.Error == nil {
+		t.Fatal("expected error for invalid since timestamp, got nil")
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("expected error code -32602 (invalid params), got %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+}
+
+// TestAudit_Since_FutureTimestamp verifies that a 'since' timestamp in the
+// future returns zero actions (all entries are older than the filter).
+func TestAudit_Since_FutureTimestamp(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	aw, err := NewAuditWriter(srv)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	srv.auditWriter = aw
+
+	// Create and send one message so there is something in the log.
+	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+	sendArgs, _ := json.Marshal(map[string]interface{}{"campfire_id": campfireID, "message": "hi"})
+	srv.dispatch(makeReq("tools/call", `{"name":"campfire_send","arguments":`+string(sendArgs)+`}`))
+	aw.Flush()
+
+	// Use a far-future since timestamp — no entries should match.
+	futureArgs, _ := json.Marshal(map[string]interface{}{
+		"since": "2099-01-01T00:00:00Z",
+	})
+	resp := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_audit","arguments":`+string(futureArgs)+`}`))
+	if resp.Error != nil {
+		t.Fatalf("campfire_audit (future since) failed: %s", resp.Error.Message)
+	}
+	text := extractResultText(t, resp)
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		t.Fatalf("parsing result: %v — raw: %s", err, text)
+	}
+	total, _ := result["total_actions"].(float64)
+	if total != 0 {
+		t.Errorf("expected 0 actions with far-future since filter, got %.0f", total)
+	}
+}

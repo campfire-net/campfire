@@ -413,6 +413,51 @@ func loadOrCreateAuditCampfire(srv *server, agentID *identity.Identity, st store
 }
 
 // ---------------------------------------------------------------------------
+// Anomaly detection
+// ---------------------------------------------------------------------------
+
+// detectSequenceGaps analyses a set of sequence numbers from audit log entries
+// and returns a list of human-readable anomaly descriptions. A sequence gap
+// (missing one or more consecutive sequence numbers) is the primary indicator
+// of potential tampering or inadvertent entry loss.
+//
+// The input slice need not be sorted. Each gap is reported as a string of the
+// form "sequence gap: missing N entries between seq X and seq Y".
+// Returns a non-nil (possibly empty) slice so callers always get a JSON array.
+func detectSequenceGaps(seqs []uint64) []string {
+	anomalies := []string{}
+	if len(seqs) < 2 {
+		return anomalies
+	}
+
+	// Sort ascending (simple insertion sort — audit logs are typically small).
+	sorted := make([]uint64, len(seqs))
+	copy(sorted, seqs)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+
+	// Scan for gaps between consecutive entries.
+	for i := 1; i < len(sorted); i++ {
+		prev, cur := sorted[i-1], sorted[i]
+		if cur <= prev {
+			// Duplicate sequence number — also anomalous.
+			anomalies = append(anomalies,
+				fmt.Sprintf("duplicate sequence number: seq %d appears more than once", cur))
+			continue
+		}
+		if gap := cur - prev; gap > 1 {
+			anomalies = append(anomalies,
+				fmt.Sprintf("sequence gap: missing %d entries between seq %d and seq %d", gap-1, prev, cur))
+		}
+	}
+
+	return anomalies
+}
+
+// ---------------------------------------------------------------------------
 // requestHash helper
 // ---------------------------------------------------------------------------
 

@@ -662,9 +662,14 @@ detecting operator abuse.
 
 Returns: total actions, actions by type, latest Merkle root (if computed), and audit_campfire_id.`,
 			InputSchema: mustJSON(map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-				"required":   []string{},
+				"type": "object",
+				"properties": map[string]interface{}{
+					"since": map[string]interface{}{
+						"type":        "string",
+						"description": "ISO-8601 timestamp (e.g. 2026-03-24T00:00:00Z). Only audit entries at or after this time are included in the summary.",
+					},
+				},
+				"required": []string{},
 			}),
 		},
 	}
@@ -2762,13 +2767,37 @@ func (s *server) handleRevokeInvite(id interface{}, params map[string]interface{
 // handleAudit implements the campfire_audit tool. It reads all messages from
 // the agent's audit campfire, counts actions by type, and returns a summary
 // including the latest Merkle root if one has been published.
-func (s *server) handleAudit(id interface{}, _ map[string]interface{}) jsonRPCResponse {
+//
+// Optional parameter:
+//
+//	since (string) — ISO-8601 timestamp. When provided, only audit entries
+//	    whose timestamp is at or after this time are included in the summary.
+func (s *server) handleAudit(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	// Parse optional 'since' filter. Accept both RFC3339 (second precision) and
+	// RFC3339Nano (sub-second precision) as both are valid ISO-8601 forms.
+	var sinceNano int64
+	if sinceStr := getStr(params, "since"); sinceStr != "" {
+		var sinceTime time.Time
+		var parseErr error
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+			sinceTime, parseErr = time.Parse(layout, sinceStr)
+			if parseErr == nil {
+				break
+			}
+		}
+		if parseErr != nil {
+			return errResponse(id, -32602, fmt.Sprintf("invalid 'since' timestamp %q: must be ISO-8601 (e.g. 2026-03-24T00:00:00Z)", sinceStr))
+		}
+		sinceNano = sinceTime.UnixNano()
+	}
+
 	if s.auditWriter == nil {
 		result, _ := toolResultJSON(map[string]interface{}{
 			"audit_campfire_id": "",
 			"total_actions":     0,
 			"actions_by_type":   map[string]int{},
 			"latest_root":       "",
+			"anomalies":         []string{},
 			"note":              "Transparency logging is not enabled for this session.",
 		})
 		return okResponse(id, result)
@@ -2799,6 +2828,7 @@ func (s *server) handleAudit(id interface{}, _ map[string]interface{}) jsonRPCRe
 			"total_actions":     0,
 			"actions_by_type":   map[string]int{},
 			"latest_root":       "",
+			"anomalies":         []string{},
 		})
 		return okResponse(id, result)
 	}
@@ -2806,8 +2836,14 @@ func (s *server) handleAudit(id interface{}, _ map[string]interface{}) jsonRPCRe
 	totalActions := 0
 	actionsByType := map[string]int{}
 	latestRoot := ""
+	var sequences []uint64
 
 	for _, msg := range messages {
+		// Apply 'since' filter using the message envelope timestamp (UnixNano).
+		if sinceNano > 0 && msg.Timestamp < sinceNano {
+			continue
+		}
+
 		// Parse the payload.
 		var entry map[string]interface{}
 		if err := json.Unmarshal(msg.Payload, &entry); err != nil {
@@ -2825,9 +2861,25 @@ func (s *server) handleAudit(id interface{}, _ map[string]interface{}) jsonRPCRe
 					totalActions++
 					actionsByType[action]++
 				}
+				// Collect sequence numbers for gap detection.
+				if seqRaw, ok := entry["sequence"]; ok {
+					switch v := seqRaw.(type) {
+					case float64:
+						if v > 0 {
+							sequences = append(sequences, uint64(v))
+						}
+					case json.Number:
+						if n, err2 := v.Int64(); err2 == nil && n > 0 {
+							sequences = append(sequences, uint64(n))
+						}
+					}
+				}
 			}
 		}
 	}
+
+	// Detect sequence gaps — gaps indicate potential tampering or dropped entries.
+	anomalies := detectSequenceGaps(sequences)
 
 	result, _ := toolResultJSON(map[string]interface{}{
 		"audit_campfire_id": auditID,
@@ -2835,6 +2887,7 @@ func (s *server) handleAudit(id interface{}, _ map[string]interface{}) jsonRPCRe
 		"actions_by_type":   actionsByType,
 		"latest_root":       latestRoot,
 		"dropped_entries":   s.auditWriter.Dropped(),
+		"anomalies":         anomalies,
 	})
 	return okResponse(id, result)
 }
