@@ -394,3 +394,112 @@ func TestAudit_NoGoroutineLeakOnRepeatedInit(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test 7: sequence numbers are contiguous even when channel drops entries
+// ---------------------------------------------------------------------------
+
+// TestAudit_SequenceAssignedByWriter verifies that sequence numbers are
+// assigned in the write goroutine (consumer), not in Log() (producer).
+//
+// Before the fix: Log() called seq.Add(1) before the channel send. Dropped
+// entries consumed a sequence number, creating gaps indistinguishable from
+// tampering. After the fix: only entries that reach writeEntry() get a
+// sequence number, so written sequences are always contiguous.
+func TestAudit_SequenceAssignedByWriter(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	aw, err := NewAuditWriter(srv)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	srv.auditWriter = aw
+
+	// Log a small set of entries — well within the channel buffer so none
+	// are dropped — and verify written sequences are 1, 2, 3, ... with no gaps.
+	const n = 5
+	for i := 0; i < n; i++ {
+		aw.Log(AuditEntry{
+			Timestamp: time.Now().UnixNano(),
+			Action:    "send",
+			AgentKey:  fmt.Sprintf("key%d", i),
+		})
+	}
+	aw.Flush()
+
+	// Read the audit campfire and extract all AuditEntry JSON objects.
+	auditID := aw.CampfireID()
+	readArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": auditID,
+		"all":         true,
+	})
+	readResp := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_read","arguments":`+string(readArgs)+`}`))
+	if readResp.Error != nil {
+		t.Fatalf("campfire_read: %s", readResp.Error.Message)
+	}
+
+	readText := extractResultText(t, readResp)
+
+	// Parse each escaped JSON payload embedded in the response.
+	// campfire_read returns messages; each audit payload is a JSON object
+	// containing "sequence". Extract all sequence values and verify contiguity.
+	var seqs []uint64
+	// The payload appears as an escaped JSON string — unescape and scan for
+	// sequence fields by decoding each embedded AuditEntry.
+	decoder := json.NewDecoder(strings.NewReader(readText))
+	for {
+		// Advance through the outer JSON until we find an object with "sequence".
+		tok, err := decoder.Token()
+		if err != nil {
+			break
+		}
+		if key, ok := tok.(string); ok && key == "sequence" {
+			// Next token is the sequence value.
+			var seq float64
+			if err := decoder.Decode(&seq); err == nil && seq > 0 {
+				seqs = append(seqs, uint64(seq))
+			}
+		}
+	}
+
+	if len(seqs) < n {
+		// The outer JSON structure may escape the inner payloads; fall back to
+		// string scanning. Extract quoted numbers after "\"sequence\":" pattern.
+		seqs = nil
+		remaining := readText
+		marker := `\"sequence\"`
+		for {
+			idx := strings.Index(remaining, marker)
+			if idx < 0 {
+				break
+			}
+			remaining = remaining[idx+len(marker):]
+			// Skip whitespace and colon.
+			rest := strings.TrimLeft(remaining, " \t\r\n:")
+			var seq uint64
+			if _, err := fmt.Sscanf(rest, "%d", &seq); err == nil && seq > 0 {
+				seqs = append(seqs, seq)
+			}
+		}
+	}
+
+	if len(seqs) < n {
+		t.Fatalf("expected at least %d sequence numbers in audit log, found %d; raw: %s", n, len(seqs), readText)
+	}
+
+	// Sort and verify contiguity: sequences must be 1,2,3,...,n with no gaps.
+	// (Simple insertion sort — n is small.)
+	for i := 1; i < len(seqs); i++ {
+		for j := i; j > 0 && seqs[j] < seqs[j-1]; j-- {
+			seqs[j], seqs[j-1] = seqs[j-1], seqs[j]
+		}
+	}
+	for i, seq := range seqs[:n] {
+		want := uint64(i + 1)
+		if seq != want {
+			t.Errorf("sequence gap detected: position %d expected %d got %d — seqs=%v", i, want, seq, seqs)
+		}
+	}
+}

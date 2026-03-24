@@ -533,8 +533,11 @@ func (m *SessionManager) revokeSession(token string) {
 		return
 	}
 	if v, ok := m.sessions.Load(internalID); ok {
-		m.sessions.Delete(internalID)
+		// Close before Delete to match the reaper ordering: the session is
+		// fully torn down before it is removed from the map, preventing a
+		// concurrent getOrCreate from receiving a half-closed session.
 		v.(*Session).Close()
+		m.sessions.Delete(internalID)
 	}
 }
 
@@ -567,10 +570,12 @@ func (m *SessionManager) rotateToken(oldToken string) (string, error) {
 		sess := v.(*Session)
 		sess.mu.Lock()
 		sess.token = newToken
-		// Update router registration: old token → new token.
+		// Transfer router registration from old token to new token.
+		// RotateSession preserves campfire→transport mappings so that
+		// GetCampfireTransport and LookupInviteAcrossAllStores continue
+		// to resolve correctly after rotation.
 		if sess.router != nil {
-			sess.router.UnregisterSession(oldToken)
-			sess.router.RegisterSession(newToken, sess.httpTransport)
+			sess.router.RotateSession(oldToken, newToken, sess.httpTransport)
 		}
 		sess.mu.Unlock()
 	}
@@ -688,8 +693,14 @@ func (m *SessionManager) reaper() {
 				idle := time.Since(sess.lastActivity) > timeout
 				sess.mu.Unlock()
 				if idle {
-					m.sessions.Delete(k)
+					// Close before Delete: a concurrent getOrCreate can re-add
+					// the session between Delete and Close, getting a session
+					// that is mid-close. Closing first (while still in the map)
+					// means the session is fully torn down before it disappears
+					// from the map. getOrCreate will see the session is gone
+					// and create a fresh one.
 					sess.Close()
+					m.sessions.Delete(k)
 				}
 				return true
 			})

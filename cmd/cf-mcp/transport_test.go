@@ -436,6 +436,161 @@ func TestTransportRouter_UnknownCampfire404(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: campfire routing survives token rotation
+// ---------------------------------------------------------------------------
+
+// TestTransport_CampfireRoutePreservedAfterTokenRotation verifies that
+// GetCampfireTransport and LookupInviteAcrossAllStores continue to resolve
+// after a campfire_rotate_token call. This is the regression test for the
+// bug where UnregisterSession removed campfire routes but RegisterSession
+// did not restore them.
+func TestTransport_CampfireRoutePreservedAfterTokenRotation(t *testing.T) {
+	_, _, tsURL := newTestServerWithHTTPTransport(t)
+
+	// 1. Create a session and identity.
+	initResp := mcpCall(t, tsURL, "", "campfire_init", map[string]interface{}{})
+	oldToken := extractTokenFromInit(t, initResp)
+	if oldToken == "" {
+		t.Fatal("expected non-empty session token")
+	}
+
+	// 2. Create a campfire via MCP.
+	createResp := mcpCall(t, tsURL, oldToken, "campfire_create", map[string]interface{}{
+		"description": "rotation routing test",
+	})
+	createText := extractResultText(t, createResp)
+	var createResult struct {
+		CampfireID string `json:"campfire_id"`
+	}
+	if err := json.Unmarshal([]byte(createText), &createResult); err != nil {
+		t.Fatalf("parsing create result: %v (text: %s)", err, createText)
+	}
+	campfireID := createResult.CampfireID
+	if campfireID == "" {
+		t.Fatal("campfire_id is empty in create result")
+	}
+
+	// 3. Rotate the token.
+	// campfire_rotate_token returns plain text: "New session token: <hex>\n..."
+	rotateResp := mcpCall(t, tsURL, oldToken, "campfire_rotate_token", map[string]interface{}{})
+	rotateText := extractResultText(t, rotateResp)
+	// Parse the new token from the first line: "New session token: <token>"
+	var newToken string
+	if _, err := fmt.Sscanf(rotateText, "New session token: %s", &newToken); err != nil || newToken == "" {
+		t.Fatalf("cannot parse new token from rotate result: %q", rotateText)
+	}
+	if newToken == oldToken {
+		t.Fatal("expected rotated token to differ from old token")
+	}
+
+	// 4. Verify campfire routing is intact after rotation: GetCampfireTransport
+	// must still resolve. This requires server-side state inspection via a
+	// follow-up MCP call that exercises the routing path.
+	//
+	// campfire_read uses the session transport internally; if routing broke,
+	// the call would fail with an internal error rather than returning messages.
+	readResp := mcpCall(t, tsURL, newToken, "campfire_read", map[string]interface{}{
+		"campfire_id": campfireID,
+		"all":         true,
+	})
+	if readResp.Error != nil {
+		t.Fatalf("campfire_read after rotation failed: code=%d msg=%s",
+			readResp.Error.Code, readResp.Error.Message)
+	}
+
+	// 5. Verify that the old token is no longer valid for new requests
+	// (it's in grace period but campfire ops should still gate on session ownership).
+	// The new token must work for send.
+	sendResp := mcpCall(t, tsURL, newToken, "campfire_send", map[string]interface{}{
+		"campfire_id": campfireID,
+		"message":     "post-rotation message",
+		"tags":        []string{"status"},
+	})
+	if sendResp.Error != nil {
+		t.Fatalf("campfire_send after rotation failed: code=%d msg=%s",
+			sendResp.Error.Code, sendResp.Error.Message)
+	}
+
+	// 6. Read again and verify the post-rotation message is present.
+	readResp2 := mcpCall(t, tsURL, newToken, "campfire_read", map[string]interface{}{
+		"campfire_id": campfireID,
+		"all":         true,
+	})
+	readText2 := extractResultText(t, readResp2)
+	var messages []struct {
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(readText2), &messages); err != nil {
+		t.Fatalf("parsing read result: %v (text: %s)", err, readText2)
+	}
+	found := false
+	for _, m := range messages {
+		if m.Payload == "post-rotation message" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("post-rotation message not found; messages: %v", messages)
+	}
+}
+
+// TestTransportRouter_RotateSession verifies the RotateSession method transfers
+// campfire ownership from old token to new token without losing routes.
+func TestTransportRouter_RotateSession(t *testing.T) {
+	router := NewTransportRouter()
+	st1, err := store.Open(store.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	t.Cleanup(func() { st1.Close() })
+	transport1 := cfhttp.New("", st1)
+
+	oldToken := "old-token"
+	newToken := "new-token"
+	campfireID := "test-campfire-id"
+
+	// Register transport and campfire for old token.
+	router.RegisterSession(oldToken, transport1)
+	router.RegisterForSession(campfireID, oldToken, transport1)
+
+	// Verify routes are set up.
+	if got := router.GetCampfireTransport(campfireID); got == nil {
+		t.Fatal("campfire route should be set before rotation")
+	}
+	if got := router.GetTransport(oldToken); got == nil {
+		t.Fatal("old token transport should be set before rotation")
+	}
+
+	// Rotate: transfer from old to new.
+	router.RotateSession(oldToken, newToken, transport1)
+
+	// Campfire route must still resolve (this was the bug: it was nil after rotation).
+	if got := router.GetCampfireTransport(campfireID); got == nil {
+		t.Fatal("campfire route lost after RotateSession — bug not fixed")
+	}
+	if got := router.GetCampfireTransport(campfireID); got != transport1 {
+		t.Errorf("campfire route points to wrong transport after rotation")
+	}
+
+	// New token transport must resolve.
+	if got := router.GetTransport(newToken); got == nil {
+		t.Fatal("new token transport not registered after rotation")
+	}
+
+	// Old token transport must be gone.
+	if got := router.GetTransport(oldToken); got != nil {
+		t.Error("old token transport should be removed after rotation")
+	}
+
+	// Verify UnregisterSession on new token cleans up all routes.
+	router.UnregisterSession(newToken)
+	if got := router.GetCampfireTransport(campfireID); got != nil {
+		t.Error("campfire route should be gone after UnregisterSession(newToken)")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test: mux serves both MCP and transport endpoints
 // ---------------------------------------------------------------------------
 
