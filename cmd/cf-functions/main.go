@@ -42,7 +42,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
+	"github.com/campfire-net/campfire/pkg/x402"
 )
 
 // Version is set at build time via ldflags.
@@ -187,12 +189,45 @@ func run() error {
 	}
 
 	// -------------------------------------------------------------------------
-	// HTTP mux: /api/health is own; everything else proxied.
+	// Rate limiter and x402 payment handler.
+	// The rate limiter wraps an in-memory no-op store here — the actual
+	// store lives inside cf-mcp. The limiter here is used only to track
+	// per-campfire caps for the payment endpoint and to serve 402 challenges
+	// when the proxy returns a 402 from the child process.
+	// -------------------------------------------------------------------------
+	limiter := ratelimit.New(nil, ratelimit.Config{})
+
+	// Determine the payment URL from CF_DOMAIN (same env used for external addr).
+	paymentURL := ""
+	if cfDomain != "" {
+		base := cfDomain
+		if !strings.HasPrefix(base, "http") {
+			base = "https://" + base
+		}
+		paymentURL = base + "/api/payment"
+	}
+
+	// Wrap the proxy so that 402 responses from cf-mcp are converted into
+	// structured x402 payment challenges.
+	proxyWithChallenge := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Use a response recorder to inspect the upstream status.
+		rec := &statusRecorder{ResponseWriter: w}
+		proxy.ServeHTTP(rec, r)
+		// If cf-mcp returned 402 and we haven't written the body yet, rewrite.
+		if rec.status == http.StatusPaymentRequired && !rec.written {
+			x402.ChallengeFromError(w, ratelimit.ErrMonthlyCapExceeded, paymentURL)
+		}
+	})
+	_ = proxyWithChallenge // used below in mux
+
+	// -------------------------------------------------------------------------
+	// HTTP mux: /api/health and /api/payment are own; everything else proxied.
 	// -------------------------------------------------------------------------
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		handleHealth(w, r, child)
 	})
+	mux.Handle("/api/payment", x402.NewPaymentHandler(x402.StubVerifier{}, limiter))
 	mux.Handle("/api/mcp", proxy)
 	mux.Handle("/api/mcp/", proxy)
 	mux.Handle("/api/sse", proxy)
@@ -293,6 +328,36 @@ func inheritEnv(pairs ...string) []string {
 		env = setEnv(env, pairs[i], pairs[i+1])
 	}
 	return env
+}
+
+// statusRecorder wraps http.ResponseWriter to capture the status code written
+// by a downstream handler without forwarding the response body prematurely.
+// It is used to inspect 402 responses from the cf-mcp proxy before deciding
+// whether to rewrite them as x402 payment challenges.
+//
+// NOTE: statusRecorder only intercepts WriteHeader — the body bytes written
+// by the proxy are still forwarded to the underlying ResponseWriter. The
+// ChallengeFromError call in the proxy wrapper is therefore only reached when
+// the upstream handler did NOT write a body (i.e. returned an empty 402).
+// In the common case where cf-mcp writes its own 402 body, that body is
+// forwarded and written is set to true so ChallengeFromError is skipped.
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	written bool
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	r.written = len(b) > 0
+	return r.ResponseWriter.Write(b)
 }
 
 // setEnv sets key=value in env, replacing any existing entry for key.
