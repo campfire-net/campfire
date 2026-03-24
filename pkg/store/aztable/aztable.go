@@ -35,11 +35,11 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
-// chunkSize is the maximum raw byte size per chunk property (45 KB).
-// Azure Table Storage supports up to 64 KB per property value. Binary data
-// is base64-encoded in JSON, expanding by ~4/3 (45 KB → ~60 KB base64),
-// safely under the 64 KB limit.
-const chunkSize = 45 * 1024
+// chunkSize is the maximum raw byte size per chunk property (32 KB).
+// Azure Table Storage supports up to 64 KB per property value, but binary
+// data is base64-encoded in JSON (4/3 expansion) and Azurite applies a 32K
+// UTF-16 character limit. 32 KB raw → ~43 KB base64, safely under both.
+const chunkSize = 32 * 1024
 
 // epochPadWidth is the zero-padding width for epoch strings used as row keys.
 // uint64 max is 18446744073709551615 (20 digits).
