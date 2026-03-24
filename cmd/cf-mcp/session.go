@@ -32,7 +32,7 @@ type Session struct {
 	token         string
 	cfHome        string
 	beaconDir     string
-	st            *store.Store
+	st            store.Store
 	httpTransport *cfhttp.Transport // non-nil in hosted HTTP mode
 	router        *TransportRouter  // non-nil in hosted HTTP mode; used by Close to unregister routes
 	lastActivity  time.Time

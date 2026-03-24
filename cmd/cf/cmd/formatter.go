@@ -94,7 +94,7 @@ func extractMessageFields(m store.MessageRecord) (tags []string, antecedents []s
 // only the requested fields. When fields is nil, all fields are printed using the
 // original output format (backward compatible). When fields is non-nil, only the
 // requested fields are included.
-func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, fields map[string]bool) {
+func printMessagesWithFields(allMessages []store.MessageRecord, s store.Store, fields map[string]bool) {
 	if len(allMessages) == 0 {
 		return
 	}
@@ -216,7 +216,7 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s *store.Store, 
 
 // printMessages prints message records in the standard human-readable format.
 // It is a backward-compatible wrapper around printMessagesWithFields with no field projection.
-func printMessages(allMessages []store.MessageRecord, s *store.Store) {
+func printMessages(allMessages []store.MessageRecord, s store.Store) {
 	printMessagesWithFields(allMessages, s, nil)
 }
 
@@ -281,7 +281,7 @@ func encodeMessagesJSONWithFields(allMessages []store.MessageRecord, fields map[
 // printNATMessages prints messages received via long-poll to w in the same
 // human-readable format as the direct-mode read path.
 // campfireID is passed separately because message.Message has no CampfireID field.
-func printNATMessages(campfireID string, msgs []message.Message, w io.Writer, s *store.Store) {
+func printNATMessages(campfireID string, msgs []message.Message, w io.Writer, s store.Store) {
 	cfShort := campfireID
 	if len(cfShort) > 6 {
 		cfShort = cfShort[:6]

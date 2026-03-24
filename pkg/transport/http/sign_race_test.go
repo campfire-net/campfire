@@ -72,7 +72,7 @@ func TestSignRound1ConcurrentRequests(t *testing.T) {
 	addrB := fmt.Sprintf("127.0.0.1:%d", base+80)
 	epB := fmt.Sprintf("http://%s", addrB)
 
-	buildShareProvider := func(s *store.Store) cfhttp.ThresholdShareProvider {
+	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(cfID)
 			if err != nil || share == nil {
@@ -157,7 +157,7 @@ func TestSignRound1SingleRequest(t *testing.T) {
 	addrB := fmt.Sprintf("127.0.0.1:%d", base+81)
 	epB := fmt.Sprintf("http://%s", addrB)
 
-	buildShareProvider := func(s *store.Store) cfhttp.ThresholdShareProvider {
+	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(cfID)
 			if err != nil || share == nil {

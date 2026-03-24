@@ -23,7 +23,7 @@ import (
 
 // setupJoinServer starts a transport with a key provider and returns the
 // campfire ID, server endpoint, store, and cleanup func.
-func setupJoinServer(t *testing.T, portOffset int) (campfireID, ep string, sHost *store.Store) {
+func setupJoinServer(t *testing.T, portOffset int) (campfireID, ep string, sHost store.Store) {
 	t.Helper()
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {

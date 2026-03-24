@@ -14,7 +14,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
-func openTestStore(t *testing.T) *store.Store {
+func openTestStore(t *testing.T) store.Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.db")
 	s, err := store.Open(path)
@@ -25,7 +25,7 @@ func openTestStore(t *testing.T) *store.Store {
 	return s
 }
 
-func addMembership(t *testing.T, s *store.Store, campfireID string) {
+func addMembership(t *testing.T, s store.Store, campfireID string) {
 	t.Helper()
 	err := s.AddMembership(store.Membership{
 		CampfireID:   campfireID,
@@ -40,7 +40,7 @@ func addMembership(t *testing.T, s *store.Store, campfireID string) {
 	}
 }
 
-func insertMessage(t *testing.T, s *store.Store, campfireID string, tags []string, ts int64) string {
+func insertMessage(t *testing.T, s store.Store, campfireID string, tags []string, ts int64) string {
 	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	msg, err := message.NewMessage(priv, pub, []byte("test payload"), tags, nil)

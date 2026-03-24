@@ -13,7 +13,7 @@ import (
 )
 
 // openTestStore creates a temporary SQLite store for tests.
-func openTestStore(t *testing.T) (*store.Store, func()) {
+func openTestStore(t *testing.T) (store.Store, func()) {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := store.Open(filepath.Join(dir, "test.db"))
@@ -24,7 +24,7 @@ func openTestStore(t *testing.T) (*store.Store, func()) {
 }
 
 // mustNewCampfire creates a campfire and registers it in the store.
-func mustNewCampfire(t *testing.T, s *store.Store) *campfire.Campfire {
+func mustNewCampfire(t *testing.T, s store.Store) *campfire.Campfire {
 	t.Helper()
 	c, err := campfire.New("open", nil, 1)
 	if err != nil {
@@ -60,7 +60,7 @@ func mustNewMessage(t *testing.T, c *campfire.Campfire, payload string) *message
 }
 
 // newTestTransport builds a Transport pointed at the given test server.
-func newTestTransport(t *testing.T, srv *httptest.Server, s *store.Store) *Transport {
+func newTestTransport(t *testing.T, srv *httptest.Server, s store.Store) *Transport {
 	t.Helper()
 	cfg := Config{
 		Repo:        "org/repo",

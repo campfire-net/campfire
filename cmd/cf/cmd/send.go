@@ -203,7 +203,7 @@ func sendFilesystem(campfireID, payload string, tags, antecedents []string, inst
 // sendGitHub sends a message via the GitHub Issues transport.
 // The campfire state (repo + issue number) is read from m.TransportDir.
 // The agent signs the message and POSTs it as a campfire-msg-v1: comment.
-func sendGitHub(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s *store.Store, m *store.Membership) (*message.Message, error) {
+func sendGitHub(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s store.Store, m *store.Membership) (*message.Message, error) {
 	meta, ok := parseGitHubTransportDir(m.TransportDir)
 	if !ok {
 		return nil, fmt.Errorf("invalid GitHub transport dir: %s", m.TransportDir)
@@ -244,7 +244,7 @@ func sendGitHub(campfireID, payload string, tags, antecedents []string, instance
 // sendP2PHTTP sends a message via the P2P HTTP transport.
 // For threshold=1: signs provenance hop with campfire key, fans out to peers.
 // For threshold>1: runs FROST signing rounds with co-signers, then fans out.
-func sendP2PHTTP(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s *store.Store, m *store.Membership) (*message.Message, error) {
+func sendP2PHTTP(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s store.Store, m *store.Membership) (*message.Message, error) {
 	// Load campfire state from local CBOR file.
 	statePath := filepath.Join(m.TransportDir, campfireID+".cbor")
 	stateData, err := os.ReadFile(statePath)
@@ -350,7 +350,7 @@ type peerEntry struct {
 
 // thresholdSignHop runs FROST signing rounds with co-signers to produce a threshold
 // signature for the provenance hop. Returns the 64-byte Ed25519 signature and the hop timestamp.
-func thresholdSignHop(msg *message.Message, cfState *campfire.CampfireState, memberCount int, campfireID string, agentID *identity.Identity, s *store.Store, peers []peerEntry, thresh uint) ([]byte, int64, error) {
+func thresholdSignHop(msg *message.Message, cfState *campfire.CampfireState, memberCount int, campfireID string, agentID *identity.Identity, s store.Store, peers []peerEntry, thresh uint) ([]byte, int64, error) {
 	// Load this node's DKG share.
 	share, err := s.GetThresholdShare(campfireID)
 	if err != nil {

@@ -65,7 +65,7 @@ var joinCmd = &cobra.Command{
 	},
 }
 
-func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Store) error {
+func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store) error {
 	tr := fs.New(fs.DefaultBaseDir())
 
 	// Read campfire state to check join protocol.
@@ -134,7 +134,7 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s *store.Stor
 	return nil
 }
 
-func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store, via, listen, tlsCert, tlsKey string) error {
+func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, via, listen, tlsCert, tlsKey string) error {
 	if (tlsCert == "") != (tlsKey == "") {
 		return fmt.Errorf("--tls-cert and --tls-key must both be provided or both omitted")
 	}
@@ -280,7 +280,7 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s *store.Store, 
 // will observe the campfire:join-request comment in their poll loop and post a
 // campfire:key-delivery comment encrypting the campfire private key to the joiner's
 // public key. This function polls until the key delivery comment arrives.
-func joinGitHub(campfireArg string, agentID *identity.Identity, s *store.Store, tokenEnv, baseURL, ghRepo string) error {
+func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, tokenEnv, baseURL, ghRepo string) error {
 	token, err := resolveGitHubToken(tokenEnv, CFHome())
 	if err != nil {
 		return fmt.Errorf("resolving GitHub token: %w", err)

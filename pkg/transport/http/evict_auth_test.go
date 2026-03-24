@@ -18,7 +18,7 @@ import (
 )
 
 // addMembershipWithCreator inserts a membership with an explicit CreatorPubkey.
-func addMembershipWithCreator(t *testing.T, s *store.Store, campfireID, creatorPubkey string) {
+func addMembershipWithCreator(t *testing.T, s store.Store, campfireID, creatorPubkey string) {
 	t.Helper()
 	err := s.AddMembership(store.Membership{
 		CampfireID:    campfireID,

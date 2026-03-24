@@ -68,7 +68,7 @@ var createCmd = &cobra.Command{
 	},
 }
 
-func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store, description string) error {
+func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, description string) error {
 	return createFilesystemWithDesc(cf, agentID, s, fs.DefaultBaseDir(), description)
 }
 
@@ -77,7 +77,7 @@ func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s *stor
 // In project mode (.campfire/root exists) it also:
 //   - publishes a beacon to .campfire/beacons/ in the project dir
 //   - sends a campfire:sub-created announcement to the root campfire
-func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store, baseDir string, description string) error {
+func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, baseDir string, description string) error {
 	// Set up filesystem transport
 	transport := fs.New(baseDir)
 	if err := transport.Init(cf); err != nil {
@@ -167,7 +167,7 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 	return nil
 }
 
-func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store, description, listenAddr, tlsCert, tlsKey string, participants uint) error {
+func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, description, listenAddr, tlsCert, tlsKey string, participants uint) error {
 	if listenAddr == "" {
 		return fmt.Errorf("--listen is required for p2p-http transport (e.g. --listen :9001)")
 	}
@@ -322,7 +322,7 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s *store.S
 // createGitHub creates a campfire with the GitHub Issues transport.
 // It creates a GitHub Issue, publishes a beacon to the coordination repo,
 // and records the membership in the local store.
-func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s *store.Store, description, ghRepo, tokenEnv, baseURL string) error {
+func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, description, ghRepo, tokenEnv, baseURL string) error {
 	if ghRepo == "" {
 		return fmt.Errorf("--github-repo is required for GitHub transport (e.g. org/campfire-relay)")
 	}
@@ -452,7 +452,7 @@ func buildKeyProvider(cfHome string) cfhttp.CampfireKeyProvider {
 
 // buildThresholdShareProvider returns a ThresholdShareProvider that reads FROST DKG
 // shares from the local store.
-func buildThresholdShareProvider(s *store.Store) cfhttp.ThresholdShareProvider {
+func buildThresholdShareProvider(s store.Store) cfhttp.ThresholdShareProvider {
 	return func(campfireID string) (uint32, []byte, error) {
 		share, err := s.GetThresholdShare(campfireID)
 		if err != nil {

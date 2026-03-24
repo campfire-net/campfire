@@ -878,7 +878,7 @@ func TestDeliverInvalidMessageSigRejected(t *testing.T) {
 
 // addPeerEndpointWithRole adds a peer to the store with a specific role.
 // Used to set up test scenarios for role enforcement.
-func addPeerEndpointWithRole(t *testing.T, s *store.Store, campfireID, pubKeyHex, role string) {
+func addPeerEndpointWithRole(t *testing.T, s store.Store, campfireID, pubKeyHex, role string) {
 	t.Helper()
 	err := s.UpsertPeerEndpoint(store.PeerEndpoint{
 		CampfireID:   campfireID,

@@ -112,7 +112,7 @@ func (r *RateLimiter) Allow(userID string) bool {
 // signed campfire messages.
 type InboundHandler struct {
 	ident       *identity.Identity
-	cfStore     *store.Store
+	cfStore     store.Store
 	bridgeDB    *state.DB
 	fsTransport *fs.Transport
 	validator   *botframework.Validator
@@ -124,7 +124,7 @@ type InboundHandler struct {
 // fsTransport is optional — if nil, messages are written to the store only.
 func NewInboundHandler(
 	ident *identity.Identity,
-	cfStore *store.Store,
+	cfStore store.Store,
 	bridgeDB *state.DB,
 	fsTransport *fs.Transport,
 	validator *botframework.Validator,

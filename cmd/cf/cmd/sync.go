@@ -26,7 +26,7 @@ func followIntervalForTransport(m store.Membership) time.Duration {
 // computeInitialCursor derives the starting poll cursor from the local store.
 // Returns the maximum ReceivedAt nanosecond timestamp across all messages in
 // the campfire, or 0 if the store is empty.
-func computeInitialCursor(s *store.Store, campfireID string) (int64, error) {
+func computeInitialCursor(s store.Store, campfireID string) (int64, error) {
 	msgs, err := s.ListMessages(campfireID, 0)
 	if err != nil {
 		return 0, fmt.Errorf("listing messages for cursor: %w", err)
@@ -41,7 +41,7 @@ func computeInitialCursor(s *store.Store, campfireID string) (int64, error) {
 }
 
 // syncCampfire runs the appropriate sync function for a single campfire based on its transport.
-func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, s *store.Store) {
+func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, s store.Store) {
 	switch transport.ResolveType(*m) {
 	case transport.TypeGitHub:
 		syncFromGitHub(cfID, m.TransportDir, s)
@@ -54,7 +54,7 @@ func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, 
 
 // syncFromGitHub polls the GitHub Issue for new comments and stores verified messages
 // in the local SQLite store. Non-fatal errors are silently ignored (caller continues).
-func syncFromGitHub(cfID, transportDir string, s *store.Store) {
+func syncFromGitHub(cfID, transportDir string, s store.Store) {
 	meta, ok := parseGitHubTransportDir(transportDir)
 	if !ok {
 		return
@@ -86,7 +86,7 @@ func syncFromGitHub(cfID, transportDir string, s *store.Store) {
 // Only messages with valid Ed25519 signatures are stored; invalid messages are silently
 // skipped to prevent injection of unsigned content via shared filesystem directories.
 // Provenance hops are also verified; any hop with an invalid signature is rejected.
-func syncFromFilesystem(cfID string, transportDir string, s *store.Store) {
+func syncFromFilesystem(cfID string, transportDir string, s store.Store) {
 	baseDir := fs.DefaultBaseDir()
 	if transportDir != "" {
 		baseDir = filepath.Dir(transportDir)
@@ -117,7 +117,7 @@ func syncFromFilesystem(cfID string, transportDir string, s *store.Store) {
 }
 
 // syncFromHTTPPeers pulls messages from all known peer endpoints for a p2p-http campfire.
-func syncFromHTTPPeers(cfID string, agentID *identity.Identity, s *store.Store) {
+func syncFromHTTPPeers(cfID string, agentID *identity.Identity, s store.Store) {
 	peers, err := s.ListPeerEndpoints(cfID)
 	if err != nil {
 		return

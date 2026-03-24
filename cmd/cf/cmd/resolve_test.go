@@ -11,7 +11,7 @@ import (
 )
 
 // makeTestStore creates a temporary store with the given campfire IDs as memberships.
-func makeTestStore(t *testing.T, campfireIDs []string) (*store.Store, string) {
+func makeTestStore(t *testing.T, campfireIDs []string) (store.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "store.db")

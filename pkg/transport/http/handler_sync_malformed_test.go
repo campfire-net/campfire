@@ -22,7 +22,7 @@ import (
 )
 
 // buildValidRecord creates and stores a well-formed MessageRecord, returning it.
-func buildValidRecord(t *testing.T, s *store.Store, campfireID string) store.MessageRecord {
+func buildValidRecord(t *testing.T, s store.Store, campfireID string) store.MessageRecord {
 	t.Helper()
 	id := tempIdentity(t)
 	return storeMessageRecord(t, s, campfireID, id)
@@ -31,7 +31,7 @@ func buildValidRecord(t *testing.T, s *store.Store, campfireID string) store.Mes
 // buildMalformedSenderRecord inserts a MessageRecord whose Sender field is an
 // odd-length hex string. hex.DecodeString will reject it, so recordToMessage
 // returns an error and handleSync silently skips the record.
-func buildMalformedSenderRecord(t *testing.T, s *store.Store, campfireID string) store.MessageRecord {
+func buildMalformedSenderRecord(t *testing.T, s store.Store, campfireID string) store.MessageRecord {
 	t.Helper()
 	id := tempIdentity(t)
 	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("malformed sender test"), []string{"test"}, nil)

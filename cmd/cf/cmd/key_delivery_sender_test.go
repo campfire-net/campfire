@@ -89,7 +89,7 @@ func hasSuffix(s, suffix string) bool {
 	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
 }
 
-func openKDStore(t *testing.T) *store.Store {
+func openKDStore(t *testing.T) store.Store {
 	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "kd.db"))
 	if err != nil {
@@ -99,7 +99,7 @@ func openKDStore(t *testing.T) *store.Store {
 	return s
 }
 
-func newKDTransport(t *testing.T, srv *httptest.Server, s *store.Store, campfireID string, issueNum int) *ghtr.Transport {
+func newKDTransport(t *testing.T, srv *httptest.Server, s store.Store, campfireID string, issueNum int) *ghtr.Transport {
 	t.Helper()
 	cfg := ghtr.Config{
 		Repo:        "org/relay",

@@ -107,7 +107,7 @@ Example:
 
 // findFulfillment searches for a message with the "fulfills" tag whose antecedents
 // contain the target message ID. Returns nil if no fulfillment found.
-func findFulfillment(s *store.Store, campfireID, targetMsgID string) (*store.MessageRecord, error) {
+func findFulfillment(s store.Store, campfireID, targetMsgID string) (*store.MessageRecord, error) {
 	// Query all messages with the "fulfills" tag.
 	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{
 		Tags: []string{"fulfills"},

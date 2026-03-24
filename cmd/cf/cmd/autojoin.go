@@ -89,7 +89,7 @@ func admitFSMemberIfNew(
 // It is only called when the campfire ID came from ProjectRoot() and the agent
 // is not yet a member. Returns nil if successfully joined or if the campfire is
 // invite-only (skips silently). Returns an error only on unexpected failures.
-func autoJoinRootCampfire(campfireID string, agentID *identity.Identity, s *store.Store) error {
+func autoJoinRootCampfire(campfireID string, agentID *identity.Identity, s store.Store) error {
 	tr := fs.New(fs.DefaultBaseDir())
 
 	// Read campfire state to check join protocol.

@@ -26,7 +26,7 @@ import (
 // setupOpenCampfireServer starts a transport for an open campfire with a key
 // provider and two pre-existing peers. Returns the campfire ID, server endpoint,
 // host identity, and store.
-func setupOpenCampfireServer(t *testing.T, portOffset int) (campfireID, ep string, hostID *identity.Identity, peerA, peerB *identity.Identity, sHost *store.Store) {
+func setupOpenCampfireServer(t *testing.T, portOffset int) (campfireID, ep string, hostID *identity.Identity, peerA, peerB *identity.Identity, sHost store.Store) {
 	t.Helper()
 
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)

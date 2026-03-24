@@ -48,7 +48,7 @@ type Config struct {
 type Transport struct {
 	cfg    Config
 	client *githubClient
-	store  *store.Store
+	store  store.Store
 
 	mu           sync.RWMutex
 	lastSeen     map[string]time.Time // campfireID -> timestamp of last seen comment
@@ -62,7 +62,7 @@ type Transport struct {
 
 // New creates a new Transport. Returns ErrEncryptAtRestNotSupported if
 // cfg.EncryptAtRest is true (not yet implemented).
-func New(cfg Config, s *store.Store) (*Transport, error) {
+func New(cfg Config, s store.Store) (*Transport, error) {
 	if cfg.EncryptAtRest {
 		return nil, ErrEncryptAtRestNotSupported
 	}

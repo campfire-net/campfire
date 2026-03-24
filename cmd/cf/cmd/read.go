@@ -23,7 +23,7 @@ type campfireEntry struct {
 // resolveCampfireEntries resolves which campfires to read from and builds the
 // campfireEntry list. If args contains a campfire ID, only that campfire is used.
 // Otherwise all memberships are returned, auto-joining the project root if needed.
-func resolveCampfireEntries(args []string, agentID *identity.Identity, s *store.Store) ([]string, []campfireEntry, error) {
+func resolveCampfireEntries(args []string, agentID *identity.Identity, s store.Store) ([]string, []campfireEntry, error) {
 	var campfireIDs []string
 	if len(args) > 0 {
 		resolved, err := resolveCampfireID(args[0], s)
@@ -67,7 +67,7 @@ func resolveCampfireEntries(args []string, agentID *identity.Identity, s *store.
 
 // runFollowMode runs the --follow polling loop: sync → query → print → sleep,
 // until a SIGINT/SIGTERM is received. Cursor advancement respects peek and all flags.
-func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s *store.Store, fieldSet map[string]bool, all, peek bool, tagFilters []string, senderFilter string) error {
+func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.Store, fieldSet map[string]bool, all, peek bool, tagFilters []string, senderFilter string) error {
 	// Determine poll interval — use the shortest interval across all campfires.
 	interval := 2 * time.Second
 	for _, e := range entries {
@@ -154,7 +154,7 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s *store
 // runOneShotMode performs a single sync → query → print → cursor-advance cycle.
 // Compaction is respected unless all is set. Cursor advancement is skipped for
 // all and peek modes.
-func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *identity.Identity, s *store.Store, fieldSet map[string]bool, all, peek bool, tagFilters []string, senderFilter string) error {
+func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *identity.Identity, s store.Store, fieldSet map[string]bool, all, peek bool, tagFilters []string, senderFilter string) error {
 	// Sync all campfires.
 	for _, e := range entries {
 		syncCampfire(e.id, e.membership, agentID, s)

@@ -60,7 +60,7 @@ func checkRoleCanSend(role string, tags []string) error {
 // sendFilesystemWithRoleCheck is the role-enforcing wrapper around sendFilesystem.
 // It checks the membership role from the store before attempting to send.
 // This is the integration point used by tests and the send command.
-func sendFilesystemWithRoleCheck(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s *store.Store) error {
+func sendFilesystemWithRoleCheck(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s store.Store) error {
 	m, err := s.GetMembership(campfireID)
 	if err != nil {
 		return fmt.Errorf("querying membership: %w", err)

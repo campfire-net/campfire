@@ -22,7 +22,7 @@ import (
 // - A filesystem transport campfire
 // - The agent joined with the given role
 // Returns (agentID, store, campfireID, transportBaseDir, cfHomeDir).
-func setupCompactTestEnv(t *testing.T, role string) (*identity.Identity, *store.Store, string, string, string) {
+func setupCompactTestEnv(t *testing.T, role string) (*identity.Identity, store.Store, string, string, string) {
 	t.Helper()
 
 	cfHomeDir := t.TempDir()
@@ -50,7 +50,7 @@ func setupCompactTestEnv(t *testing.T, role string) (*identity.Identity, *store.
 
 // seedMessages sends n messages to the campfire via the filesystem transport
 // and stores them in the local store. Returns the list of message IDs.
-func seedMessages(t *testing.T, n int, agentID *identity.Identity, s *store.Store, campfireID, transportBaseDir string) []string {
+func seedMessages(t *testing.T, n int, agentID *identity.Identity, s store.Store, campfireID, transportBaseDir string) []string {
 	t.Helper()
 	transport := fs.New(transportBaseDir)
 	var ids []string

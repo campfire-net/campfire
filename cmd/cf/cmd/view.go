@@ -334,7 +334,7 @@ func runViewList(campfireIDArg string) error {
 }
 
 // findLatestView finds the most recent campfire:view message with the given name.
-func findLatestView(s *store.Store, campfireID, name string) (*viewDefinition, error) {
+func findLatestView(s store.Store, campfireID, name string) (*viewDefinition, error) {
 	// Use tag-filtered query to get campfire:view messages efficiently.
 	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{"campfire:view"}})
 	if err != nil {
@@ -362,7 +362,7 @@ type viewInfo struct {
 }
 
 // findAllViews returns the latest definition for each unique view name.
-func findAllViews(s *store.Store, campfireID string) ([]viewInfo, error) {
+func findAllViews(s store.Store, campfireID string) ([]viewInfo, error) {
 	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{"campfire:view"}})
 	if err != nil {
 		return nil, fmt.Errorf("listing view messages: %w", err)

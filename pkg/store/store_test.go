@@ -124,7 +124,7 @@ func TestListReferencingMessages_ExactMatch(t *testing.T) {
 	}
 }
 
-func testStore(t *testing.T) *Store {
+func testStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "store.db")
 	s, err := Open(path)
@@ -132,7 +132,7 @@ func testStore(t *testing.T) *Store {
 		t.Fatalf("Open() error: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return s
+	return s.(*SQLiteStore)
 }
 
 func TestOpenClose(t *testing.T) {
@@ -555,7 +555,7 @@ func TestGetMessageByPrefix_UnderscoreWildcardInjection(t *testing.T) {
 }
 
 // helpers shared across ListMessages filter tests.
-func setupFilterTestStore(t *testing.T) (*Store, string) {
+func setupFilterTestStore(t *testing.T) (*SQLiteStore, string) {
 	t.Helper()
 	s := testStore(t)
 	cfID := "filter-cf"
@@ -726,7 +726,7 @@ func TestListMessages_EmptyFilter_ReturnsAll(t *testing.T) {
 // setupCompactionTestStore creates a store with a campfire and a few messages,
 // then adds a compaction event that supersedes the first two.
 // Returns (store, campfireID, supersededIDs, compactionEventID).
-func setupCompactionTestStore(t *testing.T) (*Store, string, []string, string) {
+func setupCompactionTestStore(t *testing.T) (*SQLiteStore, string, []string, string) {
 	t.Helper()
 	s := testStore(t)
 	cfID := "compact-cf"
@@ -1962,7 +1962,7 @@ func TestHasMessage_Present(t *testing.T) {
 
 // countRows returns the number of rows in table where col equals id.
 // The store's db field is accessible because these tests are in the same package.
-func countRows(t *testing.T, s *Store, table, col, id string) int {
+func countRows(t *testing.T, s *SQLiteStore, table, col, id string) int {
 	t.Helper()
 	var n int
 	q := "SELECT COUNT(*) FROM " + table + " WHERE " + col + " = ?"
@@ -2280,7 +2280,7 @@ func TestMigration_BackfillTransportType(t *testing.T) {
 		t.Fatalf("creating cbor file: %v", err)
 	}
 	// Force empty transport_type by bypassing AddMembership.
-	_, dbErr := s1.db.Exec(
+	_, dbErr := s1.(*SQLiteStore).db.Exec(
 		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type)
 		 VALUES (?, ?, 'open', 'creator', 1, 1, '', '', '')`,
 		campfireID, dir,
@@ -2311,24 +2311,24 @@ func TestMigration_BackfillTransportType(t *testing.T) {
 
 // --- workspace-ao9: interface boundary verification ---
 
-// TestStoreImplementsMembershipStore verifies that *Store satisfies MembershipStore.
+// TestStoreImplementsMembershipStore verifies that Store satisfies MembershipStore.
 func TestStoreImplementsMembershipStore(t *testing.T) {
-	var _ MembershipStore = (*Store)(nil)
+	var _ MembershipStore = (Store)(nil)
 }
 
-// TestStoreImplementsMessageStore verifies that *Store satisfies MessageStore.
+// TestStoreImplementsMessageStore verifies that Store satisfies MessageStore.
 func TestStoreImplementsMessageStore(t *testing.T) {
-	var _ MessageStore = (*Store)(nil)
+	var _ MessageStore = (Store)(nil)
 }
 
-// TestStoreImplementsPeerStore verifies that *Store satisfies PeerStore.
+// TestStoreImplementsPeerStore verifies that Store satisfies PeerStore.
 func TestStoreImplementsPeerStore(t *testing.T) {
-	var _ PeerStore = (*Store)(nil)
+	var _ PeerStore = (Store)(nil)
 }
 
-// TestStoreImplementsThresholdStore verifies that *Store satisfies ThresholdStore.
+// TestStoreImplementsThresholdStore verifies that Store satisfies ThresholdStore.
 func TestStoreImplementsThresholdStore(t *testing.T) {
-	var _ ThresholdStore = (*Store)(nil)
+	var _ ThresholdStore = (Store)(nil)
 }
 
 // TestMembershipStoreInterface exercises MembershipStore methods via the interface,
@@ -2511,7 +2511,7 @@ func TestMigrations_Idempotent(t *testing.T) {
 	defer s2.Close()
 
 	var count int
-	if err := s2.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
+	if err := s2.(*SQLiteStore).db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("querying schema_migrations count: %v", err)
 	}
 	if count != len(schemaMigrations) {
