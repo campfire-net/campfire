@@ -74,6 +74,7 @@ func admitFSMemberIfNew(
 		state.PrivateKey, state.PublicKey,
 		cf.MembershipHash(), len(updatedMembers),
 		state.JoinProtocol, state.ReceptionRequirements,
+		campfire.RoleFull,
 	); err != nil {
 		return 0, "", false, fmt.Errorf("adding provenance hop: %w", err)
 	}

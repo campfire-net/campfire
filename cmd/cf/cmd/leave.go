@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
@@ -64,6 +65,7 @@ var leaveCmd = &cobra.Command{
 			state.PrivateKey, state.PublicKey,
 			cf.MembershipHash(), len(remainingMembers),
 			state.JoinProtocol, state.ReceptionRequirements,
+			campfire.RoleFull,
 		); err != nil {
 			return fmt.Errorf("adding provenance hop: %w", err)
 		}
