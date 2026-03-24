@@ -370,7 +370,9 @@ func TestAudit_NoGoroutineLeakOnRepeatedInit(t *testing.T) {
 		var ir struct {
 			AuditCampfireID string `json:"audit_campfire_id"`
 		}
-		json.Unmarshal([]byte(outer.Content[0].Text), &ir) //nolint:errcheck
+		// The session HTTP layer appends "\n\nSession token: ..." after the JSON
+		// object; json.NewDecoder stops at the first valid JSON value.
+		json.NewDecoder(strings.NewReader(outer.Content[0].Text)).Decode(&ir) //nolint:errcheck
 		return ir.AuditCampfireID
 	}
 
