@@ -597,3 +597,163 @@ func TestLargePayload(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateAndUseInvite_Basic verifies that ValidateAndUseInvite returns the
+// invite record and increments UseCount on a successful call.
+func TestValidateAndUseInvite_Basic(t *testing.T) {
+	s := newTestStore(t)
+	cfID := fmt.Sprintf("cf-invite-basic-%d", time.Now().UnixNano())
+	code := fmt.Sprintf("code-basic-%d", time.Now().UnixNano())
+
+	inv := store.InviteRecord{
+		CampfireID: cfID,
+		InviteCode: code,
+		CreatedBy:  "test-agent",
+		CreatedAt:  time.Now().UnixNano(),
+		MaxUses:    3,
+		UseCount:   0,
+	}
+	if err := s.CreateInvite(inv); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+
+	got, err := s.ValidateAndUseInvite(cfID, code)
+	if err != nil {
+		t.Fatalf("ValidateAndUseInvite: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ValidateAndUseInvite returned nil")
+	}
+	if got.UseCount != 1 {
+		t.Errorf("UseCount: got %d, want 1", got.UseCount)
+	}
+	if got.CampfireID != cfID {
+		t.Errorf("CampfireID: got %q, want %q", got.CampfireID, cfID)
+	}
+
+	// Second use should also succeed and increment to 2.
+	got2, err := s.ValidateAndUseInvite(cfID, code)
+	if err != nil {
+		t.Fatalf("ValidateAndUseInvite second: %v", err)
+	}
+	if got2.UseCount != 2 {
+		t.Errorf("UseCount second: got %d, want 2", got2.UseCount)
+	}
+}
+
+// TestValidateAndUseInvite_ExhaustedReturnsError verifies that calling
+// ValidateAndUseInvite on a fully-used invite returns ErrInviteExhausted.
+func TestValidateAndUseInvite_ExhaustedReturnsError(t *testing.T) {
+	s := newTestStore(t)
+	cfID := fmt.Sprintf("cf-invite-exhaust-%d", time.Now().UnixNano())
+	code := fmt.Sprintf("code-exhaust-%d", time.Now().UnixNano())
+
+	inv := store.InviteRecord{
+		CampfireID: cfID,
+		InviteCode: code,
+		CreatedBy:  "test-agent",
+		CreatedAt:  time.Now().UnixNano(),
+		MaxUses:    1,
+		UseCount:   1, // already exhausted
+	}
+	if err := s.CreateInvite(inv); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+
+	_, err := s.ValidateAndUseInvite(cfID, code)
+	if err == nil {
+		t.Fatal("expected ErrInviteExhausted, got nil")
+	}
+	if err != store.ErrInviteExhausted {
+		t.Errorf("expected ErrInviteExhausted, got: %v", err)
+	}
+}
+
+// TestValidateAndUseInvite_UnlimitedMaxUses verifies that an invite with
+// MaxUses==0 is never treated as exhausted regardless of UseCount.
+func TestValidateAndUseInvite_UnlimitedMaxUses(t *testing.T) {
+	s := newTestStore(t)
+	cfID := fmt.Sprintf("cf-invite-unlimited-%d", time.Now().UnixNano())
+	code := fmt.Sprintf("code-unlimited-%d", time.Now().UnixNano())
+
+	inv := store.InviteRecord{
+		CampfireID: cfID,
+		InviteCode: code,
+		CreatedBy:  "test-agent",
+		CreatedAt:  time.Now().UnixNano(),
+		MaxUses:    0, // unlimited
+		UseCount:   999,
+	}
+	if err := s.CreateInvite(inv); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+
+	got, err := s.ValidateAndUseInvite(cfID, code)
+	if err != nil {
+		t.Fatalf("ValidateAndUseInvite unlimited: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ValidateAndUseInvite returned nil")
+	}
+	if got.UseCount != 1000 {
+		t.Errorf("UseCount: got %d, want 1000", got.UseCount)
+	}
+}
+
+// TestValidateAndUseInvite_Concurrent verifies that concurrent calls to
+// ValidateAndUseInvite on the same invite do not corrupt the use count.
+// Each goroutine increments once; the final count must equal the number of
+// successful calls (some may get ErrInviteExhausted if MaxUses is reached).
+func TestValidateAndUseInvite_Concurrent(t *testing.T) {
+	s := newTestStore(t)
+	cfID := fmt.Sprintf("cf-invite-concurrent-%d", time.Now().UnixNano())
+	code := fmt.Sprintf("code-concurrent-%d", time.Now().UnixNano())
+
+	const maxUses = 5
+	const goroutines = 10
+
+	inv := store.InviteRecord{
+		CampfireID: cfID,
+		InviteCode: code,
+		CreatedBy:  "test-agent",
+		CreatedAt:  time.Now().UnixNano(),
+		MaxUses:    maxUses,
+		UseCount:   0,
+	}
+	if err := s.CreateInvite(inv); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+
+	type result struct {
+		inv *store.InviteRecord
+		err error
+	}
+	results := make(chan result, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			inv, err := s.ValidateAndUseInvite(cfID, code)
+			results <- result{inv, err}
+		}()
+	}
+
+	successCount := 0
+	exhaustedCount := 0
+	for i := 0; i < goroutines; i++ {
+		r := <-results
+		if r.err == nil {
+			successCount++
+		} else if r.err == store.ErrInviteExhausted {
+			exhaustedCount++
+		} else {
+			t.Errorf("unexpected error: %v", r.err)
+		}
+	}
+
+	if successCount != maxUses {
+		t.Errorf("successCount: got %d, want %d", successCount, maxUses)
+	}
+	if successCount+exhaustedCount != goroutines {
+		t.Errorf("total calls: got %d, want %d", successCount+exhaustedCount, goroutines)
+	}
+}
