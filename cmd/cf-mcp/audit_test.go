@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -396,6 +397,91 @@ func TestAudit_NoGoroutineLeakOnRepeatedInit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test 8: dropped counter increments when channel is full
+// ---------------------------------------------------------------------------
+
+// TestAudit_DroppedCounter verifies that:
+//   - Dropped() returns 0 when no entries are dropped.
+//   - Dropped() increments atomically when Log() is called on a full channel.
+//   - campfire_audit exposes dropped_entries in its response.
+func TestAudit_DroppedCounter(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	aw, err := NewAuditWriter(srv)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	srv.auditWriter = aw
+
+	// Initially zero.
+	if got := aw.Dropped(); got != 0 {
+		t.Fatalf("expected 0 dropped entries initially, got %d", got)
+	}
+
+	// Saturate the channel without letting the background goroutine drain it.
+	// We do this by closing done first so the goroutine exits, then stuffing
+	// the channel directly up to its capacity, then calling Log() for extras.
+	//
+	// Simpler approach: create a fresh writer whose background goroutine is
+	// blocked, fill it past capacity, and check the counter.
+	//
+	// Instead, use a small-channel writer: create one directly and bypass
+	// NewAuditWriter by constructing it inline (package-internal test).
+	smallAW := &AuditWriter{
+		campfireID: aw.campfireID,
+		srv:        srv,
+		agentID:    aw.agentID,
+		st:         aw.st,
+		ch:         make(chan AuditEntry, 2), // tiny buffer
+		done:       make(chan struct{}),
+		flushReq:   make(chan chan struct{}, 1),
+		lastRootAt: time.Now(),
+	}
+	smallAW.wg.Add(1)
+	go smallAW.loop()
+
+	// Fill the buffer (2 slots) without the goroutine running.
+	// Log 5 entries — 2 should be buffered, 3 should be dropped.
+	// The goroutine is running but will be drained — we need to block it.
+	// Simplest: close done immediately so loop exits, then log.
+	close(smallAW.done)
+	smallAW.wg.Wait() // goroutine stopped; channel is now frozen
+
+	// Log entries into a stopped writer to force drops.
+	for i := 0; i < 5; i++ {
+		smallAW.Log(AuditEntry{Action: "send", Timestamp: time.Now().UnixNano()})
+	}
+
+	dropped := smallAW.Dropped()
+	if dropped == 0 {
+		t.Error("expected at least 1 dropped entry after overfilling a stopped AuditWriter, got 0")
+	}
+	if dropped > 5 {
+		t.Errorf("dropped count %d exceeds entries logged (5)", dropped)
+	}
+
+	// campfire_audit tool must expose dropped_entries.
+	srv.auditWriter = aw // restore the live writer
+	aw.Flush()
+
+	auditResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_audit","arguments":{}}`))
+	if auditResp.Error != nil {
+		t.Fatalf("campfire_audit failed: %s", auditResp.Error.Message)
+	}
+
+	auditText := extractResultText(t, auditResp)
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(auditText), &result); err != nil {
+		t.Fatalf("parsing campfire_audit result: %v — raw: %s", err, auditText)
+	}
+
+	if _, ok := result["dropped_entries"]; !ok {
+		t.Errorf("campfire_audit response missing 'dropped_entries' field; got: %v", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test 7: sequence numbers are contiguous even when channel drops entries
 // ---------------------------------------------------------------------------
 
@@ -501,5 +587,95 @@ func TestAudit_SequenceAssignedByWriter(t *testing.T) {
 		if seq != want {
 			t.Errorf("sequence gap detected: position %d expected %d got %d — seqs=%v", i, want, seq, seqs)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: campfire_init response includes audit_status
+// ---------------------------------------------------------------------------
+
+// extractInitAuditFields parses the campfire_init JSON response and returns
+// the audit_status and audit_error fields from the result text.
+func extractInitAuditFields(t *testing.T, resp jsonRPCResponse) (status, auditErr string) {
+	t.Helper()
+	if resp.Error != nil {
+		t.Fatalf("campfire_init error: code=%d msg=%s", resp.Error.Code, resp.Error.Message)
+	}
+	b, _ := json.Marshal(resp.Result)
+	var outer struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(b, &outer); err != nil || len(outer.Content) == 0 {
+		t.Fatalf("cannot extract content from init result: %v — raw: %s", err, string(b))
+	}
+	var payload struct {
+		AuditStatus string `json:"audit_status"`
+		AuditError  string `json:"audit_error"`
+	}
+	// Use json.NewDecoder to tolerate trailing content (e.g., session token line).
+	if err := json.NewDecoder(strings.NewReader(outer.Content[0].Text)).Decode(&payload); err != nil {
+		t.Fatalf("cannot parse init payload JSON: %v — raw text: %s", err, outer.Content[0].Text)
+	}
+	return payload.AuditStatus, payload.AuditError
+}
+
+// TestAudit_InitResponseIncludesAuditStatusOK verifies that campfire_init
+// returns audit_status: "ok" in the result when the AuditWriter initialises
+// successfully.
+func TestAudit_InitResponseIncludesAuditStatusOK(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	resp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	status, _ := extractInitAuditFields(t, resp)
+	if status != "ok" {
+		t.Errorf("expected audit_status=ok, got %q", status)
+	}
+}
+
+// TestAudit_InitResponseIncludesAuditStatusDisabled verifies that when
+// AuditWriter initialisation fails, campfire_init still succeeds but returns
+// audit_status: "disabled" and a non-empty audit_error so the agent knows
+// transparency logging is unavailable.
+//
+// Failure is induced by making cfHome read-only after identity creation so
+// that the audit campfire directory cannot be written.
+func TestAudit_InitResponseIncludesAuditStatusDisabled(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test read-only directory as root")
+	}
+	srv, _ := newTestServerWithStore(t)
+
+	// Create the identity first so campfire_init can complete its own setup
+	// before we restrict the directory.
+	initResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if initResp.Error != nil {
+		t.Fatalf("first campfire_init failed: code=%d msg=%s", initResp.Error.Code, initResp.Error.Message)
+	}
+
+	// Remove the audit campfire ID file so the next init must re-create it,
+	// and make cfHome read-only so the re-creation fails.
+	_ = os.Remove(srv.cfHome + "/" + auditCampfireIDFile)
+	if err := os.Chmod(srv.cfHome, 0500); err != nil { // r-x: can read, cannot write
+		t.Fatalf("chmod cfHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(srv.cfHome, 0700) })
+
+	// Reset the auditWriter so handleInit tries to create a new one.
+	srv.auditWriter = nil
+
+	// Second init: AuditWriter creation must fail (cannot write audit campfire state).
+	resp2 := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if resp2.Error != nil {
+		t.Fatalf("campfire_init must not fail even when audit is unavailable: code=%d msg=%s",
+			resp2.Error.Code, resp2.Error.Message)
+	}
+
+	status, auditErr := extractInitAuditFields(t, resp2)
+	if status != "disabled" {
+		t.Errorf("expected audit_status=disabled when audit init fails, got %q", status)
+	}
+	if auditErr == "" {
+		t.Errorf("expected non-empty audit_error when audit_status=disabled, got empty string")
 	}
 }

@@ -815,6 +815,8 @@ Identity model:
 	// causing a new AuditWriter (and its background goroutine) to be created
 	// every call while the previous one is abandoned without Close().
 	auditCampfireID := ""
+	auditStatus := "ok"
+	auditError := ""
 	if s.auditWriter == nil {
 		if aw, awErr := NewAuditWriter(s); awErr == nil {
 			s.auditWriter = aw
@@ -826,6 +828,9 @@ Identity model:
 				s.sess.mu.Unlock()
 			}
 			auditCampfireID = aw.CampfireID()
+		} else {
+			auditStatus = "disabled"
+			auditError = awErr.Error()
 		}
 	} else {
 		auditCampfireID = s.auditWriter.CampfireID()
@@ -835,12 +840,21 @@ Identity model:
 		result, _ := toolResultJSON(map[string]interface{}{
 			"public_key":        agentID.PublicKeyHex(),
 			"audit_campfire_id": auditCampfireID,
+			"audit_status":      auditStatus,
 			"guide":             guide,
 		})
 		return okResponse(id, result)
 	}
 
-	return okResponse(id, toolResult(guide))
+	// Audit writer unavailable: include warning so the agent knows transparency
+	// logging is not active for this session (§5.e).
+	result, _ := toolResultJSON(map[string]interface{}{
+		"public_key":   agentID.PublicKeyHex(),
+		"audit_status": auditStatus,
+		"audit_error":  auditError,
+		"guide":        guide,
+	})
+	return okResponse(id, result)
 }
 
 // autoProvisionResult holds the result of autoProvisionCampfire.
@@ -2799,6 +2813,7 @@ func (s *server) handleAudit(id interface{}, _ map[string]interface{}) jsonRPCRe
 		"total_actions":     totalActions,
 		"actions_by_type":   actionsByType,
 		"latest_root":       latestRoot,
+		"dropped_entries":   s.auditWriter.Dropped(),
 	})
 	return okResponse(id, result)
 }

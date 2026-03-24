@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
@@ -68,6 +69,10 @@ type AuditWriter struct {
 	done     chan struct{}
 	wg       sync.WaitGroup
 	flushReq chan chan struct{}
+
+	// dropped counts entries silently dropped due to a full channel.
+	// Accessed atomically; readable from any goroutine via Dropped().
+	dropped atomic.Int64
 
 	// Merkle state and sequence counter — accessed only by the background goroutine.
 	seq            uint64
@@ -125,6 +130,11 @@ func (aw *AuditWriter) CampfireID() string {
 	return aw.campfireID
 }
 
+// Dropped returns the total number of audit entries dropped due to channel overflow.
+func (aw *AuditWriter) Dropped() int64 {
+	return aw.dropped.Load()
+}
+
 // Log enqueues an audit entry for async writing. Non-blocking: if the channel
 // is full the entry is dropped (audit writes must not block the request path).
 //
@@ -142,6 +152,11 @@ func (aw *AuditWriter) Log(entry AuditEntry) {
 	case aw.ch <- entry:
 	default:
 		// Channel full — drop rather than block.
+		prev := aw.dropped.Add(1)
+		if prev == 1 {
+			// First drop: emit a one-time warning to stderr so operators notice.
+			fmt.Fprintf(os.Stderr, "campfire-mcp: audit channel full — entries are being dropped (action=%s)\n", entry.Action)
+		}
 	}
 }
 
