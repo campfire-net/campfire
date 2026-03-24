@@ -218,8 +218,6 @@ func run() error {
 			x402.ChallengeFromError(w, ratelimit.ErrMonthlyCapExceeded, paymentURL)
 		}
 	})
-	_ = proxyWithChallenge // used below in mux
-
 	// -------------------------------------------------------------------------
 	// HTTP mux: /api/health and /api/payment are own; everything else proxied.
 	// -------------------------------------------------------------------------
@@ -228,10 +226,10 @@ func run() error {
 		handleHealth(w, r, child)
 	})
 	mux.Handle("/api/payment", x402.NewPaymentHandler(x402.StubVerifier{}, limiter))
-	mux.Handle("/api/mcp", proxy)
-	mux.Handle("/api/mcp/", proxy)
-	mux.Handle("/api/sse", proxy)
-	mux.Handle("/api/campfire/", proxy)
+	mux.Handle("/api/mcp", proxyWithChallenge)
+	mux.Handle("/api/mcp/", proxyWithChallenge)
+	mux.Handle("/api/sse", proxyWithChallenge)
+	mux.Handle("/api/campfire/", proxyWithChallenge)
 
 	srv := &http.Server{
 		Addr:              listenAddr,
@@ -356,7 +354,7 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
 	}
-	r.written = len(b) > 0
+	r.written = r.written || len(b) > 0
 	return r.ResponseWriter.Write(b)
 }
 
