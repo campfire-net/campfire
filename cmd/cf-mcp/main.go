@@ -1271,7 +1271,9 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		// transport router. In CLI/single-store mode there is only one store, so the
 		// local store is always correct.
 		inviteCode := getStr(params, "invite_code")
-		inviteSt := store.InviteStore(st) // default: session-local store (CLI mode)
+		// inviteSt is the store to consult for invite records.
+		// Default: the session's own store (correct for CLI mode, single-store deployments).
+		var inviteSt store.InviteStore = st
 		if s.transportRouter != nil {
 			if ownerTransport := s.transportRouter.GetCampfireTransport(campfireID); ownerTransport != nil {
 				inviteSt = ownerTransport.Store()
