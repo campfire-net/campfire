@@ -74,6 +74,11 @@ type AuditWriter struct {
 	// Accessed atomically; readable from any goroutine via Dropped().
 	dropped atomic.Int64
 
+	// written counts entries successfully written to the audit campfire.
+	// Incremented by the background goroutine after each writeEntry call.
+	// Readable from any goroutine via Written().
+	written atomic.Int64
+
 	// Merkle state and sequence counter — accessed only by the background goroutine.
 	seq            uint64
 	pendingEntries []AuditEntry
@@ -133,6 +138,12 @@ func (aw *AuditWriter) CampfireID() string {
 // Dropped returns the total number of audit entries dropped due to channel overflow.
 func (aw *AuditWriter) Dropped() int64 {
 	return aw.dropped.Load()
+}
+
+// Written returns the total number of audit entries successfully written to the
+// audit campfire. Incremented atomically after each writeEntry call.
+func (aw *AuditWriter) Written() int64 {
+	return aw.written.Load()
 }
 
 // Log enqueues an audit entry for async writing. Non-blocking: if the channel
@@ -230,6 +241,7 @@ func (aw *AuditWriter) writeEntry(entry AuditEntry) {
 	}
 
 	_ = aw.postMessage(string(payload), []string{"campfire:audit"})
+	aw.written.Add(1)
 
 	if len(aw.pendingEntries) >= merkleRootInterval {
 		aw.maybePublishRoot(false)
