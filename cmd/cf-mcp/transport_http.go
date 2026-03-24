@@ -95,6 +95,22 @@ func (r *TransportRouter) GetCampfireTransport(campfireID string) *cfhttp.Transp
 	return r.campfires[campfireID]
 }
 
+// LookupInviteAcrossAllStores searches every registered session's store for an
+// invite record matching inviteCode. Returns the first match found, or nil if
+// no store holds the code. Used by handleJoin to resolve campfire_id from an
+// invite code when the caller provides only invite_code (design-mcp-security.md §5.a).
+func (r *TransportRouter) LookupInviteAcrossAllStores(inviteCode string) (*cfhttp.Transport, string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for campfireID, t := range r.campfires {
+		inv, err := t.Store().LookupInvite(inviteCode)
+		if err == nil && inv != nil && inv.CampfireID == campfireID {
+			return t, campfireID
+		}
+	}
+	return nil, ""
+}
+
 // ServeHTTP routes incoming /campfire/{id}/... requests to the correct session's
 // transport handler. It extracts the campfire ID from the URL path, looks up the
 // owning transport, and delegates. Returns 404 if no session owns the campfire.
