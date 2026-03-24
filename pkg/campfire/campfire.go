@@ -27,18 +27,33 @@ const (
 	// RoleFull has full access: read, send, and sign system messages.
 	// This is the default for backward compatibility (empty role = full).
 	RoleFull = "full"
+	// RoleBlindRelay is a relay member that stores/forwards encrypted messages but
+	// does NOT hold the CEK and cannot decrypt payloads (spec-encryption.md v0.2 §2.5).
+	// Blind relays:
+	//   - Are included in the membership hash (for transparency)
+	//   - Sign provenance hops with role: "blind-relay" (verified field)
+	//   - Are SKIPPED in key delivery maps within campfire:membership-commit messages
+	//   - Can evaluate filters on plaintext metadata (tags, sender, timestamp)
+	//   - Cannot initiate epoch rotation (they do not hold key material)
+	RoleBlindRelay = "blind-relay"
 )
 
 // EffectiveRole returns the canonical role string, defaulting empty/legacy
 // role values to RoleFull for backward compatibility.
 func EffectiveRole(role string) string {
 	switch role {
-	case RoleObserver, RoleWriter, RoleFull:
+	case RoleObserver, RoleWriter, RoleFull, RoleBlindRelay:
 		return role
 	default:
 		// empty, "member", "creator", and any unknown legacy value → full
 		return RoleFull
 	}
+}
+
+// IsBlindRelay reports whether the role is RoleBlindRelay.
+// Blind relays are excluded from key delivery maps in campfire:membership-commit.
+func IsBlindRelay(role string) bool {
+	return role == RoleBlindRelay
 }
 
 // Campfire represents a campfire's state.
@@ -52,6 +67,12 @@ type Campfire struct {
 	Members               []Member           `cbor:"4,keyasint" json:"members"`
 	CreatedAt             int64              `cbor:"5,keyasint" json:"created_at"`
 	Threshold             uint               `cbor:"6,keyasint" json:"threshold"`
+	// Encrypted is true when this campfire uses E2E payload encryption (spec-encryption.md v0.2 §2.1).
+	// CBOR field 7, omitempty — backward compatible: absent = false (unencrypted).
+	Encrypted bool `cbor:"7,keyasint,omitempty" json:"encrypted,omitempty"`
+	// KeyEpoch is the current symmetric key epoch (spec-encryption.md v0.2 §3.4).
+	// CBOR field 8, omitempty — zero value = epoch 0.
+	KeyEpoch uint64 `cbor:"8,keyasint,omitempty" json:"key_epoch,omitempty"`
 }
 
 // Member represents a campfire member.
@@ -75,6 +96,12 @@ type CampfireState struct {
 	ReceptionRequirements []string `cbor:"4,keyasint" json:"reception_requirements"`
 	CreatedAt             int64    `cbor:"5,keyasint" json:"created_at"`
 	Threshold             uint     `cbor:"6,keyasint" json:"threshold"`
+	// Encrypted is true when this campfire uses E2E payload encryption (spec-encryption.md v0.2 §2.1).
+	// CBOR field 7, omitempty — backward compatible: absent = false (unencrypted).
+	Encrypted bool `cbor:"7,keyasint,omitempty" json:"encrypted,omitempty"`
+	// KeyEpoch is the current symmetric key epoch.
+	// CBOR field 8, omitempty — zero value = epoch 0.
+	KeyEpoch uint64 `cbor:"8,keyasint,omitempty" json:"key_epoch,omitempty"`
 }
 
 // ToCampfire reconstructs a live Campfire from this on-disk state and the
@@ -88,6 +115,8 @@ func (s *CampfireState) ToCampfire(members []MemberRecord) *Campfire {
 		ReceptionRequirements: s.ReceptionRequirements,
 		CreatedAt:             s.CreatedAt,
 		Threshold:             s.Threshold,
+		Encrypted:             s.Encrypted,
+		KeyEpoch:              s.KeyEpoch,
 	}
 	cf.Members = append(cf.Members, members...)
 	return cf
@@ -158,17 +187,29 @@ func (c *Campfire) IsMember(pubKey ed25519.PublicKey) bool {
 }
 
 // MembershipHash computes the SHA-256 hash of sorted concatenated member public keys.
+// The Role field is included in the hash per spec-encryption.md v0.2 §2.5:
+// blind relay role must be visible and verifiable in the membership hash.
 func (c *Campfire) MembershipHash() []byte {
-	keys := make([][]byte, len(c.Members))
+	// Include role in hash input: sort by (pubkey, role) for determinism.
+	type memberKey struct {
+		pubkey []byte
+		role   string
+	}
+	keys := make([]memberKey, len(c.Members))
 	for i, m := range c.Members {
-		keys[i] = m.PublicKey
+		keys[i] = memberKey{pubkey: m.PublicKey, role: m.Role}
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		return bytes.Compare(keys[i], keys[j]) < 0
+		cmp := bytes.Compare(keys[i].pubkey, keys[j].pubkey)
+		if cmp != 0 {
+			return cmp < 0
+		}
+		return keys[i].role < keys[j].role
 	})
 	h := sha256.New()
 	for _, k := range keys {
-		h.Write(k)
+		h.Write(k.pubkey)
+		h.Write([]byte(k.role))
 	}
 	result := h.Sum(nil)
 	return result
@@ -183,6 +224,7 @@ func (c *Campfire) State() CampfireState {
 		ReceptionRequirements: c.ReceptionRequirements,
 		CreatedAt:             c.CreatedAt,
 		Threshold:             c.Threshold,
+		Encrypted:             c.Encrypted,
+		KeyEpoch:              c.KeyEpoch,
 	}
 }
-
