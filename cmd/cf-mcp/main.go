@@ -98,6 +98,7 @@ type server struct {
 	httpTransport   *cfhttp.Transport // non-nil when this server has an embedded HTTP transport
 	transportRouter *TransportRouter  // non-nil in hosted HTTP mode (shared across sessions)
 	externalAddr    string            // public URL of the hosted server (e.g. "http://localhost:8080")
+	auditWriter     *AuditWriter      // non-nil when transparency logging is enabled (§5.e)
 	sessionToken    string            // non-empty in session mode; used for campfire ownership tracking in the router
 	st              store.Store      // non-nil in session mode; already-open store shared from Session
 }
@@ -641,6 +642,25 @@ membership — revocation only prevents new joins using this code.`,
 				"required":   []string{},
 			}),
 		},
+		// ---------------------------------------------------------------
+		// TRANSPARENCY LOG — per-agent audit campfire (security model §5.e)
+		// ---------------------------------------------------------------
+		{
+			Name: "campfire_audit",
+			Description: `Show a summary of your agent's transparency log.
+
+Every action this server takes on your behalf (send, join, create, export, invite, revoke) is
+recorded in a dedicated per-agent audit campfire. The log can be read by you or any party you
+share the audit_campfire_id with, providing an independent record of server activity for
+detecting operator abuse.
+
+Returns: total actions, actions by type, latest Merkle root (if computed), and audit_campfire_id.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+				"required":   []string{},
+			}),
+		},
 	}
 }
 
@@ -779,6 +799,27 @@ Identity model:
 - Session identity (no name): disposable, other agents won't recognize you next time.
 - Named identity (name: "worker-1"): persistent, survives across sessions. Use when others need to recognize you.`,
 		status, agentID.PublicKeyHex(), identityType, s.cfHome)
+
+	// Transparency log: create audit campfire for this session (§5.e).
+	// Best-effort — audit failure does not block init.
+	auditCampfireID := ""
+	if s.auditWriter == nil {
+		if aw, awErr := NewAuditWriter(s); awErr == nil {
+			s.auditWriter = aw
+			auditCampfireID = aw.CampfireID()
+		}
+	} else {
+		auditCampfireID = s.auditWriter.CampfireID()
+	}
+
+	if auditCampfireID != "" {
+		result, _ := toolResultJSON(map[string]interface{}{
+			"public_key":        agentID.PublicKeyHex(),
+			"audit_campfire_id": auditCampfireID,
+			"guide":             guide,
+		})
+		return okResponse(id, result)
+	}
 
 	return okResponse(id, toolResult(guide))
 }
@@ -1010,6 +1051,18 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
 	}
 
+	// Audit: record create action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "create",
+			AgentKey:    agentID.PublicKeyHex(),
+			CampfireID:  cf.PublicKeyHex(),
+			RequestHash: requestHash(paramBytes),
+		})
+	}
+
 	result, _ := toolResultJSON(map[string]interface{}{
 		"campfire_id":            cf.PublicKeyHex(),
 		"join_protocol":          cf.JoinProtocol,
@@ -1116,6 +1169,16 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		Label:      "default",
 	}); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
+	}
+
+	// Audit: record create action for HTTP mode (§5.e).
+	if s.auditWriter != nil {
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:  time.Now().UnixNano(),
+			Action:     "create",
+			AgentKey:   agentID.PublicKeyHex(),
+			CampfireID: cf.PublicKeyHex(),
+		})
 	}
 
 	result, _ := toolResultJSON(map[string]interface{}{
@@ -1270,6 +1333,18 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
 	}
 
+	// Audit: record join action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "join",
+			AgentKey:    agentID.PublicKeyHex(),
+			CampfireID:  campfireID,
+			RequestHash: requestHash(paramBytes),
+		})
+	}
+
 	result, _ := toolResultJSON(map[string]string{
 		"campfire_id": campfireID,
 		"status":      "joined",
@@ -1393,6 +1468,19 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		if err := fsT.WriteMessage(campfireID, msg); err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("writing message: %v", err))
 		}
+	}
+
+	// Audit: record send action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "send",
+			AgentKey:    agentID.PublicKeyHex(),
+			CampfireID:  campfireID,
+			RequestHash: requestHash(paramBytes),
+			Commitment:  commitment,
+		})
 	}
 
 	result, _ := toolResultJSON(map[string]interface{}{
@@ -2410,6 +2498,20 @@ func (s *server) handleExport(id interface{}, _ map[string]interface{}) jsonRPCR
 		return errResponse(id, -32000, fmt.Sprintf("closing gzip writer: %v", err))
 	}
 
+	// Audit: record export action (§5.e).
+	if s.auditWriter != nil {
+		agentID, _ := identity.Load(s.identityPath())
+		agentKey := ""
+		if agentID != nil {
+			agentKey = agentID.PublicKeyHex()
+		}
+		s.auditWriter.Log(AuditEntry{
+			Timestamp: time.Now().UnixNano(),
+			Action:    "export",
+			AgentKey:  agentKey,
+		})
+	}
+
 	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
 	result, _ := toolResultJSON(map[string]interface{}{
 		"tarball":     encoded,
@@ -2463,6 +2565,18 @@ func (s *server) handleCreateInvite(id interface{}, params map[string]interface{
 		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
 	}
 
+	// Audit: record invite action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "invite",
+			AgentKey:    agentID.PublicKeyHex(),
+			CampfireID:  campfireID,
+			RequestHash: requestHash(paramBytes),
+		})
+	}
+
 	result, _ := toolResultJSON(map[string]interface{}{
 		"campfire_id": campfireID,
 		"invite_code": inviteCode,
@@ -2494,10 +2608,104 @@ func (s *server) handleRevokeInvite(id interface{}, params map[string]interface{
 		return errResponse(id, -32000, fmt.Sprintf("revoking invite code: %v", err))
 	}
 
+	// Audit: record revoke action (§5.e).
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "revoke",
+			CampfireID:  campfireID,
+			RequestHash: requestHash(paramBytes),
+		})
+	}
+
 	result, _ := toolResultJSON(map[string]interface{}{
 		"campfire_id": campfireID,
 		"invite_code": inviteCode,
 		"status":      "revoked",
+	})
+	return okResponse(id, result)
+}
+
+// ---------------------------------------------------------------------------
+// Audit handler (transparency log §5.e)
+// ---------------------------------------------------------------------------
+
+// handleAudit implements the campfire_audit tool. It reads all messages from
+// the agent's audit campfire, counts actions by type, and returns a summary
+// including the latest Merkle root if one has been published.
+func (s *server) handleAudit(id interface{}, _ map[string]interface{}) jsonRPCResponse {
+	if s.auditWriter == nil {
+		result, _ := toolResultJSON(map[string]interface{}{
+			"audit_campfire_id": "",
+			"total_actions":     0,
+			"actions_by_type":   map[string]int{},
+			"latest_root":       "",
+			"note":              "Transparency logging is not enabled for this session.",
+		})
+		return okResponse(id, result)
+	}
+
+	auditID := s.auditWriter.CampfireID()
+
+	// Read all audit campfire messages.
+	st := s.st
+	var ownStore bool
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
+		ownStore = true
+	}
+	_ = ownStore
+
+	fsT := s.fsTransport()
+	messages, err := fsT.ListMessages(auditID)
+	if err != nil {
+		// Audit campfire might not exist yet (no actions logged). Return empty summary.
+		result, _ := toolResultJSON(map[string]interface{}{
+			"audit_campfire_id": auditID,
+			"total_actions":     0,
+			"actions_by_type":   map[string]int{},
+			"latest_root":       "",
+		})
+		return okResponse(id, result)
+	}
+
+	totalActions := 0
+	actionsByType := map[string]int{}
+	latestRoot := ""
+
+	for _, msg := range messages {
+		// Parse the payload.
+		var entry map[string]interface{}
+		if err := json.Unmarshal(msg.Payload, &entry); err != nil {
+			continue
+		}
+		// Check for audit-root messages.
+		for _, tag := range msg.Tags {
+			if tag == "campfire:audit-root" {
+				if root, ok := entry["merkle_root"].(string); ok {
+					latestRoot = root
+				}
+			}
+			if tag == "campfire:audit" {
+				if action, ok := entry["action"].(string); ok {
+					totalActions++
+					actionsByType[action]++
+				}
+			}
+		}
+	}
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"audit_campfire_id": auditID,
+		"total_actions":     totalActions,
+		"actions_by_type":   actionsByType,
+		"latest_root":       latestRoot,
 	})
 	return okResponse(id, result)
 }
@@ -2569,6 +2777,8 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 			return s.handleCreateInvite(req.ID, callParams.Arguments)
 		case "campfire_revoke_invite":
 			return s.handleRevokeInvite(req.ID, callParams.Arguments)
+		case "campfire_audit":
+			return s.handleAudit(req.ID, callParams.Arguments)
 		default:
 			return errResponse(req.ID, -32601, fmt.Sprintf("unknown tool: %s", callParams.Name))
 		}
