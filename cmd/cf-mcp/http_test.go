@@ -299,11 +299,19 @@ func TestHealth_SessionCount(t *testing.T) {
 	defer sm.Stop()
 
 	// Create two sessions.
-	_, err := sm.getOrCreate("tok-a")
+	tokA, err := sm.issueToken()
+	if err != nil {
+		t.Fatalf("issue token a: %v", err)
+	}
+	_, err = sm.getOrCreate(tokA)
 	if err != nil {
 		t.Fatalf("create session a: %v", err)
 	}
-	_, err = sm.getOrCreate("tok-b")
+	tokB, err := sm.issueToken()
+	if err != nil {
+		t.Fatalf("issue token b: %v", err)
+	}
+	_, err = sm.getOrCreate(tokB)
 	if err != nil {
 		t.Fatalf("create session b: %v", err)
 	}

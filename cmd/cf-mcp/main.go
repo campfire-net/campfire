@@ -35,6 +35,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/google/uuid"
 )
 
 // Version is set at build time via ldflags.
@@ -529,6 +530,79 @@ Use this to migrate from hosted to self-hosted: download the export, decode it, 
 				"required":   []string{},
 			}),
 		},
+		// ---------------------------------------------------------------
+		// INVITE CODES — campfire access control (security model §5.a)
+		// ---------------------------------------------------------------
+		{
+			Name: "campfire_invite",
+			Description: `Create an additional invite code for a campfire you own.
+
+Returns a new invite_code that can be shared with agents you want to admit. Codes can have optional
+max_uses limits and human-readable labels for tracking.
+
+Note: campfire_create automatically generates a default invite code. Use campfire_invite to
+create additional codes (e.g. per-agent codes, time-limited codes with max_uses).`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The campfire ID to create an invite code for.",
+					},
+					"max_uses": map[string]interface{}{
+						"type":        "integer",
+						"description": "Maximum number of times this code can be used (0 = unlimited).",
+					},
+					"label": map[string]interface{}{
+						"type":        "string",
+						"description": "Human-readable label for this code (e.g. 'team-access', 'agent-7').",
+					},
+				},
+				"required": []string{"campfire_id"},
+			}),
+		},
+		{
+			Name: "campfire_revoke_invite",
+			Description: `Revoke an invite code, preventing further use.
+
+After revocation the code is permanently invalid. Agents who joined with this code retain their
+membership — revocation only prevents new joins using this code.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The campfire ID.",
+					},
+					"invite_code": map[string]interface{}{
+						"type":        "string",
+						"description": "The invite code to revoke.",
+					},
+				},
+				"required": []string{"campfire_id", "invite_code"},
+			}),
+		},
+		// ---------------------------------------------------------------
+		// SESSION MANAGEMENT — revoke and rotate session tokens
+		// ---------------------------------------------------------------
+		{
+			Name:        "campfire_revoke_session",
+			Description: "Revoke your current session token immediately. The session is closed and all state is cleared. You must call campfire_init to get a new token. Use this if you believe your token has been compromised.",
+			InputSchema: mustJSON(map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+				"required":   []string{},
+			}),
+		},
+		{
+			Name:        "campfire_rotate_token",
+			Description: "Rotate your session token. Returns a new token that maps to the same session identity and state. The old token remains valid for 30 seconds to allow in-flight requests to complete, then it is invalidated. Use this to limit the blast radius of a leaked token.",
+			InputSchema: mustJSON(map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+				"required":   []string{},
+			}),
+		},
 	}
 }
 
@@ -873,11 +947,24 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
 	}
 
+	// Generate a default invite code for this campfire (security model §5.a).
+	inviteCode := uuid.New().String()
+	if err := st.CreateInvite(store.InviteRecord{
+		CampfireID: cf.PublicKeyHex(),
+		InviteCode: inviteCode,
+		CreatedBy:  agentID.PublicKeyHex(),
+		CreatedAt:  store.NowNano(),
+		Label:      "default",
+	}); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
+	}
+
 	result, _ := toolResultJSON(map[string]interface{}{
 		"campfire_id":            cf.PublicKeyHex(),
 		"join_protocol":          cf.JoinProtocol,
 		"reception_requirements": cf.ReceptionRequirements,
 		"transport_dir":          transport.CampfireDir(cf.PublicKeyHex()),
+		"invite_code":            inviteCode,
 	})
 	return okResponse(id, result)
 }
@@ -964,12 +1051,25 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		s.transportRouter.RegisterForSession(cf.PublicKeyHex(), s.sessionToken, s.httpTransport)
 	}
 
+	// Generate a default invite code for this campfire (security model §5.a).
+	inviteCode := uuid.New().String()
+	if err := st.CreateInvite(store.InviteRecord{
+		CampfireID: cf.PublicKeyHex(),
+		InviteCode: inviteCode,
+		CreatedBy:  agentID.PublicKeyHex(),
+		CreatedAt:  store.NowNano(),
+		Label:      "default",
+	}); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
+	}
+
 	result, _ := toolResultJSON(map[string]interface{}{
 		"campfire_id":            cf.PublicKeyHex(),
 		"join_protocol":          cf.JoinProtocol,
 		"reception_requirements": cf.ReceptionRequirements,
 		"transport":              "p2p-http",
 		"endpoint":               s.externalAddr,
+		"invite_code":            inviteCode,
 	})
 	return okResponse(id, result)
 }
@@ -1029,6 +1129,28 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 	if alreadyOnDisk {
 		now = existingJoinedAt
 	} else {
+		// Invite code enforcement (security model §5.a).
+		// Grace period: if the campfire has NO registered invite codes (e.g. old campfires),
+		// we allow the join without a code. If at least one code exists, a valid code is required.
+		inviteCode := getStr(params, "invite_code")
+		hasInvites, inviteCheckErr := st.HasAnyInvites(campfireID)
+		if inviteCheckErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("checking invite codes: %v", inviteCheckErr))
+		}
+		if hasInvites {
+			if inviteCode == "" {
+				return errResponse(id, -32000, "invite code required to join this campfire")
+			}
+			inv, validateErr := st.ValidateInvite(campfireID, inviteCode)
+			if validateErr != nil {
+				return errResponse(id, -32000, fmt.Sprintf("invalid invite code: %v", validateErr))
+			}
+			// Increment use count after successful validation.
+			if incErr := st.IncrementInviteUse(inv.InviteCode); incErr != nil {
+				return errResponse(id, -32000, fmt.Sprintf("recording invite use: %v", incErr))
+			}
+		}
+
 		switch state.JoinProtocol {
 		case "open":
 			// immediately admitted
@@ -2175,6 +2297,87 @@ func (s *server) handleExport(id interface{}, _ map[string]interface{}) jsonRPCR
 }
 
 // ---------------------------------------------------------------------------
+// Invite code handlers (security model §5.a)
+// ---------------------------------------------------------------------------
+
+// handleCreateInvite creates a new invite code for the given campfire.
+func (s *server) handleCreateInvite(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	campfireID := getStr(params, "campfire_id")
+	if campfireID == "" {
+		return errResponse(id, -32602, "campfire_id is required")
+	}
+
+	agentID, err := identity.Load(s.identityPath())
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("loading identity (run campfire_init first): %v", err))
+	}
+
+	maxUsesFloat, _ := params["max_uses"].(float64)
+	maxUses := int(maxUsesFloat)
+	label := getStr(params, "label")
+
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		defer st.Close()
+	}
+
+	inviteCode := uuid.New().String()
+	if err := st.CreateInvite(store.InviteRecord{
+		CampfireID: campfireID,
+		InviteCode: inviteCode,
+		CreatedBy:  agentID.PublicKeyHex(),
+		CreatedAt:  store.NowNano(),
+		MaxUses:    maxUses,
+		Label:      label,
+	}); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
+	}
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"campfire_id": campfireID,
+		"invite_code": inviteCode,
+		"max_uses":    maxUses,
+		"label":       label,
+	})
+	return okResponse(id, result)
+}
+
+// handleRevokeInvite revokes an invite code for the given campfire.
+func (s *server) handleRevokeInvite(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	campfireID := getStr(params, "campfire_id")
+	inviteCode := getStr(params, "invite_code")
+	if campfireID == "" || inviteCode == "" {
+		return errResponse(id, -32602, "campfire_id and invite_code are required")
+	}
+
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		defer st.Close()
+	}
+
+	if err := st.RevokeInvite(campfireID, inviteCode); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("revoking invite code: %v", err))
+	}
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"campfire_id": campfireID,
+		"invite_code": inviteCode,
+		"status":      "revoked",
+	})
+	return okResponse(id, result)
+}
+
+// ---------------------------------------------------------------------------
 // Request dispatch
 // ---------------------------------------------------------------------------
 
@@ -2235,6 +2438,10 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 			return s.handleTrust(req.ID, callParams.Arguments)
 		case "campfire_export":
 			return s.handleExport(req.ID, callParams.Arguments)
+		case "campfire_invite":
+			return s.handleCreateInvite(req.ID, callParams.Arguments)
+		case "campfire_revoke_invite":
+			return s.handleRevokeInvite(req.ID, callParams.Arguments)
 		default:
 			return errResponse(req.ID, -32601, fmt.Sprintf("unknown tool: %s", callParams.Name))
 		}
@@ -2335,13 +2542,16 @@ func (s *server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 // handleMCPSessioned is the session-aware MCP handler used in hosted HTTP mode.
 //
-// Protocol:
-//   - No Authorization header + campfire_init call: generate a token, create a
-//     session, dispatch using the session's server, inject "session_token" into
-//     the campfire_init result text.
+// Auth dispatch:
+//   - No Authorization header + campfire_init call: issue a new token via the
+//     registry, create a session, dispatch using the session's server, inject
+//     "session_token" into the campfire_init result text.
 //   - No Authorization header + any other call: reject with -32000 (session
 //     required).
-//   - Authorization: Bearer <token>: look up the session and dispatch.
+//   - Authorization: Bearer <token>: validate token against registry (rejects
+//     unregistered, revoked, and expired tokens), look up session, dispatch.
+//   - Authorization: Signed <pubkey>:<sig>: dispatch point reserved for future
+//     client-side crypto (P1). Currently returns 401 "unsupported auth scheme".
 func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2371,22 +2581,32 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract Bearer token.
+	// Auth middleware: parse Authorization header and dispatch by scheme.
+	// Supported: "Bearer <token>" — validated against issuance registry.
+	// Prepared: "Signed <pubkey>:<sig>" — reserved for future P1 (client-side crypto).
 	token := ""
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		token = strings.TrimPrefix(auth, "Bearer ")
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	} else if strings.HasPrefix(authHeader, "Signed ") {
+		// Future: client-side Ed25519 auth. Not yet implemented.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "auth scheme 'Signed' not yet supported; use Bearer")) //nolint:errcheck
+		return
 	}
 
 	// Determine if this is a campfire_init call.
-	isInit := false
+	toolName := ""
 	if req.Method == "tools/call" && req.Params != nil {
 		var cp struct {
 			Name string `json:"name"`
 		}
 		if json.Unmarshal(req.Params, &cp) == nil {
-			isInit = cp.Name == "campfire_init"
+			toolName = cp.Name
 		}
 	}
+	isInit := toolName == "campfire_init"
 
 	if token == "" && !isInit {
 		// Non-init request with no session token.
@@ -2396,14 +2616,59 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if token == "" {
-		// campfire_init with no token: create a new session.
-		var genErr error
-		token, genErr = generateToken()
-		if genErr != nil {
+		// campfire_init with no token: issue a new registered token.
+		var issueErr error
+		token, issueErr = s.sessManager.issueToken()
+		if issueErr != nil {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("generating session token: %v", genErr))) //nolint:errcheck
+			json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("issuing session token: %v", issueErr))) //nolint:errcheck
 			return
 		}
+	} else {
+		// Validate token against registry before doing anything else.
+		if _, err := s.sessManager.validateToken(token); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			var expErr *tokenExpiredError
+			if errors.As(err, &expErr) {
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "session token has expired: call campfire_init to get a new token")) //nolint:errcheck
+			} else {
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "invalid or revoked session token: call campfire_init to get a new token")) //nolint:errcheck
+			}
+			return
+		}
+	}
+
+	// Handle session management tools before getOrCreate (they operate on the
+	// registry directly and don't need a live session object for revocation).
+	if toolName == "campfire_revoke_session" {
+		s.sessManager.revokeSession(token)
+		w.Header().Set("Content-Type", "application/json")
+		resp := okResponse(req.ID, map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "Session revoked. Call campfire_init to start a new session."},
+			},
+		})
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+		return
+	}
+
+	if toolName == "campfire_rotate_token" {
+		newToken, rotErr := s.sessManager.rotateToken(token)
+		if rotErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("rotating token: %v", rotErr))) //nolint:errcheck
+			return
+		}
+		graceSec := int(s.sessManager.gracePeriod().Seconds())
+		w.Header().Set("Content-Type", "application/json")
+		resp := okResponse(req.ID, map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": fmt.Sprintf("New session token: %s\nOld token valid for %d more seconds. Update your Authorization header immediately.", newToken, graceSec)},
+			},
+		})
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+		return
 	}
 
 	sess, err := s.sessManager.getOrCreate(token)
