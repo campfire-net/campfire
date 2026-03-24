@@ -988,3 +988,60 @@ func TestSession_TokenNotInErrors(t *testing.T) {
 		t.Errorf("response body contains session token: %q", body)
 	}
 }
+
+// TestTokenRegistry_LookupRace exercises the data race that existed when
+// lookup() read tokenEntry fields after releasing the RWMutex. The -race
+// detector should report no issues with the fixed implementation.
+//
+// The race: concurrent goroutines call lookup() while another goroutine
+// calls revoke() and revokeWithGrace() on the same token, which mutates
+// the entry's fields (revoked, gracePeriodUntil, internalID).
+func TestTokenRegistry_LookupRace(t *testing.T) {
+	r := newTokenRegistry()
+
+	// Issue a token that will be continuously mutated by writers.
+	tok, err := r.issue()
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	const goroutines = 20
+	const iterations = 500
+
+	var wg sync.WaitGroup
+
+	// Readers: concurrent lookup() calls — this is where the race manifests.
+	for i := 0; i < goroutines/2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				// Result doesn't matter; we're exercising the race detector.
+				_, _ = r.lookup(tok, 0)
+			}
+		}()
+	}
+
+	// Writers: concurrent revoke / revokeWithGrace / re-issue to mutate the
+	// entry fields that lookup() reads after releasing the lock in the old code.
+	for i := 0; i < goroutines/4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				r.revokeWithGrace(tok, time.Now().Add(100*time.Millisecond))
+			}
+		}()
+	}
+	for i := 0; i < goroutines/4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				r.revoke(tok)
+			}
+		}()
+	}
+
+	wg.Wait()
+}

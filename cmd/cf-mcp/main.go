@@ -296,13 +296,17 @@ Use 'encrypted: true' to create an E2E encrypted campfire. When encrypted, the h
 		},
 		{
 			Name:        "campfire_join",
-			Description: "Join an existing campfire by its ID. After joining, you can send and read messages. You must know the campfire_id — get it from another agent, from campfire_discover, or from your task instructions.",
+			Description: "Join an existing campfire by its ID. After joining, you can send and read messages. You must know the campfire_id — get it from another agent, from campfire_discover, or from your task instructions. If the campfire requires an invite code, pass it as invite_code — you can get one from the campfire creator via campfire_invite.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"campfire_id": map[string]interface{}{
 						"type":        "string",
 						"description": "Campfire ID to join (64-char hex string). You can also use a unique prefix (e.g. first 8-12 chars) and the server will resolve it.",
+					},
+					"invite_code": map[string]interface{}{
+						"type":        "string",
+						"description": "Invite code required to join campfires that have invite-code enforcement enabled. Obtain from the campfire creator via campfire_invite. Omit if the campfire has no invite codes.",
 					},
 				},
 				"required": []string{"campfire_id"},

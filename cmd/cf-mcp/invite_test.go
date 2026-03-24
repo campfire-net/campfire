@@ -56,6 +56,59 @@ func doInit(t *testing.T, srv *server) {
 }
 
 // ---------------------------------------------------------------------------
+// Test 0: campfire_join schema declares invite_code parameter
+// ---------------------------------------------------------------------------
+
+func TestInvite_JoinSchemaHasInviteCode(t *testing.T) {
+	srv := newTestServer(t)
+	resp := srv.dispatch(makeReq("tools/list", "{}"))
+	if resp.Error != nil {
+		t.Fatalf("tools/list error: %+v", resp.Error)
+	}
+
+	b, _ := json.Marshal(resp.Result)
+	var result map[string]interface{}
+	if err := json.Unmarshal(b, &result); err != nil {
+		t.Fatalf("unmarshaling tools/list result: %v", err)
+	}
+
+	toolsRaw, _ := result["tools"].([]interface{})
+	var joinSchema map[string]interface{}
+	for _, raw := range toolsRaw {
+		tool, _ := raw.(map[string]interface{})
+		if tool["name"] == "campfire_join" {
+			schemaBytes, _ := json.Marshal(tool["inputSchema"])
+			if err := json.Unmarshal(schemaBytes, &joinSchema); err != nil {
+				t.Fatalf("unmarshaling campfire_join inputSchema: %v", err)
+			}
+			break
+		}
+	}
+	if joinSchema == nil {
+		t.Fatal("campfire_join tool not found in tools/list")
+	}
+
+	props, _ := joinSchema["properties"].(map[string]interface{})
+	if props == nil {
+		t.Fatal("campfire_join inputSchema has no properties")
+	}
+	if _, ok := props["invite_code"]; !ok {
+		t.Error("campfire_join schema missing invite_code parameter — MCP clients cannot send it")
+	}
+	if _, ok := props["campfire_id"]; !ok {
+		t.Error("campfire_join schema missing campfire_id parameter")
+	}
+
+	// invite_code must NOT be in required (it's optional — only needed when campfire has codes).
+	required, _ := joinSchema["required"].([]interface{})
+	for _, r := range required {
+		if r == "invite_code" {
+			t.Error("invite_code must not be in required — it is only needed when campfire enforces codes")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test 1: campfire_create response includes invite_code field
 // ---------------------------------------------------------------------------
 

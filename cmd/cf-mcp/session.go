@@ -97,21 +97,34 @@ func (r *TokenRegistry) issueFor(internalID string) (string, error) {
 func (r *TokenRegistry) lookup(token string, ttl time.Duration) (string, error) {
 	r.mu.RLock()
 	entry, ok := r.tokens[token]
+	// Copy all fields we need while holding the lock to avoid a data race.
+	// Between RUnlock and reading entry fields, another goroutine (reaper,
+	// rotation, or explicit revoke) can modify or delete the entry.
+	var internalID string
+	var issuedAt time.Time
+	var revoked bool
+	var gracePeriodUntil time.Time
+	if ok {
+		internalID = entry.internalID
+		issuedAt = entry.issuedAt
+		revoked = entry.revoked
+		gracePeriodUntil = entry.gracePeriodUntil
+	}
 	r.mu.RUnlock()
 	if !ok {
 		return "", &tokenUnknownError{}
 	}
-	if entry.revoked {
+	if revoked {
 		// Check grace period for rotated tokens.
-		if !entry.gracePeriodUntil.IsZero() && time.Now().Before(entry.gracePeriodUntil) {
-			return entry.internalID, nil
+		if !gracePeriodUntil.IsZero() && time.Now().Before(gracePeriodUntil) {
+			return internalID, nil
 		}
 		return "", &tokenRevokedError{}
 	}
-	if ttl > 0 && time.Since(entry.issuedAt) > ttl {
+	if ttl > 0 && time.Since(issuedAt) > ttl {
 		return "", &tokenExpiredError{}
 	}
-	return entry.internalID, nil
+	return internalID, nil
 }
 
 // revoke marks a token as revoked immediately.
