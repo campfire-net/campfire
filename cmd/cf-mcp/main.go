@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1414,6 +1415,13 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 	instance := getStr(params, "instance")
 	commitment := getStr(params, "commitment")
 	commitmentNonce := getStr(params, "commitment_nonce")
+
+	// §5.d: commitment and commitment_nonce must be provided together.
+	// Providing only one silently drops the commitment, misleading the sender
+	// into thinking the message is committed when it is not.
+	if (commitment != "") != (commitmentNonce != "") {
+		return errResponse(id, -32602, "commitment and commitment_nonce must both be provided, or neither")
+	}
 
 	agentID, err := identity.Load(s.identityPath())
 	if err != nil {
@@ -3015,7 +3023,15 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if token == "" {
-		// campfire_init with no token: issue a new registered token.
+		// campfire_init with no token: enforce per-IP rate limit before issuing.
+		clientIP := clientIPFromRequest(r)
+		if err := s.sessManager.checkInitRateLimit(clientIP); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("rate limit exceeded: too many new sessions from this IP; retry after 1 minute"))) //nolint:errcheck
+			return
+		}
+		// Issue a new registered token.
 		var issueErr error
 		token, issueErr = s.sessManager.issueToken()
 		if issueErr != nil {
@@ -3135,6 +3151,29 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, `{"status":"ok","sessions":%d}`, sessions)
+}
+
+// clientIPFromRequest extracts the client IP address from an HTTP request.
+// It prefers the leftmost address in X-Forwarded-For (set by reverse proxies
+// like Fly.io's edge) and falls back to the bare host from RemoteAddr.
+// The returned string is a bare IP with no port.
+func clientIPFromRequest(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// X-Forwarded-For may contain a comma-separated list; take the first.
+		if idx := strings.IndexByte(xff, ','); idx >= 0 {
+			xff = xff[:idx]
+		}
+		ip := strings.TrimSpace(xff)
+		if ip != "" {
+			return ip
+		}
+	}
+	// Fall back to RemoteAddr (host:port or bare host).
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr // already bare IP (unusual but safe)
+	}
+	return host
 }
 
 // serveHTTP starts the HTTP+SSE MCP server on the given address.
