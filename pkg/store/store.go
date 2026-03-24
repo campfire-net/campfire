@@ -10,9 +10,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/crypto"
 	"github.com/campfire-net/campfire/pkg/message"
 	_ "modernc.org/sqlite"
 )
+
+// ErrPlaintextInEncryptedCampfire is returned by AddMessage when a campfire is
+// marked encrypted (Encrypted=true) but a non-system message carries a plaintext
+// payload that does not decode as crypto.EncryptedPayload.
+// This is the downgrade-prevention sentinel error (spec §2.1).
+var ErrPlaintextInEncryptedCampfire = fmt.Errorf("plaintext payload rejected in encrypted campfire")
 
 const schema = `
 CREATE TABLE IF NOT EXISTS campfire_memberships (
@@ -559,7 +566,23 @@ func scanMessageRecord(scan func(dest ...any) error) (MessageRecord, error) {
 	return r.toMessageRecord(), nil
 }
 
+// isSystemMessage returns true if any of the message's tags have the "campfire:" prefix.
+// System messages (campfire:membership-commit, campfire:encrypted-init, etc.) are not
+// encrypted under the CEK and bypass downgrade-prevention payload enforcement.
+func isSystemMessage(tags []string) bool {
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, "campfire:") {
+			return true
+		}
+	}
+	return false
+}
+
 // AddMessage inserts a message if not already present. Returns true if inserted.
+//
+// Downgrade prevention (spec §2.1): if the campfire is marked encrypted (via
+// SetMembershipEncrypted), non-system messages MUST carry an EncryptedPayload.
+// Messages that fail this check are rejected with ErrPlaintextInEncryptedCampfire.
 func (s *SQLiteStore) AddMessage(m MessageRecord) (bool, error) {
 	if m.Tags == nil {
 		m.Tags = []string{}
@@ -570,6 +593,23 @@ func (s *SQLiteStore) AddMessage(m MessageRecord) (bool, error) {
 	if m.Provenance == nil {
 		m.Provenance = []message.ProvenanceHop{}
 	}
+
+	// Downgrade prevention: reject plaintext payloads for encrypted campfires.
+	// System messages (campfire:*) bypass this check — they are protocol messages
+	// that are not encrypted under the CEK (e.g., membership-commit, encrypted-init).
+	if !isSystemMessage(m.Tags) {
+		mem, err := s.GetMembership(m.CampfireID)
+		if err != nil {
+			return false, fmt.Errorf("downgrade check: getting membership: %w", err)
+		}
+		if mem != nil && mem.Encrypted {
+			if _, err := crypto.UnmarshalEncryptedPayload(m.Payload); err != nil {
+				return false, fmt.Errorf("%w: campfire %s requires encrypted payload",
+					ErrPlaintextInEncryptedCampfire, m.CampfireID)
+			}
+		}
+	}
+
 	tagsJSON, _ := json.Marshal(m.Tags)
 	anteJSON, _ := json.Marshal(m.Antecedents)
 	provJSON, _ := json.Marshal(m.Provenance)
@@ -1378,4 +1418,71 @@ func HasTag(tags []string, tag string) bool {
 // tags that happen to contain the substring (e.g. "xycampfire:compact").
 func isCompactionEvent(rec MessageRecord) bool {
 	return HasTag(rec.Tags, "campfire:compact")
+}
+
+// ApplyMembershipCommitAtomically processes a campfire:membership-commit in a
+// single DB transaction, ensuring that the epoch secret install and any membership
+// update are committed together or not at all (spec §6.1, atomicity requirement).
+//
+// Parameters:
+//   - campfireID: the campfire to which the commit applies
+//   - newMember: if non-nil, this membership is upserted (INSERT OR REPLACE) within
+//     the same transaction. Pass nil for evictions/leaves/scheduled rotations where
+//     no new member is being added.
+//   - secret: the EpochSecret to install for the new epoch.
+//
+// On success both the epoch secret and (optionally) the new member record are
+// visible to readers. On error neither is committed.
+func (s *SQLiteStore) ApplyMembershipCommitAtomically(campfireID string, newMember *Membership, secret EpochSecret) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("ApplyMembershipCommitAtomically: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // deferred rollback on error path
+
+	// Install epoch secret.
+	_, err = tx.Exec(
+		`INSERT INTO campfire_epoch_secrets (campfire_id, epoch, root_secret, cek, created_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(campfire_id, epoch) DO UPDATE SET
+		   root_secret = excluded.root_secret,
+		   cek         = excluded.cek,
+		   created_at  = excluded.created_at`,
+		secret.CampfireID, secret.Epoch, secret.RootSecret, secret.CEK, secret.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("ApplyMembershipCommitAtomically: upsert epoch secret: %w", err)
+	}
+
+	// Optionally add new member.
+	if newMember != nil {
+		tt := newMember.TransportType
+		if tt == "" {
+			tt = inferTransportType(newMember.CampfireID, newMember.TransportDir)
+		}
+		threshold := int(newMember.Threshold)
+		if threshold == 0 {
+			threshold = 1
+		}
+		encrypted := 0
+		if newMember.Encrypted {
+			encrypted = 1
+		}
+		_, err = tx.Exec(
+			`INSERT OR REPLACE INTO campfire_memberships
+			 (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, encrypted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			newMember.CampfireID, newMember.TransportDir, newMember.JoinProtocol,
+			newMember.Role, newMember.JoinedAt, threshold,
+			newMember.Description, newMember.CreatorPubkey, tt, encrypted,
+		)
+		if err != nil {
+			return fmt.Errorf("ApplyMembershipCommitAtomically: upsert membership: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("ApplyMembershipCommitAtomically: commit: %w", err)
+	}
+	return nil
 }
