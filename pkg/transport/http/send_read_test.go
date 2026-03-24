@@ -124,6 +124,7 @@ func TestSendReadP2PThreshold1(t *testing.T) {
 		JoinProtocol:          hop.JoinProtocol,
 		ReceptionRequirements: hop.ReceptionRequirements,
 		Timestamp:             hop.Timestamp,
+		Role:                  hop.Role,
 	}
 	signBytes, err := cfencoding.Marshal(hopSignInput)
 	if err != nil {
