@@ -13,12 +13,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
 
@@ -389,5 +392,234 @@ func TestRateLimiter_OpaquePayloads(t *testing.T) {
 	// Inner store must NOT have been called for the oversized message.
 	if fake.calls != len(opaquePayloads) {
 		t.Errorf("inner store called for oversized opaque payload (should be rejected before store)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: handleCreateHTTP stores serviceRole in Membership (not PeerRoleCreator)
+// ---------------------------------------------------------------------------
+
+// closeSessionForTest closes a session's store so that t.TempDir cleanup can
+// remove the SQLite files without "directory not empty" errors.
+func closeSessionForTest(t *testing.T, sm *SessionManager, token string) {
+	t.Helper()
+	sess := sm.getSession(token)
+	if sess == nil {
+		return
+	}
+	sess.Close()
+}
+
+// TestBlindRelay_CreateEncryptedCampfireHTTPPath verifies that when a hosted
+// server creates an encrypted campfire via the HTTP transport path
+// (handleCreateHTTP), the Membership.Role stored in SQLite is
+// campfire.RoleBlindRelay — not store.PeerRoleCreator.
+//
+// Regression test for campfire-agent-qy3: handleCreateHTTP was hardcoding
+// store.PeerRoleCreator in AddMembership instead of passing serviceRole.
+func TestBlindRelay_CreateEncryptedCampfireHTTPPath(t *testing.T) {
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
+	cfhttp.OverridePollTransportForTest(http.DefaultTransport)
+
+	srv, _, tsURL := newTestServerWithHTTPTransport(t)
+
+	initResp := mcpCall(t, tsURL, "", "campfire_init", map[string]interface{}{})
+	token := extractTokenFromInit(t, initResp)
+	if token == "" {
+		t.Fatal("expected non-empty session token")
+	}
+	t.Cleanup(func() { closeSessionForTest(t, srv.sessManager, token) })
+
+	createResp := mcpCall(t, tsURL, token, "campfire_create", map[string]interface{}{
+		"encrypted": true,
+	})
+	createText := extractResultText(t, createResp)
+
+	var createResult struct {
+		CampfireID string `json:"campfire_id"`
+	}
+	if err := json.Unmarshal([]byte(createText), &createResult); err != nil || createResult.CampfireID == "" {
+		t.Fatalf("parsing campfire_create result: %v (text: %s)", err, createText)
+	}
+
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
+		t.Fatal("session not found")
+	}
+	sess.mu.Lock()
+	st := sess.st
+	sess.mu.Unlock()
+	if st == nil {
+		t.Fatal("session store is nil")
+	}
+
+	mem, err := st.GetMembership(createResult.CampfireID)
+	if err != nil {
+		t.Fatalf("GetMembership: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("membership record not found")
+	}
+	if mem.Role != campfire.RoleBlindRelay {
+		t.Errorf("Membership.Role = %q for encrypted campfire (HTTP path), want %q",
+			mem.Role, campfire.RoleBlindRelay)
+	}
+}
+
+// TestBlindRelay_CreateNonEncryptedCampfireHTTPPath verifies that when a
+// hosted server creates a non-encrypted campfire via handleCreateHTTP,
+// Membership.Role is not campfire.RoleBlindRelay.
+func TestBlindRelay_CreateNonEncryptedCampfireHTTPPath(t *testing.T) {
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
+	cfhttp.OverridePollTransportForTest(http.DefaultTransport)
+
+	srv, _, tsURL := newTestServerWithHTTPTransport(t)
+
+	initResp := mcpCall(t, tsURL, "", "campfire_init", map[string]interface{}{})
+	token := extractTokenFromInit(t, initResp)
+	if token == "" {
+		t.Fatal("expected non-empty session token")
+	}
+	t.Cleanup(func() { closeSessionForTest(t, srv.sessManager, token) })
+
+	createResp := mcpCall(t, tsURL, token, "campfire_create", map[string]interface{}{})
+	createText := extractResultText(t, createResp)
+
+	var createResult struct {
+		CampfireID string `json:"campfire_id"`
+	}
+	if err := json.Unmarshal([]byte(createText), &createResult); err != nil || createResult.CampfireID == "" {
+		t.Fatalf("parsing campfire_create result: %v (text: %s)", err, createText)
+	}
+
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
+		t.Fatal("session not found")
+	}
+	sess.mu.Lock()
+	st := sess.st
+	sess.mu.Unlock()
+	if st == nil {
+		t.Fatal("session store is nil")
+	}
+
+	mem, err := st.GetMembership(createResult.CampfireID)
+	if err != nil {
+		t.Fatalf("GetMembership: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("membership record not found")
+	}
+	if mem.Role == campfire.RoleBlindRelay {
+		t.Errorf("Membership.Role = %q for non-encrypted campfire (HTTP path); expected non-blind-relay",
+			mem.Role)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: handleCreateHTTP stores Encrypted=true for encrypted campfire (bug campfire-agent-vcw)
+// ---------------------------------------------------------------------------
+
+// TestBlindRelay_CreateHTTP_EncryptedFlagSet verifies that the Encrypted field
+// in the SQLite store membership is set to true when an encrypted campfire is
+// created via the HTTP transport path (handleCreateHTTP).
+//
+// Regression test for campfire-agent-vcw: handleCreateHTTP was not passing
+// Encrypted to AddMembership, so the creator's own record was stored with
+// Encrypted=false even for encrypted campfires. This bypasses the downgrade
+// prevention checks in AddMessage that inspect Membership.Encrypted.
+func TestBlindRelay_CreateHTTP_EncryptedFlagSet(t *testing.T) {
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
+	cfhttp.OverridePollTransportForTest(http.DefaultTransport)
+
+	srv, _, tsURL := newTestServerWithHTTPTransport(t)
+
+	initResp := mcpCall(t, tsURL, "", "campfire_init", map[string]interface{}{})
+	token := extractTokenFromInit(t, initResp)
+	if token == "" {
+		t.Fatal("expected non-empty session token")
+	}
+	t.Cleanup(func() { closeSessionForTest(t, srv.sessManager, token) })
+
+	createResp := mcpCall(t, tsURL, token, "campfire_create", map[string]interface{}{
+		"encrypted": true,
+	})
+	createText := extractResultText(t, createResp)
+
+	var createResult struct {
+		CampfireID string `json:"campfire_id"`
+	}
+	if err := json.Unmarshal([]byte(createText), &createResult); err != nil || createResult.CampfireID == "" {
+		t.Fatalf("parsing campfire_create result: %v (text: %s)", err, createText)
+	}
+
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
+		t.Fatal("session not found")
+	}
+	sess.mu.Lock()
+	st := sess.st
+	sess.mu.Unlock()
+	if st == nil {
+		t.Fatal("session store is nil")
+	}
+
+	mem, err := st.GetMembership(createResult.CampfireID)
+	if err != nil {
+		t.Fatalf("GetMembership: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("membership record not found")
+	}
+	if !mem.Encrypted {
+		t.Errorf("Membership.Encrypted = false for encrypted campfire (HTTP path); want true — downgrade prevention will not fire for creator's own record")
+	}
+}
+
+// TestBlindRelay_CreateHTTP_NonEncryptedFlagClear verifies that the Encrypted
+// field is false when a non-encrypted campfire is created via handleCreateHTTP.
+func TestBlindRelay_CreateHTTP_NonEncryptedFlagClear(t *testing.T) {
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
+	cfhttp.OverridePollTransportForTest(http.DefaultTransport)
+
+	srv, _, tsURL := newTestServerWithHTTPTransport(t)
+
+	initResp := mcpCall(t, tsURL, "", "campfire_init", map[string]interface{}{})
+	token := extractTokenFromInit(t, initResp)
+	if token == "" {
+		t.Fatal("expected non-empty session token")
+	}
+	t.Cleanup(func() { closeSessionForTest(t, srv.sessManager, token) })
+
+	createResp := mcpCall(t, tsURL, token, "campfire_create", map[string]interface{}{})
+	createText := extractResultText(t, createResp)
+
+	var createResult struct {
+		CampfireID string `json:"campfire_id"`
+	}
+	if err := json.Unmarshal([]byte(createText), &createResult); err != nil || createResult.CampfireID == "" {
+		t.Fatalf("parsing campfire_create result: %v (text: %s)", err, createText)
+	}
+
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
+		t.Fatal("session not found")
+	}
+	sess.mu.Lock()
+	st := sess.st
+	sess.mu.Unlock()
+	if st == nil {
+		t.Fatal("session store is nil")
+	}
+
+	mem, err := st.GetMembership(createResult.CampfireID)
+	if err != nil {
+		t.Fatalf("GetMembership: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("membership record not found")
+	}
+	if mem.Encrypted {
+		t.Errorf("Membership.Encrypted = true for non-encrypted campfire (HTTP path); want false")
 	}
 }
