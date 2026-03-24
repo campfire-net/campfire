@@ -14,11 +14,52 @@ package main
 
 import (
 	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/store"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
+
+// copyDir recursively copies src directory to dst, creating dst if needed.
+func copyDir(t *testing.T, src, dst string) error {
+	t.Helper()
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		return copyFile(target, path)
+	})
+}
+
+func copyFile(dst, src string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		return err
+	}
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
 
 // extractCreateResult parses a campfire_create JSON response and returns
 // the top-level fields as a map.
@@ -434,6 +475,127 @@ func TestInvite_ToolCreatesCode(t *testing.T) {
 	}
 	if len(code) != 36 {
 		t.Errorf("expected UUID-format invite_code (len 36), got %q", code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: hosted-mode invite bypass (campfire-agent-6cp security fix)
+// ---------------------------------------------------------------------------
+//
+// Regression test for the grace-period bypass bug:
+//   - In hosted multi-session mode, HasAnyInvites was called on the joining
+//     session's store (always empty for campfires created by other sessions).
+//   - This allowed joining without an invite code even when the campfire owner
+//     had registered invite codes.
+//
+// Fix: campfire_join looks up the campfire owner's store via the transport
+// router and calls HasAnyInvites on that store instead of the local session store.
+//
+// Test setup:
+//   srvA: creates the campfire — invite code stored in A's store, campfire
+//         registered in the shared transport router.
+//   srvB: separate store (no invite records for campfireID), shares the router
+//         and A's cfHome (campfire fs state).
+//
+// Expected:
+//   1. srvB join without invite_code → 403 (router → A's store → hasInvites=true)
+//   2. srvB join with valid invite_code → success
+
+func TestInvite_HostedModeBypassBlocked(t *testing.T) {
+	router := NewTransportRouter()
+
+	// srvA: owns the campfire. Has a transport + store, registered in the router.
+	srvA, stA := newTestServerWithStore(t)
+	doInit(t, srvA)
+
+	// Wire up a transport for srvA so RegisterForSession works.
+	tA := cfhttp.New("", stA)
+	t.Cleanup(tA.StopNoncePruner)
+	tA.StartNoncePruner()
+	srvA.httpTransport = tA
+	srvA.transportRouter = router
+
+	// srvA creates the campfire. This registers the transport in the router and
+	// stores the invite code in stA.
+	createResp := srvA.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+	inviteCode, _ := fields["invite_code"].(string)
+	if campfireID == "" || inviteCode == "" {
+		t.Fatalf("missing campfire_id or invite_code in create response: %v", fields)
+	}
+
+	// Verify the router has the campfire registered with srvA's transport (pre-condition).
+	if ownerT := router.GetCampfireTransport(campfireID); ownerT == nil {
+		t.Fatal("campfire not registered in router after campfire_create")
+	}
+
+	// Verify stA has the invite code (pre-condition).
+	hasAny, err := stA.HasAnyInvites(campfireID)
+	if err != nil || !hasAny {
+		t.Fatalf("pre-condition: stA.HasAnyInvites=%v err=%v", hasAny, err)
+	}
+
+	// srvB: fresh identity and store with no invite records.
+	// Set up its own cfHome (separate identity), then copy the campfire state
+	// from srvA's cfHome so srvB can read the campfire (members, state) without
+	// sharing srvA's identity (which would make alreadyOnDisk=true and bypass
+	// the invite check entirely).
+	srvB, stB := newTestServerWithStore(t)
+	respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if respB.Error != nil {
+		t.Fatalf("init srvB: code=%d msg=%s", respB.Error.Code, respB.Error.Message)
+	}
+
+	// Confirm stB has no invites for campfireID — this is the pre-fix bypass condition.
+	hasAnyB, err := stB.HasAnyInvites(campfireID)
+	if err != nil || hasAnyB {
+		t.Fatalf("pre-condition: stB must have no invites; HasAnyInvites=%v err=%v", hasAnyB, err)
+	}
+
+	// Copy campfire state from srvA's cfHome to srvB's cfHome so srvB can read
+	// the campfire (campfire.cbor, members/) without needing srvA's identity.
+	// srvB's identity.json remains in srvB.cfHome so identityPath() resolves correctly.
+	if err := copyDir(t,
+		filepath.Join(srvA.cfHome, campfireID),
+		filepath.Join(srvB.cfHome, campfireID),
+	); err != nil {
+		t.Fatalf("copying campfire state: %v", err)
+	}
+
+	// Wire srvB to the shared router with its own store and transport.
+	// httpTransport must be non-nil so fsTransport() uses srvB.cfHome (where we
+	// copied the campfire state) rather than DefaultBaseDir().
+	srvB.st = stB
+	srvB.transportRouter = router
+	srvB.httpTransport = cfhttp.New("", stB)
+
+	// Step 1: srvB joins without an invite code — must be REJECTED.
+	// Before the fix, this would succeed because stB.HasAnyInvites returned false.
+	// After the fix, the router redirects to stA (the owner's store) which has invites.
+	joinNoCode, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+		// no invite_code
+	})
+	rejResp := srvB.dispatch(makeReq("tools/call",
+		`{"name":"campfire_join","arguments":`+string(joinNoCode)+`}`))
+	if rejResp.Error == nil {
+		t.Fatal("security regression: campfire_join without invite_code succeeded in hosted mode — bypass not blocked")
+	}
+	if rejResp.Error.Code != -32000 {
+		t.Errorf("expected -32000, got %d: %s", rejResp.Error.Code, rejResp.Error.Message)
+	}
+
+	// Step 2: srvB joins with the valid invite code — must SUCCEED.
+	joinWithCode, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+		"invite_code": inviteCode,
+	})
+	okResp := srvB.dispatch(makeReq("tools/call",
+		`{"name":"campfire_join","arguments":`+string(joinWithCode)+`}`))
+	if okResp.Error != nil {
+		t.Fatalf("campfire_join with valid invite_code failed: code=%d msg=%s",
+			okResp.Error.Code, okResp.Error.Message)
 	}
 }
 
