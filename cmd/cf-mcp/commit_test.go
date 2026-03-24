@@ -207,6 +207,65 @@ func TestCommitment_TamperedPayloadFails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test 3a: commitment without nonce → error (§5.d XOR guard)
+// ---------------------------------------------------------------------------
+
+func TestCommitment_CommitmentWithoutNonceErrors(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+	if campfireID == "" {
+		t.Fatal("missing campfire_id in create response")
+	}
+
+	nonce := randomHex(16)
+	commitment := computeCommitment("hello", nonce)
+
+	sendArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+		"message":     "hello",
+		"commitment":  commitment,
+		// commitment_nonce intentionally omitted
+	})
+	resp := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_send","arguments":`+string(sendArgs)+`}`))
+	if resp.Error == nil {
+		t.Fatal("expected error when commitment provided without nonce, got success")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 3b: nonce without commitment → error (§5.d XOR guard)
+// ---------------------------------------------------------------------------
+
+func TestCommitment_NonceWithoutCommitmentErrors(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+	if campfireID == "" {
+		t.Fatal("missing campfire_id in create response")
+	}
+
+	sendArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id":      campfireID,
+		"message":          "hello",
+		"commitment_nonce": randomHex(16),
+		// commitment intentionally omitted
+	})
+	resp := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_send","arguments":`+string(sendArgs)+`}`))
+	if resp.Error == nil {
+		t.Fatal("expected error when nonce provided without commitment, got success")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test 3: send without commitment works as before (no commitment_verified in response)
 // ---------------------------------------------------------------------------
 
