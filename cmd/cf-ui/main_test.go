@@ -90,6 +90,49 @@ func TestRouteStaticAsset(t *testing.T) {
 	}
 }
 
+func TestCampfireCSS(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/static/campfire.css")
+	if err != nil {
+		t.Fatalf("GET /static/campfire.css: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/css") {
+		t.Fatalf("expected text/css content-type, got %q", ct)
+	}
+}
+
+func TestBaseTemplateIncludesCSS(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	buf := make([]byte, 4096)
+	n, _ := resp.Body.Read(buf)
+	body := string(buf[:n])
+
+	if !strings.Contains(body, "campfire.css") {
+		t.Fatal("index page does not include campfire.css link")
+	}
+}
+
 func TestRouteNotFound(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
