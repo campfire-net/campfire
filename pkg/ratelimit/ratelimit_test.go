@@ -89,6 +89,9 @@ func (f *fakeStore) ListInvites(campfireID string) ([]store.InviteRecord, error)
 func (f *fakeStore) LookupInvite(inviteCode string) (*store.InviteRecord, error)   { return nil, nil }
 func (f *fakeStore) HasAnyInvites(campfireID string) (bool, error)                 { return false, nil }
 func (f *fakeStore) IncrementInviteUse(inviteCode string) error                    { return nil }
+func (f *fakeStore) ValidateAndUseInvite(campfireID, inviteCode string) (*store.InviteRecord, error) {
+	return nil, nil
+}
 
 // EpochSecretStore stubs — required by store.Store interface, not exercised by rate limit tests.
 func (f *fakeStore) UpsertEpochSecret(secret store.EpochSecret) error { return nil }
