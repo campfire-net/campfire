@@ -176,7 +176,7 @@ const histogramBucketCount = 11
 // histSeries is one histogram time series (one {path, method} label combination).
 type histSeries struct {
 	mu      sync.Mutex
-	buckets [histogramBucketCount]int64 // cumulative counts per upper bound; index matches histogramBuckets
+	buckets [histogramBucketCount]int64 // per-bucket raw counts (NOT cumulative); index matches histogramBuckets
 	count   int64
 	sum     float64
 }
@@ -187,6 +187,7 @@ func (s *histSeries) observe(v float64) {
 	for i, upper := range histogramBuckets {
 		if v <= upper {
 			s.buckets[i]++
+			break // only the first matching bucket; writeTo cumulates when rendering
 		}
 	}
 	s.count++
@@ -257,14 +258,20 @@ func (h *latencyHistogram) writeTo(w io.Writer) {
 			{name: "path", value: sn.key.path},
 		}
 		// Bucket lines (cumulative).
+		// Each leLabels slice is allocated fresh (cap=len(base)+1) to avoid aliasing
+		// the backing array when multiple appends share the same base slice.
 		var cumulative int64
 		for bi, upper := range histogramBuckets {
 			cumulative += sn.buckets[bi]
-			leLabels := append(base, metricLabel{name: "le", value: formatFloat(upper)})
+			leLabels := make([]metricLabel, len(base)+1)
+			copy(leLabels, base)
+			leLabels[len(base)] = metricLabel{name: "le", value: formatFloat(upper)}
 			fmt.Fprintf(w, "cfui_http_request_duration_seconds_bucket%s %d\n", labelStr(leLabels), cumulative)
 		}
-		// +Inf bucket.
-		infLabels := append(base, metricLabel{name: "le", value: "+Inf"})
+		// +Inf bucket — fresh slice, no aliasing risk.
+		infLabels := make([]metricLabel, len(base)+1)
+		copy(infLabels, base)
+		infLabels[len(base)] = metricLabel{name: "le", value: "+Inf"}
 		fmt.Fprintf(w, "cfui_http_request_duration_seconds_bucket%s %d\n", labelStr(infLabels), sn.count)
 		// Sum and count.
 		fmt.Fprintf(w, "cfui_http_request_duration_seconds_sum%s %s\n", labelStr(base), formatFloat(sn.sum))

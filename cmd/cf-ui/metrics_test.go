@@ -259,6 +259,100 @@ func TestMetricsEndpoint_SSEGaugeViaRegistry(t *testing.T) {
 	}
 }
 
+// TestHistogram_SingleObservationCumulativeCounts verifies that a single observation
+// produces correct cumulative bucket values (regression for double-cumulation bug: q34).
+// A 0.03s observation must appear in le=0.05, le=0.1, ..., le=10.0 as 1,
+// NOT as progressively larger numbers caused by per-bucket increments + re-summing.
+func TestHistogram_SingleObservationCumulativeCounts(t *testing.T) {
+	h := newLatencyHistogram()
+	// 0.03s falls in the 0.05 bucket (first upper bound >= 0.03).
+	h.Observe("GET", "/test", 30*time.Millisecond)
+
+	var sb strings.Builder
+	h.writeTo(&sb)
+	out := sb.String()
+
+	// Buckets below 0.03s must be 0.
+	for _, le := range []string{"0.005", "0.01", "0.025"} {
+		want := fmt.Sprintf(`cfui_http_request_duration_seconds_bucket{method="GET",path="/test",le="%s"} 0`, le)
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in histogram output:\n%s", want, out)
+		}
+	}
+
+	// The 0.05 bucket is the first to include the 0.03s observation; cumulative = 1.
+	want005 := `cfui_http_request_duration_seconds_bucket{method="GET",path="/test",le="0.05"} 1`
+	if !strings.Contains(out, want005) {
+		t.Errorf("expected le=0.05 bucket=1 (single observation), got output:\n%s", out)
+	}
+
+	// All higher buckets must also be 1 (cumulative), not 2, 3, etc.
+	for _, le := range []string{"0.1", "0.25", "0.5", "1", "2.5", "5", "10"} {
+		want := fmt.Sprintf(`cfui_http_request_duration_seconds_bucket{method="GET",path="/test",le="%s"} 1`, le)
+		if !strings.Contains(out, want) {
+			t.Errorf("expected cumulative bucket=1 for le=%s (no double-cumulation), got output:\n%s", le, out)
+		}
+	}
+
+	// +Inf bucket and count must both be 1.
+	wantInf := `cfui_http_request_duration_seconds_bucket{method="GET",path="/test",le="+Inf"} 1`
+	if !strings.Contains(out, wantInf) {
+		t.Errorf("expected +Inf bucket=1, got output:\n%s", out)
+	}
+	wantCount := `cfui_http_request_duration_seconds_count{method="GET",path="/test"} 1`
+	if !strings.Contains(out, wantCount) {
+		t.Errorf("expected count=1, got output:\n%s", out)
+	}
+}
+
+// TestHistogram_LabelNotCorrupted verifies that label values are not corrupted across
+// bucket lines due to slice aliasing (regression for udj: append(base,...) shared backing array).
+// After writeTo, every bucket line must have the correct le= value, not a value overwritten
+// by a subsequent append.
+func TestHistogram_LabelNotCorrupted(t *testing.T) {
+	h := newLatencyHistogram()
+	h.Observe("POST", "/send", 5*time.Millisecond)
+
+	var sb strings.Builder
+	h.writeTo(&sb)
+	out := sb.String()
+
+	// Each bucket line must pair its own le value with the correct count.
+	// The aliasing bug would cause earlier le= values to be overwritten by "+Inf".
+	cases := []struct {
+		le   string
+		want int64
+	}{
+		{"0.005", 1}, // 5ms <= 0.005s
+		{"0.01", 1},
+		{"0.025", 1},
+		{"0.05", 1},
+		{"0.1", 1},
+		{"0.25", 1},
+		{"0.5", 1},
+		{"1", 1},
+		{"2.5", 1},
+		{"5", 1},
+		{"10", 1},
+		{"+Inf", 1},
+	}
+	for _, tc := range cases {
+		line := fmt.Sprintf(`cfui_http_request_duration_seconds_bucket{method="POST",path="/send",le="%s"} %d`, tc.le, tc.want)
+		if !strings.Contains(out, line) {
+			t.Errorf("label corruption or wrong count: expected line %q in:\n%s", line, out)
+		}
+	}
+
+	// Confirm no bucket line contains le="+Inf" where it shouldn't (aliasing symptom).
+	// Every non-inf le= line must have its own le value present in the output.
+	for _, le := range []string{"0.005", "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1", "2.5", "5", "10"} {
+		marker := fmt.Sprintf(`le="%s"`, le)
+		if !strings.Contains(out, marker) {
+			t.Errorf("missing le=%s in output (possible aliasing): %s", le, out)
+		}
+	}
+}
+
 func TestMetricsEndpoint_LatencyRecordedByMiddleware(t *testing.T) {
 	srv, bundle := newTestServerWithBundle(t)
 
