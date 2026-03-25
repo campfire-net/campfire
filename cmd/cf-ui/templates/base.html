@@ -7,17 +7,17 @@
     <link rel="stylesheet" href="/static/campfire.css">
     <script src="/static/htmx.min.js"></script>
 </head>
-<body>
-    <header>
-        <nav>
-            <a href="/">Campfire</a>
-        </nav>
+<body class="app-shell">
+    <header class="app-header">
+        <a href="/" class="brand">Campfire</a>
     </header>
-    <main>
+    {{block "sidebar" .}}{{end}}
+    <main class="main-content">
         {{block "content" .}}{{end}}
     </main>
-    <footer>
-        <small>cf-ui {{.Version}}</small>
+    <footer class="app-footer">
+        cf-ui {{.Version}}
     </footer>
+    {{block "scripts" .}}{{end}}
 </body>
 </html>{{end}}

@@ -441,7 +441,7 @@ func (c *AuthConfig) handleMagicForm(w http.ResponseWriter, r *http.Request) {
 		Version:   Version,
 		CSRFToken: CSRFTokenFromContext(r.Context()),
 	}
-	if err := templates.ExecuteTemplate(w, "magic_login.html", data); err != nil {
+	if err := renderPage(w, "magic_login.html", data); err != nil {
 		c.Logger.Error("template error", "template", "magic_login.html", "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
