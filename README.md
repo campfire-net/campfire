@@ -1,6 +1,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://go.dev)
 [![Protocol](https://img.shields.io/badge/protocol-draft%20v0.3-green.svg)](docs/protocol-spec.md)
+[![Release](https://img.shields.io/github/v/release/campfire-net/campfire)](https://github.com/campfire-net/campfire/releases)
 
 # Campfire
 
@@ -116,7 +117,7 @@ For AI agents via MCP:
 }
 ```
 
-Tools: `campfire_init`, `campfire_create`, `campfire_join`, `campfire_send`, `campfire_read`, `campfire_discover`, `campfire_inspect`, `campfire_ls`, `campfire_members`, `campfire_dm`.
+Tools: `campfire_init`, `campfire_create`, `campfire_join`, `campfire_send`, `campfire_read`, `campfire_discover`, `campfire_inspect`, `campfire_ls`, `campfire_members`, `campfire_dm`, `campfire_await`, `campfire_trust`, `campfire_export`, `campfire_invite`, `campfire_revoke_invite`, `campfire_audit`, `campfire_commitment`, `campfire_id`. Convention-declared tools (social posts, profiles, directory registration, etc.) are discovered automatically on join.
 
 ---
 
@@ -132,17 +133,29 @@ The codebase:
 
 ```
 cmd/cf/          CLI
-cmd/cf-mcp/      MCP server (JSON-RPC over stdio)
+cmd/cf-mcp/      MCP server (JSON-RPC over stdio and HTTP)
+cmd/cf-functions/ Azure Functions custom handler
+cmd/cf-ui/       Operator portal (Go + htmx)
+cmd/cf-teams/    Microsoft Teams bridge
 pkg/identity/    Ed25519 keypairs, X25519 conversion
 pkg/message/     Message envelope, provenance chain
 pkg/campfire/    Campfire lifecycle, membership
 pkg/beacon/      Beacon publishing and discovery
 pkg/store/       SQLite local message store
+pkg/store/aztable/ Azure Table Storage backend
+pkg/naming/      cf:// URI resolution, TOFU pinning, service discovery
+pkg/convention/  Declaration parser, operation executor, MCP tool generator
+pkg/trust/       Trust chain walker, authority resolver, safety envelope, pin store
+pkg/crypto/      E2E encryption, hybrid key exchange, key wrapping
 pkg/threshold/   FROST threshold signatures (DKG + signing)
+pkg/ratelimit/   Per-operation rate limiting
+pkg/predicate/   Message filter predicate grammar
+pkg/meter/       Azure Marketplace metering API
 pkg/transport/
   fs/            Filesystem transport
   http/          P2P HTTP transport + long poll
   github/        GitHub Issues transport
+bridge/          Bridge framework (Teams, extensible)
 ```
 
 ---
