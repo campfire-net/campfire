@@ -113,13 +113,15 @@ func main() {
 	}
 }
 
-// muxBundle bundles the HTTP handler with the AuthConfig, CSRF store, and SSE hub
-// so tests can access them to seed sessions, generate CSRF tokens, and publish events.
+// muxBundle bundles the HTTP handler with the AuthConfig, CSRF store, SSE hub,
+// and metrics registry so tests can access them to seed sessions, generate CSRF
+// tokens, publish events, and inspect metric values.
 type muxBundle struct {
 	handler   http.Handler
 	authCfg   *AuthConfig
 	csrfStore *csrfStore
 	hub       *SSEHub
+	metrics   *MetricsRegistry
 }
 
 // buildMux constructs the HTTP router and returns it. Extracted for testability.
@@ -149,7 +151,9 @@ func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) muxBundle {
 		panic("cf-ui: failed to initialize CSRF store: " + err.Error())
 	}
 
-	hub := NewSSEHub(authCfg.Sessions, logger)
+	reg := NewMetricsRegistry()
+
+	hub := NewSSEHub(authCfg.Sessions, logger).WithMetrics(reg)
 
 	sessionMW := SessionMiddleware(authCfg.Sessions)
 	csrfMW := CSRFMiddleware(csrf)
@@ -159,6 +163,9 @@ func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) muxBundle {
 	// Public routes — no session or CSRF middleware.
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFS)))
+
+	// Metrics endpoint — public (infrastructure monitoring, no session required).
+	mux.HandleFunc("GET /metrics", handleMetrics(reg))
 
 	// Auth routes — public (session middleware must NOT wrap /auth/* because
 	// unauthenticated users need to reach the login endpoints).
@@ -173,7 +180,10 @@ func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) muxBundle {
 	// the Identity; the hub handler enforces the connection budget.
 	mux.Handle("GET /events", sessionMW(handleEventsHandler(hub)))
 
-	return muxBundle{handler: mux, authCfg: authCfg, csrfStore: csrf, hub: hub}
+	// Wrap the entire mux with the latency middleware (outermost layer).
+	handler := LatencyMiddleware(reg)(mux)
+
+	return muxBundle{handler: handler, authCfg: authCfg, csrfStore: csrf, hub: hub, metrics: reg}
 }
 
 // handleHealthz returns a JSON health response.
