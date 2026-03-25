@@ -1,0 +1,9 @@
+{{template "base" .}}
+{{define "title"}}{{.Title}}{{end}}
+{{define "content"}}
+<h1>Campfire</h1>
+<p>ID: <code>{{.CampfireID}}</code></p>
+<div id="messages" hx-ext="sse" sse-connect="/c/{{.CampfireID}}/events" sse-swap="message">
+    <p>Loading messages&hellip;</p>
+</div>
+{{end}}
