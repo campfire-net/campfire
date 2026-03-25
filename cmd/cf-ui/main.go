@@ -27,6 +27,17 @@ import (
 	"time"
 )
 
+// noopAuthProvider is the default AuthProvider used when no real campfire store
+// is wired. It generates opaque random tokens and is a no-op for invalidation.
+// A real implementation will be wired by the session middleware bead (campfire-agent-pd3).
+type noopAuthProvider struct{}
+
+func (noopAuthProvider) CreateSession(_ context.Context, _ Identity) (string, error) {
+	return randomToken(32)
+}
+
+func (noopAuthProvider) InvalidateSession(_ context.Context, _ string) error { return nil }
+
 // Version is set at build time via ldflags.
 var Version = "dev"
 
@@ -102,9 +113,20 @@ func main() {
 // buildMux constructs the HTTP router and returns it. Extracted for testability.
 // logger may be nil, in which case a default text-handler logger is used.
 func buildMux(logger *slog.Logger) http.Handler {
+	return buildMuxWithAuth(logger, nil)
+}
+
+// buildMuxWithAuth constructs the HTTP router with an explicit AuthConfig.
+// If authCfg is nil, a default in-memory config with noopAuthProvider is created.
+// Extracted so tests can inject a custom AuthConfig (e.g. pointing at a fake GitHub server).
+func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
+	if authCfg == nil {
+		authCfg = newAuthConfig(logger, os.Getenv, os.Getenv("BASE_URL"), NewMemSessionStore(), noopAuthProvider{})
+	}
+
 	mux := http.NewServeMux()
 
 	// Health endpoint.
@@ -112,6 +134,9 @@ func buildMux(logger *slog.Logger) http.Handler {
 
 	// Static assets (CSS, JS, etc.) embedded from static/.
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFS)))
+
+	// Auth routes.
+	registerAuthRoutes(mux, authCfg)
 
 	// UI routes.
 	mux.HandleFunc("GET /", handleIndex(logger))
