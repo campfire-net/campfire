@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -36,6 +37,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/trust"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	"github.com/google/uuid"
@@ -103,6 +105,8 @@ type server struct {
 	sessionToken    string            // non-empty in session mode; used for campfire ownership tracking in the router
 	st              store.Store       // non-nil in session mode; already-open store shared from Session
 	sess            *Session          // non-nil in session mode; back-reference used to persist auditWriter across requests
+	conventionTools *conventionToolMap // dynamic convention-declared tools per session
+	chainWalker     *trust.ChainWalker // trust chain walker for envelope metadata
 }
 
 func (s *server) identityPath() string {
@@ -1431,6 +1435,18 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 			CampfireID:  campfireID,
 			RequestHash: requestHash(paramBytes),
 		})
+	}
+
+	// Post-join: discover convention:operation declarations and register as tools.
+	if s.conventionTools == nil {
+		s.conventionTools = newConventionToolMap()
+	}
+	decls, declErr := readDeclarations(st, campfireID, "" /* campfire key resolved later */)
+	if declErr != nil {
+		log.Printf("convention: reading declarations for %s: %v", campfireID, declErr)
+	} else if len(decls) > 0 {
+		registerConventionTools(s.conventionTools, campfireID, decls)
+		log.Printf("convention: registered %d tools for campfire %s", len(decls), campfireID)
 	}
 
 	result, _ := toolResultJSON(map[string]string{
@@ -2910,7 +2926,18 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 		return jsonRPCResponse{} // marker: skip sending
 
 	case "tools/list":
-		return okResponse(req.ID, map[string]interface{}{"tools": tools})
+		allTools := make([]mcpToolInfo, len(tools))
+		copy(allTools, tools)
+		if s.conventionTools != nil {
+			for _, ct := range s.conventionTools.list() {
+				allTools = append(allTools, mcpToolInfo{
+					Name:        ct.Name,
+					Description: ct.Description,
+					InputSchema: ct.InputSchema,
+				})
+			}
+		}
+		return okResponse(req.ID, map[string]interface{}{"tools": allTools})
 
 	case "tools/call":
 		var callParams struct {
@@ -2962,6 +2989,11 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 		case "campfire_audit":
 			return s.handleAudit(req.ID, callParams.Arguments)
 		default:
+			if s.conventionTools != nil {
+				if entry, ok := s.conventionTools.get(callParams.Name); ok {
+					return s.handleConventionTool(req.ID, entry, callParams.Arguments)
+				}
+			}
 			return errResponse(req.ID, -32601, fmt.Sprintf("unknown tool: %s", callParams.Name))
 		}
 
