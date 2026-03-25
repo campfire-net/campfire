@@ -23,11 +23,19 @@ type MessageStore interface {
 	ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error)
 }
 
+// MembershipChecker reports whether an operator is a member of a campfire.
+// Used to enforce BOLA/IDOR access control on campfire detail and send routes.
+// If nil, all authenticated operators are allowed (open mode — for testing/dev).
+type MembershipChecker interface {
+	IsMember(campfireID, operatorEmail string) bool
+}
+
 // CampfireDetailHandlers holds dependencies for campfire detail routes.
 type CampfireDetailHandlers struct {
-	logger   *slog.Logger
-	messages MessageStore // nil → stub (empty feed)
-	csrf     *csrfStore   // non-nil → CSRF token injected into compose box
+	logger     *slog.Logger
+	messages   MessageStore     // nil → stub (empty feed)
+	csrf       *csrfStore       // non-nil → CSRF token injected into compose box
+	membership MembershipChecker // nil → open access (no membership check)
 }
 
 // NewCampfireDetailHandlers creates a handler bundle.
@@ -44,6 +52,27 @@ func NewCampfireDetailHandlers(logger *slog.Logger, ms MessageStore) *CampfireDe
 func (h *CampfireDetailHandlers) WithCSRF(csrf *csrfStore) *CampfireDetailHandlers {
 	h.csrf = csrf
 	return h
+}
+
+// WithMembership attaches a MembershipChecker so that only campfire members can
+// access detail and message routes. Without this, all authenticated operators
+// can access any campfire (open/dev mode).
+func (h *CampfireDetailHandlers) WithMembership(m MembershipChecker) *CampfireDetailHandlers {
+	h.membership = m
+	return h
+}
+
+// checkMembership returns false and writes a 403 if the caller is not a member.
+// Returns true if membership is not configured (nil checker) or if the operator is a member.
+func (h *CampfireDetailHandlers) checkMembership(w http.ResponseWriter, campfireID, operatorEmail string) bool {
+	if h.membership == nil {
+		return true
+	}
+	if !h.membership.IsMember(campfireID, operatorEmail) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 // messageViewModel is the view-layer representation of a single message.
@@ -88,6 +117,16 @@ func (h *CampfireDetailHandlers) HandleDetail(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// BOLA/IDOR guard: only campfire members may view the detail page.
+	identity, ok := IdentityFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if !h.checkMembership(w, id, identity.Email) {
+		return
+	}
+
 	activeTags := parseTags(r.URL.Query().Get("tags"))
 	msgs, allTags, err := h.loadMessages(id, activeTags)
 	if err != nil {
@@ -125,12 +164,21 @@ func (h *CampfireDetailHandlers) HandleMessages(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// BOLA/IDOR guard: only campfire members may fetch the message feed.
+	identity, ok := IdentityFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if !h.checkMembership(w, id, identity.Email) {
+		return
+	}
+
 	activeTags := parseTags(r.URL.Query().Get("tags"))
 	msgs, allTags, err := h.loadMessages(id, activeTags)
 	if err != nil {
 		h.logger.Error("campfire messages fragment: list messages", "campfire", id, "err", err)
 		msgs = nil
-		allTags = nil
 	}
 
 	data := messageFragmentData{

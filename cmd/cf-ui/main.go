@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -91,14 +92,24 @@ func init() {
 	}
 }
 
-// renderPage executes the named page template with the given data.
-// Uses the isolated per-page template set if available, falling back to the
-// global templates set.
+// renderPage executes the named page template with the given data and writes
+// the result atomically to w. Rendering happens into a bytes.Buffer first so
+// that a mid-template error does not leave partial HTML in the response and
+// does not cause a double-WriteHeader (headers are only written on success).
 func renderPage(w http.ResponseWriter, name string, data any) error {
+	var buf bytes.Buffer
+	var err error
 	if t, ok := pageTemplates[name]; ok {
-		return t.ExecuteTemplate(w, name, data)
+		err = t.ExecuteTemplate(&buf, name, data)
+	} else {
+		err = templates.ExecuteTemplate(&buf, name, data)
 	}
-	return templates.ExecuteTemplate(w, name, data)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, werr := buf.WriteTo(w)
+	return werr
 }
 
 func main() {
@@ -113,10 +124,14 @@ func main() {
 	bundle := buildMuxWithAuth(logger, nil)
 
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      bundle.handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:        addr,
+		Handler:     bundle.handler,
+		ReadTimeout: 15 * time.Second,
+		// WriteTimeout is intentionally 0 (disabled) because SSE connections
+		// are long-lived streams. A non-zero WriteTimeout would kill SSE
+		// connections after that duration, before keepalives can fire.
+		// Non-SSE route timeouts are enforced per-handler via http.TimeoutHandler.
+		WriteTimeout: 0,
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -213,7 +228,9 @@ func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) muxBundle {
 	mux.Handle("GET /c/{id}/messages", sessionMW(http.HandlerFunc(detail.HandleMessages)))
 
 	// Compose box — POST /c/{id}/send. Session + CSRF required.
-	mux.Handle("POST /c/{id}/send", sessionMW(csrfMW(handleSend(logger, sender, hub))))
+	// nil membership = open/dev mode (no membership check). Wire a real
+	// MembershipChecker here when the campfire store is available.
+	mux.Handle("POST /c/{id}/send", sessionMW(csrfMW(handleSend(logger, sender, hub, nil))))
 
 	// SSE events stream — requires a valid session. Session middleware injects
 	// the Identity; the hub handler enforces the connection budget.

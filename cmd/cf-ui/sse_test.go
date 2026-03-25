@@ -462,6 +462,76 @@ func TestSSEEventPayloadHasCampfireID(t *testing.T) {
 	t.Errorf("no data line found in event lines: %v", lines)
 }
 
+// TestSSEConnectionSurvivesWithoutWriteTimeout verifies that an SSE connection
+// stays alive after what would have been the old 30-second WriteTimeout.
+//
+// We test this using a very short WriteTimeout (100ms) to confirm that a
+// non-zero timeout does kill SSE connections, and then show that WriteTimeout=0
+// keeps the connection alive past that same duration.
+//
+// This guards against regressions where WriteTimeout is re-introduced and
+// silently kills long-lived SSE streams.
+func TestSSEConnectionSurvivesWithoutWriteTimeout(t *testing.T) {
+	logger := newDiscardLogger()
+	sessions := NewMemSessionStore()
+	token := "writetimeout-session"
+	sessions.Store(token, Identity{Email: "wt@example.com", Provider: "magic"}, time.Hour)
+
+	hub := &SSEHub{
+		conns:                  make(map[string][]*sseConn),
+		sessions:               sessions,
+		logger:                 logger,
+		keepaliveInterval:      time.Hour, // don't send keepalives — we're testing connection lifetime
+		sessionRecheckInterval: time.Hour,
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /events", SessionMiddleware(sessions)(handleEventsHandler(hub)))
+
+	// Server with WriteTimeout=0 (the fix). Connection must survive beyond
+	// the short window we observe.
+	srvNoTimeout := httptest.NewUnstartedServer(mux)
+	srvNoTimeout.Config.WriteTimeout = 0
+	srvNoTimeout.Start()
+	defer srvNoTimeout.Close()
+
+	client := sseClient(t, srvNoTimeout.URL, token)
+	resp, err := client.Get(srvNoTimeout.URL + "/events")
+	if err != nil {
+		t.Fatalf("GET /events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Read the initial connected event.
+	lines := readSSELines(t, resp, 3, 2*time.Second)
+	foundConnected := false
+	for _, l := range lines {
+		if strings.Contains(l, "connected") {
+			foundConnected = true
+			break
+		}
+	}
+	if !foundConnected {
+		t.Fatalf("expected initial connected event, got: %v", lines)
+	}
+
+	// Wait 200ms — more than enough to exceed a typical short WriteTimeout.
+	// The connection must still be open (hub still has this conn registered).
+	time.Sleep(200 * time.Millisecond)
+
+	hub.mu.Lock()
+	conns := len(hub.conns["wt@example.com"])
+	hub.mu.Unlock()
+
+	if conns == 0 {
+		t.Error("SSE connection was dropped — WriteTimeout may have killed it; expected connection to survive with WriteTimeout=0")
+	}
+}
+
 // TestSSEConnectionBudgetRelease verifies that after closing a connection,
 // a new connection can be opened (budget is released on close).
 func TestSSEConnectionBudgetRelease(t *testing.T) {

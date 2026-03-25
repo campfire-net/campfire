@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -616,4 +617,79 @@ func (j *simpleCookieJar) Cookies(u *url.URL) []*http.Cookie {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.cookies[u.Host]
+}
+
+// --- Security tests ---
+
+// TestMagicLinkResponseHidesTokenInProduction verifies that the magic link token
+// is NOT included in the HTTP response body when CF_UI_DEV/DEV_MODE are unset.
+// Exposing the token in the response body is a critical security bug — any proxy
+// or intermediary logging response bodies would capture it.
+func TestMagicLinkResponseHidesTokenInProduction(t *testing.T) {
+	t.Setenv("CF_UI_DEV", "")
+	t.Setenv("DEV_MODE", "")
+
+	cfg, _ := newTestAuthConfig(t, nil)
+	srv, bundle := newTestServerWithAuth(t, cfg)
+
+	csrfToken := bundle.csrfStore.tokenFor("")
+
+	form := url.Values{}
+	form.Set("email", "prod-user@example.com")
+	form.Set("_csrf", csrfToken)
+
+	resp, err := http.PostForm(srv.URL+"/auth/magic", form)
+	if err != nil {
+		t.Fatalf("POST /auth/magic: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// The response must NOT contain the verify URL with a token.
+	if strings.Contains(bodyStr, "/auth/magic/verify?token=") {
+		t.Errorf("production response must not expose verify URL with token; got: %q", bodyStr)
+	}
+	// Must still contain a user-facing confirmation message.
+	if !strings.Contains(bodyStr, "Check your email") {
+		t.Errorf("response should include confirmation message; got: %q", bodyStr)
+	}
+}
+
+// TestMagicLinkResponseIncludesTokenInDevMode verifies that the magic link token
+// IS included in the response when CF_UI_DEV is set (developer convenience).
+func TestMagicLinkResponseIncludesTokenInDevMode(t *testing.T) {
+	t.Setenv("CF_UI_DEV", "1")
+
+	cfg, _ := newTestAuthConfig(t, nil)
+	srv, bundle := newTestServerWithAuth(t, cfg)
+
+	csrfToken := bundle.csrfStore.tokenFor("")
+
+	form := url.Values{}
+	form.Set("email", "dev-user@example.com")
+	form.Set("_csrf", csrfToken)
+
+	resp, err := http.PostForm(srv.URL+"/auth/magic", form)
+	if err != nil {
+		t.Fatalf("POST /auth/magic: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// In dev mode the verify URL should appear in the response.
+	if !strings.Contains(bodyStr, "/auth/magic/verify?token=") {
+		t.Errorf("dev mode response should include verify URL; got: %q", bodyStr)
+	}
 }

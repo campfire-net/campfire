@@ -66,8 +66,9 @@ var msgFragmentTmpl = template.Must(template.New("msg-fragment").Parse(`<div cla
 </div>`))
 
 // handleSend returns the POST /c/{id}/send handler.
-// logger, sender, and hub are injected at construction time.
-func handleSend(logger interface{ Error(string, ...any) }, sender MessageSender, hub *SSEHub) http.HandlerFunc {
+// logger, sender, hub, and membership are injected at construction time.
+// membership may be nil (open/dev mode — no membership check performed).
+func handleSend(logger interface{ Error(string, ...any) }, sender MessageSender, hub *SSEHub, membership MembershipChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		campfireID := r.PathValue("id")
 
@@ -75,6 +76,12 @@ func handleSend(logger interface{ Error(string, ...any) }, sender MessageSender,
 		identity, ok := IdentityFromContext(r.Context())
 		if !ok {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+
+		// BOLA/IDOR guard: only campfire members may post messages.
+		if membership != nil && !membership.IsMember(campfireID, identity.Email) {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 
