@@ -477,9 +477,16 @@ func (m *SessionManager) checkInitRateLimit(ip string) error {
 	return nil
 }
 
-// Stop shuts down the background reaper.
+// Stop shuts down the background reaper and closes all active sessions.
+// This ensures audit writers are drained before the session directory
+// is cleaned up (e.g., by t.TempDir in tests).
 func (m *SessionManager) Stop() {
 	close(m.stopCh)
+	m.sessions.Range(func(k, v interface{}) bool {
+		v.(*Session).Close()
+		m.sessions.Delete(k)
+		return true
+	})
 }
 
 // ttl returns the effective token TTL.
