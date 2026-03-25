@@ -86,12 +86,14 @@ type noopWriter struct{}
 func (noopWriter) Write(p []byte) (int, error) { return len(p), nil }
 
 // newTestServerWithAuth builds an httptest.Server using a custom AuthConfig.
-func newTestServerWithAuth(t *testing.T, cfg *AuthConfig) *httptest.Server {
+// Returns the server and the muxBundle (which carries the csrfStore for tests
+// that need to generate CSRF tokens).
+func newTestServerWithAuth(t *testing.T, cfg *AuthConfig) (*httptest.Server, muxBundle) {
 	t.Helper()
-	mux := buildMuxWithAuth(nil, cfg)
-	srv := httptest.NewServer(mux)
+	bundle := buildMuxWithAuth(nil, cfg)
+	srv := httptest.NewServer(bundle.handler)
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, bundle
 }
 
 // --- GitHub OAuth redirect tests ---
@@ -193,7 +195,7 @@ func TestGitHubCallbackSuccess(t *testing.T) {
 		nil,
 	)
 	cfg, provider := newTestAuthConfig(t, ghServer)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, _ := newTestServerWithAuth(t, cfg)
 
 	// Step 1: GET /auth/github — do NOT follow the redirect to GitHub.
 	// We need the state cookie value and the state query param.
@@ -274,7 +276,7 @@ func TestGitHubCallbackFetchEmailFallback(t *testing.T) {
 
 func TestGitHubCallbackStateMismatch(t *testing.T) {
 	cfg, _ := newTestAuthConfig(t, nil)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, _ := newTestServerWithAuth(t, cfg)
 
 	client := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -296,7 +298,7 @@ func TestGitHubCallbackStateMismatch(t *testing.T) {
 
 func TestGitHubCallbackMissingStateCookie(t *testing.T) {
 	cfg, _ := newTestAuthConfig(t, nil)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, _ := newTestServerWithAuth(t, cfg)
 
 	client := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -315,7 +317,7 @@ func TestGitHubCallbackMissingStateCookie(t *testing.T) {
 
 func TestMagicLinkFormRendered(t *testing.T) {
 	cfg, _ := newTestAuthConfig(t, nil)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, _ := newTestServerWithAuth(t, cfg)
 
 	resp, err := http.Get(srv.URL + "/auth/magic")
 	if err != nil {
@@ -371,10 +373,14 @@ func TestMagicLinkTokenExpiry(t *testing.T) {
 
 func TestMagicLinkPostGeneratesToken(t *testing.T) {
 	cfg, _ := newTestAuthConfig(t, nil)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, bundle := newTestServerWithAuth(t, cfg)
+
+	// Generate a CSRF token for an unauthenticated request (session token = "").
+	csrfToken := bundle.csrfStore.tokenFor("")
 
 	form := url.Values{}
 	form.Set("email", "alice@example.com")
+	form.Set("_csrf", csrfToken)
 	resp, err := http.PostForm(srv.URL+"/auth/magic", form)
 	if err != nil {
 		t.Fatalf("POST /auth/magic: %v", err)
@@ -387,10 +393,14 @@ func TestMagicLinkPostGeneratesToken(t *testing.T) {
 
 func TestMagicLinkPostInvalidEmail(t *testing.T) {
 	cfg, _ := newTestAuthConfig(t, nil)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, bundle := newTestServerWithAuth(t, cfg)
+
+	// Generate a valid CSRF token so the CSRF check passes and we reach email validation.
+	csrfToken := bundle.csrfStore.tokenFor("")
 
 	form := url.Values{}
 	form.Set("email", "notanemail")
+	form.Set("_csrf", csrfToken)
 	resp, err := http.PostForm(srv.URL+"/auth/magic", form)
 	if err != nil {
 		t.Fatalf("POST /auth/magic: %v", err)
@@ -403,7 +413,7 @@ func TestMagicLinkPostInvalidEmail(t *testing.T) {
 
 func TestMagicLinkVerifyFlow(t *testing.T) {
 	cfg, provider := newTestAuthConfig(t, nil)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, _ := newTestServerWithAuth(t, cfg)
 
 	// Store a valid token directly.
 	token, _ := randomToken(32)
@@ -438,7 +448,7 @@ func TestMagicLinkVerifyFlow(t *testing.T) {
 
 func TestMagicLinkVerifyExpiredToken(t *testing.T) {
 	cfg, _ := newTestAuthConfig(t, nil)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, _ := newTestServerWithAuth(t, cfg)
 
 	token, _ := randomToken(32)
 	cfg.magic.store(token, "expired@example.com", -1*time.Second)
@@ -455,7 +465,7 @@ func TestMagicLinkVerifyExpiredToken(t *testing.T) {
 
 func TestMagicLinkVerifyMissingToken(t *testing.T) {
 	cfg, _ := newTestAuthConfig(t, nil)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, _ := newTestServerWithAuth(t, cfg)
 
 	resp, err := http.Get(srv.URL + "/auth/magic/verify")
 	if err != nil {
@@ -471,7 +481,7 @@ func TestMagicLinkVerifyMissingToken(t *testing.T) {
 
 func TestSessionCookieProperties(t *testing.T) {
 	cfg, _ := newTestAuthConfig(t, nil)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, _ := newTestServerWithAuth(t, cfg)
 
 	// Trigger a magic-link verify to get a session cookie back.
 	token, _ := randomToken(32)
@@ -511,7 +521,7 @@ func TestSessionCookieProperties(t *testing.T) {
 
 func TestLogout(t *testing.T) {
 	cfg, _ := newTestAuthConfig(t, nil)
-	srv := newTestServerWithAuth(t, cfg)
+	srv, _ := newTestServerWithAuth(t, cfg)
 
 	client := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

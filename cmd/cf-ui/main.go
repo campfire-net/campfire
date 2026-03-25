@@ -110,16 +110,25 @@ func main() {
 	}
 }
 
+// muxBundle bundles the HTTP handler with the AuthConfig and CSRF store
+// so tests can access them to seed sessions and generate CSRF tokens.
+type muxBundle struct {
+	handler  http.Handler
+	authCfg  *AuthConfig
+	csrfStore *csrfStore
+}
+
 // buildMux constructs the HTTP router and returns it. Extracted for testability.
 // logger may be nil, in which case a default text-handler logger is used.
 func buildMux(logger *slog.Logger) http.Handler {
-	return buildMuxWithAuth(logger, nil)
+	return buildMuxWithAuth(logger, nil).handler
 }
 
 // buildMuxWithAuth constructs the HTTP router with an explicit AuthConfig.
 // If authCfg is nil, a default in-memory config with noopAuthProvider is created.
 // Extracted so tests can inject a custom AuthConfig (e.g. pointing at a fake GitHub server).
-func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) http.Handler {
+// Returns a muxBundle containing the handler plus references to the auth/CSRF state.
+func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) muxBundle {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
@@ -127,22 +136,31 @@ func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) http.Handler {
 		authCfg = newAuthConfig(logger, os.Getenv, os.Getenv("BASE_URL"), NewMemSessionStore(), noopAuthProvider{})
 	}
 
+	csrf, err := newCSRFStore()
+	if err != nil {
+		// This can only fail if the OS random source is broken — treat as fatal.
+		panic("cf-ui: failed to initialize CSRF store: " + err.Error())
+	}
+
+	sessionMW := SessionMiddleware(authCfg.Sessions)
+	csrfMW := CSRFMiddleware(csrf)
+
 	mux := http.NewServeMux()
 
-	// Health endpoint.
+	// Public routes — no session or CSRF middleware.
 	mux.HandleFunc("GET /healthz", handleHealthz)
-
-	// Static assets (CSS, JS, etc.) embedded from static/.
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFS)))
 
-	// Auth routes.
-	registerAuthRoutes(mux, authCfg)
+	// Auth routes — public (session middleware must NOT wrap /auth/* because
+	// unauthenticated users need to reach the login endpoints).
+	// The magic-link POST route gets CSRF protection only.
+	registerAuthRoutes(mux, authCfg, csrfMW)
 
-	// UI routes.
-	mux.HandleFunc("GET /", handleIndex(logger))
-	mux.HandleFunc("GET /c/{id}", handleCampfireDetail(logger))
+	// Protected UI routes — require a valid session.
+	mux.Handle("GET /", sessionMW(handleIndex(logger)))
+	mux.Handle("GET /c/{id}", sessionMW(handleCampfireDetail(logger)))
 
-	return mux
+	return muxBundle{handler: mux, authCfg: authCfg, csrfStore: csrf}
 }
 
 // handleHealthz returns a JSON health response.
