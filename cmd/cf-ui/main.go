@@ -78,11 +78,11 @@ func main() {
 	}
 	addr := net.JoinHostPort("", port)
 
-	mux := buildMux(logger)
+	bundle := buildMuxWithAuth(logger, nil)
 
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      bundle.handler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -103,6 +103,9 @@ func main() {
 	<-ctx.Done()
 	logger.Info("cf-ui shutting down")
 
+	// Signal all SSE connections to close before HTTP shutdown drains them.
+	bundle.hub.Shutdown()
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -110,12 +113,13 @@ func main() {
 	}
 }
 
-// muxBundle bundles the HTTP handler with the AuthConfig and CSRF store
-// so tests can access them to seed sessions and generate CSRF tokens.
+// muxBundle bundles the HTTP handler with the AuthConfig, CSRF store, and SSE hub
+// so tests can access them to seed sessions, generate CSRF tokens, and publish events.
 type muxBundle struct {
-	handler  http.Handler
-	authCfg  *AuthConfig
+	handler   http.Handler
+	authCfg   *AuthConfig
 	csrfStore *csrfStore
+	hub       *SSEHub
 }
 
 // buildMux constructs the HTTP router and returns it. Extracted for testability.
@@ -123,6 +127,9 @@ type muxBundle struct {
 func buildMux(logger *slog.Logger) http.Handler {
 	return buildMuxWithAuth(logger, nil).handler
 }
+
+// muxBundle bundles the HTTP handler with the AuthConfig, CSRF store, and SSE hub
+// so tests can access them to seed sessions, generate CSRF tokens, and publish events.
 
 // buildMuxWithAuth constructs the HTTP router with an explicit AuthConfig.
 // If authCfg is nil, a default in-memory config with noopAuthProvider is created.
@@ -142,6 +149,8 @@ func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) muxBundle {
 		panic("cf-ui: failed to initialize CSRF store: " + err.Error())
 	}
 
+	hub := NewSSEHub(authCfg.Sessions, logger)
+
 	sessionMW := SessionMiddleware(authCfg.Sessions)
 	csrfMW := CSRFMiddleware(csrf)
 
@@ -160,7 +169,11 @@ func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) muxBundle {
 	mux.Handle("GET /", sessionMW(handleIndex(logger)))
 	mux.Handle("GET /c/{id}", sessionMW(handleCampfireDetail(logger)))
 
-	return muxBundle{handler: mux, authCfg: authCfg, csrfStore: csrf}
+	// SSE events stream — requires a valid session. Session middleware injects
+	// the Identity; the hub handler enforces the connection budget.
+	mux.Handle("GET /events", sessionMW(handleEventsHandler(hub)))
+
+	return muxBundle{handler: mux, authCfg: authCfg, csrfStore: csrf, hub: hub}
 }
 
 // handleHealthz returns a JSON health response.
