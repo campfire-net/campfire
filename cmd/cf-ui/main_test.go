@@ -5,20 +5,39 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
-// newTestServer returns an httptest.Server backed by buildMux.
-func newTestServer(t *testing.T) *httptest.Server {
+// newTestServer returns an httptest.Server backed by buildMuxWithAuth, along
+// with the AuthConfig so tests can seed sessions for protected routes.
+func newTestServer(t *testing.T) (*httptest.Server, *AuthConfig) {
 	t.Helper()
-	mux := buildMux(nil) // nil logger is safe — handlers guard against it
-	return httptest.NewServer(mux)
+	logger := newDiscardLogger()
+	authCfg := newAuthConfig(logger, func(string) string { return "" }, "http://localhost", NewMemSessionStore(), noopAuthProvider{})
+	bundle := buildMuxWithAuth(logger, authCfg)
+	srv := httptest.NewServer(bundle.handler)
+	t.Cleanup(srv.Close)
+	return srv, authCfg
+}
+
+// authenticatedClient returns an http.Client with a valid session cookie pre-loaded
+// for the given server URL. The session is seeded in the provided SessionStore.
+func authenticatedClient(t *testing.T, srvURL string, sessions SessionStore) *http.Client {
+	t.Helper()
+	sessionToken := "test-session-" + t.Name()
+	sessions.Store(sessionToken, Identity{Email: "test@example.com", DisplayName: "Test User", Provider: "magic"}, time.Hour)
+
+	jar := newCookieJar()
+	u, _ := url.Parse(srvURL)
+	jar.SetCookies(u, []*http.Cookie{{Name: sessionCookieName, Value: sessionToken}})
+	return &http.Client{Jar: jar}
 }
 
 func TestHealthz(t *testing.T) {
-	srv := newTestServer(t)
-	defer srv.Close()
+	srv, _ := newTestServer(t)
 
 	resp, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
@@ -45,10 +64,10 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestRouteIndex(t *testing.T) {
-	srv := newTestServer(t)
-	defer srv.Close()
+	srv, authCfg := newTestServer(t)
 
-	resp, err := http.Get(srv.URL + "/")
+	client := authenticatedClient(t, srv.URL, authCfg.Sessions)
+	resp, err := client.Get(srv.URL + "/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
@@ -60,11 +79,11 @@ func TestRouteIndex(t *testing.T) {
 }
 
 func TestRouteCampfireDetail(t *testing.T) {
-	srv := newTestServer(t)
-	defer srv.Close()
+	srv, authCfg := newTestServer(t)
 
+	client := authenticatedClient(t, srv.URL, authCfg.Sessions)
 	id := "abc123"
-	resp, err := http.Get(srv.URL + "/c/" + id)
+	resp, err := client.Get(srv.URL + "/c/" + id)
 	if err != nil {
 		t.Fatalf("GET /c/%s: %v", id, err)
 	}
@@ -76,8 +95,7 @@ func TestRouteCampfireDetail(t *testing.T) {
 }
 
 func TestRouteStaticAsset(t *testing.T) {
-	srv := newTestServer(t)
-	defer srv.Close()
+	srv, _ := newTestServer(t)
 
 	resp, err := http.Get(srv.URL + "/static/htmx.min.js")
 	if err != nil {
@@ -91,8 +109,7 @@ func TestRouteStaticAsset(t *testing.T) {
 }
 
 func TestCampfireCSS(t *testing.T) {
-	srv := newTestServer(t)
-	defer srv.Close()
+	srv, _ := newTestServer(t)
 
 	resp, err := http.Get(srv.URL + "/static/campfire.css")
 	if err != nil {
@@ -111,10 +128,10 @@ func TestCampfireCSS(t *testing.T) {
 }
 
 func TestBaseTemplateIncludesCSS(t *testing.T) {
-	srv := newTestServer(t)
-	defer srv.Close()
+	srv, authCfg := newTestServer(t)
 
-	resp, err := http.Get(srv.URL + "/")
+	client := authenticatedClient(t, srv.URL, authCfg.Sessions)
+	resp, err := client.Get(srv.URL + "/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
@@ -134,10 +151,12 @@ func TestBaseTemplateIncludesCSS(t *testing.T) {
 }
 
 func TestRouteNotFound(t *testing.T) {
-	srv := newTestServer(t)
-	defer srv.Close()
+	srv, authCfg := newTestServer(t)
 
-	resp, err := http.Get(srv.URL + "/does-not-exist")
+	// /does-not-exist falls through to the session-protected / handler which
+	// returns 404 after verifying the session. Use an authenticated client.
+	client := authenticatedClient(t, srv.URL, authCfg.Sessions)
+	resp, err := client.Get(srv.URL + "/does-not-exist")
 	if err != nil {
 		t.Fatalf("GET /does-not-exist: %v", err)
 	}

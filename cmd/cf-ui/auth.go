@@ -177,11 +177,21 @@ func newAuthConfig(logger *slog.Logger, env func(string) string, baseURL string,
 }
 
 // registerAuthRoutes adds auth routes to mux.
-func registerAuthRoutes(mux *http.ServeMux, cfg *AuthConfig) {
+// csrfMW is applied to the magic login GET (to inject the token into context
+// for templates) and POST (to validate the submitted token).
+// When csrfMW is nil, no CSRF protection is applied (used in pre-middleware tests).
+func registerAuthRoutes(mux *http.ServeMux, cfg *AuthConfig, csrfMW func(http.Handler) http.Handler) {
 	mux.HandleFunc("GET /auth/github", cfg.handleGitHubLogin)
 	mux.HandleFunc("GET /auth/github/callback", cfg.handleGitHubCallback)
-	mux.HandleFunc("GET /auth/magic", cfg.handleMagicForm)
-	mux.HandleFunc("POST /auth/magic", cfg.handleMagicRequest)
+	if csrfMW != nil {
+		// Wrap both GET and POST for the magic login — GET injects the CSRF
+		// token into context so the template can embed it; POST validates it.
+		mux.Handle("GET /auth/magic", csrfMW(http.HandlerFunc(cfg.handleMagicForm)))
+		mux.Handle("POST /auth/magic", csrfMW(http.HandlerFunc(cfg.handleMagicRequest)))
+	} else {
+		mux.HandleFunc("GET /auth/magic", cfg.handleMagicForm)
+		mux.HandleFunc("POST /auth/magic", cfg.handleMagicRequest)
+	}
 	mux.HandleFunc("GET /auth/magic/verify", cfg.handleMagicVerify)
 	mux.HandleFunc("GET /logout", cfg.handleLogout)
 }
@@ -423,11 +433,13 @@ func (c *AuthConfig) fetchPrimaryGitHubEmail(ctx context.Context, token string) 
 // handleMagicForm renders the magic link email entry form.
 func (c *AuthConfig) handleMagicForm(w http.ResponseWriter, r *http.Request) {
 	data := struct {
-		Title   string
-		Version string
+		Title     string
+		Version   string
+		CSRFToken string
 	}{
-		Title:   "Sign in — Campfire",
-		Version: Version,
+		Title:     "Sign in — Campfire",
+		Version:   Version,
+		CSRFToken: CSRFTokenFromContext(r.Context()),
 	}
 	if err := templates.ExecuteTemplate(w, "magic_login.html", data); err != nil {
 		c.Logger.Error("template error", "template", "magic_login.html", "err", err)
