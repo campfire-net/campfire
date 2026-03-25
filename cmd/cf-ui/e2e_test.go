@@ -162,7 +162,7 @@ func newE2EServer(t *testing.T) *e2eBundle {
 	mux.Handle("GET /", sessionMW(handleIndexWithStore(logger, lister)))
 	mux.Handle("GET /c/{id}", sessionMW(csrfMW(http.HandlerFunc(detail.HandleDetail))))
 	mux.Handle("GET /c/{id}/messages", sessionMW(http.HandlerFunc(detail.HandleMessages)))
-	mux.Handle("POST /c/{id}/send", sessionMW(csrfMW(handleSend(logger, sender, hub))))
+	mux.Handle("POST /c/{id}/send", sessionMW(csrfMW(handleSend(logger, sender, hub, nil))))
 	mux.Handle("GET /events", sessionMW(handleEventsHandler(hub)))
 
 	handler := LatencyMiddleware(reg)(mux)

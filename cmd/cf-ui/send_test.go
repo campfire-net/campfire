@@ -58,7 +58,7 @@ func newTestServerWithSender(t *testing.T, sender MessageSender) (*httptest.Serv
 	registerAuthRoutes(mux, authCfg, csrfMW)
 	mux.Handle("GET /healthz", http.HandlerFunc(handleHealthz))
 	mux.Handle("GET /c/{id}", sessionMW(csrfMW(http.HandlerFunc(detail.HandleDetail))))
-	mux.Handle("POST /c/{id}/send", sessionMW(csrfMW(handleSend(logger, sender, hub))))
+	mux.Handle("POST /c/{id}/send", sessionMW(csrfMW(handleSend(logger, sender, hub, nil))))
 
 	patchedBundle := &muxBundle{
 		handler:   mux,

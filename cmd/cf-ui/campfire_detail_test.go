@@ -461,3 +461,145 @@ func TestToggleTagRemoves(t *testing.T) {
 		t.Errorf("toggleTag should keep other tags: got %q", got)
 	}
 }
+
+// --- BOLA/IDOR access control tests ---
+
+// fakeMembershipChecker is a MembershipChecker that allows only pre-registered pairs.
+type fakeMembershipChecker struct {
+	// members maps "campfireID:email" → bool
+	members map[string]bool
+}
+
+func newFakeMembership(pairs ...string) *fakeMembershipChecker {
+	m := &fakeMembershipChecker{members: make(map[string]bool)}
+	for _, p := range pairs {
+		m.members[p] = true
+	}
+	return m
+}
+
+func (f *fakeMembershipChecker) IsMember(campfireID, email string) bool {
+	return f.members[campfireID+":"+email]
+}
+
+// newDetailTestServerWithMembership builds a test server with an injected
+// MembershipChecker to test BOLA/IDOR enforcement.
+func newDetailTestServerWithMembership(t *testing.T, ms MessageStore, membership MembershipChecker) (*httptest.Server, SessionStore) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sessions := NewMemSessionStore()
+	authCfg := newAuthConfig(logger, func(string) string { return "" }, "http://localhost", sessions, noopAuthProvider{})
+	_ = authCfg
+
+	csrf, err := newCSRFStore()
+	if err != nil {
+		t.Fatalf("newCSRFStore: %v", err)
+	}
+
+	hub := NewSSEHub(sessions, logger)
+	detail := NewCampfireDetailHandlers(logger, ms).WithCSRF(csrf).WithMembership(membership)
+
+	sessionMW := SessionMiddleware(sessions)
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /c/{id}", sessionMW(http.HandlerFunc(detail.HandleDetail)))
+	mux.Handle("GET /c/{id}/messages", sessionMW(http.HandlerFunc(detail.HandleMessages)))
+	mux.Handle("GET /events", sessionMW(handleEventsHandler(hub)))
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, sessions
+}
+
+// authenticatedRequestAs makes an authenticated GET request with the given email identity.
+func authenticatedRequestAs(t *testing.T, srvURL, path, email string, sessions SessionStore) *http.Response {
+	t.Helper()
+	tok := "bola-test-" + t.Name() + email
+	sessions.Store(tok, Identity{Email: email, DisplayName: email}, time.Hour)
+
+	req, err := http.NewRequest(http.MethodGet, srvURL+path, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tok})
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	return resp
+}
+
+// TestDetailBOLANonMemberGets403 verifies that a non-member operator receives 403
+// when attempting to access a campfire detail page (BOLA/IDOR protection).
+func TestDetailBOLANonMemberGets403(t *testing.T) {
+	// only alice@example.com is a member of campfire-secret
+	membership := newFakeMembership("campfire-secret:alice@example.com")
+	srv, sessions := newDetailTestServerWithMembership(t, nil, membership)
+
+	// bob is NOT a member
+	resp := authenticatedRequestAs(t, srv.URL, "/c/campfire-secret", "bob@example.com", sessions)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 for non-member on /c/{id}, got %d", resp.StatusCode)
+	}
+}
+
+// TestDetailBOLAMemberGets200 verifies that a member operator can access the campfire detail page.
+func TestDetailBOLAMemberGets200(t *testing.T) {
+	membership := newFakeMembership("campfire-open:alice@example.com")
+	srv, sessions := newDetailTestServerWithMembership(t, nil, membership)
+
+	resp := authenticatedRequestAs(t, srv.URL, "/c/campfire-open", "alice@example.com", sessions)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for member on /c/{id}, got %d", resp.StatusCode)
+	}
+}
+
+// TestMessagesBOLANonMemberGets403 verifies that a non-member operator receives 403
+// when attempting to access the messages fragment (BOLA/IDOR protection).
+func TestMessagesBOLANonMemberGets403(t *testing.T) {
+	membership := newFakeMembership("campfire-private:alice@example.com")
+	srv, sessions := newDetailTestServerWithMembership(t, nil, membership)
+
+	// charlie is NOT a member
+	resp := authenticatedRequestAs(t, srv.URL, "/c/campfire-private/messages", "charlie@example.com", sessions)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 for non-member on /c/{id}/messages, got %d", resp.StatusCode)
+	}
+}
+
+// TestMessagesBOLAMemberGets200 verifies that a member operator can fetch messages.
+func TestMessagesBOLAMemberGets200(t *testing.T) {
+	membership := newFakeMembership("campfire-shared:alice@example.com")
+	srv, sessions := newDetailTestServerWithMembership(t, nil, membership)
+
+	resp := authenticatedRequestAs(t, srv.URL, "/c/campfire-shared/messages", "alice@example.com", sessions)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for member on /c/{id}/messages, got %d", resp.StatusCode)
+	}
+}
+
+// TestDetailNilMembershipCheckerAllowsAll verifies that when no membership checker
+// is configured (nil), all authenticated operators can access campfires (open/dev mode).
+func TestDetailNilMembershipCheckerAllowsAll(t *testing.T) {
+	// No membership checker — open mode.
+	srv, sessions := newDetailTestServerWithMembership(t, nil, nil)
+
+	resp := authenticatedRequestAs(t, srv.URL, "/c/any-campfire", "anyone@example.com", sessions)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 with nil membership checker, got %d", resp.StatusCode)
+	}
+}

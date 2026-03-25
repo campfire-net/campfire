@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -71,9 +72,12 @@ type SessionStore interface {
 }
 
 // MemSessionStore is an in-memory SessionStore implementation.
+// A background goroutine sweeps expired entries every gcInterval to prevent
+// unbounded memory growth. Call Close to stop the sweep goroutine.
 type MemSessionStore struct {
 	mu      sync.Mutex
 	entries map[string]sessionEntry
+	stop    chan struct{}
 }
 
 type sessionEntry struct {
@@ -81,9 +85,43 @@ type sessionEntry struct {
 	expiresAt time.Time
 }
 
-// NewMemSessionStore returns an initialized MemSessionStore.
+const sessionGCInterval = 5 * time.Minute
+
+// NewMemSessionStore returns an initialized MemSessionStore with a background
+// GC goroutine that sweeps expired entries every 5 minutes.
 func NewMemSessionStore() *MemSessionStore {
-	return &MemSessionStore{entries: make(map[string]sessionEntry)}
+	s := &MemSessionStore{
+		entries: make(map[string]sessionEntry),
+		stop:    make(chan struct{}),
+	}
+	go s.gc()
+	return s
+}
+
+// Close stops the background GC goroutine.
+func (s *MemSessionStore) Close() {
+	close(s.stop)
+}
+
+// gc runs periodically and removes expired entries from the store.
+func (s *MemSessionStore) gc() {
+	ticker := time.NewTicker(sessionGCInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			s.mu.Lock()
+			for token, e := range s.entries {
+				if now.After(e.expiresAt) {
+					delete(s.entries, token)
+				}
+			}
+			s.mu.Unlock()
+		case <-s.stop:
+			return
+		}
+	}
 }
 
 func (s *MemSessionStore) Store(token string, identity Identity, ttl time.Duration) {
@@ -116,13 +154,49 @@ type magicTokenEntry struct {
 }
 
 // MagicStore manages short-lived magic-link tokens (in-memory).
+// A background goroutine sweeps expired entries every magicGCInterval to
+// prevent unbounded growth under load. Call Close to stop it.
 type MagicStore struct {
 	mu     sync.Mutex
 	tokens map[string]magicTokenEntry
+	stop   chan struct{}
 }
 
+const magicGCInterval = 5 * time.Minute
+
 func newMagicStore() *MagicStore {
-	return &MagicStore{tokens: make(map[string]magicTokenEntry)}
+	m := &MagicStore{
+		tokens: make(map[string]magicTokenEntry),
+		stop:   make(chan struct{}),
+	}
+	go m.gc()
+	return m
+}
+
+// Close stops the background GC goroutine.
+func (m *MagicStore) Close() {
+	close(m.stop)
+}
+
+// gc periodically removes expired entries.
+func (m *MagicStore) gc() {
+	ticker := time.NewTicker(magicGCInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			m.mu.Lock()
+			for token, e := range m.tokens {
+				if now.After(e.expiresAt) {
+					delete(m.tokens, token)
+				}
+			}
+			m.mu.Unlock()
+		case <-m.stop:
+			return
+		}
+	}
 }
 
 func (m *MagicStore) store(token, email string, ttl time.Duration) {
@@ -474,7 +548,11 @@ func (c *AuthConfig) handleMagicRequest(w http.ResponseWriter, r *http.Request) 
 
 	// Respond with a simple confirmation — real email would be sent here.
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprintf(w, "Check your email for a sign-in link. (Dev: %s)\n", verifyURL)
+	if os.Getenv("CF_UI_DEV") != "" || os.Getenv("DEV_MODE") != "" {
+		fmt.Fprintf(w, "Check your email for a sign-in link. (Dev: %s)\n", verifyURL)
+	} else {
+		fmt.Fprint(w, "Check your email for a sign-in link.\n")
+	}
 }
 
 // handleMagicVerify validates the magic-link token and creates a session.
