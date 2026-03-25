@@ -51,7 +51,14 @@ var templateFS fs.FS
 var staticFS fs.FS
 
 // templates holds all parsed page templates.
+// Each page template is parsed into a clone of the base+funcs set so that
+// {{define "content"}} blocks from different pages don't overwrite each other.
 var templates *template.Template
+
+// pageTemplates maps template filename to an isolated template set for that
+// page. Using isolated sets prevents {{define "content"}} collisions between
+// pages (a known Go html/template limitation with shared named blocks).
+var pageTemplates map[string]*template.Template
 
 func init() {
 	var err error
@@ -63,10 +70,35 @@ func init() {
 	if err != nil {
 		panic("cf-ui: failed to sub static FS: " + err.Error())
 	}
-	templates, err = template.New("").ParseFS(templateFS, "*.html")
+
+	// Parse all templates together for backward compatibility (SSE tests, etc.).
+	templates, err = template.New("").Funcs(templateFuncs()).ParseFS(templateFS, "*.html")
 	if err != nil {
 		panic("cf-ui: failed to parse templates: " + err.Error())
 	}
+
+	// Build isolated per-page template sets so {{define "content"}} in each
+	// page does not stomp on other pages' definitions.
+	pages := []string{"campfire.html", "index.html", "magic_login.html"}
+	pageTemplates = make(map[string]*template.Template, len(pages))
+	for _, page := range pages {
+		// Start with base.html (shared layout), then add the page file.
+		t, err := template.New("").Funcs(templateFuncs()).ParseFS(templateFS, "base.html", page)
+		if err != nil {
+			panic("cf-ui: failed to parse page template " + page + ": " + err.Error())
+		}
+		pageTemplates[page] = t
+	}
+}
+
+// renderPage executes the named page template with the given data.
+// Uses the isolated per-page template set if available, falling back to the
+// global templates set.
+func renderPage(w http.ResponseWriter, name string, data any) error {
+	if t, ok := pageTemplates[name]; ok {
+		return t.ExecuteTemplate(w, name, data)
+	}
+	return templates.ExecuteTemplate(w, name, data)
 }
 
 func main() {
@@ -113,13 +145,16 @@ func main() {
 	}
 }
 
-// muxBundle bundles the HTTP handler with the AuthConfig, CSRF store, and SSE hub
-// so tests can access them to seed sessions, generate CSRF tokens, and publish events.
+// muxBundle bundles the HTTP handler with the AuthConfig, CSRF store, SSE hub,
+// metrics registry, and MessageSender so tests can access them to seed sessions,
+// generate CSRF tokens, publish events, and inject fake senders.
 type muxBundle struct {
 	handler   http.Handler
 	authCfg   *AuthConfig
 	csrfStore *csrfStore
 	hub       *SSEHub
+	metrics   *MetricsRegistry
+	sender    MessageSender
 }
 
 // buildMux constructs the HTTP router and returns it. Extracted for testability.
@@ -127,9 +162,6 @@ type muxBundle struct {
 func buildMux(logger *slog.Logger) http.Handler {
 	return buildMuxWithAuth(logger, nil).handler
 }
-
-// muxBundle bundles the HTTP handler with the AuthConfig, CSRF store, and SSE hub
-// so tests can access them to seed sessions, generate CSRF tokens, and publish events.
 
 // buildMuxWithAuth constructs the HTTP router with an explicit AuthConfig.
 // If authCfg is nil, a default in-memory config with noopAuthProvider is created.
@@ -149,7 +181,13 @@ func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) muxBundle {
 		panic("cf-ui: failed to initialize CSRF store: " + err.Error())
 	}
 
-	hub := NewSSEHub(authCfg.Sessions, logger)
+	reg := NewMetricsRegistry()
+
+	hub := NewSSEHub(authCfg.Sessions, logger).WithMetrics(reg)
+	sender := MessageSender(noopMessageSender{})
+
+	// Campfire detail handlers — inject CSRF store so compose form gets a token.
+	detail := NewCampfireDetailHandlers(logger, nil).WithCSRF(csrf)
 
 	sessionMW := SessionMiddleware(authCfg.Sessions)
 	csrfMW := CSRFMiddleware(csrf)
@@ -160,20 +198,31 @@ func buildMuxWithAuth(logger *slog.Logger, authCfg *AuthConfig) muxBundle {
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFS)))
 
+	// Metrics endpoint — public (infrastructure monitoring, no session required).
+	mux.HandleFunc("GET /metrics", handleMetrics(reg))
+
 	// Auth routes — public (session middleware must NOT wrap /auth/* because
 	// unauthenticated users need to reach the login endpoints).
 	// The magic-link POST route gets CSRF protection only.
 	registerAuthRoutes(mux, authCfg, csrfMW)
 
 	// Protected UI routes — require a valid session.
-	mux.Handle("GET /", sessionMW(handleIndex(logger)))
-	mux.Handle("GET /c/{id}", sessionMW(handleCampfireDetail(logger)))
+	// handleIndexWithStore accepts a nil CampfireLister — shows empty state if no store.
+	mux.Handle("GET /", sessionMW(handleIndexWithStore(logger, nil)))
+	mux.Handle("GET /c/{id}", sessionMW(csrfMW(http.HandlerFunc(detail.HandleDetail))))
+	mux.Handle("GET /c/{id}/messages", sessionMW(http.HandlerFunc(detail.HandleMessages)))
+
+	// Compose box — POST /c/{id}/send. Session + CSRF required.
+	mux.Handle("POST /c/{id}/send", sessionMW(csrfMW(handleSend(logger, sender, hub))))
 
 	// SSE events stream — requires a valid session. Session middleware injects
 	// the Identity; the hub handler enforces the connection budget.
 	mux.Handle("GET /events", sessionMW(handleEventsHandler(hub)))
 
-	return muxBundle{handler: mux, authCfg: authCfg, csrfStore: csrf, hub: hub}
+	// Wrap the entire mux with the latency middleware (outermost layer).
+	handler := LatencyMiddleware(reg)(mux)
+
+	return muxBundle{handler: handler, authCfg: authCfg, csrfStore: csrf, hub: hub, metrics: reg, sender: sender}
 }
 
 // handleHealthz returns a JSON health response.
@@ -181,45 +230,4 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"}) //nolint:errcheck
-}
-
-// handleIndex renders the campfire list page.
-func handleIndex(logger *slog.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		data := struct {
-			Title   string
-			Version string
-		}{
-			Title:   "Campfire",
-			Version: Version,
-		}
-		if err := templates.ExecuteTemplate(w, "index.html", data); err != nil {
-			logger.Error("template error", "template", "index.html", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-		}
-	}
-}
-
-// handleCampfireDetail renders the campfire detail page for a given ID.
-func handleCampfireDetail(logger *slog.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		data := struct {
-			Title       string
-			CampfireID  string
-			Version     string
-		}{
-			Title:      "Campfire — " + id,
-			CampfireID: id,
-			Version:    Version,
-		}
-		if err := templates.ExecuteTemplate(w, "campfire.html", data); err != nil {
-			logger.Error("template error", "template", "campfire.html", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-		}
-	}
 }

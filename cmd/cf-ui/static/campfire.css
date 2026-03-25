@@ -743,3 +743,108 @@ button.secondary:hover {
     display: none;
   }
 }
+
+
+/* ═══════════════════════════════════════════════════
+ * Compose box — message send form
+ * ═══════════════════════════════════════════════════ */
+.compose-box {
+  background: var(--ash-medium);
+  border-top: 1px solid var(--ash-light);
+  padding: 0.75rem 1rem;
+  flex-shrink: 0;
+}
+
+.compose-row {
+  margin-bottom: 0.5rem;
+}
+
+.compose-textarea {
+  width: 100%;
+  min-height: 48px;
+  max-height: 200px;
+  resize: vertical;
+  background: var(--ash-light);
+  border: 1px solid rgba(255, 213, 128, 0.15);
+  border-radius: 4px;
+  color: var(--fire-warm);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+  font-family: inherit;
+  line-height: 1.5;
+  transition: border-color var(--transition-default),
+              box-shadow var(--transition-default);
+  outline: none;
+}
+
+.compose-textarea:focus {
+  border-color: var(--fire-ember);
+  box-shadow: 0 0 0 2px rgba(232, 115, 42, 0.2);
+}
+
+.compose-textarea::placeholder {
+  color: rgba(255, 213, 128, 0.3);
+}
+
+.compose-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.compose-tag-select {
+  background: var(--ash-light);
+  border: 1px solid rgba(255, 213, 128, 0.15);
+  border-radius: 4px;
+  color: var(--fire-warm);
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: border-color var(--transition-default);
+}
+
+.compose-tag-select:focus {
+  border-color: var(--fire-ember);
+}
+
+.compose-tag-select option {
+  background: var(--ash-medium);
+  color: var(--fire-warm);
+}
+
+.compose-send-btn {
+  background: var(--fire-ember);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 0.4rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--transition-default),
+              box-shadow var(--transition-default);
+  white-space: nowrap;
+}
+
+.compose-send-btn:hover {
+  background: var(--fire-glow);
+  box-shadow: var(--glow-dim);
+}
+
+.compose-send-btn:active {
+  background: var(--fire-ember);
+}
+
+/* htmx request indicator on the send button */
+.compose-send-btn.htmx-request {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.compose-error {
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--fire-ember);
+}

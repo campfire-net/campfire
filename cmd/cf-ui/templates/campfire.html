@@ -1,9 +1,237 @@
 {{template "base" .}}
 {{define "title"}}{{.Title}}{{end}}
 {{define "content"}}
-<h1>Campfire</h1>
-<p>ID: <code>{{.CampfireID}}</code></p>
-<div id="messages" hx-ext="sse" sse-connect="/c/{{.CampfireID}}/events" sse-swap="message">
-    <p>Loading messages&hellip;</p>
+<div class="detail-shell">
+  <!-- Left: message feed + compose -->
+  <div class="flex flex-col flex-1" style="overflow:hidden;">
+
+    <!-- Tag filter chips bar -->
+    <div class="campfire-filter-bar" id="filter-bar">
+      <span class="text-muted" style="font-size:0.75rem;padding:0.5rem 0.75rem 0.5rem 1rem;">Filter:</span>
+      {{range .AllTags}}
+      <button
+        class="tag-chip tag-filter-chip{{if tagActive . $.ActiveTags}} tag-filter-active{{end}}"
+        data-tag="{{.}}"
+        hx-get="/c/{{$.CampfireID}}/messages?tags={{toggleTag . $.ActiveTags}}"
+        hx-target="#message-feed"
+        hx-swap="innerHTML"
+        hx-push-url="true"
+        title="Filter by {{.}}"
+      >{{.}}</button>
+      {{end}}
+      {{if .ActiveTags}}
+      <button
+        class="tag-chip secondary"
+        style="background:var(--ash-light);color:var(--fire-warm);"
+        hx-get="/c/{{.CampfireID}}/messages"
+        hx-target="#message-feed"
+        hx-swap="innerHTML"
+        hx-push-url="true"
+        title="Clear all filters"
+      >clear</button>
+      {{end}}
+    </div>
+
+    <!-- "N new messages" banner (hidden until JS shows it) -->
+    <div id="new-msg-banner" class="new-msg-banner hidden" role="alert" aria-live="polite">
+      <span id="new-msg-count"></span> new message(s) &mdash;
+      <button class="link-btn" onclick="scrollToBottom()">scroll down</button>
+    </div>
+
+    <!-- Message feed -->
+    <div
+      id="message-feed"
+      class="message-feed"
+      data-campfire-id="{{.CampfireID}}"
+    >
+      {{template "message_list" .}}
+    </div>
+
+    <!-- Compose box -->
+    <div class="compose-box" id="compose-box">
+      <form
+        id="compose-form"
+        method="POST"
+        action="/c/{{.CampfireID}}/send"
+        hx-post="/c/{{.CampfireID}}/send"
+        hx-target="#message-feed"
+        hx-swap="beforeend"
+        hx-on::after-request="this.reset()"
+      >
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <div class="compose-row">
+          <textarea
+            name="message"
+            id="compose-textarea"
+            class="compose-textarea"
+            placeholder="Send a message..."
+            rows="2"
+            required
+          ></textarea>
+          <select name="tag" class="compose-tag-select" title="Tag (optional)">
+            <option value="">no tag</option>
+            {{range .ValidTags}}
+            <option value="{{.}}">{{.}}</option>
+            {{end}}
+          </select>
+          <button type="submit" class="compose-send-btn">Send</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Right: context panel placeholder -->
+  <aside class="context-panel" id="context-panel">
+    <div class="context-panel-header">
+      <h3 style="font-size:0.85rem;font-weight:600;color:rgba(255,213,128,0.5);text-transform:uppercase;letter-spacing:0.08em;">Context</h3>
+    </div>
+    <div class="context-panel-body" style="margin-top:1rem;">
+      <p class="text-muted" style="font-size:0.8rem;">Select a message to see details, thread, and provenance.</p>
+    </div>
+  </aside>
 </div>
+
+<!-- SSE live update script -->
+<script>
+(function () {
+  var feedEl = document.getElementById('message-feed');
+  var bannerEl = document.getElementById('new-msg-banner');
+  var countEl = document.getElementById('new-msg-count');
+  var campfireID = feedEl ? feedEl.dataset.campfireId : '';
+  var newCount = 0;
+
+  function isScrolledToBottom() {
+    if (!feedEl) return true;
+    return feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 80;
+  }
+
+  function scrollToBottom() {
+    if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
+    newCount = 0;
+    if (bannerEl) bannerEl.classList.add('hidden');
+  }
+  window.scrollToBottom = scrollToBottom;
+
+  if (!campfireID || !window.EventSource) return;
+
+  var es = new EventSource('/events');
+
+  es.addEventListener('message', function (e) {
+    try {
+      var payload = JSON.parse(e.data);
+    } catch (_) { return; }
+    if (payload.campfire_id !== campfireID) return;
+
+    var card = buildMessageCard(payload);
+    if (!card) return;
+
+    var atBottom = isScrolledToBottom();
+    feedEl.appendChild(card);
+
+    if (atBottom) {
+      scrollToBottom();
+    } else {
+      newCount++;
+      if (countEl) countEl.textContent = newCount;
+      if (bannerEl) bannerEl.classList.remove('hidden');
+    }
+  });
+
+  feedEl.addEventListener('scroll', function () {
+    if (isScrolledToBottom() && newCount > 0) {
+      newCount = 0;
+      if (bannerEl) bannerEl.classList.add('hidden');
+    }
+  });
+
+  function buildMessageCard(p) {
+    var body = p.body || '';
+    var tags = Array.isArray(p.tags) ? p.tags : [];
+    var sender = p.sender || 'unknown';
+    var instance = p.instance || '';
+    var timeFmt = p.time_fmt || '';
+
+    var card = document.createElement('div');
+    card.className = 'message-card new';
+    card.id = 'msg-' + (p.id || '');
+
+    var meta = document.createElement('div');
+    meta.className = 'message-meta';
+
+    var badge = document.createElement('span');
+    badge.className = 'member-badge';
+    var avatarEl = document.createElement('span');
+    avatarEl.className = 'avatar';
+    avatarEl.textContent = sender.charAt(0).toUpperCase();
+    badge.appendChild(avatarEl);
+    var nameEl = document.createElement('span');
+    nameEl.textContent = sender;
+    badge.appendChild(nameEl);
+    if (instance) {
+      var roleEl = document.createElement('span');
+      roleEl.className = 'role';
+      roleEl.textContent = instance;
+      badge.appendChild(roleEl);
+    }
+    meta.appendChild(badge);
+
+    if (tags.length > 0) {
+      var tagsEl = document.createElement('span');
+      tagsEl.className = 'message-tags';
+      tags.forEach(function (t) {
+        var chip = document.createElement('span');
+        chip.className = 'tag-chip';
+        chip.dataset.tag = t;
+        chip.textContent = t;
+        tagsEl.appendChild(chip);
+      });
+      meta.appendChild(tagsEl);
+    }
+
+    if (timeFmt) {
+      var timeEl = document.createElement('time');
+      timeEl.className = 'message-time';
+      timeEl.textContent = timeFmt;
+      meta.appendChild(timeEl);
+    }
+
+    card.appendChild(meta);
+
+    var bodyEl = document.createElement('div');
+    bodyEl.className = 'message-body message-body-collapsed';
+    bodyEl.textContent = body;
+    card.appendChild(bodyEl);
+
+    return card;
+  }
+})();
+</script>
+{{end}}
+
+{{define "message_list"}}
+{{if not .Messages}}
+<div class="loading-indicator" id="empty-feed">
+  <span class="text-muted">No messages yet.</span>
+</div>
+{{else}}
+{{range .Messages}}
+<div class="message-card" id="msg-{{.ID}}">
+  <div class="message-meta">
+    <span class="member-badge">
+      <span class="avatar">{{if .Sender}}{{slice .Sender 0 1}}{{else}}?{{end}}</span>
+      <span>{{if .Sender}}{{.Sender}}{{else}}unknown{{end}}</span>
+      {{if .Instance}}<span class="role">{{.Instance}}</span>{{end}}
+    </span>
+    {{if .Tags}}
+    <span class="message-tags">
+      {{range .Tags}}<span class="tag-chip" data-tag="{{.}}">{{.}}</span>{{end}}
+    </span>
+    {{end}}
+    {{if .TimeFmt}}<time class="message-time">{{.TimeFmt}}</time>{{end}}
+    {{if .Threaded}}<span class="thread-indicator text-muted" title="{{.ThreadCount}} thread(s)">thread {{.ThreadCount}}</span>{{end}}
+  </div>
+  <div class="message-body message-body-collapsed">{{.Body}}</div>
+</div>
+{{end}}
+{{end}}
 {{end}}

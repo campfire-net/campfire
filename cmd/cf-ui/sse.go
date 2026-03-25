@@ -83,6 +83,10 @@ type SSEHub struct {
 	// logger is the server logger.
 	logger *slog.Logger
 
+	// metrics is the registry used to record SSE connection counts and message volume.
+	// If nil, metrics are not recorded.
+	metrics *MetricsRegistry
+
 	// keepaliveInterval and sessionRecheckInterval are injectable for tests.
 	keepaliveInterval      time.Duration
 	sessionRecheckInterval time.Duration
@@ -99,6 +103,13 @@ func NewSSEHub(sessions SessionStore, logger *slog.Logger) *SSEHub {
 	}
 }
 
+// WithMetrics attaches a MetricsRegistry to the hub so that SSE connect/disconnect
+// and message publish events are recorded.
+func (h *SSEHub) WithMetrics(reg *MetricsRegistry) *SSEHub {
+	h.metrics = reg
+	return h
+}
+
 // register adds conn to the hub for the given operator.
 // It returns false (and does NOT add the connection) if the budget is exceeded.
 func (h *SSEHub) register(conn *sseConn) bool {
@@ -109,6 +120,9 @@ func (h *SSEHub) register(conn *sseConn) bool {
 		return false
 	}
 	h.conns[email] = append(h.conns[email], conn)
+	if h.metrics != nil {
+		h.metrics.SSE.Inc(email)
+	}
 	return true
 }
 
@@ -121,6 +135,9 @@ func (h *SSEHub) unregister(conn *sseConn) {
 	for i, c := range list {
 		if c == conn {
 			h.conns[email] = append(list[:i], list[i+1:]...)
+			if h.metrics != nil {
+				h.metrics.SSE.Dec(email)
+			}
 			break
 		}
 	}
@@ -134,6 +151,11 @@ func (h *SSEHub) unregister(conn *sseConn) {
 // (Campfire membership scoping is a future item.)
 func (h *SSEHub) Publish(campfireID string, event SSEEvent) {
 	event.CampfireID = campfireID
+
+	// Record message volume metric.
+	if h.metrics != nil {
+		h.metrics.Messages.Inc(campfireID)
+	}
 
 	h.mu.Lock()
 	// Collect target channels outside the lock to avoid holding it during sends.
