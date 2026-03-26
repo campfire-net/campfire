@@ -93,6 +93,18 @@ type Transport struct {
 	// pollBroker fans out new-message notifications to active long-poll goroutines.
 	pollBroker *PollBroker
 
+	// dedup is the message-ID deduplication table used by the router to prevent
+	// re-forwarding of already-seen messages (spec §7.3).
+	dedup *DedupTable
+
+	// routingTable maps campfire_id to known routing entries, populated by
+	// routing:beacon messages (spec §7.1).
+	routingTable *RoutingTable
+
+	// relayMode enables forwarding for all campfires in the routing table,
+	// not just locally-hosted ones. Opt-in per spec §11.2.
+	relayMode bool
+
 	// stopNoncePruner is closed by Stop() to signal the background nonce
 	// pruner goroutine to exit cleanly.
 	stopNoncePruner chan struct{}
@@ -126,6 +138,8 @@ func New(listenAddr string, s store.Store) *Transport {
 		signSessionCounts:   make(map[string]int),
 		rekeySessions:       make(map[string]*rekeySessionState),
 		stopNoncePruner:     make(chan struct{}),
+		dedup:               defaultDedupTable(),
+		routingTable:        newRoutingTable(),
 		pollBroker: &PollBroker{
 			subs:           make(map[string][]chan struct{}),
 			limits:         make(map[string]int),
@@ -448,6 +462,20 @@ func (t *Transport) PollBrokerSubscribe(campfireID string) (<-chan struct{}, fun
 		return nil, nil, fmt.Errorf("poll broker not initialized")
 	}
 	return t.pollBroker.Subscribe(campfireID)
+}
+
+// SetRelayMode enables or disables relay mode.
+// When relay mode is on, the router forwards messages for all campfires in the
+// routing table, not just locally-hosted ones. Opt-in per spec §11.2.
+func (t *Transport) SetRelayMode(enabled bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.relayMode = enabled
+}
+
+// RoutingTable returns the transport's routing table for external inspection (e.g. tests).
+func (t *Transport) RoutingTable() *RoutingTable {
+	return t.routingTable
 }
 
 // SetMaxPollersPerCampfire overrides the per-campfire long-poll concurrency limit.

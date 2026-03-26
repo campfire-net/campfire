@@ -1,11 +1,13 @@
 package http
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 )
@@ -86,11 +89,49 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		log.Printf("handleDeliver: relay for campfire %s: deliverer=%s author=%s", campfireID, senderHex, msg.SenderHex())
 	}
 
+	// Dedup check (spec §7.3): if message ID already seen, drop silently.
+	// Check dedup BEFORE storing — a duplicate should not be re-stored or re-forwarded.
+	// Return 200 so the sender doesn't retry.
+	if h.transport != nil && h.transport.dedup != nil {
+		if h.transport.dedup.See(msg.ID) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+
+	// Max hops check (spec §7.5): if provenance chain length >= MaxHops, drop.
+	if len(msg.Provenance) >= MaxHops {
+		log.Printf("handleDeliver: message %s for campfire %s exceeds max_hops (%d), dropping", msg.ID, campfireID, MaxHops)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	// Store in local SQLite
 	if _, err := h.store.AddMessage(store.MessageRecordFromMessage(campfireID, &msg, store.NowNano())); err != nil {
 		log.Printf("handleDeliver: failed to store message for campfire %s: %v", campfireID, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+
+	// Process routing:beacon and routing:withdraw tags for routing table updates.
+	if h.transport != nil {
+		for _, tag := range msg.Tags {
+			switch tag {
+			case "routing:beacon":
+				if err := h.transport.routingTable.HandleBeacon(msg.Payload, campfireID); err != nil {
+					log.Printf("handleDeliver: routing:beacon processing failed for campfire %s: %v", campfireID, err)
+				}
+			case "routing:withdraw":
+				if err := h.transport.routingTable.HandleWithdraw(msg.Payload); err != nil {
+					log.Printf("handleDeliver: routing:withdraw processing failed for campfire %s: %v", campfireID, err)
+				}
+			}
+		}
+	}
+
+	// Forward the message to other peers (router forwarding, spec §7.2).
+	if h.transport != nil {
+		h.forwardMessage(campfireID, senderHex, &msg)
 	}
 
 	// Wake any long-polling goroutines waiting for new messages.
@@ -99,6 +140,155 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// forwardMessage forwards a message to peers for the given campfire, excluding the sender.
+// It appends a provenance hop signed by the campfire key before forwarding.
+//
+// Forwarding policy (spec §11.2):
+//   - Default: forward only if this instance has the campfire key (locally-hosted campfire).
+//   - Relay mode: forward for any campfire in the routing table (opt-in).
+//
+// If the keyProvider is not set, forwarding is skipped (no campfire key to sign hops).
+func (h *handler) forwardMessage(campfireID, senderHex string, msg *message.Message) {
+	kp := h.keyProvider
+	if kp == nil && h.transport != nil {
+		h.transport.mu.RLock()
+		kp = h.transport.keyProvider
+		h.transport.mu.RUnlock()
+	}
+	if kp == nil {
+		// No key provider: cannot sign provenance hops; skip forwarding.
+		return
+	}
+
+	privKeyBytes, pubKeyBytes, err := kp(campfireID)
+	if err != nil {
+		// Not a locally-hosted campfire; check relay mode.
+		h.transport.mu.RLock()
+		relayMode := h.transport.relayMode
+		h.transport.mu.RUnlock()
+
+		if !relayMode {
+			// Default policy: only forward for locally-hosted campfires.
+			return
+		}
+		// Relay mode: no campfire key, cannot sign hops. Skip.
+		log.Printf("forwardMessage: relay mode enabled for campfire %s but no key available: %v", campfireID, err)
+		return
+	}
+
+	campfirePriv := ed25519.PrivateKey(privKeyBytes)
+	campfirePub := ed25519.PublicKey(pubKeyBytes)
+
+	// Get campfire membership for provenance hop metadata.
+	membership, err := h.store.GetMembership(campfireID)
+	if err != nil || membership == nil {
+		// Log but continue — we can still forward without membership metadata.
+		log.Printf("forwardMessage: GetMembership failed for campfire %s: %v", campfireID, err)
+	}
+
+	var joinProtocol string
+	if membership != nil {
+		joinProtocol = membership.JoinProtocol
+	}
+
+	// Make a copy of the message to add provenance hop without mutating the original.
+	fwdMsg := *msg
+	fwdMsg.Provenance = make([]message.ProvenanceHop, len(msg.Provenance))
+	copy(fwdMsg.Provenance, msg.Provenance)
+
+	// Add provenance hop signed by campfire key (spec §7.4).
+	if err := fwdMsg.AddHop(campfirePriv, campfirePub, nil, 0, joinProtocol, nil, ""); err != nil {
+		log.Printf("forwardMessage: AddHop failed for campfire %s: %v", campfireID, err)
+		return
+	}
+
+	// Build the forwarder identity from campfire keys.
+	// The router signs requests as the campfire, not as an individual agent.
+	fwdIdentity := &identity.Identity{
+		PublicKey:  campfirePub,
+		PrivateKey: campfirePriv,
+	}
+
+	// Collect forwarding targets: first check routing table, then fall back to local peers.
+	var targetEndpoints []string
+	routes := h.transport.routingTable.Lookup(campfireID)
+	if len(routes) > 0 {
+		for _, route := range routes {
+			if route.Endpoint != "" {
+				targetEndpoints = append(targetEndpoints, route.Endpoint)
+			}
+		}
+	}
+
+	// Also include locally known peers (from membership events).
+	h.transport.mu.RLock()
+	localPeers := make([]PeerInfo, len(h.transport.peers[campfireID]))
+	copy(localPeers, h.transport.peers[campfireID])
+	h.transport.mu.RUnlock()
+
+	for _, peer := range localPeers {
+		if peer.Endpoint == "" {
+			continue
+		}
+		// Exclude the sender (prevent echo — spec §7.2 step 4).
+		if peer.PubKeyHex == senderHex {
+			continue
+		}
+		// Exclude already-targeted endpoints (from routing table).
+		alreadyTargeted := false
+		for _, ep := range targetEndpoints {
+			if ep == peer.Endpoint {
+				alreadyTargeted = true
+				break
+			}
+		}
+		if !alreadyTargeted {
+			targetEndpoints = append(targetEndpoints, peer.Endpoint)
+		}
+	}
+
+	if len(targetEndpoints) == 0 {
+		return
+	}
+
+	// Forward in parallel (fire-and-forget, errors are logged not fatal).
+	for _, ep := range targetEndpoints {
+		go func(endpoint string) {
+			if err := deliverMessage(endpoint, campfireID, &fwdMsg, fwdIdentity); err != nil {
+				log.Printf("forwardMessage: deliver to %s for campfire %s failed: %v", endpoint, campfireID, err)
+			}
+		}(ep)
+	}
+}
+
+// deliverMessage delivers a message to a peer endpoint, signing the request.
+// This is the internal version that accepts raw ed25519 keys wrapped in identity.Identity.
+func deliverMessage(endpoint, campfireID string, msg *message.Message, id *identity.Identity) error {
+	body, err := cfencoding.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("encoding message: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/deliver", endpoint, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("building request: %w", err)
+	}
+	signRequest(req, id, body)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("posting to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("peer returned %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
 }
 
 // handleSync serves messages from the local store newer than the given timestamp.
