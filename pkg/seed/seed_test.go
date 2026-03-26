@@ -1,12 +1,16 @@
 package seed_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/seed"
 )
 
@@ -209,6 +213,101 @@ func TestReadConventionMessages_HTTPProtocol(t *testing.T) {
 	_, err := seed.ReadConventionMessages(sb)
 	if err == nil {
 		t.Fatal("expected error for http protocol, got nil")
+	}
+}
+
+// TestReadConventionMessages_SignatureVerification_Reject verifies that when
+// SeedBeacon.CampfireID is set, messages signed by a DIFFERENT key are rejected.
+// This is the regression test for the missing signature verification bug.
+func TestReadConventionMessages_SignatureVerification_Reject(t *testing.T) {
+	// Generate two keypairs: one for the beacon identity, one for the actual signer.
+	beaconPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating beacon keypair: %v", err)
+	}
+	differentPub, differentPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating different keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write a convention:operation message signed by the DIFFERENT (wrong) key.
+	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
+	msg, err := message.NewMessage(differentPriv, differentPub, declPayload, []string{"convention:operation"}, nil)
+	if err != nil {
+		t.Fatalf("creating message: %v", err)
+	}
+	writeMsgToDir(t, messagesDir, "0000000001-wrongkey.cbor", msg)
+
+	// Beacon claims beaconPub as its identity, but message is signed by differentPub.
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(beaconPub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+
+	_, err = seed.ReadConventionMessages(sb)
+	if err == nil {
+		t.Fatal("expected signature verification to reject mismatched key, got nil error")
+	}
+}
+
+// TestReadConventionMessages_SignatureVerification_Accept verifies that when
+// SeedBeacon.CampfireID is set, messages signed by the MATCHING key are accepted.
+func TestReadConventionMessages_SignatureVerification_Accept(t *testing.T) {
+	// Generate a keypair that will be both the beacon identity and the message signer.
+	beaconPub, beaconPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating beacon keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write a convention:operation message signed by the correct (matching) key.
+	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
+	msg, err := message.NewMessage(beaconPriv, beaconPub, declPayload, []string{"convention:operation"}, nil)
+	if err != nil {
+		t.Fatalf("creating message: %v", err)
+	}
+	writeMsgToDir(t, messagesDir, "0000000001-correct.cbor", msg)
+
+	// Beacon CampfireID matches the signing key.
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(beaconPub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+
+	msgs, err := seed.ReadConventionMessages(sb)
+	if err != nil {
+		t.Fatalf("ReadConventionMessages with matching key: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 convention message, got %d", len(msgs))
+	}
+	if string(msgs[0].Payload) != string(declPayload) {
+		t.Errorf("payload mismatch: want %q, got %q", declPayload, msgs[0].Payload)
+	}
+}
+
+// writeMsgToDir writes a signed message.Message as CBOR to the given directory.
+func writeMsgToDir(t *testing.T, dir, filename string, msg *message.Message) {
+	t.Helper()
+	data, err := cfencoding.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshaling message %s: %v", filename, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filename), data, 0600); err != nil {
+		t.Fatalf("writing message %s: %v", filename, err)
 	}
 }
 

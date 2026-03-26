@@ -14,6 +14,8 @@
 package seed
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,6 +25,7 @@ import (
 	"time"
 
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/message"
 )
 
 // WellKnownURL is the URL for the default seed beacon.
@@ -183,6 +186,10 @@ func fetchWellKnownBeacon(url string) (*SeedBeacon, error) {
 // For filesystem protocol: reads CBOR message files from <Dir>/messages/ and
 // returns those tagged with "convention:operation".
 //
+// When sb.CampfireID is set, at least one convention message must be signed by
+// the key matching CampfireID. If no message validates, the seed is rejected
+// and an error is returned.
+//
 // Returns (nil, nil) when the messages directory is absent (empty seed campfire).
 func ReadConventionMessages(sb *SeedBeacon) ([]ConventionMessage, error) {
 	proto := sb.Protocol
@@ -196,10 +203,68 @@ func ReadConventionMessages(sb *SeedBeacon) ([]ConventionMessage, error) {
 		if sb.Dir == "" {
 			return nil, fmt.Errorf("seed beacon has no dir for filesystem transport")
 		}
-		return readFilesystemConventionMessages(sb.Dir)
+		msgs, err := readFilesystemConventionMessages(sb.Dir)
+		if err != nil {
+			return nil, err
+		}
+		// When CampfireID is set, verify at least one message is signed by the
+		// campfire key. Reject the entire seed if none validates.
+		if sb.CampfireID != "" {
+			if err := verifySeedBeaconSignatures(sb.CampfireID, sb.Dir); err != nil {
+				return nil, err
+			}
+		}
+		return msgs, nil
 	default:
 		return nil, fmt.Errorf("unknown seed beacon protocol %q", proto)
 	}
+}
+
+// verifySeedBeaconSignatures checks that at least one message in campfireDir/messages/
+// is validly signed by the key whose hex encoding matches campfireID.
+// Returns an error if no valid message is found.
+func verifySeedBeaconSignatures(campfireID string, campfireDir string) error {
+	expectedPub, err := hex.DecodeString(campfireID)
+	if err != nil {
+		return fmt.Errorf("invalid campfire_id %q: %w", campfireID, err)
+	}
+	if len(expectedPub) != ed25519.PublicKeySize {
+		return fmt.Errorf("campfire_id %q has wrong length (want %d bytes, got %d)", campfireID, ed25519.PublicKeySize, len(expectedPub))
+	}
+
+	messagesDir := filepath.Join(campfireDir, "messages")
+	entries, err := os.ReadDir(messagesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("seed beacon campfire_id set but messages directory is absent: signature verification failed")
+		}
+		return fmt.Errorf("reading seed campfire messages at %s: %w", messagesDir, err)
+	}
+
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".cbor" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(messagesDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var msg message.Message
+		if err := cfencoding.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+		if !hasTag(msg.Tags, "convention:operation") {
+			continue
+		}
+		// Check sender matches expected campfire key and signature is valid.
+		if len(msg.Sender) == ed25519.PublicKeySize &&
+			hex.EncodeToString(msg.Sender) == campfireID &&
+			msg.VerifySignature() {
+			return nil // at least one valid message found
+		}
+	}
+
+	return fmt.Errorf("seed beacon signature verification failed: no convention:operation message signed by campfire_id %q", campfireID)
 }
 
 // readFilesystemConventionMessages reads convention:operation messages from
