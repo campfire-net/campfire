@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/beacon"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
@@ -533,15 +534,7 @@ func TestRoutingBeaconUpdatesRoutingTable(t *testing.T) {
 
 	// Build and sign a routing:beacon payload for targetCampfire.
 	ts := time.Now().Unix()
-	signInput := struct {
-		CampfireID        string `json:"campfire_id"`
-		ConventionVersion string `json:"convention_version"`
-		Description       string `json:"description"`
-		Endpoint          string `json:"endpoint"`
-		JoinProtocol      string `json:"join_protocol"`
-		Timestamp         int64  `json:"timestamp"`
-		Transport         string `json:"transport"`
-	}{
+	beaconDecl := beacon.BeaconDeclaration{
 		CampfireID:        targetCampfireIDHex,
 		ConventionVersion: "0.4.2",
 		Description:       "test campfire",
@@ -550,7 +543,7 @@ func TestRoutingBeaconUpdatesRoutingTable(t *testing.T) {
 		Timestamp:         ts,
 		Transport:         "p2p-http",
 	}
-	signBytes, _ := json.Marshal(signInput)
+	signBytes, _ := beacon.MarshalInnerSignInput(beaconDecl)
 	innerSig := ed25519.Sign(targetCfPriv, signBytes)
 
 	beaconPayload := map[string]interface{}{
