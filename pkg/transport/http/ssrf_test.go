@@ -196,3 +196,108 @@ func TestSSRFSafeTransportBlocksLoopback(t *testing.T) {
 		t.Error("SSRFSafeTransport: expected connection to loopback to be blocked, got nil error")
 	}
 }
+
+// TestSSRFSafeTransport_RedirectToLoopbackBlocked verifies that the SSRF-safe
+// transport's DialContext blocks direct connections to loopback addresses.
+// This tests the transport-layer guard against DNS rebinding to loopback.
+func TestSSRFSafeTransport_RedirectToLoopbackBlocked(t *testing.T) {
+	// Create a client with the SSRF-safe transport and extract the transport.
+	client := cfhttp.NewSSRFSafeClient()
+	tr := client.Transport.(*http.Transport)
+
+	ctx := context.Background()
+	// Attempt to dial a loopback address directly.
+	// The DialContext should block this with an SSRF message.
+	conn, err := tr.DialContext(ctx, "tcp", "127.0.0.1:9999")
+	if err == nil {
+		defer conn.Close()
+		t.Error("expected DialContext to block 127.0.0.1:9999, got nil error")
+		return
+	}
+	// Verify error message indicates SSRF block (contains "private" or "blocked").
+	errMsg := err.Error()
+	if !(bytes.Contains([]byte(errMsg), []byte("private")) ||
+		bytes.Contains([]byte(errMsg), []byte("blocked"))) {
+		t.Errorf("expected SSRF block message, got: %v", err)
+	}
+}
+
+// TestSSRFSafeTransport_UnreachablePublicIPReturnsDialError verifies that
+// when all resolved public IPs are unreachable, the transport returns the
+// actual dial error (not an SSRF message).
+func TestSSRFSafeTransport_UnreachablePublicIPReturnsDialError(t *testing.T) {
+	// Create a client with the SSRF-safe transport and extract the transport.
+	client := cfhttp.NewSSRFSafeClient()
+	tr := client.Transport.(*http.Transport)
+
+	ctx := context.Background()
+	// Attempt to dial a public IP (1.2.3.4) on a port with no listener.
+	// This should fail with a genuine dial error (connection refused or timeout),
+	// not an SSRF message.
+	conn, err := tr.DialContext(ctx, "tcp", "1.2.3.4:1")
+	if err == nil {
+		defer conn.Close()
+		t.Fatal("expected DialContext to fail with network error, got nil error")
+	}
+
+	// Verify error message does NOT contain SSRF-specific text.
+	errMsg := err.Error()
+	if bytes.Contains([]byte(errMsg), []byte("private")) ||
+		bytes.Contains([]byte(errMsg), []byte("SSRF")) ||
+		bytes.Contains([]byte(errMsg), []byte("blocked: resolves")) {
+		t.Errorf("expected genuine dial error (not SSRF message) for unreachable public IP, got: %v", err)
+	}
+}
+
+// TestValidateJoinerEndpoint_LiteralIPErrorDoesNotContainIP verifies that when a
+// literal private IP is passed, the error message does NOT contain the specific IP
+// (to prevent IP enumeration attacks).
+func TestValidateJoinerEndpoint_LiteralIPErrorDoesNotContainIP(t *testing.T) {
+	privateIP := "10.0.0.1"
+	endpoint := fmt.Sprintf("http://%s:8080/", privateIP)
+
+	err := cfhttp.ValidateJoinerEndpoint(endpoint)
+	if err == nil {
+		t.Fatalf("expected error for private IP %s, got nil", privateIP)
+	}
+
+	errMsg := err.Error()
+	if bytes.Contains([]byte(errMsg), []byte(privateIP)) {
+		t.Errorf("error message contains specific IP %q, should be redacted: %q", privateIP, errMsg)
+	}
+
+	// Message should still indicate it's a private/internal address
+	if !bytes.Contains([]byte(errMsg), []byte("private")) && !bytes.Contains([]byte(errMsg), []byte("internal")) {
+		t.Errorf("error message should mention private/internal, got: %q", errMsg)
+	}
+}
+
+// TestValidateJoinerEndpoint_ResolvedIPErrorDoesNotContainIP verifies that when a
+// hostname resolves to a private IP, the error message does NOT contain the specific
+// resolved IP (to prevent IP enumeration attacks).
+func TestValidateJoinerEndpoint_ResolvedIPErrorDoesNotContainIP(t *testing.T) {
+	// Use a hostname that resolves to a private IP for testing purposes.
+	// We'll use localhost which resolves to 127.0.0.1.
+	endpoint := "http://localhost:8080/"
+
+	err := cfhttp.ValidateJoinerEndpoint(endpoint)
+	if err == nil {
+		t.Fatalf("expected error for localhost (resolves to 127.0.0.1), got nil")
+	}
+
+	errMsg := err.Error()
+	// The error should not contain the resolved IP (127.0.0.1)
+	if bytes.Contains([]byte(errMsg), []byte("127.0.0.1")) {
+		t.Errorf("error message contains resolved IP 127.0.0.1, should be redacted: %q", errMsg)
+	}
+
+	// The error should contain the hostname (since the attacker supplied it)
+	if !bytes.Contains([]byte(errMsg), []byte("localhost")) {
+		t.Errorf("error message should mention hostname 'localhost', got: %q", errMsg)
+	}
+
+	// Message should still indicate it's a private/internal address
+	if !bytes.Contains([]byte(errMsg), []byte("private")) && !bytes.Contains([]byte(errMsg), []byte("internal")) {
+		t.Errorf("error message should mention private/internal, got: %q", errMsg)
+	}
+}
