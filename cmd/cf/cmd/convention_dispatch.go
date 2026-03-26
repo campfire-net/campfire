@@ -101,9 +101,10 @@ func dispatchConventionOp(campfireName string, operationName string, rawArgs []s
 		return fmt.Errorf("reading declarations from campfire: %w", err)
 	}
 
-	// Default operation (no operation given) = delegate to read subcommand
+	// Default operation (no operation given) = delegate to read subcommand.
+	// Do NOT call s.Close() here — the deferred close at the top of the function
+	// handles it. A second close causes a panic.
 	if operationName == "" {
-		s.Close()
 		return readCmd.RunE(readCmd, []string{campfireID})
 	}
 
