@@ -134,7 +134,7 @@ func hasTag(tags []string, tag string) bool {
 
 // TestIntegration_SocialPostRoundtrip exercises the full stack: parse → authority → toolgen → execute.
 func TestIntegration_SocialPostRoundtrip(t *testing.T) {
-	tags := []string{"convention:operation"}
+	tags := []string{convention.ConventionOperationTag}
 	senderKey := "aabbcc" + strings.Repeat("0", 58)
 	campfireKey := "deadbeef" + strings.Repeat("0", 56)
 
@@ -198,7 +198,7 @@ func TestIntegration_SocialPostRoundtrip(t *testing.T) {
 
 // TestIntegration_TrustGate verifies that a member-signed campfire_key declaration is gated.
 func TestIntegration_TrustGate(t *testing.T) {
-	tags := []string{"convention:operation"}
+	tags := []string{convention.ConventionOperationTag}
 	senderKey := "aabbcc" + strings.Repeat("0", 58)
 	campfireKey := "deadbeef" + strings.Repeat("0", 56) // different from sender
 
@@ -230,7 +230,7 @@ func TestIntegration_TrustGate(t *testing.T) {
 
 // TestIntegration_CampfireKeyAccepted verifies that campfire-key-signed operations are accepted.
 func TestIntegration_CampfireKeyAccepted(t *testing.T) {
-	tags := []string{"convention:operation"}
+	tags := []string{convention.ConventionOperationTag}
 	// When senderKey == campfireKey the operation is authorized.
 	campfireKey := "deadbeef" + strings.Repeat("0", 56)
 	senderKey := campfireKey
@@ -269,7 +269,7 @@ func TestIntegration_CampfireKeyAccepted(t *testing.T) {
 
 // TestIntegration_OperationalOverride validates tightening vs. loosening of constraints.
 func TestIntegration_OperationalOverride(t *testing.T) {
-	tags := []string{"convention:operation"}
+	tags := []string{convention.ConventionOperationTag}
 	key := strings.Repeat("a", 64)
 
 	registry, _, err := convention.Parse(tags, socialPostPayload, key, key)
@@ -366,7 +366,7 @@ func TestIntegration_EnvelopeWrapping(t *testing.T) {
 
 // TestIntegration_WorkflowExecution verifies multi-step workflow: query binds result, send uses it as antecedent.
 func TestIntegration_WorkflowExecution(t *testing.T) {
-	tags := []string{"convention:operation"}
+	tags := []string{convention.ConventionOperationTag}
 	key := strings.Repeat("b", 64)
 
 	decl, _, err := convention.Parse(tags, profileUpdatePayload, key, key)

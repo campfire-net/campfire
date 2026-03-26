@@ -248,7 +248,7 @@ func (t *digitalTwin) testDeclaration(src declSource) declTestResult {
 
 	// Step 2: Parse.
 	decl, _, err := convention.Parse(
-		[]string{"convention:operation"},
+		[]string{convention.ConventionOperationTag},
 		src.payload,
 		t.conventionRegID,
 		t.conventionRegID,

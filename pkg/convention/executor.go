@@ -96,7 +96,7 @@ func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfir
 	// and convention:revoke tags — it IS the convention management protocol.
 	isConventionExtension := decl.Convention == InfrastructureConvention
 	for _, tag := range composed {
-		if isConventionExtension && (tag == conventionOperationTag || tag == conventionRevokeTag) {
+		if isConventionExtension && (tag == ConventionOperationTag || tag == conventionRevokeTag) {
 			continue
 		}
 		if err := checkDeniedTag(tag); err != nil {

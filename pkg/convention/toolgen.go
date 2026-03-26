@@ -85,7 +85,7 @@ func ListOperationsWithRegistry(s StoreReader, campfireID, campfireKey, registry
 func listOperations(s StoreReader, campfireID, campfireKey, registryCampfireID string) ([]*Declaration, error) {
 	// Collect operation declarations.
 	opMsgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{
-		Tags: []string{"convention:operation"},
+		Tags: []string{ConventionOperationTag},
 	})
 	if err != nil {
 		return nil, err
@@ -104,7 +104,7 @@ func listOperations(s StoreReader, campfireID, campfireKey, registryCampfireID s
 	// so that the timestamp-based supersede winner logic applies uniformly.
 	if registryCampfireID != "" && registryCampfireID != campfireID {
 		regOpMsgs, regErr := s.ListMessages(registryCampfireID, 0, store.MessageFilter{
-			Tags: []string{"convention:operation"},
+			Tags: []string{ConventionOperationTag},
 		})
 		if regErr == nil {
 			opMsgs = append(opMsgs, regOpMsgs...)

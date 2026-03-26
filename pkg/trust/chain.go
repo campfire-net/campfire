@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 )
@@ -222,7 +223,7 @@ func (w *ChainWalker) walkChainUncached(ctx context.Context) (*Chain, error) {
 	// Step 3: Convention registry → declarations.
 	// Read declarations from the convention registry.
 	declMsgs, err := w.store.ListMessages(conventionRegID, 0, store.MessageFilter{
-		Tags: []string{"convention:operation"},
+		Tags: []string{convention.ConventionOperationTag},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("trust chain broken at convention registry→declarations: reading declarations: %w", err)

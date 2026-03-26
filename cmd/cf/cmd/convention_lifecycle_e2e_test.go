@@ -73,7 +73,7 @@ func e2eSetupSeedCampfire(t *testing.T, transportBaseDir string, projectDir stri
 		t.Fatalf("marshaling seed declaration: %v", err)
 	}
 	// Sign with the campfire's own key so the sender matches CampfireID.
-	seedMsg, err := message.NewMessage(seedCF.PrivateKey, seedCF.PublicKey, seedPayload, []string{"convention:operation"}, nil)
+	seedMsg, err := message.NewMessage(seedCF.PrivateKey, seedCF.PublicKey, seedPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating seed message: %v", err)
 	}
@@ -174,7 +174,7 @@ func e2eWriteDeclarationToStore(t *testing.T, s store.Store, agentID *identity.I
 		t.Fatalf("marshaling modified declaration: %v", err)
 	}
 
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, finalPayload, []string{"convention:operation"}, nil)
+	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, finalPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating declaration message: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestConventionLifecycleE2E(t *testing.T) {
 	}
 
 	// Verify agent B can see the promoted declaration without a separate read.
-	bConvMsgs, err := storeB.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{"convention:operation"}})
+	bConvMsgs, err := storeB.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{convention.ConventionOperationTag}})
 	if err != nil {
 		t.Fatalf("Stage 4: listing convention messages for agent B: %v", err)
 	}

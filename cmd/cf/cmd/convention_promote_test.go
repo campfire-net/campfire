@@ -198,7 +198,7 @@ func TestConventionPromote_TransportTaggedAsConventionOperation(t *testing.T) {
 	for _, msg := range msgs {
 		if msg.ID == result.MessageID {
 			for _, tag := range msg.Tags {
-				if tag == "convention:operation" {
+				if tag == convention.ConventionOperationTag {
 					return // tag present — test passes
 				}
 			}
@@ -229,7 +229,7 @@ func TestConventionPromote_SkipsConflict(t *testing.T) {
 	}
 
 	// Build existing map from what we know was promoted.
-	decl, _, err := convention.Parse([]string{"convention:operation"}, payload, agentID.PublicKeyHex(), agentID.PublicKeyHex())
+	decl, _, err := convention.Parse([]string{convention.ConventionOperationTag}, payload, agentID.PublicKeyHex(), agentID.PublicKeyHex())
 	if err != nil {
 		t.Fatalf("parsing declaration: %v", err)
 	}

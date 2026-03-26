@@ -45,7 +45,7 @@ var beaconRegisterPayload = []byte(`{
 
 func parseDeclForTest(t *testing.T, payload []byte) *Declaration {
 	t.Helper()
-	decl, _, err := Parse([]string{"convention:operation"}, payload, "sender", "campfire")
+	decl, _, err := Parse([]string{ConventionOperationTag}, payload, "sender", "campfire")
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
@@ -282,13 +282,13 @@ func TestListOperations(t *testing.T) {
 				ID:      "msg1",
 				Sender:  "sender1",
 				Payload: socialPostPayload,
-				Tags:    []string{"convention:operation"},
+				Tags:    []string{ConventionOperationTag},
 			},
 			{
 				ID:      "msg2",
 				Sender:  "sender2",
 				Payload: []byte(`{"not":"valid convention"}`),
-				Tags:    []string{"convention:operation"},
+				Tags:    []string{ConventionOperationTag},
 			},
 		},
 	}
@@ -335,14 +335,14 @@ func TestListOperations_SupersedesNewerWins(t *testing.T) {
 				ID:        "msg1",
 				Sender:    "sender1",
 				Payload:   v1Payload,
-				Tags:      []string{"convention:operation"},
+				Tags:      []string{ConventionOperationTag},
 				Timestamp: 1000,
 			},
 			{
 				ID:        "msg2",
 				Sender:    "sender1",
 				Payload:   v2Payload,
-				Tags:      []string{"convention:operation"},
+				Tags:      []string{ConventionOperationTag},
 				Timestamp: 2000,
 			},
 		},
@@ -395,9 +395,9 @@ func TestListOperations_SupersedesOlderLoses(t *testing.T) {
 
 	mock := &mockStore{
 		records: []store.MessageRecord{
-			{ID: "msg1", Sender: "s1", Payload: origPayload, Tags: []string{"convention:operation"}, Timestamp: 1000},
-			{ID: "msg3", Sender: "s1", Payload: newerPayload, Tags: []string{"convention:operation"}, Timestamp: 3000},
-			{ID: "msg2", Sender: "s1", Payload: olderPayload, Tags: []string{"convention:operation"}, Timestamp: 2000},
+			{ID: "msg1", Sender: "s1", Payload: origPayload, Tags: []string{ConventionOperationTag}, Timestamp: 1000},
+			{ID: "msg3", Sender: "s1", Payload: newerPayload, Tags: []string{ConventionOperationTag}, Timestamp: 3000},
+			{ID: "msg2", Sender: "s1", Payload: olderPayload, Tags: []string{ConventionOperationTag}, Timestamp: 2000},
 		},
 	}
 
@@ -429,7 +429,7 @@ func TestListOperations_RevokeRemovesDeclaration(t *testing.T) {
 				ID:        "msg1",
 				Sender:    "sender1",
 				Payload:   socialPostPayload,
-				Tags:      []string{"convention:operation"},
+				Tags:      []string{ConventionOperationTag},
 				Timestamp: 1000,
 			},
 			{
@@ -470,14 +470,14 @@ func TestListOperations_RevokeDoesNotAffectOthers(t *testing.T) {
 				ID:        "msg1",
 				Sender:    "sender1",
 				Payload:   socialPostPayload,
-				Tags:      []string{"convention:operation"},
+				Tags:      []string{ConventionOperationTag},
 				Timestamp: 1000,
 			},
 			{
 				ID:        "msg2",
 				Sender:    "sender2",
 				Payload:   otherPayload,
-				Tags:      []string{"convention:operation"},
+				Tags:      []string{ConventionOperationTag},
 				Timestamp: 1100,
 			},
 			{
@@ -525,8 +525,8 @@ func TestListOperations_RevokeSupersededTarget(t *testing.T) {
 
 	mock := &mockStore{
 		records: []store.MessageRecord{
-			{ID: "msg1", Sender: "s1", Payload: v1Payload, Tags: []string{"convention:operation"}, Timestamp: 1000},
-			{ID: "msg2", Sender: "s1", Payload: v2Payload, Tags: []string{"convention:operation"}, Timestamp: 2000},
+			{ID: "msg1", Sender: "s1", Payload: v1Payload, Tags: []string{ConventionOperationTag}, Timestamp: 1000},
+			{ID: "msg2", Sender: "s1", Payload: v2Payload, Tags: []string{ConventionOperationTag}, Timestamp: 2000},
 			// Revoke targets msg1 (the superseded one): should also remove msg2.
 			// Sender must match msg1's original signer ("s1") in offline mode.
 			{ID: "rev1", Sender: "s1", Payload: []byte(`{"target_id":"msg1"}`), Tags: []string{"convention:revoke"}, Timestamp: 3000},
@@ -649,7 +649,7 @@ func TestListOperations_RealSQLiteRoundtrip(t *testing.T) {
 		CampfireID: campfireID,
 		Sender:     "sender1",
 		Payload:    v1Payload,
-		Tags:       []string{"convention:operation"},
+		Tags:       []string{ConventionOperationTag},
 		Timestamp:  1000,
 		Signature:  []byte("sig1"),
 		ReceivedAt: 1000,
@@ -659,7 +659,7 @@ func TestListOperations_RealSQLiteRoundtrip(t *testing.T) {
 		CampfireID: campfireID,
 		Sender:     "sender1",
 		Payload:    v2Payload,
-		Tags:       []string{"convention:operation"},
+		Tags:       []string{ConventionOperationTag},
 		Timestamp:  2000,
 		Signature:  []byte("sig2"),
 		ReceivedAt: 2000,
@@ -697,7 +697,7 @@ func TestListOperations_RevokeUnauthorizedSenderIgnored(t *testing.T) {
 				ID:        "msg1",
 				Sender:    "sender1",
 				Payload:   socialPostPayload,
-				Tags:      []string{"convention:operation"},
+				Tags:      []string{ConventionOperationTag},
 				Timestamp: 1000,
 			},
 			{
@@ -737,7 +737,7 @@ func TestListOperationsWithRegistry_FallsThrough(t *testing.T) {
 					ID:      "reg-msg1",
 					Sender:  "reg-sender",
 					Payload: socialPostPayload,
-					Tags:    []string{"convention:operation"},
+					Tags:    []string{ConventionOperationTag},
 				},
 			},
 		},
@@ -784,7 +784,7 @@ func TestListOperationsWithRegistry_RegistrySupersedes(t *testing.T) {
 					ID:        "inline-msg1",
 					Sender:    "sender1",
 					Payload:   inlinePayload,
-					Tags:      []string{"convention:operation"},
+					Tags:      []string{ConventionOperationTag},
 					Timestamp: 1000,
 				},
 			},
@@ -793,7 +793,7 @@ func TestListOperationsWithRegistry_RegistrySupersedes(t *testing.T) {
 					ID:        "reg-msg1",
 					Sender:    "sender1",
 					Payload:   registryPayload,
-					Tags:      []string{"convention:operation"},
+					Tags:      []string{ConventionOperationTag},
 					Timestamp: 2000,
 				},
 			},
@@ -824,7 +824,7 @@ func TestListOperationsWithRegistry_EmptyRegistry(t *testing.T) {
 				ID:      "msg1",
 				Sender:  "sender1",
 				Payload: socialPostPayload,
-				Tags:    []string{"convention:operation"},
+				Tags:    []string{ConventionOperationTag},
 			},
 		},
 	}
@@ -847,7 +847,7 @@ func TestListOperationsWithRegistry_SameCampfire(t *testing.T) {
 				ID:      "msg1",
 				Sender:  "sender1",
 				Payload: socialPostPayload,
-				Tags:    []string{"convention:operation"},
+				Tags:    []string{ConventionOperationTag},
 			},
 		},
 	}
@@ -874,7 +874,7 @@ func TestListOperations_RevokeOfflineMode_OriginalSignerHonored(t *testing.T) {
 				ID:        "msg1",
 				Sender:    "original-signer",
 				Payload:   socialPostPayload,
-				Tags:      []string{"convention:operation"},
+				Tags:      []string{ConventionOperationTag},
 				Timestamp: 1000,
 			},
 			{
@@ -911,7 +911,7 @@ func TestListOperations_RevokeOfflineMode_DifferentSenderIgnored(t *testing.T) {
 				ID:        "msg1",
 				Sender:    "original-signer",
 				Payload:   socialPostPayload,
-				Tags:      []string{"convention:operation"},
+				Tags:      []string{ConventionOperationTag},
 				Timestamp: 1000,
 			},
 			{
@@ -996,17 +996,17 @@ func TestListOperations_TransitiveRevokeChain_RealSQLite(t *testing.T) {
 	msgs := []store.MessageRecord{
 		{
 			ID: "msg1", CampfireID: campfireID, Sender: "signer1",
-			Payload: msg1Payload, Tags: []string{"convention:operation"},
+			Payload: msg1Payload, Tags: []string{ConventionOperationTag},
 			Timestamp: 1000, Signature: []byte("sig1"), ReceivedAt: 1000,
 		},
 		{
 			ID: "msg2", CampfireID: campfireID, Sender: "signer1",
-			Payload: msg2Payload, Tags: []string{"convention:operation"},
+			Payload: msg2Payload, Tags: []string{ConventionOperationTag},
 			Timestamp: 2000, Signature: []byte("sig2"), ReceivedAt: 2000,
 		},
 		{
 			ID: "msg3", CampfireID: campfireID, Sender: "signer1",
-			Payload: msg3Payload, Tags: []string{"convention:operation"},
+			Payload: msg3Payload, Tags: []string{ConventionOperationTag},
 			Timestamp: 3000, Signature: []byte("sig3"), ReceivedAt: 3000,
 		},
 		// Revoke targets msg1 only; the transitive chain must cascade to msg2 and msg3.

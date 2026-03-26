@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 )
@@ -109,7 +110,7 @@ func TestWalkChain_Valid(t *testing.T) {
 	ms.messages[convRegistryID] = append(ms.messages[convRegistryID], convGenMsg)
 
 	// Convention registry has declaration messages.
-	declMsg := makeSignedRecord(convRegistryID, convPriv, convPub, []byte(`{"convention":"trust","operation":"verify"}`), []string{"convention:operation"})
+	declMsg := makeSignedRecord(convRegistryID, convPriv, convPub, []byte(`{"convention":"trust","operation":"verify"}`), []string{convention.ConventionOperationTag})
 	ms.messages[convRegistryID] = append(ms.messages[convRegistryID], declMsg)
 
 	resolver := &mockChainResolver{rootRegistryID: rootRegistryID}
@@ -222,7 +223,7 @@ func TestWalkChain_BrokenAtDeclarations(t *testing.T) {
 	ms.messages[convRegistryID] = append(ms.messages[convRegistryID], convGenMsg)
 
 	// Declaration signed by attacker (not the convention registry key).
-	declMsg := makeSignedRecord(convRegistryID, attackerPriv, attackerPub, []byte(`{"convention":"trust","operation":"verify"}`), []string{"convention:operation"})
+	declMsg := makeSignedRecord(convRegistryID, attackerPriv, attackerPub, []byte(`{"convention":"trust","operation":"verify"}`), []string{convention.ConventionOperationTag})
 	ms.messages[convRegistryID] = append(ms.messages[convRegistryID], declMsg)
 
 	resolver := &mockChainResolver{rootRegistryID: rootRegistryID}

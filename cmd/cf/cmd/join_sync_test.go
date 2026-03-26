@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/pkg/convention"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
@@ -149,7 +150,7 @@ func TestJoinFilesystem_SyncsConventionDeclarations(t *testing.T) {
 		"signing": "member_key"
 	}`)
 	tr := fs.New(transportBaseDir)
-	declMsg, err := message.NewMessage(creator.PrivateKey, creator.PublicKey, declPayload, []string{"convention:operation"}, nil)
+	declMsg, err := message.NewMessage(creator.PrivateKey, creator.PublicKey, declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating declaration message: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestJoinFilesystem_SyncsConventionDeclarations(t *testing.T) {
 	}
 
 	// Query convention:operation messages immediately — no cf read needed.
-	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{"convention:operation"}})
+	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{convention.ConventionOperationTag}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}

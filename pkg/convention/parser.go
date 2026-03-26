@@ -92,7 +92,9 @@ type ConformanceResult struct {
 	Warnings              []string
 }
 
-const conventionOperationTag = "convention:operation"
+// ConventionOperationTag is the tag used to identify convention operation declaration messages.
+const ConventionOperationTag = "convention:operation"
+
 const conventionRevokeTag = "convention:revoke"
 
 var knownArgTypes = map[string]bool{
@@ -115,7 +117,7 @@ var validPerValues = map[string]bool{
 
 var deniedTagPrefixes = []string{"naming:", "campfire:"}
 var deniedTagExact = map[string]bool{
-	"future": true, "fulfills": true, "convention:operation": true, "convention:schema": true,
+	"future": true, "fulfills": true, ConventionOperationTag: true, "convention:schema": true,
 	"convention:revoke": true,
 }
 
@@ -132,15 +134,15 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*De
 	// Check 1: Tag presence — exactly one convention:operation tag.
 	count := 0
 	for _, t := range msgTags {
-		if t == conventionOperationTag {
+		if t == ConventionOperationTag {
 			count++
 		}
 	}
 	if count == 0 {
-		return nil, nil, fmt.Errorf("missing required tag %q", conventionOperationTag)
+		return nil, nil, fmt.Errorf("missing required tag %q", ConventionOperationTag)
 	}
 	if count > 1 {
-		return nil, nil, fmt.Errorf("duplicate tag %q (found %d, expected 1)", conventionOperationTag, count)
+		return nil, nil, fmt.Errorf("duplicate tag %q (found %d, expected 1)", ConventionOperationTag, count)
 	}
 
 	// Check 2: Payload validity.
@@ -230,7 +232,7 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*De
 		if skipNamingDeny && strings.HasPrefix(tag, "naming:") {
 			continue
 		}
-		if skipConventionDeny && (tag == conventionOperationTag || tag == conventionRevokeTag) {
+		if skipConventionDeny && (tag == ConventionOperationTag || tag == conventionRevokeTag) {
 			continue
 		}
 		if err := checkDeniedTag(tag); err != nil {
