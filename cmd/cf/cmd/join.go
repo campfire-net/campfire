@@ -109,16 +109,21 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 
 	// Record membership in local store.
 	// Role is preserved from the admission record (workspace-4s4).
-	if err := s.AddMembership(store.Membership{
+	m := store.Membership{
 		CampfireID:   campfireID,
 		TransportDir: tr.CampfireDir(campfireID),
 		JoinProtocol: state.JoinProtocol,
 		Role:         role,
 		JoinedAt:     now,
 		Description:  description,
-	}); err != nil {
+	}
+	if err := s.AddMembership(m); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
+
+	// Sync messages immediately so convention declarations are available
+	// without requiring a separate cf read.
+	syncCampfire(campfireID, &m, agentID, s)
 
 	if jsonOutput {
 		out := map[string]string{
@@ -178,7 +183,7 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	p2pDescription := lookupBeaconDescription(campfireID)
 
 	// Record membership in local store.
-	if err := s.AddMembership(store.Membership{
+	p2pMembership := store.Membership{
 		CampfireID:   campfireID,
 		TransportDir: stateDir,
 		JoinProtocol: result.JoinProtocol,
@@ -186,7 +191,8 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 		JoinedAt:     store.NowNano(),
 		Threshold:    result.Threshold,
 		Description:  p2pDescription,
-	}); err != nil {
+	}
+	if err := s.AddMembership(p2pMembership); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
 
@@ -252,6 +258,10 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 			}
 		}
 	}
+
+	// Sync messages immediately so convention declarations are available
+	// without requiring a separate cf read.
+	syncCampfire(campfireID, &p2pMembership, agentID, s)
 
 	if jsonOutput {
 		out := map[string]interface{}{
@@ -412,7 +422,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 	ghDescription := lookupBeaconDescription(campfireID)
 
 	// Record membership in local store.
-	if err := s.AddMembership(store.Membership{
+	ghMembership := store.Membership{
 		CampfireID:   campfireID,
 		TransportDir: transportDir,
 		JoinProtocol: "open", // populated from beacon in production; simplified here
@@ -420,9 +430,14 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 		JoinedAt:     store.NowNano(),
 		Threshold:    1,
 		Description:  ghDescription,
-	}); err != nil {
+	}
+	if err := s.AddMembership(ghMembership); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
+
+	// Sync messages immediately so convention declarations are available
+	// without requiring a separate cf read.
+	syncCampfire(campfireID, &ghMembership, agentID, s)
 
 	if jsonOutput {
 		out := map[string]string{
