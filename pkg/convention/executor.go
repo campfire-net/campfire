@@ -33,12 +33,40 @@ type Executor struct {
 	rateLimiter *rateLimiter
 }
 
+// globalRateLimiter is a process-level singleton so that rate limit state persists
+// across multiple Executor instances within the same process. Without this, each CLI
+// invocation (or programmatic Executor construction) would start with a fresh limiter,
+// defeating rate limiting entirely.
+var (
+	globalRateLimiter     *rateLimiter
+	globalRateLimiterOnce sync.Once
+)
+
+func sharedRateLimiter() *rateLimiter {
+	globalRateLimiterOnce.Do(func() {
+		globalRateLimiter = newRateLimiter()
+	})
+	return globalRateLimiter
+}
+
 // NewExecutor creates an Executor using the given transport and agent public key.
+// All Executors created within the same process share a single rate limiter so that
+// rate limits are enforced across multiple sequential CLI calls.
 func NewExecutor(transport ExecutorTransport, selfKey string) *Executor {
 	return &Executor{
 		transport:   transport,
 		selfKey:     selfKey,
-		rateLimiter: newRateLimiter(),
+		rateLimiter: sharedRateLimiter(),
+	}
+}
+
+// NewExecutorWithLimiter creates an Executor with an explicit rate limiter.
+// Use this in tests that need isolated rate limit state.
+func NewExecutorWithLimiter(transport ExecutorTransport, selfKey string, rl *rateLimiter) *Executor {
+	return &Executor{
+		transport:   transport,
+		selfKey:     selfKey,
+		rateLimiter: rl,
 	}
 }
 
