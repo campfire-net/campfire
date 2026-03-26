@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -120,10 +121,16 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 			case "routing:beacon":
 				if err := h.transport.routingTable.HandleBeacon(msg.Payload, campfireID, senderHex); err != nil {
 					log.Printf("handleDeliver: routing:beacon processing failed for campfire %s: %v", campfireID, err)
+				} else {
+					// Re-advertise the beacon to other peers with our node_id appended to the path (spec §7.2).
+					go h.reAdvertiseBeacon(campfireID, senderHex, msg.Payload)
 				}
 			case "routing:withdraw":
 				if err := h.transport.routingTable.HandleWithdraw(msg.Payload); err != nil {
 					log.Printf("handleDeliver: routing:withdraw processing failed for campfire %s: %v", campfireID, err)
+				} else {
+					// Propagate the withdrawal to downstream peers (spec §7.3).
+					go h.propagateWithdraw(campfireID, senderHex, msg.Payload)
 				}
 			}
 		}
@@ -258,6 +265,227 @@ func (h *handler) forwardMessage(campfireID, senderHex string, msg *message.Mess
 		go func(endpoint string) {
 			if err := deliverMessage(endpoint, campfireID, &fwdMsg, fwdIdentity); err != nil {
 				log.Printf("forwardMessage: deliver to %s for campfire %s failed: %v", endpoint, campfireID, err)
+			}
+		}(ep)
+	}
+}
+
+// reAdvertiseBeacon re-advertises a received routing:beacon to other peers, appending
+// this router's node_id to the path per spec §7.2. The beacon inner_signature is
+// re-signed with the TARGET campfire private key when available (threshold=1). When the
+// target campfire key is not held by this node, the path is appended advisory-only and
+// the original inner_signature is kept (threshold>1 behavior per §3.2).
+//
+// The re-advertisement is delivered into the gateway campfire (campfireID) so peers can
+// receive it via the same routing:beacon mechanism. The delivery request is signed with
+// the gateway campfire key (which this node must hold to be authorised to deliver).
+//
+// The re-advertisement is sent to all known peers for the gateway campfire, excluding the
+// peer that originally sent us the beacon (senderHex).
+func (h *handler) reAdvertiseBeacon(campfireID, senderHex string, rawPayload []byte) {
+	if h.transport == nil {
+		return
+	}
+
+	// Own node_id: the transport's self public key hex, used as the router's node_id in path.
+	selfNodeID, selfEndpoint := h.transport.SelfInfo()
+	if selfNodeID == "" {
+		// No self identity configured — cannot append node_id to path.
+		return
+	}
+
+	// Resolve the key provider (transport-level takes precedence over handler-level).
+	kp := h.keyProvider
+	if kp == nil {
+		h.transport.mu.RLock()
+		kp = h.transport.keyProvider
+		h.transport.mu.RUnlock()
+	}
+
+	// The delivery request must be signed with the GATEWAY campfire key.
+	// Without it, we cannot authenticate to downstream peers.
+	if kp == nil {
+		return
+	}
+	gwPrivBytes, gwPubBytes, err := kp(campfireID)
+	if err != nil {
+		// This node doesn't hold the gateway campfire key — cannot deliver.
+		log.Printf("reAdvertiseBeacon: no gateway key for campfire %s: %v", campfireID, err)
+		return
+	}
+	gwPriv := ed25519.PrivateKey(gwPrivBytes)
+	gwPub := ed25519.PublicKey(gwPubBytes)
+
+	// Parse the incoming beacon payload.
+	var bp beaconPayload
+	if err := json.Unmarshal(rawPayload, &bp); err != nil {
+		log.Printf("reAdvertiseBeacon: unmarshal failed for campfire %s: %v", campfireID, err)
+		return
+	}
+
+	// Append own node_id to path (spec §7.2 step 3).
+	newPath := make([]string, len(bp.Path)+1)
+	copy(newPath, bp.Path)
+	newPath[len(bp.Path)] = selfNodeID
+	bp.Path = newPath
+
+	// Attempt to re-sign the inner_signature with the TARGET campfire key (threshold=1,
+	// spec §7.2 step 4). The inner_signature must be signed by the target campfire key
+	// (whose public key is bp.CampfireID), not the gateway key. If we don't hold the
+	// target campfire key, keep the original inner_signature — the path becomes advisory.
+	targetPrivBytes, _, targetKeyErr := kp(bp.CampfireID)
+	if targetKeyErr == nil {
+		// We hold the target campfire key — re-sign with updated path.
+		targetPriv := ed25519.PrivateKey(targetPrivBytes)
+		decl := beacon.BeaconDeclaration{
+			CampfireID:        bp.CampfireID,
+			Endpoint:          bp.Endpoint,
+			Transport:         bp.Transport,
+			Description:       bp.Description,
+			JoinProtocol:      bp.JoinProtocol,
+			Timestamp:         bp.Timestamp,
+			ConventionVersion: bp.ConventionVersion,
+			Path:              newPath,
+		}
+		signBytes, marshalErr := beacon.MarshalInnerSignInput(decl)
+		if marshalErr == nil {
+			sig := ed25519.Sign(targetPriv, signBytes)
+			bp.InnerSignature = fmt.Sprintf("%x", sig)
+		} else {
+			log.Printf("reAdvertiseBeacon: re-sign marshal failed for target campfire %s: %v", bp.CampfireID, marshalErr)
+			// Keep original inner_signature — path is advisory.
+		}
+	}
+	// targetKeyErr != nil: don't hold target campfire key — original inner_signature kept (advisory path).
+
+	// Marshal the updated beacon payload.
+	updatedPayload, err := json.Marshal(bp)
+	if err != nil {
+		log.Printf("reAdvertiseBeacon: marshal updated beacon failed for campfire %s: %v", campfireID, err)
+		return
+	}
+
+	// Create a new routing:beacon message signed by the gateway campfire key.
+	// This is how the re-advertisement is authenticated to downstream peers.
+	beaconMsg, err := message.NewMessage(gwPriv, gwPub, updatedPayload, []string{"routing:beacon"}, nil)
+	if err != nil {
+		log.Printf("reAdvertiseBeacon: creating beacon message failed for campfire %s: %v", campfireID, err)
+		return
+	}
+
+	fwdIdentity := &identity.Identity{
+		PublicKey:  gwPub,
+		PrivateKey: gwPriv,
+	}
+
+	// Collect target peers: all known peers for the gateway campfire, excluding the sender.
+	var targetEndpoints []string
+	h.transport.mu.RLock()
+	localPeers := make([]PeerInfo, len(h.transport.peers[campfireID]))
+	copy(localPeers, h.transport.peers[campfireID])
+	h.transport.mu.RUnlock()
+
+	for _, peer := range localPeers {
+		if peer.Endpoint == "" {
+			continue
+		}
+		// Exclude the peer that sent us this beacon (prevent echo).
+		if peer.PubKeyHex == senderHex {
+			continue
+		}
+		// Exclude our own endpoint (prevent self-delivery).
+		if peer.Endpoint == selfEndpoint {
+			continue
+		}
+		targetEndpoints = append(targetEndpoints, peer.Endpoint)
+	}
+
+	if len(targetEndpoints) == 0 {
+		return
+	}
+
+	// Forward in parallel (fire-and-forget).
+	for _, ep := range targetEndpoints {
+		go func(endpoint string) {
+			if err := deliverMessage(endpoint, campfireID, beaconMsg, fwdIdentity); err != nil {
+				log.Printf("reAdvertiseBeacon: deliver to %s for campfire %s failed: %v", endpoint, campfireID, err)
+			}
+		}(ep)
+	}
+}
+
+// propagateWithdraw propagates a routing:withdraw message to all peers for the campfire,
+// excluding the peer that originally sent the withdrawal (spec §7.3).
+// This ensures downstream peers that received beacons through this router also remove
+// the stale route.
+func (h *handler) propagateWithdraw(campfireID, senderHex string, rawPayload []byte) {
+	if h.transport == nil {
+		return
+	}
+
+	// Need a key to sign the forwarded delivery request.
+	kp := h.keyProvider
+	if kp == nil && h.transport != nil {
+		h.transport.mu.RLock()
+		kp = h.transport.keyProvider
+		h.transport.mu.RUnlock()
+	}
+	if kp == nil {
+		return
+	}
+	privKeyBytes, pubKeyBytes, err := kp(campfireID)
+	if err != nil {
+		log.Printf("propagateWithdraw: no key for gateway campfire %s: %v", campfireID, err)
+		return
+	}
+	campfirePriv := ed25519.PrivateKey(privKeyBytes)
+	campfirePub := ed25519.PublicKey(pubKeyBytes)
+
+	fwdIdentity := &identity.Identity{
+		PublicKey:  campfirePub,
+		PrivateKey: campfirePriv,
+	}
+
+	// Create a new routing:withdraw message with the same payload.
+	withdrawMsg, err := message.NewMessage(campfirePriv, campfirePub, rawPayload, []string{"routing:withdraw"}, nil)
+	if err != nil {
+		log.Printf("propagateWithdraw: creating withdraw message failed for campfire %s: %v", campfireID, err)
+		return
+	}
+
+	selfNodeID, selfEndpoint := h.transport.SelfInfo()
+
+	// Collect target peers: all known peers for this campfire, excluding the sender.
+	var targetEndpoints []string
+	h.transport.mu.RLock()
+	localPeers := make([]PeerInfo, len(h.transport.peers[campfireID]))
+	copy(localPeers, h.transport.peers[campfireID])
+	h.transport.mu.RUnlock()
+
+	for _, peer := range localPeers {
+		if peer.Endpoint == "" {
+			continue
+		}
+		if peer.PubKeyHex == senderHex {
+			continue
+		}
+		if selfNodeID != "" && peer.PubKeyHex == selfNodeID {
+			continue
+		}
+		if peer.Endpoint == selfEndpoint {
+			continue
+		}
+		targetEndpoints = append(targetEndpoints, peer.Endpoint)
+	}
+
+	if len(targetEndpoints) == 0 {
+		return
+	}
+
+	for _, ep := range targetEndpoints {
+		go func(endpoint string) {
+			if err := deliverMessage(endpoint, campfireID, withdrawMsg, fwdIdentity); err != nil {
+				log.Printf("propagateWithdraw: deliver to %s for campfire %s failed: %v", endpoint, campfireID, err)
 			}
 		}(ep)
 	}
