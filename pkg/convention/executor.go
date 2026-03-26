@@ -455,10 +455,11 @@ func validateSingleValue(desc ArgDescriptor, val any) error {
 		default:
 			return fmt.Errorf("expected integer, got %T", val)
 		}
-		if desc.Min != 0 || desc.Max != 0 {
-			if n < desc.Min || (desc.Max != 0 && n > desc.Max) {
-				return fmt.Errorf("value %d out of range [%d, %d]", n, desc.Min, desc.Max)
-			}
+		if n < desc.Min {
+			return fmt.Errorf("value %d out of range [%d, %d]", n, desc.Min, desc.Max)
+		}
+		if desc.Max != 0 && n > desc.Max {
+			return fmt.Errorf("value %d out of range [%d, %d]", n, desc.Min, desc.Max)
 		}
 
 	case "enum":
