@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/trust"
 	"github.com/spf13/pflag"
 )
 
@@ -15,6 +17,67 @@ type cliStoreReader struct{ s store.Store }
 
 func (r cliStoreReader) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
 	return r.s.ListMessages(campfireID, afterTimestamp, filter...)
+}
+
+// localChainResolver implements trust.ChainResolver for the CLI's local store.
+// For locally-operated campfires, the root registry campfire ID equals the root key
+// (campfire IDs are Ed25519 public keys encoded as hex, which is also the root key).
+type localChainResolver struct{}
+
+func (r localChainResolver) ResolveRootRegistry(_ context.Context, rootKey string) (string, error) {
+	return rootKey, nil
+}
+
+// listConventionOperations returns the declarations for campfireID.
+// It first checks for inline declarations (convention:operation messages in the
+// campfire). If none are found, it walks the trust chain to find the convention
+// registry campfire and reads declarations from there. Registry declarations
+// can supersede inline declarations via the Supersedes field.
+//
+// The chain walk uses a 5-minute cache on the ChainWalker, so repeated calls
+// within the same process do not re-walk the chain.
+func listConventionOperations(ctx context.Context, s store.Store, campfireID string) ([]*convention.Declaration, error) {
+	reader := cliStoreReader{s}
+
+	// Check for inline declarations first.
+	inlineDecls, err := convention.ListOperations(reader, campfireID, "")
+	if err != nil {
+		return nil, fmt.Errorf("reading inline declarations: %w", err)
+	}
+	if len(inlineDecls) > 0 {
+		return inlineDecls, nil
+	}
+
+	// No inline declarations — try to find the convention registry via the trust chain.
+	// The root key for a locally-operated campfire is the campfire ID itself.
+	operatorRoot, err := naming.LoadOperatorRoot(CFHome())
+	if err != nil || operatorRoot == nil {
+		// No operator root configured — return empty list (offline fallback).
+		return inlineDecls, nil
+	}
+
+	rootKey := operatorRoot.CampfireID
+	walker := trust.NewChainWalker(rootKey, cliChainStore{s}, localChainResolver{})
+	chain, chainErr := walker.WalkChain(ctx)
+	if chainErr != nil {
+		// Chain walk failed — fall back to inline declarations (empty here).
+		return inlineDecls, nil
+	}
+
+	if chain.ConventionRegID == "" {
+		return inlineDecls, nil
+	}
+
+	// Read from registry, merging with any inline declarations (empty set here).
+	// Registry declarations may supersede inline ones via the Supersedes field.
+	return convention.ListOperationsWithRegistry(reader, campfireID, "", chain.ConventionRegID)
+}
+
+// cliChainStore adapts store.Store to trust.ChainStore.
+type cliChainStore struct{ s store.Store }
+
+func (c cliChainStore) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
+	return c.s.ListMessages(campfireID, afterTimestamp, filter...)
 }
 
 // dispatchConventionOp dispatches a convention operation on a campfire.
@@ -32,8 +95,8 @@ func dispatchConventionOp(campfireName string, operationName string, rawArgs []s
 		return fmt.Errorf("resolving campfire %q: %w", campfireName, err)
 	}
 
-	// Read declarations from this campfire
-	decls, err := convention.ListOperations(cliStoreReader{s}, campfireID, "")
+	// Read declarations from this campfire, with registry fallback via trust chain.
+	decls, err := listConventionOperations(context.Background(), s, campfireID)
 	if err != nil {
 		return fmt.Errorf("reading declarations from campfire: %w", err)
 	}

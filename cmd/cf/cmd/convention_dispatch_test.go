@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
@@ -240,4 +243,223 @@ func TestCLIDispatchFlagMapping(t *testing.T) {
 	}
 	_ = decl
 	// Just verify the types compile — actual flag parsing tested in TestCLIDispatchConventionOp.
+}
+
+// setupRegistryEnv creates a test environment with:
+//   - An operator root campfire (root registry)
+//   - A convention registry campfire (registered in root registry via naming:registration)
+//   - A target campfire with no inline declarations
+//
+// Returns (targetCampfireID, cleanup). The convention registry has a declaration
+// for the given payload.
+func setupRegistryEnv(t *testing.T, declPayload []byte) (targetCampfireID string, cleanup func()) {
+	t.Helper()
+
+	dir := t.TempDir()
+	t.Setenv("CF_HOME", dir)
+	cfHome = ""
+
+	// Generate identity.
+	id, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	if err := id.Save(filepath.Join(dir, "identity.json")); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	// Open store.
+	s, err := store.Open(filepath.Join(dir, "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	// Generate root registry campfire (operator root).
+	rootPub, rootPriv, _ := ed25519.GenerateKey(nil)
+	rootCampfireID := hex.EncodeToString(rootPub)
+
+	// Generate convention registry campfire.
+	convPub, convPriv, _ := ed25519.GenerateKey(nil)
+	convRegistryID := hex.EncodeToString(convPub)
+
+	// Generate target campfire (no inline declarations).
+	targetID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating target campfire: %v", err)
+	}
+	targetCampfireID = targetID.PublicKeyHex()
+
+	// Save operator root config so CFHome() / LoadOperatorRoot() finds it.
+	operatorRoot := &naming.OperatorRoot{Name: "test", CampfireID: rootCampfireID}
+	if err := naming.SaveOperatorRoot(dir, operatorRoot); err != nil {
+		t.Fatalf("saving operator root: %v", err)
+	}
+
+	// Add memberships.
+	for _, cfID := range []string{rootCampfireID, convRegistryID, targetCampfireID} {
+		if err := s.AddMembership(store.Membership{
+			CampfireID:   cfID,
+			TransportDir: dir,
+			JoinProtocol: "open",
+			Role:         "member",
+			JoinedAt:     1,
+		}); err != nil {
+			t.Fatalf("adding membership for %s: %v", cfID[:12], err)
+		}
+	}
+
+	// Root registry: one message signed by root key (proves ownership).
+	rootOwnerMsg, err := message.NewMessage(rootPriv, rootPub, []byte("root-init"), []string{"general"}, nil)
+	if err != nil {
+		t.Fatalf("creating root owner msg: %v", err)
+	}
+	if _, err := s.AddMessage(store.MessageRecord{
+		ID: rootOwnerMsg.ID, CampfireID: rootCampfireID,
+		Sender: hex.EncodeToString(rootPub), Payload: rootOwnerMsg.Payload,
+		Tags: rootOwnerMsg.Tags, Timestamp: rootOwnerMsg.Timestamp,
+		Signature: rootOwnerMsg.Signature,
+	}); err != nil {
+		t.Fatalf("adding root owner msg: %v", err)
+	}
+
+	// Root registry: naming:registration message pointing to convRegistryID.
+	regMsg, err := message.NewMessage(rootPriv, rootPub, []byte(convRegistryID), []string{"naming:registration"}, nil)
+	if err != nil {
+		t.Fatalf("creating registration msg: %v", err)
+	}
+	if _, err := s.AddMessage(store.MessageRecord{
+		ID: regMsg.ID, CampfireID: rootCampfireID,
+		Sender: hex.EncodeToString(rootPub), Payload: regMsg.Payload,
+		Tags: regMsg.Tags, Timestamp: regMsg.Timestamp,
+		Signature: regMsg.Signature,
+	}); err != nil {
+		t.Fatalf("adding registration msg: %v", err)
+	}
+
+	// Convention registry: one general message (establishes the key).
+	convInitMsg, err := message.NewMessage(convPriv, convPub, []byte("conv-init"), []string{"general"}, nil)
+	if err != nil {
+		t.Fatalf("creating conv init msg: %v", err)
+	}
+	if _, err := s.AddMessage(store.MessageRecord{
+		ID: convInitMsg.ID, CampfireID: convRegistryID,
+		Sender: hex.EncodeToString(convPub), Payload: convInitMsg.Payload,
+		Tags: convInitMsg.Tags, Timestamp: convInitMsg.Timestamp,
+		Signature: convInitMsg.Signature,
+	}); err != nil {
+		t.Fatalf("adding conv init msg: %v", err)
+	}
+
+	// Convention registry: convention:operation declaration.
+	if declPayload != nil {
+		convDeclMsg, err := message.NewMessage(convPriv, convPub, declPayload, []string{"convention:operation"}, nil)
+		if err != nil {
+			t.Fatalf("creating conv decl msg: %v", err)
+		}
+		if _, err := s.AddMessage(store.MessageRecord{
+			ID: convDeclMsg.ID, CampfireID: convRegistryID,
+			Sender: hex.EncodeToString(convPub), Payload: convDeclMsg.Payload,
+			Tags: convDeclMsg.Tags, Timestamp: convDeclMsg.Timestamp,
+			Signature: convDeclMsg.Signature,
+		}); err != nil {
+			t.Fatalf("adding conv decl msg: %v", err)
+		}
+	}
+
+	cleanup = func() {
+		cfHome = ""
+		os.Unsetenv("CF_HOME")
+	}
+	return targetCampfireID, cleanup
+}
+
+// TestListConventionOperations_InlineFallback verifies that when a campfire has
+// inline declarations, listConventionOperations returns them without walking
+// the trust chain.
+func TestListConventionOperations_InlineFallback(t *testing.T) {
+	campfireID, cleanupDispatch := setupDispatchEnv(t, testDecl)
+	defer cleanupDispatch()
+
+	s, err := openStore()
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	decls, err := listConventionOperations(context.Background(), s, campfireID)
+	if err != nil {
+		t.Fatalf("listConventionOperations: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Fatalf("expected 1 inline decl, got %d", len(decls))
+	}
+	if decls[0].Operation != "post" {
+		t.Errorf("operation = %q, want post", decls[0].Operation)
+	}
+}
+
+// TestListConventionOperations_RegistryFallback verifies that when a campfire has
+// no inline declarations, listConventionOperations walks the trust chain and reads
+// declarations from the convention registry campfire.
+func TestListConventionOperations_RegistryFallback(t *testing.T) {
+	targetCampfireID, cleanup := setupRegistryEnv(t, testDecl)
+	defer cleanup()
+
+	s, err := openStore()
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	decls, err := listConventionOperations(context.Background(), s, targetCampfireID)
+	if err != nil {
+		t.Fatalf("listConventionOperations: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Fatalf("expected 1 decl from registry, got %d", len(decls))
+	}
+	if decls[0].Operation != "post" {
+		t.Errorf("operation = %q, want post", decls[0].Operation)
+	}
+}
+
+// TestListConventionOperations_NoOperatorRoot verifies that when no operator root
+// is configured, listConventionOperations returns an empty list gracefully (offline).
+func TestListConventionOperations_NoOperatorRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CF_HOME", dir)
+	cfHome = ""
+	defer func() { cfHome = ""; os.Unsetenv("CF_HOME") }()
+
+	id, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	if err := id.Save(filepath.Join(dir, "identity.json")); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	s, err := store.Open(filepath.Join(dir, "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	campfireID := id.PublicKeyHex()
+	if err := s.AddMembership(store.Membership{
+		CampfireID: campfireID, TransportDir: dir,
+		JoinProtocol: "open", Role: "member", JoinedAt: 1,
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	// No operator root configured — should return empty list, not error.
+	decls, err := listConventionOperations(context.Background(), s, campfireID)
+	if err != nil {
+		t.Fatalf("expected no error without operator root, got: %v", err)
+	}
+	if len(decls) != 0 {
+		t.Errorf("expected 0 decls (no operator root), got %d", len(decls))
+	}
 }
