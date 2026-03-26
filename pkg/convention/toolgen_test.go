@@ -221,7 +221,7 @@ func TestGenerateTool_BeaconRegister(t *testing.T) {
 		t.Errorf("campfire_id.type = %v, want string", cfProp["type"])
 	}
 
-	// agent_key: key type → string with hex pattern
+	// agent_key: key type -> string with hex pattern
 	keyProp, ok := props["agent_key"].(map[string]any)
 	if !ok {
 		t.Fatal("agent_key property missing")
@@ -304,6 +304,240 @@ func TestListOperations(t *testing.T) {
 	}
 }
 
+// TestListOperations_SupersedesNewerWins verifies that when a declaration has a
+// non-empty Supersedes field, the superseded declaration is excluded and only the
+// newer one appears in the output.
+func TestListOperations_SupersedesNewerWins(t *testing.T) {
+	// v1: the original declaration (msg1)
+	v1Payload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.3",
+		"operation":   "post",
+		"description": "Original post op",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+	// v2: supersedes v1 (msg2, newer timestamp)
+	v2Payload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.4",
+		"operation":   "post",
+		"description": "Updated post op",
+		"supersedes":  "msg1",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:        "msg1",
+				Sender:    "sender1",
+				Payload:   v1Payload,
+				Tags:      []string{"convention:operation"},
+				Timestamp: 1000,
+			},
+			{
+				ID:        "msg2",
+				Sender:    "sender1",
+				Payload:   v2Payload,
+				Tags:      []string{"convention:operation"},
+				Timestamp: 2000,
+			},
+		},
+	}
+
+	decls, err := ListOperations(mock, "campfire123", "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Fatalf("len(decls) = %d, want 1 (only the superseding version)", len(decls))
+	}
+	if decls[0].Version != "0.4" {
+		t.Errorf("expected version 0.4 (newer), got %q", decls[0].Version)
+	}
+	if decls[0].MessageID != "msg2" {
+		t.Errorf("expected messageID msg2, got %q", decls[0].MessageID)
+	}
+}
+
+// TestListOperations_SupersedesOlderLoses verifies that when two declarations
+// both claim to supersede the same message, only the one with the later timestamp wins.
+func TestListOperations_SupersedesOlderLoses(t *testing.T) {
+	origPayload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.3",
+		"operation":   "post",
+		"description": "Original",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+	newerPayload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.5",
+		"operation":   "post",
+		"description": "Newer superseder",
+		"supersedes":  "msg1",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+	olderPayload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.4",
+		"operation":   "post",
+		"description": "Older superseder",
+		"supersedes":  "msg1",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{ID: "msg1", Sender: "s1", Payload: origPayload, Tags: []string{"convention:operation"}, Timestamp: 1000},
+			{ID: "msg3", Sender: "s1", Payload: newerPayload, Tags: []string{"convention:operation"}, Timestamp: 3000},
+			{ID: "msg2", Sender: "s1", Payload: olderPayload, Tags: []string{"convention:operation"}, Timestamp: 2000},
+		},
+	}
+
+	decls, err := ListOperations(mock, "campfire123", "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	// msg1 is superseded. msg2 is a losing superseder (msg3 has newer timestamp).
+	// Only msg3 should survive.
+	if len(decls) != 1 {
+		ids := make([]string, len(decls))
+		for i, d := range decls {
+			ids[i] = d.MessageID
+		}
+		t.Fatalf("len(decls) = %d, want 1; got %v", len(decls), ids)
+	}
+	if decls[0].Version != "0.5" {
+		t.Errorf("expected version 0.5 (newest superseder), got %q", decls[0].Version)
+	}
+}
+
+// TestListOperations_RevokeRemovesDeclaration verifies that a convention:revoke
+// message with target_id pointing at a declaration causes it to disappear.
+func TestListOperations_RevokeRemovesDeclaration(t *testing.T) {
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:        "msg1",
+				Sender:    "sender1",
+				Payload:   socialPostPayload,
+				Tags:      []string{"convention:operation"},
+				Timestamp: 1000,
+			},
+			{
+				ID:        "revoke1",
+				Sender:    "campfire-key",
+				Payload:   []byte(`{"target_id":"msg1"}`),
+				Tags:      []string{"convention:revoke"},
+				Timestamp: 2000,
+			},
+		},
+	}
+
+	decls, err := ListOperations(mock, "campfire123", "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	if len(decls) != 0 {
+		t.Errorf("expected 0 decls after revoke, got %d", len(decls))
+	}
+}
+
+// TestListOperations_RevokeDoesNotAffectOthers verifies that a revoke only removes
+// the targeted declaration, not all declarations.
+func TestListOperations_RevokeDoesNotAffectOthers(t *testing.T) {
+	otherPayload := mustJSON(map[string]any{
+		"convention":  "other-conv",
+		"version":     "0.1",
+		"operation":   "act",
+		"description": "Other operation",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:        "msg1",
+				Sender:    "sender1",
+				Payload:   socialPostPayload,
+				Tags:      []string{"convention:operation"},
+				Timestamp: 1000,
+			},
+			{
+				ID:        "msg2",
+				Sender:    "sender2",
+				Payload:   otherPayload,
+				Tags:      []string{"convention:operation"},
+				Timestamp: 1100,
+			},
+			{
+				ID:        "revoke1",
+				Sender:    "campfire-key",
+				Payload:   []byte(`{"target_id":"msg1"}`),
+				Tags:      []string{"convention:revoke"},
+				Timestamp: 2000,
+			},
+		},
+	}
+
+	decls, err := ListOperations(mock, "campfire123", "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Fatalf("expected 1 decl (msg2 survives), got %d", len(decls))
+	}
+	if decls[0].Operation != "act" {
+		t.Errorf("expected operation 'act', got %q", decls[0].Operation)
+	}
+}
+
+// TestListOperations_RevokeSupersededTarget verifies that revoking a superseded
+// declaration also removes the superseding declaration (chain invalidation).
+func TestListOperations_RevokeSupersededTarget(t *testing.T) {
+	v1Payload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.3",
+		"operation":   "post",
+		"description": "Original",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+	v2Payload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.4",
+		"operation":   "post",
+		"description": "Updated",
+		"supersedes":  "msg1",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{ID: "msg1", Sender: "s1", Payload: v1Payload, Tags: []string{"convention:operation"}, Timestamp: 1000},
+			{ID: "msg2", Sender: "s1", Payload: v2Payload, Tags: []string{"convention:operation"}, Timestamp: 2000},
+			// Revoke targets msg1 (the superseded one): should also remove msg2.
+			{ID: "rev1", Sender: "ck", Payload: []byte(`{"target_id":"msg1"}`), Tags: []string{"convention:revoke"}, Timestamp: 3000},
+		},
+	}
+
+	decls, err := ListOperations(mock, "campfire123", "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	if len(decls) != 0 {
+		t.Errorf("expected 0 decls (revoke on superseded target invalidates chain), got %d", len(decls))
+	}
+}
+
 func TestGenerateTool_RepeatedArg(t *testing.T) {
 	payload := []byte(`{
         "convention": "test-conv",
@@ -366,10 +600,39 @@ func TestGenerateTool_DescriptionTruncation(t *testing.T) {
 }
 
 // mockStore implements StoreReader for testing.
+// It filters records by tags when a MessageFilter is provided.
 type mockStore struct {
 	records []store.MessageRecord
 }
 
 func (m *mockStore) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
-	return m.records, nil
+	if len(filter) == 0 || len(filter[0].Tags) == 0 {
+		return m.records, nil
+	}
+	// Filter: return records that have ALL the requested tags.
+	wantTags := filter[0].Tags
+	var result []store.MessageRecord
+	for _, rec := range m.records {
+		if mockRecordHasTags(rec, wantTags) {
+			result = append(result, rec)
+		}
+	}
+	return result, nil
+}
+
+// mockRecordHasTags returns true if the record contains all wantTags.
+func mockRecordHasTags(rec store.MessageRecord, wantTags []string) bool {
+	for _, want := range wantTags {
+		found := false
+		for _, have := range rec.Tags {
+			if have == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }

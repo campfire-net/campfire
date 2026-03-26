@@ -56,21 +56,114 @@ func GenerateToolName(decl *Declaration, existing map[string]bool) string {
 // ListOperations reads convention:operation tagged messages from a campfire store.
 // Parse errors are skipped; only valid declarations are returned.
 // campfireKey is passed to Parse for authority verification (use "" to skip).
+//
+// Supersede semantics: if a declaration carries a non-empty Supersedes field, the
+// declaration with that message ID is replaced by the newer one. Only the newest
+// version in a supersede chain is returned. When multiple declarations claim to
+// supersede the same target, the one with the highest timestamp wins; all others
+// are also excluded.
+//
+// Revoke semantics: convention:revoke tagged messages (produced by the convention-
+// extension "revoke" operation) permanently remove a declaration from the list.
+// A revoked declaration disappears entirely. Revoking a superseded declaration
+// also removes the superseding declaration (chain invalidation).
 func ListOperations(s StoreReader, campfireID, campfireKey string) ([]*Declaration, error) {
-	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{
+	// Collect operation declarations.
+	opMsgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{
 		Tags: []string{"convention:operation"},
 	})
 	if err != nil {
 		return nil, err
 	}
-	var decls []*Declaration
-	for _, msg := range msgs {
-		decl, _, err := Parse(msg.Tags, msg.Payload, msg.Sender, campfireKey)
-		if err != nil {
+
+	// Collect revoke messages.
+	revokeMsgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{
+		Tags: []string{conventionRevokeTag},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Build revoked set: target_id values from revoke message payloads.
+	revoked := make(map[string]bool)
+	for _, msg := range revokeMsgs {
+		var revokePayload struct {
+			TargetID string `json:"target_id"`
+		}
+		if jsonErr := json.Unmarshal(msg.Payload, &revokePayload); jsonErr != nil {
+			continue
+		}
+		if revokePayload.TargetID != "" {
+			revoked[revokePayload.TargetID] = true
+		}
+	}
+
+	// Parse all operation declarations.
+	type opEntry struct {
+		decl      *Declaration
+		messageID string
+		timestamp int64
+	}
+	var all []opEntry
+	for _, msg := range opMsgs {
+		decl, _, parseErr := Parse(msg.Tags, msg.Payload, msg.Sender, campfireKey)
+		if parseErr != nil {
 			continue // skip malformed
 		}
 		decl.MessageID = msg.ID
-		decls = append(decls, decl)
+		all = append(all, opEntry{decl: decl, messageID: msg.ID, timestamp: msg.Timestamp})
+	}
+
+	// Build supersede winner map: for each target, find the superseding entry with
+	// the highest timestamp. All other candidates claiming to supersede the same
+	// target are treated as superseded themselves.
+	winnerByTarget := make(map[string]opEntry) // target msgID -> winning entry
+	for _, e := range all {
+		if e.decl.Supersedes == "" {
+			continue
+		}
+		prev, exists := winnerByTarget[e.decl.Supersedes]
+		if !exists || e.timestamp > prev.timestamp {
+			winnerByTarget[e.decl.Supersedes] = e
+		}
+	}
+
+	// Collect all message IDs that are effectively superseded:
+	// - The direct targets (they have a newer replacement).
+	// - Losing superseder candidates (earlier-timestamp declarations that also
+	//   claimed to supersede the same target, but lost to the winner).
+	supersededIDs := make(map[string]bool)
+	for targetID := range winnerByTarget {
+		supersededIDs[targetID] = true
+	}
+	for _, e := range all {
+		if e.decl.Supersedes == "" {
+			continue
+		}
+		target := e.decl.Supersedes
+		if winner, ok := winnerByTarget[target]; ok && winner.messageID != e.messageID {
+			supersededIDs[e.messageID] = true
+		}
+	}
+
+	// Build final list: include only declarations that are not superseded and not revoked.
+	var decls []*Declaration
+	for _, e := range all {
+		msgID := e.messageID
+		// Skip if superseded.
+		if supersededIDs[msgID] {
+			continue
+		}
+		// Skip if directly revoked.
+		if revoked[msgID] {
+			continue
+		}
+		// Skip if this declaration supersedes a revoked target (chain invalidation:
+		// revoking msg1 removes msg2 if msg2.supersedes == "msg1").
+		if e.decl.Supersedes != "" && revoked[e.decl.Supersedes] {
+			continue
+		}
+		decls = append(decls, e.decl)
 	}
 	return decls, nil
 }
