@@ -15,6 +15,11 @@ import (
 // TestValidateJoinerEndpoint_PrivateLiteralIPsRejected verifies that literal private
 // IPv4 and IPv6 addresses in endpoints are rejected by validateJoinerEndpoint.
 func TestValidateJoinerEndpoint_PrivateLiteralIPsRejected(t *testing.T) {
+	// Restore real validation (TestMain disables it via OverrideValidateJoinerEndpointForTest);
+	// re-enable the override when the test finishes so other tests are not affected.
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
+
 	cases := []struct {
 		name     string
 		endpoint string
@@ -83,6 +88,11 @@ func TestValidateJoinerEndpoint_EmptyAllowed(t *testing.T) {
 // TestValidateJoinerEndpoint_BadURLsRejected verifies that non-HTTP schemes and
 // malformed URLs are rejected.
 func TestValidateJoinerEndpoint_BadURLsRejected(t *testing.T) {
+	// Restore real validation (TestMain disables it via OverrideValidateJoinerEndpointForTest);
+	// re-enable the override when the test finishes so other tests are not affected.
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
+
 	bad := []string{
 		"ftp://example.com/",
 		"file:///etc/passwd",
@@ -194,5 +204,20 @@ func TestSSRFSafeTransportBlocksLoopback(t *testing.T) {
 	_, err := safeClient.Get(ts.URL)
 	if err == nil {
 		t.Error("SSRFSafeTransport: expected connection to loopback to be blocked, got nil error")
+	}
+}
+
+// TestValidateJoinerEndpoint_OverrideRoutesThrough verifies that after
+// OverrideValidateJoinerEndpointForTest(), cfhttp.ValidateJoinerEndpoint also
+// accepts loopback endpoints — i.e. the exported var routes through the internal
+// validateJoinerEndpointFunc so a single override point is sufficient.
+//
+// Bead: campfire-agent-msx
+func TestValidateJoinerEndpoint_OverrideRoutesThrough(t *testing.T) {
+	// TestMain already called OverrideValidateJoinerEndpointForTest().
+	// Verify that ValidateJoinerEndpoint (the exported var) respects the override
+	// without any additional per-test override of the var.
+	if err := cfhttp.ValidateJoinerEndpoint("http://127.0.0.1/"); err != nil {
+		t.Errorf("after OverrideValidateJoinerEndpointForTest, ValidateJoinerEndpoint returned error: %v", err)
 	}
 }

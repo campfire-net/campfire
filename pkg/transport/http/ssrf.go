@@ -178,9 +178,12 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// ValidateJoinerEndpoint is the exported form of validateJoinerEndpoint, exposed
-// for use in tests and by callers outside the package.
-var ValidateJoinerEndpoint = validateJoinerEndpointImpl
+// ValidateJoinerEndpoint is the exported form of validateJoinerEndpoint.
+// It routes through validateJoinerEndpointFunc so that
+// OverrideValidateJoinerEndpointForTest() is the single override point for
+// both this var and any callers that hold a reference to it (e.g. ssrfValidateEndpoint
+// in cmd/cf-mcp/main.go). No separate per-caller override is needed in tests.
+var ValidateJoinerEndpoint = validateJoinerEndpoint
 
 // NewSSRFSafeClient returns an *http.Client backed by the SSRF-safe transport.
 // Exported for tests that want to verify the transport rejects private addresses.
