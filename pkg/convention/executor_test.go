@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -474,11 +475,25 @@ func TestExecute_RateLimitSenderAndCampfire(t *testing.T) {
 // a new rate limiter was created per Executor, allowing the same sender to bypass rate
 // limits by constructing a new Executor (as the CLI does on every invocation).
 //
-// This test simulates two sequential CLI invocations: each call constructs a fresh
-// Executor via NewExecutor (as dispatchConventionOp does), yet both should share the
-// same process-level rate limiter so the second call is throttled after the first
-// saturates the limit.
+// This test calls NewExecutor (the real CLI path — not NewExecutorWithLimiter) to prove
+// that the globalRateLimiterOnce singleton is actually wired. Two separate NewExecutor()
+// calls must share limiter state so the second invocation is throttled after the first
+// saturates the quota.
+//
+// Isolation: the singleton is reset before the test and restored on cleanup so that
+// this test does not bleed state into other tests (or inherit state from them).
 func TestExecute_RateLimitSharedAcrossExecutors(t *testing.T) {
+	// Reset the process-level singleton so this test starts with a clean slate,
+	// regardless of what other tests have executed. Restore on cleanup.
+	origLimiter := globalRateLimiter
+	origOnce := globalRateLimiterOnce
+	globalRateLimiter = nil
+	globalRateLimiterOnce = sync.Once{}
+	t.Cleanup(func() {
+		globalRateLimiter = origLimiter
+		globalRateLimiterOnce = origOnce
+	})
+
 	payload := mustJSON(map[string]any{
 		"convention": "test",
 		"version":    "0.1",
@@ -495,27 +510,28 @@ func TestExecute_RateLimitSharedAcrossExecutors(t *testing.T) {
 		t.Fatalf("Parse error: %v", err)
 	}
 
-	// Inject a fresh shared limiter so this test is isolated from the process singleton,
-	// but still validates that two separate NewExecutorWithLimiter calls sharing the same
-	// limiter instance enforce limits across invocations.
-	limiter := newRateLimiter()
-
-	// First "invocation": a new executor (simulating first CLI call).
+	// First "invocation": NewExecutor uses sharedRateLimiter() — initialises the singleton.
 	tr1 := &mockTransport{}
-	ex1 := NewExecutorWithLimiter(tr1, testSenderKey, limiter)
+	ex1 := NewExecutor(tr1, testSenderKey)
 	if err := ex1.Execute(context.Background(), decl, "cf-shared-rl", map[string]any{}); err != nil {
 		t.Fatalf("first invocation unexpected error: %v", err)
 	}
 
-	// Second "invocation": a new executor (simulating second CLI call) — must be throttled.
+	// Second "invocation": a new Executor constructed via NewExecutor (as the CLI does).
+	// It must pick up the same singleton and be throttled.
 	tr2 := &mockTransport{}
-	ex2 := NewExecutorWithLimiter(tr2, testSenderKey, limiter)
+	ex2 := NewExecutor(tr2, testSenderKey)
 	err = ex2.Execute(context.Background(), decl, "cf-shared-rl", map[string]any{})
 	if err == nil {
 		t.Fatal("second invocation should be rate-limited because the first invocation saturated the quota")
 	}
 	if !strings.Contains(err.Error(), "rate limit") {
 		t.Errorf("error should mention 'rate limit'; got %v", err)
+	}
+
+	// Verify both executors reference the same singleton (belt-and-suspenders).
+	if ex1.rateLimiter != ex2.rateLimiter {
+		t.Error("ex1 and ex2 should share the same rateLimiter singleton")
 	}
 }
 
