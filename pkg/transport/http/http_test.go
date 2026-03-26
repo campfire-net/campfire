@@ -103,6 +103,8 @@ func newTestMessage(t *testing.T, id *identity.Identity) *message.Message {
 //	400 - 419: handler_sync_malformed_test.go (used: 400-401)
 //	420 - 439: ssrf_test.go               (used: 420)
 //	440 - 459: handler_message_test.go    (used: 440-444)
+//	460 - 499: forwarding_test.go         (used: 460-472)
+//	500 - 519: beacon_readvert_test.go    (used: 500-506)
 func portBase() int {
 	return 19000 + (os.Getpid() % 500)
 }
