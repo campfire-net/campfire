@@ -41,7 +41,7 @@ func Lint(payload []byte) *LintResult {
 	// Run Parse with synthetic keys. senderKey == campfireKey so the
 	// campfire_key check (Check 7) passes; rate limit ceiling warnings surface
 	// as ConformanceResult.Warnings which we promote to lint warnings.
-	decl, conf, err := Parse([]string{"convention:operation"}, payload, "synthetic", "synthetic")
+	decl, conf, err := Parse([]string{ConventionOperationTag}, payload, "synthetic", "synthetic")
 	if err != nil {
 		result.Errors = append(result.Errors, LintFinding{
 			Severity: LintError,

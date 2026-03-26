@@ -79,7 +79,7 @@ func setupDispatchEnv(t *testing.T, declPayload []byte) (campfireID string, clea
 
 	// Post declaration message to campfire
 	if declPayload != nil {
-		msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, declPayload, []string{"convention:operation"}, nil)
+		msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, declPayload, []string{convention.ConventionOperationTag}, nil)
 		if err != nil {
 			t.Fatalf("creating declaration message: %v", err)
 		}
@@ -392,7 +392,7 @@ func setupRegistryEnv(t *testing.T, declPayload []byte) (targetCampfireID string
 
 	// Convention registry: convention:operation declaration.
 	if declPayload != nil {
-		convDeclMsg, err := message.NewMessage(convPriv, convPub, declPayload, []string{"convention:operation"}, nil)
+		convDeclMsg, err := message.NewMessage(convPriv, convPub, declPayload, []string{convention.ConventionOperationTag}, nil)
 		if err != nil {
 			t.Fatalf("creating conv decl msg: %v", err)
 		}

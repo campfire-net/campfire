@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/campfire-net/campfire/pkg/convention"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/seed"
@@ -152,7 +153,7 @@ func TestReadConventionMessages_FilesystemProtocol(t *testing.T) {
 		"operation":  "test-op",
 	}
 	declPayload, _ := json.Marshal(decl)
-	writeMsg("0000000001-abc.cbor", declPayload, []string{"convention:operation"})
+	writeMsg("0000000001-abc.cbor", declPayload, []string{convention.ConventionOperationTag})
 	writeMsg("0000000002-def.cbor", []byte("other payload"), []string{"other:tag"})
 
 	sb := &seed.SeedBeacon{
@@ -166,7 +167,7 @@ func TestReadConventionMessages_FilesystemProtocol(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 convention message, got %d", len(msgs))
 	}
-	if !hasTag(msgs[0].Tags, "convention:operation") {
+	if !hasTag(msgs[0].Tags, convention.ConventionOperationTag) {
 		t.Errorf("expected convention:operation tag, got %v", msgs[0].Tags)
 	}
 	if string(msgs[0].Payload) != string(declPayload) {
@@ -241,7 +242,7 @@ func TestReadConventionMessages_SignatureVerification_Reject(t *testing.T) {
 
 	// Write a convention:operation message signed by the DIFFERENT (wrong) key.
 	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
-	msg, err := message.NewMessage(differentPriv, differentPub, declPayload, []string{"convention:operation"}, nil)
+	msg, err := message.NewMessage(differentPriv, differentPub, declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -277,7 +278,7 @@ func TestReadConventionMessages_SignatureVerification_Accept(t *testing.T) {
 
 	// Write a convention:operation message signed by the correct (matching) key.
 	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
-	msg, err := message.NewMessage(beaconPriv, beaconPub, declPayload, []string{"convention:operation"}, nil)
+	msg, err := message.NewMessage(beaconPriv, beaconPub, declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

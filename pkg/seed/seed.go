@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/convention"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/message"
 )
@@ -253,7 +254,7 @@ func verifySeedBeaconSignatures(campfireID string, campfireDir string) error {
 		if err := cfencoding.Unmarshal(data, &msg); err != nil {
 			continue
 		}
-		if !hasTag(msg.Tags, "convention:operation") {
+		if !hasTag(msg.Tags, convention.ConventionOperationTag) {
 			continue
 		}
 		// Check sender matches expected campfire key and signature is valid.
@@ -297,7 +298,7 @@ func readFilesystemConventionMessages(campfireDir string) ([]ConventionMessage, 
 		if err := cfencoding.Unmarshal(data, &raw); err != nil {
 			continue // skip unparseable files
 		}
-		if !hasTag(raw.Tags, "convention:operation") {
+		if !hasTag(raw.Tags, convention.ConventionOperationTag) {
 			continue // only convention declarations
 		}
 		result = append(result, ConventionMessage{

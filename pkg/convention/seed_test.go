@@ -26,8 +26,8 @@ func TestPromoteDeclaration(t *testing.T) {
 	if len(decl.ProducesTags) != 1 {
 		t.Fatalf("produces_tags: want 1, got %d", len(decl.ProducesTags))
 	}
-	if decl.ProducesTags[0].Tag != "convention:operation" {
-		t.Errorf("produces_tags[0].tag: want %q, got %q", "convention:operation", decl.ProducesTags[0].Tag)
+	if decl.ProducesTags[0].Tag != convention.ConventionOperationTag {
+		t.Errorf("produces_tags[0].tag: want %q, got %q", convention.ConventionOperationTag, decl.ProducesTags[0].Tag)
 	}
 
 	// Must have 'file' and 'registry' args
@@ -112,8 +112,8 @@ func TestSupersedeDeclaration(t *testing.T) {
 	if len(decl.ProducesTags) != 1 {
 		t.Fatalf("produces_tags: want 1, got %d", len(decl.ProducesTags))
 	}
-	if decl.ProducesTags[0].Tag != "convention:operation" {
-		t.Errorf("produces_tags[0].tag: want %q, got %q", "convention:operation", decl.ProducesTags[0].Tag)
+	if decl.ProducesTags[0].Tag != convention.ConventionOperationTag {
+		t.Errorf("produces_tags[0].tag: want %q, got %q", convention.ConventionOperationTag, decl.ProducesTags[0].Tag)
 	}
 	if decl.ProducesTags[0].Cardinality != "exactly_one" {
 		t.Errorf("produces_tags[0].cardinality: want %q, got %q", "exactly_one", decl.ProducesTags[0].Cardinality)
@@ -205,7 +205,7 @@ func TestSupersedeDeclaration_ParsesWithConventionExtensionException(t *testing.
 		"signing": "campfire_key"
 	}`)
 	campfireKey := "deadbeef" + seedRepeatStr('0', 56)
-	decl, result, err := convention.Parse([]string{"convention:operation"}, payload, campfireKey, campfireKey)
+	decl, result, err := convention.Parse([]string{convention.ConventionOperationTag}, payload, campfireKey, campfireKey)
 	if err != nil {
 		t.Fatalf("Parse supersede decl: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestRevokeDeclaration_ParsesWithConventionExtensionException(t *testing.T) 
 		"signing": "campfire_key"
 	}`)
 	campfireKey := "deadbeef" + seedRepeatStr('0', 56)
-	decl, result, err := convention.Parse([]string{"convention:operation"}, payload, campfireKey, campfireKey)
+	decl, result, err := convention.Parse([]string{convention.ConventionOperationTag}, payload, campfireKey, campfireKey)
 	if err != nil {
 		t.Fatalf("Parse revoke decl: %v", err)
 	}

@@ -33,7 +33,7 @@ var socialPostPayload = []byte(`{
 // TestConventionToolRegistration verifies that convention tools appear in the
 // tool list after readDeclarations + registerConventionTools.
 func TestConventionToolRegistration(t *testing.T) {
-	tags := []string{"convention:operation"}
+	tags := []string{convention.ConventionOperationTag}
 	senderKey := "aaaa" // member key
 	campfireKey := "bbbb"
 
@@ -101,7 +101,7 @@ func TestConventionToolTrustGate(t *testing.T) {
 		"signing": "campfire_key"
 	}`)
 
-	tags := []string{"convention:operation"}
+	tags := []string{convention.ConventionOperationTag}
 	senderKey := "aaaa" // NOT the campfire key
 	campfireKey := "bbbb"
 
@@ -137,7 +137,7 @@ func TestConventionToolTrustGate(t *testing.T) {
 // TestConventionToolNameCollision verifies collision handling when two
 // declarations have the same operation name.
 func TestConventionToolNameCollision(t *testing.T) {
-	tags := []string{"convention:operation"}
+	tags := []string{convention.ConventionOperationTag}
 	senderKey := "aaaa"
 	campfireKey := "bbbb"
 
@@ -234,7 +234,7 @@ func TestConventionToolsInToolsList(t *testing.T) {
 	srv := newTestServer(t)
 	srv.conventionTools = newConventionToolMap()
 
-	tags := []string{"convention:operation"}
+	tags := []string{convention.ConventionOperationTag}
 	decl, _, err := convention.Parse(tags, socialPostPayload, "aaaa", "bbbb")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)

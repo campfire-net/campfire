@@ -22,7 +22,7 @@ func PromoteDeclaration() *Declaration {
 		Operation:   "promote",
 		Description: "Publish a validated convention declaration to a convention registry campfire",
 		ProducesTags: []TagRule{
-			{Tag: conventionOperationTag, Cardinality: "exactly_one"},
+			{Tag: ConventionOperationTag, Cardinality: "exactly_one"},
 		},
 		Args: []ArgDescriptor{
 			{
@@ -53,7 +53,7 @@ func SupersedeDeclaration() *Declaration {
 		Operation:   "supersede",
 		Description: "Replace a convention declaration with a newer version",
 		ProducesTags: []TagRule{
-			{Tag: conventionOperationTag, Cardinality: "exactly_one"},
+			{Tag: ConventionOperationTag, Cardinality: "exactly_one"},
 		},
 		Args: []ArgDescriptor{
 			{

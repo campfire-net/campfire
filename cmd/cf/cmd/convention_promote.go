@@ -139,7 +139,7 @@ func promoteSingle(
 
 	// Parse to get convention+operation+version for conflict detection.
 	decl, _, err := convention.Parse(
-		[]string{"convention:operation"},
+		[]string{convention.ConventionOperationTag},
 		src.payload,
 		agentID.PublicKeyHex(),
 		agentID.PublicKeyHex(),
@@ -171,7 +171,7 @@ func promoteSingle(
 // Returns a map keyed by "convention:operation@version".
 func loadExistingDeclarations(s store.Store, registryID string) (map[string]*convention.Declaration, error) {
 	msgs, err := s.ListMessages(registryID, 0, store.MessageFilter{
-		Tags: []string{"convention:operation"},
+		Tags: []string{convention.ConventionOperationTag},
 	})
 	if err != nil {
 		return nil, err
@@ -195,7 +195,7 @@ func loadExistingDeclarations(s store.Store, registryID string) (map[string]*con
 // After writing to transport, the message is also stored locally so that
 // loadExistingDeclarations and other local queries can find it.
 func sendDeclarationViaTransport(payload []byte, campfireID string, agentID *identity.Identity, s store.Store, m *store.Membership) (string, error) {
-	tags := []string{"convention:operation"}
+	tags := []string{convention.ConventionOperationTag}
 
 	var msgID string
 	switch transport.ResolveType(*m) {

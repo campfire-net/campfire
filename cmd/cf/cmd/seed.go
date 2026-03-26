@@ -48,7 +48,7 @@ func seedCampfireFilesystem(
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to marshal promote declaration: %v\n", err)
 	} else {
-		tags := []string{"convention:operation"}
+		tags := []string{convention.ConventionOperationTag}
 		if _, err := sendFilesystem(campfireID, string(promotePayload), tags, nil, "", agentID, transportDir); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to post promote declaration: %v\n", err)
 		}

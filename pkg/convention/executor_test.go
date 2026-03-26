@@ -65,7 +65,7 @@ func (m *mockTransport) SendFutureAndAwait(ctx context.Context, campfireID strin
 
 // socialPostDecl returns the §16.1 Declaration.
 func socialPostDecl() *Declaration {
-	decl, _, err := Parse(tags("convention:operation"), socialPostPayload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), socialPostPayload, testSenderKey, testCampfireKey)
 	if err != nil {
 		panic("socialPostDecl: " + err.Error())
 	}
@@ -93,7 +93,7 @@ func voteDecl() *Declaration {
 		},
 		"signing": "member_key",
 	})
-	decl, _, err := Parse(tags("convention:operation"), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
 	if err != nil {
 		panic("voteDecl: " + err.Error())
 	}
@@ -123,7 +123,7 @@ func profileUpdateDecl() *Declaration {
 			},
 		},
 	})
-	decl, _, err := Parse(tags("convention:operation"), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
 	if err != nil {
 		panic("profileUpdateDecl: " + err.Error())
 	}
@@ -143,7 +143,7 @@ func campfireKeyDecl() *Declaration {
 		},
 	})
 	key := "same-key-hex"
-	decl, _, err := Parse(tags("convention:operation"), payload, key, key)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, key, key)
 	if err != nil {
 		panic("campfireKeyDecl: " + err.Error())
 	}
@@ -163,7 +163,7 @@ func selfPriorDecl() *Declaration {
 		},
 		"signing": "member_key",
 	})
-	decl, _, err := Parse(tags("convention:operation"), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
 	if err != nil {
 		panic("selfPriorDecl: " + err.Error())
 	}
@@ -337,7 +337,7 @@ func TestExecute_RateLimitExceeded(t *testing.T) {
 			"window": "1m",
 		},
 	})
-	decl, _, err := Parse(tags("convention:operation"), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
@@ -440,11 +440,11 @@ func TestExecute_RateLimitSenderAndCampfire(t *testing.T) {
 			"window": "1m",
 		},
 	})
-	declA, _, err := Parse(tags("convention:operation"), payload, "senderA", "campfireX")
+	declA, _, err := Parse(tags(ConventionOperationTag), payload, "senderA", "campfireX")
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
-	declB, _, err := Parse(tags("convention:operation"), payload, "senderB", "campfireX")
+	declB, _, err := Parse(tags(ConventionOperationTag), payload, "senderB", "campfireX")
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
@@ -505,7 +505,7 @@ func TestExecute_RateLimitSharedAcrossExecutors(t *testing.T) {
 			"window": "1m",
 		},
 	})
-	decl, _, err := Parse(tags("convention:operation"), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
