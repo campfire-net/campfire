@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
@@ -121,10 +122,31 @@ type server struct {
 	sess            *Session          // non-nil in session mode; back-reference used to persist auditWriter across requests
 	conventionTools *conventionToolMap // dynamic convention-declared tools per session
 	chainWalker     *trust.ChainWalker // trust chain walker for envelope metadata
+	joinMu          sync.Mutex         // guards joinLock map
+	joinLock        map[string]*sync.Mutex // per-campfireID mutex; prevents concurrent-join cleanup race
 }
 
 func (s *server) identityPath() string {
 	return filepath.Join(s.cfHome, "identity.json")
+}
+
+// getJoinMutex returns the per-campfireID mutex for serializing concurrent
+// handleRemoteJoin calls. Concurrent joins for different campfireIDs proceed
+// in parallel; joins for the same campfireID are serialized to prevent the
+// TOCTOU cleanup race (a failing concurrent call from deleting state written
+// by a succeeding concurrent call).
+//
+// The mutex map grows unboundedly — GC of idle entries is a future concern.
+func (s *server) getJoinMutex(campfireID string) *sync.Mutex {
+	s.joinMu.Lock()
+	defer s.joinMu.Unlock()
+	if s.joinLock == nil {
+		s.joinLock = make(map[string]*sync.Mutex)
+	}
+	if _, ok := s.joinLock[campfireID]; !ok {
+		s.joinLock[campfireID] = &sync.Mutex{}
+	}
+	return s.joinLock[campfireID]
 }
 
 func (s *server) storePath() string {
@@ -1543,6 +1565,14 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 	if err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("joining remote campfire via %s: %v", peerEndpoint, err))
 	}
+
+	// Serialize concurrent joins for the same campfireID to prevent a TOCTOU
+	// cleanup race: without this lock, two concurrent calls can both observe
+	// dirExistedBefore=false, then the failing call's defer runs RemoveAll on
+	// the directory that the succeeding call already populated.
+	joinMu := s.getJoinMutex(campfireID)
+	joinMu.Lock()
+	defer joinMu.Unlock()
 
 	// Persist campfire state to local fs transport so handleSend/handleRead can use it.
 	transport := s.fsTransport()
