@@ -1,0 +1,73 @@
+package convention
+
+// InfrastructureConvention is the convention name for convention-extension operations.
+const InfrastructureConvention = "convention-extension"
+
+// InfrastructureVersion is the version for built-in convention-extension declarations.
+const InfrastructureVersion = "0.1"
+
+// SupersedeDeclaration returns the built-in "supersede" operation declaration for
+// convention-extension. A supersede operation replaces an existing declaration with
+// a newer version. It is signed by the campfire key (authority-bearing).
+func SupersedeDeclaration() *Declaration {
+	return &Declaration{
+		Convention:  InfrastructureConvention,
+		Version:     InfrastructureVersion,
+		Operation:   "supersede",
+		Description: "Replace a convention declaration with a newer version",
+		ProducesTags: []TagRule{
+			{Tag: conventionOperationTag, Cardinality: "exactly_one"},
+		},
+		Args: []ArgDescriptor{
+			{
+				Name:        "file",
+				Type:        "string",
+				Required:    true,
+				Description: "Path to new declaration JSON",
+			},
+			{
+				Name:        "supersedes",
+				Type:        "message_id",
+				Required:    true,
+				Description: "Message ID of the declaration being replaced",
+			},
+		},
+		Signing:    "campfire_key",
+		SignerType: SignerCampfireKey,
+	}
+}
+
+// RevokeDeclaration returns the built-in "revoke" operation declaration for
+// convention-extension. A revoke operation permanently removes a declaration.
+// It is signed by the campfire key (authority-bearing).
+func RevokeDeclaration() *Declaration {
+	return &Declaration{
+		Convention:  InfrastructureConvention,
+		Version:     InfrastructureVersion,
+		Operation:   "revoke",
+		Description: "Permanently revoke a convention declaration",
+		ProducesTags: []TagRule{
+			{Tag: conventionRevokeTag, Cardinality: "exactly_one"},
+		},
+		Args: []ArgDescriptor{
+			{
+				Name:        "target_id",
+				Type:        "message_id",
+				Required:    true,
+				Description: "Message ID of the declaration to revoke",
+			},
+		},
+		Signing:    "campfire_key",
+		SignerType: SignerCampfireKey,
+	}
+}
+
+// InfrastructureSeedDeclarations returns all built-in convention-extension
+// declarations. These are pre-seeded into convention campfires so that agents
+// can use supersede and revoke operations without bootstrapping.
+func InfrastructureSeedDeclarations() []*Declaration {
+	return []*Declaration{
+		SupersedeDeclaration(),
+		RevokeDeclaration(),
+	}
+}

@@ -65,7 +65,13 @@ func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfir
 	}
 
 	// 3. Tag denylist check.
+	// Exception: the convention-extension convention may produce convention:operation
+	// and convention:revoke tags — it IS the convention management protocol.
+	isConventionExtension := decl.Convention == InfrastructureConvention
 	for _, tag := range composed {
+		if isConventionExtension && (tag == conventionOperationTag || tag == conventionRevokeTag) {
+			continue
+		}
 		if err := checkDeniedTag(tag); err != nil {
 			return fmt.Errorf("composed tag rejected by denylist: %w", err)
 		}

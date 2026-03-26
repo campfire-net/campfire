@@ -93,6 +93,7 @@ type ConformanceResult struct {
 }
 
 const conventionOperationTag = "convention:operation"
+const conventionRevokeTag = "convention:revoke"
 
 var knownArgTypes = map[string]bool{
 	"string": true, "integer": true, "duration": true, "boolean": true,
@@ -115,6 +116,7 @@ var validPerValues = map[string]bool{
 var deniedTagPrefixes = []string{"naming:", "campfire:"}
 var deniedTagExact = map[string]bool{
 	"future": true, "fulfills": true, "convention:operation": true, "convention:schema": true,
+	"convention:revoke": true,
 }
 
 // innerQuantRe checks if a group body contains a quantifier.
@@ -219,10 +221,16 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*De
 
 	// Check 10: Tag denylist.
 	// Exception: the naming-uri convention may produce naming: tags (it IS the naming protocol).
+	// Exception: the convention-extension convention may produce convention:operation and
+	// convention:revoke tags (it IS the convention management protocol).
 	skipNamingDeny := decl.Convention == "naming-uri"
+	skipConventionDeny := decl.Convention == InfrastructureConvention
 	for i, tr := range decl.ProducesTags {
 		tag := tr.Tag
 		if skipNamingDeny && strings.HasPrefix(tag, "naming:") {
+			continue
+		}
+		if skipConventionDeny && (tag == conventionOperationTag || tag == conventionRevokeTag) {
 			continue
 		}
 		if err := checkDeniedTag(tag); err != nil {
