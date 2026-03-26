@@ -92,6 +92,14 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 		return fmt.Errorf("writing member record: %w", err)
 	}
 
+	// Seed the campfire: post embedded promote declaration + any seed beacon declarations.
+	// projectDir is discovered here so that project-local seeds take priority.
+	seedProjectDir := ""
+	if _, pd, ok := ProjectRoot(); ok {
+		seedProjectDir = pd
+	}
+	seedCampfireFilesystem(cf.PublicKeyHex(), transport.CampfireDir(cf.PublicKeyHex()), agentID, cf, seedProjectDir)
+
 	// Build beacon
 	b, err := beacon.New(
 		cf.PublicKey,
