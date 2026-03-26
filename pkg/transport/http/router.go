@@ -84,12 +84,19 @@ type RoutingTable struct {
 	// beacons whose path contains NodeID are dropped to prevent routing loops.
 	// May be empty — loop detection is skipped when NodeID is not set.
 	NodeID string
+	// peerNeeds tracks which direct peers participate in each campfire.
+	// Per §5.3 of the path-vector amendment: campfire_id → set of peer node_ids.
+	// A peer is in the set if it delivered a message for the campfire, is a
+	// next_hop in the routing table for the campfire, or sent a beacon for the
+	// campfire through this router.
+	peerNeeds map[string]map[string]bool // campfire_id → set of peer node_ids
 }
 
 // newRoutingTable creates an empty RoutingTable.
 func newRoutingTable() *RoutingTable {
 	return &RoutingTable{
-		entries: make(map[string][]RouteEntry),
+		entries:   make(map[string][]RouteEntry),
+		peerNeeds: make(map[string]map[string]bool),
 	}
 }
 
@@ -97,8 +104,9 @@ func newRoutingTable() *RoutingTable {
 // The nodeID is used for path-vector loop detection (spec §4.2).
 func newRoutingTableWithNodeID(nodeID string) *RoutingTable {
 	return &RoutingTable{
-		entries: make(map[string][]RouteEntry),
-		NodeID:  nodeID,
+		entries:   make(map[string][]RouteEntry),
+		NodeID:    nodeID,
+		peerNeeds: make(map[string]map[string]bool),
 	}
 }
 
@@ -219,6 +227,7 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 			NextHop:        senderNodeID,
 		}
 		rt.entries[bp.CampfireID] = existing
+		rt.addPeerNeedsLocked(bp.CampfireID, senderNodeID)
 		return nil
 	}
 
@@ -231,6 +240,7 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 			existing[i].Path = path
 			existing[i].NextHop = senderNodeID
 			rt.entries[bp.CampfireID] = existing
+			rt.addPeerNeedsLocked(bp.CampfireID, senderNodeID)
 			return nil
 		}
 	}
@@ -246,6 +256,7 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 		Path:           path,
 		NextHop:        senderNodeID,
 	})
+	rt.addPeerNeedsLocked(bp.CampfireID, senderNodeID)
 	return nil
 }
 
@@ -303,6 +314,9 @@ func (rt *RoutingTable) HandleWithdraw(rawPayload []byte) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	delete(rt.entries, withdraw.CampfireID)
+	// Clean up peer needs set for this campfire — no routes remain, so no peers
+	// need to be tracked for forwarding purposes.
+	delete(rt.peerNeeds, withdraw.CampfireID)
 	return nil
 }
 
@@ -368,4 +382,52 @@ func (rt *RoutingTable) Len() int {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	return len(rt.entries)
+}
+
+// addPeerNeedsLocked adds peerNodeID to the peer needs set for campfireID.
+// Must be called with rt.mu held (write lock).
+// Empty peerNodeID is ignored (locally-originated beacons have no sender).
+func (rt *RoutingTable) addPeerNeedsLocked(campfireID, peerNodeID string) {
+	if peerNodeID == "" {
+		return
+	}
+	if rt.peerNeeds[campfireID] == nil {
+		rt.peerNeeds[campfireID] = make(map[string]bool)
+	}
+	rt.peerNeeds[campfireID][peerNodeID] = true
+}
+
+// RecordMessageDelivery records that peerNodeID delivered a message for campfireID
+// to this router. Per §5.3, peers that deliver messages for a campfire are added
+// to the peer needs set for that campfire.
+//
+// This should be called by the message handler when a message arrives from a peer.
+func (rt *RoutingTable) RecordMessageDelivery(campfireID, peerNodeID string) {
+	if campfireID == "" || peerNodeID == "" {
+		return
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.addPeerNeedsLocked(campfireID, peerNodeID)
+}
+
+// PeerNeedsSet returns a copy of the set of direct peers that participate in
+// campfireID (per §5.3 of the path-vector amendment). The returned map maps
+// peer node_id → true. Returns nil if no peers are known for this campfire.
+//
+// The caller may use this set to determine which peers to forward messages to.
+func (rt *RoutingTable) PeerNeedsSet(campfireID string) map[string]bool {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+
+	peers := rt.peerNeeds[campfireID]
+	if len(peers) == 0 {
+		return nil
+	}
+	// Return a copy so the caller cannot mutate internal state.
+	out := make(map[string]bool, len(peers))
+	for k, v := range peers {
+		out[k] = v
+	}
+	return out
 }
