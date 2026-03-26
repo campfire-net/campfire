@@ -2,6 +2,7 @@ package http_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -194,5 +195,57 @@ func TestSSRFSafeTransportBlocksLoopback(t *testing.T) {
 	_, err := safeClient.Get(ts.URL)
 	if err == nil {
 		t.Error("SSRFSafeTransport: expected connection to loopback to be blocked, got nil error")
+	}
+}
+
+// TestSSRFSafeTransport_RedirectToLoopbackBlocked verifies that the SSRF-safe
+// transport's DialContext blocks direct connections to loopback addresses.
+// This tests the transport-layer guard against DNS rebinding to loopback.
+func TestSSRFSafeTransport_RedirectToLoopbackBlocked(t *testing.T) {
+	// Create a client with the SSRF-safe transport and extract the transport.
+	client := cfhttp.NewSSRFSafeClient()
+	tr := client.Transport.(*http.Transport)
+
+	ctx := context.Background()
+	// Attempt to dial a loopback address directly.
+	// The DialContext should block this with an SSRF message.
+	conn, err := tr.DialContext(ctx, "tcp", "127.0.0.1:9999")
+	if err == nil {
+		defer conn.Close()
+		t.Error("expected DialContext to block 127.0.0.1:9999, got nil error")
+		return
+	}
+	// Verify error message indicates SSRF block (contains "private" or "blocked").
+	errMsg := err.Error()
+	if !(bytes.Contains([]byte(errMsg), []byte("private")) ||
+		bytes.Contains([]byte(errMsg), []byte("blocked"))) {
+		t.Errorf("expected SSRF block message, got: %v", err)
+	}
+}
+
+// TestSSRFSafeTransport_UnreachablePublicIPReturnsDialError verifies that
+// when all resolved public IPs are unreachable, the transport returns the
+// actual dial error (not an SSRF message).
+func TestSSRFSafeTransport_UnreachablePublicIPReturnsDialError(t *testing.T) {
+	// Create a client with the SSRF-safe transport and extract the transport.
+	client := cfhttp.NewSSRFSafeClient()
+	tr := client.Transport.(*http.Transport)
+
+	ctx := context.Background()
+	// Attempt to dial a public IP (1.2.3.4) on a port with no listener.
+	// This should fail with a genuine dial error (connection refused or timeout),
+	// not an SSRF message.
+	conn, err := tr.DialContext(ctx, "tcp", "1.2.3.4:1")
+	if err == nil {
+		defer conn.Close()
+		t.Fatal("expected DialContext to fail with network error, got nil error")
+	}
+
+	// Verify error message does NOT contain SSRF-specific text.
+	errMsg := err.Error()
+	if bytes.Contains([]byte(errMsg), []byte("private")) ||
+		bytes.Contains([]byte(errMsg), []byte("SSRF")) ||
+		bytes.Contains([]byte(errMsg), []byte("blocked: resolves")) {
+		t.Errorf("expected genuine dial error (not SSRF message) for unreachable public IP, got: %v", err)
 	}
 }
