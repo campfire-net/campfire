@@ -33,6 +33,7 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
@@ -302,7 +303,7 @@ Use 'encrypted: true' to create an E2E encrypted campfire. When encrypted, the h
 		},
 		{
 			Name:        "campfire_join",
-			Description: "Join an existing campfire. You may provide campfire_id, invite_code, or both. If you only have an invite code (e.g. received in conversation), pass just invite_code — the server resolves the campfire from it (design-mcp-security.md §5.a). If you only have a campfire_id (e.g. from campfire_discover), pass just campfire_id. If both are provided, the server validates they refer to the same campfire.",
+			Description: "Join an existing campfire. You may provide campfire_id, invite_code, or both. If you only have an invite code (e.g. received in conversation), pass just invite_code — the server resolves the campfire from it (design-mcp-security.md §5.a). If you only have a campfire_id (e.g. from campfire_discover), pass just campfire_id. If both are provided, the server validates they refer to the same campfire. For campfires on remote instances, provide peer_endpoint to join directly via the remote server's HTTP endpoint, or let the server resolve it from a published beacon.",
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -313,6 +314,10 @@ Use 'encrypted: true' to create an E2E encrypted campfire. When encrypted, the h
 					"invite_code": map[string]interface{}{
 						"type":        "string",
 						"description": "Invite code for the campfire. When provided without campfire_id, the server resolves the campfire automatically. Required for campfires that have invite-code enforcement enabled.",
+					},
+					"peer_endpoint": map[string]interface{}{
+						"type":        "string",
+						"description": "HTTP endpoint of a remote campfire server (e.g. https://mcp.getcampfire.dev). When provided, the server joins via cfhttp.Join against this endpoint, bypassing local and beacon resolution. Useful for cross-instance joins before beacon discovery is fully wired.",
 					},
 				},
 				"required": []string{},
@@ -1286,7 +1291,16 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 
 	state, err := transport.ReadState(campfireID)
 	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("reading campfire state: %v", err))
+		// Campfire not found locally — try remote join via peer_endpoint or beacon.
+		peerEndpoint := getStr(params, "peer_endpoint")
+		if peerEndpoint == "" {
+			// Beacon resolution: scan local beacon dir for a p2p-http beacon.
+			peerEndpoint = s.resolveBeaconEndpoint(campfireID)
+		}
+		if peerEndpoint == "" {
+			return errResponse(id, -32000, "campfire not found locally or via beacon discovery")
+		}
+		return s.handleRemoteJoin(id, params, campfireID, peerEndpoint, agentID, st)
 	}
 
 	members, err := transport.ListMembers(campfireID)
@@ -1454,6 +1468,150 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		"status":      "joined",
 	})
 	return okResponse(id, result)
+}
+
+// resolveBeaconEndpoint scans the server's beacon directory for a p2p-http
+// beacon matching campfireID and returns the endpoint URL. Returns "" if not
+// found or the beacon has no p2p-http transport.
+func (s *server) resolveBeaconEndpoint(campfireID string) string {
+	beacons, err := beacon.Scan(s.beaconDir)
+	if err != nil {
+		return ""
+	}
+	// Use first p2p-http beacon matching the campfire ID.
+	for _, b := range beacons {
+		if b.CampfireIDHex() != campfireID {
+			continue
+		}
+		if b.Transport.Protocol != "p2p-http" {
+			continue
+		}
+		if ep := b.Transport.Config["endpoint"]; ep != "" {
+			return ep
+		}
+	}
+	return ""
+}
+
+// handleRemoteJoin performs a cross-instance join via cfhttp.Join.
+// Called from handleJoin when the campfire is not found locally.
+//
+// Flow:
+//  1. Call cfhttp.Join(peerEndpoint, campfireID, agentID, myEndpoint)
+//  2. Write campfire state CBOR to local fs transport dir
+//  3. Write self as a member in the local fs transport
+//  4. Call st.AddMembership so handleRead/handleSend can find the campfire
+//  5. Register peer endpoints from the join result
+//  6. If HTTP transport is running, register the campfire and add server A as peer
+func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{}, campfireID, peerEndpoint string, agentID *identity.Identity, st store.Store) jsonRPCResponse {
+	// Advertise our own endpoint so the remote host can deliver messages back.
+	myEndpoint := ""
+	if s.externalAddr != "" {
+		myEndpoint = s.externalAddr
+	}
+
+	result, err := cfhttp.Join(peerEndpoint, campfireID, agentID, myEndpoint)
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("joining remote campfire via %s: %v", peerEndpoint, err))
+	}
+
+	// Persist campfire state to local fs transport so handleSend/handleRead can use it.
+	transport := s.fsTransport()
+	campfireDir := transport.CampfireDir(campfireID)
+	for _, sub := range []string{"members", "messages"} {
+		if mkErr := os.MkdirAll(filepath.Join(campfireDir, sub), 0755); mkErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("creating campfire directory: %v", mkErr))
+		}
+	}
+
+	cfState := campfire.CampfireState{
+		PublicKey:             result.CampfirePubKey,
+		PrivateKey:            result.CampfirePrivKey,
+		JoinProtocol:          result.JoinProtocol,
+		ReceptionRequirements: result.ReceptionRequirements,
+		Threshold:             result.Threshold,
+	}
+	stateData, marshalErr := cfencoding.Marshal(cfState)
+	if marshalErr != nil {
+		return errResponse(id, -32000, fmt.Sprintf("encoding campfire state: %v", marshalErr))
+	}
+	statePath := filepath.Join(campfireDir, "campfire.cbor")
+	if writeErr := os.WriteFile(statePath, stateData, 0600); writeErr != nil {
+		return errResponse(id, -32000, fmt.Sprintf("writing campfire state: %v", writeErr))
+	}
+
+	// Write self as a member so handleSend's membership check passes.
+	if writeErr := transport.WriteMember(campfireID, campfire.MemberRecord{
+		PublicKey: agentID.PublicKey,
+		JoinedAt:  store.NowNano(),
+		Role:      campfire.RoleFull,
+	}); writeErr != nil {
+		return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", writeErr))
+	}
+
+	// Record membership in local store.
+	if addErr := st.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: campfireDir,
+		JoinProtocol: result.JoinProtocol,
+		Role:         campfire.RoleFull,
+		JoinedAt:     store.NowNano(),
+		Threshold:    result.Threshold,
+	}); addErr != nil {
+		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", addErr))
+	}
+
+	// Store peer endpoints from the join result (includes the admitting member).
+	for _, peer := range result.Peers {
+		if peer.PubKeyHex == "" {
+			continue
+		}
+		st.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+			CampfireID:    campfireID,
+			MemberPubkey:  peer.PubKeyHex,
+			Endpoint:      peer.Endpoint,
+			ParticipantID: peer.ParticipantID,
+		})
+		// Register peer in HTTP transport so handleSend can deliver to them.
+		if s.httpTransport != nil && peer.Endpoint != "" {
+			s.httpTransport.AddPeer(campfireID, peer.PubKeyHex, peer.Endpoint)
+		}
+	}
+
+	// If this server has an HTTP transport running, register the remote campfire
+	// with the transport router so incoming deliveries from peers are routed to
+	// this session's transport handler. Also register self as a peer in the store
+	// so membership checks pass for self-authored messages.
+	if s.httpTransport != nil && s.sessionToken != "" && s.transportRouter != nil {
+		s.transportRouter.RegisterForSession(campfireID, s.sessionToken, s.httpTransport)
+		// Add self as peer so sender authentication on incoming messages works.
+		st.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+			CampfireID:   campfireID,
+			MemberPubkey: agentID.PublicKeyHex(),
+			Endpoint:     s.externalAddr,
+			Role:         store.PeerRoleMember,
+		})
+	}
+
+	// Audit: record join action.
+	if s.auditWriter != nil {
+		paramBytes, _ := json.Marshal(params)
+		s.auditWriter.Log(AuditEntry{
+			Timestamp:   time.Now().UnixNano(),
+			Action:      "join",
+			AgentKey:    agentID.PublicKeyHex(),
+			CampfireID:  campfireID,
+			RequestHash: requestHash(paramBytes),
+		})
+	}
+
+	joinResult, _ := toolResultJSON(map[string]string{
+		"campfire_id": campfireID,
+		"status":      "joined",
+		"transport":   "p2p-http",
+		"via":         peerEndpoint,
+	})
+	return okResponse(id, joinResult)
 }
 
 func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonRPCResponse {
