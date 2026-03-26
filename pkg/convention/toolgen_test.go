@@ -938,6 +938,104 @@ func TestListOperations_RevokeOfflineMode_DifferentSenderIgnored(t *testing.T) {
 	}
 }
 
+// TestListOperations_TransitiveRevokeChain_RealSQLite verifies that revoking msg1
+// cascades transitively: msg2.supersedes=msg1, msg3.supersedes=msg2 →
+// all three are excluded from ListOperations.
+// Uses a real store.Open SQLite database (not mocks) per the done condition.
+func TestListOperations_TransitiveRevokeChain_RealSQLite(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "transitive.db")
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+
+	campfireID := "cf-transitive-test"
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: dir,
+		JoinProtocol: "test",
+		Role:         "full",
+		JoinedAt:     1000,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	// msg1: original declaration
+	msg1Payload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.3",
+		"operation":   "post",
+		"description": "Original v1",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+	// msg2: supersedes msg1
+	msg2Payload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.4",
+		"operation":   "post",
+		"description": "Updated v2",
+		"supersedes":  "msg1",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+	// msg3: supersedes msg2
+	msg3Payload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.5",
+		"operation":   "post",
+		"description": "Updated v3",
+		"supersedes":  "msg2",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+
+	msgs := []store.MessageRecord{
+		{
+			ID: "msg1", CampfireID: campfireID, Sender: "signer1",
+			Payload: msg1Payload, Tags: []string{"convention:operation"},
+			Timestamp: 1000, Signature: []byte("sig1"), ReceivedAt: 1000,
+		},
+		{
+			ID: "msg2", CampfireID: campfireID, Sender: "signer1",
+			Payload: msg2Payload, Tags: []string{"convention:operation"},
+			Timestamp: 2000, Signature: []byte("sig2"), ReceivedAt: 2000,
+		},
+		{
+			ID: "msg3", CampfireID: campfireID, Sender: "signer1",
+			Payload: msg3Payload, Tags: []string{"convention:operation"},
+			Timestamp: 3000, Signature: []byte("sig3"), ReceivedAt: 3000,
+		},
+		// Revoke targets msg1 only; the transitive chain must cascade to msg2 and msg3.
+		// Sender must match msg1's original signer ("signer1") in offline mode.
+		{
+			ID: "rev1", CampfireID: campfireID, Sender: "signer1",
+			Payload: []byte(`{"target_id":"msg1"}`), Tags: []string{"convention:revoke"},
+			Timestamp: 4000, Signature: []byte("rev-sig1"), ReceivedAt: 4000,
+		},
+	}
+	for _, m := range msgs {
+		if _, addErr := s.AddMessage(m); addErr != nil {
+			t.Fatalf("AddMessage %s: %v", m.ID, addErr)
+		}
+	}
+
+	decls, err := ListOperations(s, campfireID, "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	if len(decls) != 0 {
+		ids := make([]string, len(decls))
+		for i, d := range decls {
+			ids[i] = d.MessageID
+		}
+		t.Errorf("expected 0 decls (transitive revoke chain: msg1 revoked → msg2, msg3 also excluded), got %d: %v", len(decls), ids)
+	}
+}
+
 // mockStore implements StoreReader for testing.
 // It filters records by tags when a MessageFilter is provided.
 type mockStore struct {
