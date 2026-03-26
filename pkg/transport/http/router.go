@@ -153,24 +153,11 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 		}
 	}
 
-	// Decode campfire_id as ed25519 public key.
-	pubKeyBytes, err := hex.DecodeString(bp.CampfireID)
-	if err != nil {
-		return fmt.Errorf("routing:beacon: invalid campfire_id (not hex): %w", err)
-	}
-	if len(pubKeyBytes) != ed25519.PublicKeySize {
-		return fmt.Errorf("routing:beacon: campfire_id wrong length: %d (want %d)", len(pubKeyBytes), ed25519.PublicKeySize)
-	}
-
-	// Verify inner_signature (spec §5.1 — MUST verify before acting).
-	sigBytes, err := hex.DecodeString(bp.InnerSignature)
-	if err != nil {
-		return fmt.Errorf("routing:beacon: invalid inner_signature (not hex): %w", err)
-	}
-
-	// Build the signed input using the canonical beacon package function.
-	// This ensures signing and verification always use identical JSON encoding.
-	signBytes, err := beacon.MarshalInnerSignInput(beacon.BeaconDeclaration{
+	// Verify inner_signature using the canonical two-pass approach (spec §5.1, §3.2):
+	// try with path first (threshold=1, path in signature), then without path
+	// (threshold>1, path is advisory). beacon.VerifyDeclaration handles both cases
+	// and validates campfire_id format and signature encoding internally.
+	verifyDecl := beacon.BeaconDeclaration{
 		CampfireID:        bp.CampfireID,
 		Endpoint:          bp.Endpoint,
 		Transport:         bp.Transport,
@@ -178,14 +165,21 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 		JoinProtocol:      bp.JoinProtocol,
 		Timestamp:         bp.Timestamp,
 		ConventionVersion: bp.ConventionVersion,
-	})
-	if err != nil {
-		return fmt.Errorf("routing:beacon: encoding sign input: %w", err)
+		InnerSignature:    bp.InnerSignature,
+		Path:              bp.Path,
 	}
-
-	if !ed25519.Verify(ed25519.PublicKey(pubKeyBytes), signBytes, sigBytes) {
+	if !beacon.VerifyDeclaration(verifyDecl) {
 		log.Printf("routing:beacon: inner_signature verification failed for campfire_id %s from gateway %s", bp.CampfireID, gatewayCampfireID)
 		return fmt.Errorf("routing:beacon: inner_signature verification failed for campfire_id %s", bp.CampfireID)
+	}
+
+	// Validate campfire_id is a valid ed25519 public key (32 bytes).
+	pubKeyBytes, err := hex.DecodeString(bp.CampfireID)
+	if err != nil {
+		return fmt.Errorf("routing:beacon: invalid campfire_id (not hex): %w", err)
+	}
+	if len(pubKeyBytes) != ed25519.PublicKeySize {
+		return fmt.Errorf("routing:beacon: campfire_id wrong length: %d (want %d)", len(pubKeyBytes), ed25519.PublicKeySize)
 	}
 
 	// Copy path from beacon payload (nil-safe).
