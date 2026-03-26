@@ -68,6 +68,21 @@ func GenerateToolName(decl *Declaration, existing map[string]bool) string {
 // A revoked declaration disappears entirely. Revoking a superseded declaration
 // also removes the superseding declaration (chain invalidation).
 func ListOperations(s StoreReader, campfireID, campfireKey string) ([]*Declaration, error) {
+	return listOperations(s, campfireID, campfireKey, "")
+}
+
+// ListOperationsWithRegistry reads declarations from campfireID (inline) and, when
+// registryCampfireID is non-empty, also from the convention registry campfire.
+// Messages from both sources are merged before supersede and revoke filtering,
+// so registry declarations can supersede inline ones via the Supersedes field.
+// When registryCampfireID is empty, this is identical to ListOperations.
+func ListOperationsWithRegistry(s StoreReader, campfireID, campfireKey, registryCampfireID string) ([]*Declaration, error) {
+	return listOperations(s, campfireID, campfireKey, registryCampfireID)
+}
+
+// listOperations is the shared implementation used by ListOperations and
+// ListOperationsWithRegistry.
+func listOperations(s StoreReader, campfireID, campfireKey, registryCampfireID string) ([]*Declaration, error) {
 	// Collect operation declarations.
 	opMsgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{
 		Tags: []string{"convention:operation"},
@@ -82,6 +97,24 @@ func ListOperations(s StoreReader, campfireID, campfireKey string) ([]*Declarati
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// When a registry campfire is provided, merge its declarations and revokes
+	// with the inline ones. Registry messages are appended after inline messages
+	// so that the timestamp-based supersede winner logic applies uniformly.
+	if registryCampfireID != "" && registryCampfireID != campfireID {
+		regOpMsgs, regErr := s.ListMessages(registryCampfireID, 0, store.MessageFilter{
+			Tags: []string{"convention:operation"},
+		})
+		if regErr == nil {
+			opMsgs = append(opMsgs, regOpMsgs...)
+		}
+		regRevokeMsgs, regErr := s.ListMessages(registryCampfireID, 0, store.MessageFilter{
+			Tags: []string{conventionRevokeTag},
+		})
+		if regErr == nil {
+			revokeMsgs = append(revokeMsgs, regRevokeMsgs...)
+		}
 	}
 
 	// Build revoked set: target_id values from revoke message payloads.

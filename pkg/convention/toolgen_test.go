@@ -721,6 +721,144 @@ func TestListOperations_RevokeUnauthorizedSenderIgnored(t *testing.T) {
 	}
 }
 
+// TestListOperationsWithRegistry_FallsThrough verifies that when a campfire has no
+// inline declarations, ListOperationsWithRegistry reads from the registry campfire.
+func TestListOperationsWithRegistry_FallsThrough(t *testing.T) {
+	// "inline" campfire has no declarations.
+	// "registry" campfire has one declaration.
+	multi := &multiCampfireStore{
+		stores: map[string][]store.MessageRecord{
+			"inline-cf": {},
+			"reg-cf": {
+				{
+					ID:      "reg-msg1",
+					Sender:  "reg-sender",
+					Payload: socialPostPayload,
+					Tags:    []string{"convention:operation"},
+				},
+			},
+		},
+	}
+
+	decls, err := ListOperationsWithRegistry(multi, "inline-cf", "", "reg-cf")
+	if err != nil {
+		t.Fatalf("ListOperationsWithRegistry: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Fatalf("expected 1 decl from registry, got %d", len(decls))
+	}
+	if decls[0].Operation != "post" {
+		t.Errorf("operation = %q, want %q", decls[0].Operation, "post")
+	}
+}
+
+// TestListOperationsWithRegistry_RegistrySupersedes verifies that a registry
+// declaration with a Supersedes field pointing to an inline declaration ID
+// causes the inline declaration to be replaced by the registry version.
+func TestListOperationsWithRegistry_RegistrySupersedes(t *testing.T) {
+	inlinePayload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.3",
+		"operation":   "post",
+		"description": "Inline post op",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+	registryPayload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.4",
+		"operation":   "post",
+		"description": "Registry post op (supersedes inline)",
+		"supersedes":  "inline-msg1",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+
+	multi := &multiCampfireStore{
+		stores: map[string][]store.MessageRecord{
+			"inline-cf": {
+				{
+					ID:        "inline-msg1",
+					Sender:    "sender1",
+					Payload:   inlinePayload,
+					Tags:      []string{"convention:operation"},
+					Timestamp: 1000,
+				},
+			},
+			"reg-cf": {
+				{
+					ID:        "reg-msg1",
+					Sender:    "sender1",
+					Payload:   registryPayload,
+					Tags:      []string{"convention:operation"},
+					Timestamp: 2000,
+				},
+			},
+		},
+	}
+
+	decls, err := ListOperationsWithRegistry(multi, "inline-cf", "", "reg-cf")
+	if err != nil {
+		t.Fatalf("ListOperationsWithRegistry: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Fatalf("expected 1 decl (registry supersedes inline), got %d", len(decls))
+	}
+	if decls[0].Version != "0.4" {
+		t.Errorf("expected version 0.4 (registry), got %q", decls[0].Version)
+	}
+	if decls[0].MessageID != "reg-msg1" {
+		t.Errorf("expected messageID reg-msg1, got %q", decls[0].MessageID)
+	}
+}
+
+// TestListOperationsWithRegistry_EmptyRegistry verifies that when registryCampfireID
+// is empty, ListOperationsWithRegistry behaves identically to ListOperations.
+func TestListOperationsWithRegistry_EmptyRegistry(t *testing.T) {
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:      "msg1",
+				Sender:  "sender1",
+				Payload: socialPostPayload,
+				Tags:    []string{"convention:operation"},
+			},
+		},
+	}
+
+	decls, err := ListOperationsWithRegistry(mock, "campfire123", "", "")
+	if err != nil {
+		t.Fatalf("ListOperationsWithRegistry: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Errorf("expected 1 decl, got %d", len(decls))
+	}
+}
+
+// TestListOperationsWithRegistry_SameCampfire verifies that when
+// registryCampfireID equals campfireID, messages are not double-counted.
+func TestListOperationsWithRegistry_SameCampfire(t *testing.T) {
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:      "msg1",
+				Sender:  "sender1",
+				Payload: socialPostPayload,
+				Tags:    []string{"convention:operation"},
+			},
+		},
+	}
+
+	// Same campfire for both inline and registry — should still return 1 decl.
+	decls, err := ListOperationsWithRegistry(mock, "campfire123", "", "campfire123")
+	if err != nil {
+		t.Fatalf("ListOperationsWithRegistry: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Errorf("expected 1 decl (no double-counting), got %d", len(decls))
+	}
+}
+
 // mockStore implements StoreReader for testing.
 // It filters records by tags when a MessageFilter is provided.
 type mockStore struct {
@@ -754,4 +892,25 @@ func mockRecordHasAnyTag(rec store.MessageRecord, wantTags []string) bool {
 		}
 	}
 	return false
+}
+
+// multiCampfireStore implements StoreReader for tests that need multiple campfires.
+// Messages are partitioned by campfireID.
+type multiCampfireStore struct {
+	stores map[string][]store.MessageRecord
+}
+
+func (m *multiCampfireStore) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
+	recs := m.stores[campfireID]
+	if len(filter) == 0 || len(filter[0].Tags) == 0 {
+		return recs, nil
+	}
+	wantTags := filter[0].Tags
+	var result []store.MessageRecord
+	for _, rec := range recs {
+		if mockRecordHasAnyTag(rec, wantTags) {
+			result = append(result, rec)
+		}
+	}
+	return result, nil
 }
