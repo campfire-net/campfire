@@ -136,6 +136,12 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		}
 	}
 
+	// Record that this peer delivered a message for this campfire (spec §5.3).
+	// This populates the peer-needs-set used in path-vector forwarding.
+	if h.transport != nil && senderHex != "" {
+		h.transport.routingTable.RecordMessageDelivery(campfireID, senderHex)
+	}
+
 	// Forward the message to other peers (router forwarding, spec §7.2).
 	if h.transport != nil {
 		h.forwardMessage(campfireID, senderHex, &msg)
@@ -157,7 +163,19 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 //   - Relay mode: forward for any campfire in the routing table (opt-in).
 //
 // If the keyProvider is not set, forwarding is skipped (no campfire key to sign hops).
+//
+// Routing control messages (routing:beacon, routing:withdraw) are NOT forwarded here;
+// they are handled by reAdvertiseBeacon and propagateWithdraw respectively, which
+// apply path-vector semantics (appending node_id to the path, etc.). Double-forwarding
+// these messages would corrupt the path accumulation and cause test races.
 func (h *handler) forwardMessage(campfireID, senderHex string, msg *message.Message) {
+	// Skip routing control messages — propagated via dedicated handlers.
+	for _, tag := range msg.Tags {
+		if tag == "routing:beacon" || tag == "routing:withdraw" {
+			return
+		}
+	}
+
 	kp := h.keyProvider
 	if kp == nil && h.transport != nil {
 		h.transport.mu.RLock()
@@ -218,41 +236,103 @@ func (h *handler) forwardMessage(campfireID, senderHex string, msg *message.Mess
 		PrivateKey: campfirePriv,
 	}
 
-	// Collect forwarding targets: first check routing table, then fall back to local peers.
-	var targetEndpoints []string
-	routes := h.transport.routingTable.Lookup(campfireID)
-	if len(routes) > 0 {
-		for _, route := range routes {
-			if route.Endpoint != "" {
-				targetEndpoints = append(targetEndpoints, route.Endpoint)
-			}
-		}
-	}
+	// Compute the forwarding set per spec §5 (path-vector amendment).
+	//
+	// Algorithm:
+	// 1. Fetch routing table routes for campfireID.
+	// 2. If any route has a non-empty Path (path-vector route):
+	//    a. Collect unique next_hop node_ids from all routes.
+	//    b. Union with PeerNeedsSet(campfireID).
+	//    c. Remove senderHex (no echo).
+	//    d. Map each node_id to an endpoint via local peers.
+	// 3. If no path-vector routes exist (all empty-path/legacy beacons):
+	//    Fall back to flood: all local peers except sender (v0.4.2 behavior).
 
-	// Also include locally known peers (from membership events).
+	// Snapshot local peers once (endpoint lookup map).
 	h.transport.mu.RLock()
 	localPeers := make([]PeerInfo, len(h.transport.peers[campfireID]))
 	copy(localPeers, h.transport.peers[campfireID])
 	h.transport.mu.RUnlock()
 
+	// Build node_id → endpoint map from local peers (excludes sender).
+	nodeToEndpoint := make(map[string]string, len(localPeers))
 	for _, peer := range localPeers {
-		if peer.Endpoint == "" {
-			continue
+		if peer.Endpoint != "" && peer.PubKeyHex != senderHex {
+			nodeToEndpoint[peer.PubKeyHex] = peer.Endpoint
 		}
-		// Exclude the sender (prevent echo — spec §7.2 step 4).
-		if peer.PubKeyHex == senderHex {
-			continue
+	}
+
+	// Consult the routing table.
+	routes := h.transport.routingTable.Lookup(campfireID)
+
+	// Determine if any path-vector routes exist (non-empty Path).
+	hasPathVectorRoutes := false
+	for _, route := range routes {
+		if len(route.Path) > 0 {
+			hasPathVectorRoutes = true
+			break
 		}
-		// Exclude already-targeted endpoints (from routing table).
-		alreadyTargeted := false
-		for _, ep := range targetEndpoints {
-			if ep == peer.Endpoint {
-				alreadyTargeted = true
-				break
+	}
+
+	var targetEndpoints []string
+
+	if hasPathVectorRoutes {
+		// Path-vector forwarding: forwarding_set = (PeerNeedsSet ∪ NextHops) - sender.
+		forwardingSet := make(map[string]bool)
+
+		// Add routing next_hops.
+		for _, route := range routes {
+			if route.NextHop != "" && route.NextHop != senderHex {
+				forwardingSet[route.NextHop] = true
 			}
 		}
-		if !alreadyTargeted {
-			targetEndpoints = append(targetEndpoints, peer.Endpoint)
+
+		// Union with peer-needs-set.
+		peerNeeds := h.transport.routingTable.PeerNeedsSet(campfireID)
+		for nodeID := range peerNeeds {
+			if nodeID != senderHex {
+				forwardingSet[nodeID] = true
+			}
+		}
+
+		// Map node_ids to endpoints. Skip if no endpoint known for a node.
+		seen := make(map[string]bool)
+		for nodeID := range forwardingSet {
+			ep, ok := nodeToEndpoint[nodeID]
+			if !ok {
+				// Try routing table entries for this node's endpoint.
+				for _, route := range routes {
+					if route.NextHop == nodeID && route.Endpoint != "" {
+						ep = route.Endpoint
+						ok = true
+						break
+					}
+				}
+			}
+			if ok && ep != "" && !seen[ep] {
+				seen[ep] = true
+				targetEndpoints = append(targetEndpoints, ep)
+			}
+		}
+	} else {
+		// Legacy flood fallback (v0.4.2 behavior): all peers except sender.
+		seen := make(map[string]bool)
+		// Include routing table endpoints.
+		for _, route := range routes {
+			if route.Endpoint != "" && !seen[route.Endpoint] {
+				seen[route.Endpoint] = true
+				targetEndpoints = append(targetEndpoints, route.Endpoint)
+			}
+		}
+		// Include local peers.
+		for _, peer := range localPeers {
+			if peer.Endpoint == "" || peer.PubKeyHex == senderHex {
+				continue
+			}
+			if !seen[peer.Endpoint] {
+				seen[peer.Endpoint] = true
+				targetEndpoints = append(targetEndpoints, peer.Endpoint)
+			}
 		}
 	}
 

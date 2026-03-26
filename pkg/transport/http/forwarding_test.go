@@ -10,6 +10,10 @@ package http_test
 //   - Max hops: message with provenance chain >= maxHops is dropped.
 //   - Provenance hop is added on forward (signed by campfire key).
 //   - Forwarding skipped when no key provider (default transport).
+//   - Path-vector forwarding: next_hop only, not all peers (wew).
+//   - Path-vector fallback: legacy beacons → flood all peers (wew).
+//   - Sender excluded from forwarding set (wew).
+//   - PeerNeedsSet ∪ NextHops combined in forwarding set (wew).
 //
 // Port block: 460-499 (forwarding_test.go)
 
@@ -628,5 +632,365 @@ func TestForwardSkippedWithoutKeyProvider(t *testing.T) {
 		if m.ID == msg.ID {
 			t.Error("message should NOT have been forwarded without key provider")
 		}
+	}
+}
+
+// TestForwardingUsesNextHop verifies that when a path-vector route exists for a campfire,
+// messages are forwarded only to the next_hop peer and not to all known peers.
+//
+// Setup: 3 instances — router (tr1), next_hop peer (tr2), bystander (tr3).
+// Router has a path-vector route for campfireID with NextHop=id2 (tr2's node_id).
+// tr3 is a locally known peer but NOT in the forwarding set.
+//
+// The beacon is delivered into a separate gateway campfire (gwCampfireID), which is
+// the campfire that messages are forwarded through. The beacon advertises campfireID
+// (same as gwCampfireID in this test) so that the route appears in tr1's routing table
+// for the same campfire_id that messages are delivered to.
+//
+// Done condition: message appears on tr2 but NOT on tr3 after being posted to tr1.
+func TestForwardingUsesNextHop(t *testing.T) {
+	// cfPub is the campfire key. campfireID = hex(cfPub).
+	// The beacon advertises campfireID itself (self-advertisement): this installs
+	// a path-vector route for campfireID in tr1's routing table.
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireID := hex.EncodeToString(cfPub)
+
+	id1 := tempIdentity(t) // router (tr1)
+	id2 := tempIdentity(t) // next_hop peer (tr2)
+	id3 := tempIdentity(t) // bystander (NOT in forwarding set)
+
+	s1 := tempStore(t)
+	s2 := tempStore(t)
+	s3 := tempStore(t)
+
+	addMembershipWithRole(t, s1, campfireID, "creator")
+	addMembershipWithRole(t, s2, campfireID, "member")
+	addMembershipWithRole(t, s3, campfireID, "member")
+
+	cfPubHex := hex.EncodeToString(cfPub)
+
+	// Auth: all participants are known to all stores.
+	for _, s := range []store.Store{s1, s2, s3} {
+		addPeerEndpoint(t, s, campfireID, id1.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, id2.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, id3.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, cfPubHex)
+	}
+
+	base := portBase()
+	addr1 := fmt.Sprintf("127.0.0.1:%d", base+473)
+	addr2 := fmt.Sprintf("127.0.0.1:%d", base+474)
+	addr3 := fmt.Sprintf("127.0.0.1:%d", base+475)
+	ep1 := fmt.Sprintf("http://%s", addr1)
+	ep2 := fmt.Sprintf("http://%s", addr2)
+	ep3 := fmt.Sprintf("http://%s", addr3)
+
+	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
+	_ = startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
+	_ = startTransportWithKey(t, addr3, s3, id3, campfireID, cfPriv, cfPub)
+
+	// Register both id2 and id3 as peers of tr1. Both are locally known.
+	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
+	tr1.AddPeer(campfireID, id3.PublicKeyHex(), ep3)
+
+	// Deliver a routing:beacon from id2 to tr1. The beacon advertises campfireID itself
+	// at ep2 (self-advertisement: tr2 says "I host campfireID at ep2").
+	// The beacon has a non-empty path [id2] → path-vector route with NextHop=id2.
+	beaconMsg := makeSignedBeaconMessage(t, id2, cfPub, cfPriv, ep2, []string{id2.PublicKeyHex()})
+	if err := cfhttp.Deliver(ep1, campfireID, beaconMsg, id2); err != nil {
+		t.Fatalf("deliver beacon: %v", err)
+	}
+	time.Sleep(80 * time.Millisecond) // let routing table update
+
+	// Verify routing table has a path-vector route for campfireID with NextHop=id2.
+	routes := tr1.RoutingTable().Lookup(campfireID)
+	if len(routes) == 0 {
+		t.Fatal("routing table should contain route for campfireID after beacon")
+	}
+	hasPathVectorWithID2 := false
+	for _, r := range routes {
+		if len(r.Path) > 0 && r.NextHop == id2.PublicKeyHex() {
+			hasPathVectorWithID2 = true
+		}
+	}
+	if !hasPathVectorWithID2 {
+		t.Fatalf("expected path-vector route with NextHop=id2, got: %+v", routes)
+	}
+
+	// Now deliver a regular message for campfireID to tr1 from a fresh sender.
+	// tr1 should forward using path-vector: only to id2 (next_hop), not to id3 (bystander).
+	idSender := tempIdentity(t)
+	addPeerEndpoint(t, s1, campfireID, idSender.PublicKeyHex())
+	msg := newTestMessage(t, idSender)
+
+	if err := cfhttp.Deliver(ep1, campfireID, msg, idSender); err != nil {
+		t.Fatalf("deliver message: %v", err)
+	}
+
+	// id2's store (next_hop) should receive the message.
+	if !waitForMessage(t, s2, campfireID, msg.ID, 2*time.Second) {
+		t.Errorf("message should be forwarded to next_hop peer (id2) via path-vector routing")
+	}
+
+	// id3's store (bystander) should NOT receive the message.
+	time.Sleep(150 * time.Millisecond)
+	s3Msgs, _ := s3.ListMessages(campfireID, 0)
+	for _, m := range s3Msgs {
+		if m.ID == msg.ID {
+			t.Error("message should NOT be forwarded to bystander peer (id3) — path-vector restricts forwarding to next_hops + peer_needs_set only")
+		}
+	}
+}
+
+// TestForwardingFallsBackToFlood verifies that when no path-vector routes exist
+// (all beacons have empty Path fields — legacy behavior), messages are forwarded
+// to all peers except the sender (v0.4.2 flood behavior).
+//
+// Done condition: both peers receive the message when no path-vector routes exist.
+func TestForwardingFallsBackToFlood(t *testing.T) {
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireID := hex.EncodeToString(cfPub)
+
+	id1 := tempIdentity(t) // router
+	id2 := tempIdentity(t) // peer A
+	id3 := tempIdentity(t) // peer B
+
+	s1 := tempStore(t)
+	s2 := tempStore(t)
+	s3 := tempStore(t)
+
+	addMembershipWithRole(t, s1, campfireID, "creator")
+	addMembershipWithRole(t, s2, campfireID, "member")
+	addMembershipWithRole(t, s3, campfireID, "member")
+
+	cfPubHex := hex.EncodeToString(cfPub)
+	for _, s := range []store.Store{s1, s2, s3} {
+		addPeerEndpoint(t, s, campfireID, id1.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, id2.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, id3.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, cfPubHex)
+	}
+
+	base := portBase()
+	addr1 := fmt.Sprintf("127.0.0.1:%d", base+476)
+	addr2 := fmt.Sprintf("127.0.0.1:%d", base+477)
+	addr3 := fmt.Sprintf("127.0.0.1:%d", base+478)
+	ep1 := fmt.Sprintf("http://%s", addr1)
+	ep2 := fmt.Sprintf("http://%s", addr2)
+	ep3 := fmt.Sprintf("http://%s", addr3)
+
+	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
+	_ = startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
+	_ = startTransportWithKey(t, addr3, s3, id3, campfireID, cfPriv, cfPub)
+
+	// Register id2 and id3 as local peers of tr1. No path-vector routes exist —
+	// only local peers, no routing beacons delivered.
+	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
+	tr1.AddPeer(campfireID, id3.PublicKeyHex(), ep3)
+
+	// Deliver a message as id1 (NOT id2 or id3, so neither is excluded as sender).
+	idSender := tempIdentity(t)
+	addPeerEndpoint(t, s1, campfireID, idSender.PublicKeyHex())
+	msg := newTestMessage(t, idSender)
+
+	if err := cfhttp.Deliver(ep1, campfireID, msg, idSender); err != nil {
+		t.Fatalf("deliver message: %v", err)
+	}
+
+	// Both peers should receive the message (flood fallback — no path-vector routes).
+	if !waitForMessage(t, s2, campfireID, msg.ID, 2*time.Second) {
+		t.Errorf("message should be flooded to peer id2 when no path-vector routes exist")
+	}
+	if !waitForMessage(t, s3, campfireID, msg.ID, 2*time.Second) {
+		t.Errorf("message should be flooded to peer id3 when no path-vector routes exist")
+	}
+}
+
+// TestForwardingExcludesSender verifies that the message sender is never included
+// in the forwarding set, even if the sender appears in the peer-needs-set or
+// as a routing next_hop.
+//
+// Done condition: a message delivered by id2 is NOT forwarded back to id2,
+// even when id2 is a registered local peer.
+func TestForwardingExcludesSender(t *testing.T) {
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireID := hex.EncodeToString(cfPub)
+
+	id1 := tempIdentity(t) // router
+	id2 := tempIdentity(t) // sender (should be excluded from forwarding)
+	id3 := tempIdentity(t) // other peer (should receive the message)
+
+	s1 := tempStore(t)
+	s2 := tempStore(t)
+	s3 := tempStore(t)
+
+	addMembershipWithRole(t, s1, campfireID, "creator")
+	addMembershipWithRole(t, s2, campfireID, "member")
+	addMembershipWithRole(t, s3, campfireID, "member")
+
+	cfPubHex := hex.EncodeToString(cfPub)
+	for _, s := range []store.Store{s1, s2, s3} {
+		addPeerEndpoint(t, s, campfireID, id1.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, id2.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, id3.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, cfPubHex)
+	}
+
+	base := portBase()
+	addr1 := fmt.Sprintf("127.0.0.1:%d", base+479)
+	addr2 := fmt.Sprintf("127.0.0.1:%d", base+480)
+	addr3 := fmt.Sprintf("127.0.0.1:%d", base+481)
+	ep1 := fmt.Sprintf("http://%s", addr1)
+	ep2 := fmt.Sprintf("http://%s", addr2)
+	ep3 := fmt.Sprintf("http://%s", addr3)
+
+	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
+	_ = startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
+	_ = startTransportWithKey(t, addr3, s3, id3, campfireID, cfPriv, cfPub)
+
+	// Both id2 and id3 are registered as local peers of tr1.
+	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
+	tr1.AddPeer(campfireID, id3.PublicKeyHex(), ep3)
+
+	// Deliver a message FROM id2 to tr1. id2 is the sender — must be excluded.
+	msg := newTestMessage(t, id2)
+	if err := cfhttp.Deliver(ep1, campfireID, msg, id2); err != nil {
+		t.Fatalf("deliver message from id2: %v", err)
+	}
+
+	// id3 should receive the forwarded message (it's not the sender).
+	if !waitForMessage(t, s3, campfireID, msg.ID, 2*time.Second) {
+		t.Errorf("message should be forwarded to id3 (not the sender)")
+	}
+
+	// id2 should NOT receive an echo (it's the sender — excluded from forwarding set).
+	// Wait briefly to confirm no echo arrives.
+	time.Sleep(200 * time.Millisecond)
+	s2Msgs, _ := s2.ListMessages(campfireID, 0)
+	echoCount := 0
+	for _, m := range s2Msgs {
+		if m.ID == msg.ID {
+			echoCount++
+		}
+	}
+	// id2 sent the message, so it's in s1 after delivery. But tr1 should NOT forward back to ep2.
+	// s2 should have 0 copies (it only receives what tr1 forwards, and tr1 excludes sender).
+	if echoCount > 0 {
+		t.Errorf("message should NOT be echoed back to sender id2 (got %d copies)", echoCount)
+	}
+}
+
+// TestForwardingCombinesPeerNeedsAndNextHops verifies that the forwarding set is
+// the union of PeerNeedsSet and routing next_hops, not just one or the other.
+//
+// Setup:
+//   - id2 is the routing next_hop (has a path-vector route for campfireID).
+//   - id3 is in the peer-needs-set (it previously delivered a message for campfireID).
+//   - Both should receive forwarded messages.
+//
+// Done condition: both id2 and id3 receive the message.
+func TestForwardingCombinesPeerNeedsAndNextHops(t *testing.T) {
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireID := hex.EncodeToString(cfPub)
+
+	id1 := tempIdentity(t) // router
+	id2 := tempIdentity(t) // routing next_hop
+	id3 := tempIdentity(t) // peer-needs-set member (delivered a prior message)
+
+	s1 := tempStore(t)
+	s2 := tempStore(t)
+	s3 := tempStore(t)
+
+	addMembershipWithRole(t, s1, campfireID, "creator")
+	addMembershipWithRole(t, s2, campfireID, "member")
+	addMembershipWithRole(t, s3, campfireID, "member")
+
+	cfPubHex := hex.EncodeToString(cfPub)
+	for _, s := range []store.Store{s1, s2, s3} {
+		addPeerEndpoint(t, s, campfireID, id1.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, id2.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, id3.PublicKeyHex())
+		addPeerEndpoint(t, s, campfireID, cfPubHex)
+	}
+
+	base := portBase()
+	addr1 := fmt.Sprintf("127.0.0.1:%d", base+482)
+	addr2 := fmt.Sprintf("127.0.0.1:%d", base+483)
+	addr3 := fmt.Sprintf("127.0.0.1:%d", base+484)
+	ep1 := fmt.Sprintf("http://%s", addr1)
+	ep2 := fmt.Sprintf("http://%s", addr2)
+	ep3 := fmt.Sprintf("http://%s", addr3)
+
+	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
+	_ = startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
+	_ = startTransportWithKey(t, addr3, s3, id3, campfireID, cfPriv, cfPub)
+
+	// Register both as local peers of tr1.
+	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
+	tr1.AddPeer(campfireID, id3.PublicKeyHex(), ep3)
+
+	// 1. Populate routing table with path-vector route for campfireID: NextHop = id2.
+	//    Deliver a routing:beacon from id2 with a non-empty path, advertising campfireID itself.
+	beaconMsg := makeSignedBeaconMessage(t, id2, cfPub, cfPriv, ep2, []string{id2.PublicKeyHex()})
+	if err := cfhttp.Deliver(ep1, campfireID, beaconMsg, id2); err != nil {
+		t.Fatalf("deliver beacon: %v", err)
+	}
+	time.Sleep(80 * time.Millisecond)
+
+	// Verify path-vector route is installed with NextHop=id2.
+	routes := tr1.RoutingTable().Lookup(campfireID)
+	if len(routes) == 0 {
+		t.Fatal("path-vector route not installed for campfireID")
+	}
+	hasPathVectorWithID2 := false
+	for _, r := range routes {
+		if len(r.Path) > 0 && r.NextHop == id2.PublicKeyHex() {
+			hasPathVectorWithID2 = true
+		}
+	}
+	if !hasPathVectorWithID2 {
+		t.Fatalf("expected path-vector route with NextHop=id2, got: %+v", routes)
+	}
+
+	// 2. Populate peer-needs-set for campfireID with id3 by having id3 deliver a prior message.
+	//    RecordMessageDelivery is called in handleDeliver, so we deliver a message from id3.
+	priorMsg := newTestMessage(t, id3)
+	if err := cfhttp.Deliver(ep1, campfireID, priorMsg, id3); err != nil {
+		t.Fatalf("deliver prior message from id3: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify peer-needs-set contains id3.
+	pns := tr1.RoutingTable().PeerNeedsSet(campfireID)
+	if !pns[id3.PublicKeyHex()] {
+		t.Fatalf("peer-needs-set should contain id3 after it delivered a message for campfireID")
+	}
+
+	// 3. Now deliver the test message from a fresh sender (not id2 or id3).
+	idSender := tempIdentity(t)
+	addPeerEndpoint(t, s1, campfireID, idSender.PublicKeyHex())
+	msg := newTestMessage(t, idSender)
+	if err := cfhttp.Deliver(ep1, campfireID, msg, idSender); err != nil {
+		t.Fatalf("deliver message: %v", err)
+	}
+
+	// Both id2 (next_hop) and id3 (peer-needs-set) should receive the forwarded message.
+	if !waitForMessage(t, s2, campfireID, msg.ID, 2*time.Second) {
+		t.Errorf("next_hop peer (id2) should receive forwarded message via routing next_hops")
+	}
+	if !waitForMessage(t, s3, campfireID, msg.ID, 2*time.Second) {
+		t.Errorf("peer-needs-set member (id3) should receive forwarded message via PeerNeedsSet")
 	}
 }
