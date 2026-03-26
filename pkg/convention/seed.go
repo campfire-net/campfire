@@ -6,6 +6,43 @@ const InfrastructureConvention = "convention-extension"
 // InfrastructureVersion is the version for built-in convention-extension declarations.
 const InfrastructureVersion = "0.1"
 
+// PromoteDeclaration returns the built-in "promote" operation declaration for
+// convention-extension. A promote operation publishes a validated convention
+// declaration to a live convention registry campfire.
+//
+// This is the ONE declaration embedded in the binary — the bootstrap primitive.
+// It is signed by the campfire key (authority-bearing) so that only the campfire
+// owner can publish declarations to their registry. All other infrastructure
+// declarations (supersede, revoke, naming-register, beacon-register, etc.) come
+// from seed beacons, local files, or the network — not the binary.
+func PromoteDeclaration() *Declaration {
+	return &Declaration{
+		Convention:  InfrastructureConvention,
+		Version:     InfrastructureVersion,
+		Operation:   "promote",
+		Description: "Publish a validated convention declaration to a convention registry campfire",
+		ProducesTags: []TagRule{
+			{Tag: conventionOperationTag, Cardinality: "exactly_one"},
+		},
+		Args: []ArgDescriptor{
+			{
+				Name:        "file",
+				Type:        "string",
+				Required:    true,
+				Description: "Path to convention declaration JSON file to publish",
+			},
+			{
+				Name:        "registry",
+				Type:        "campfire",
+				Required:    true,
+				Description: "Convention registry campfire ID to publish to",
+			},
+		},
+		Signing:    "campfire_key",
+		SignerType: SignerCampfireKey,
+	}
+}
+
 // SupersedeDeclaration returns the built-in "supersede" operation declaration for
 // convention-extension. A supersede operation replaces an existing declaration with
 // a newer version. It is signed by the campfire key (authority-bearing).

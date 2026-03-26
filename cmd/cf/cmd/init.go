@@ -5,8 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/campfire-net/campfire/pkg/beacon"
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/naming"
+	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
 
@@ -98,8 +104,22 @@ CF_HOME to the printed path for subsequent commands.`,
 		// Write CONTEXT.md alongside the identity
 		writeContext(cfHome)
 
+		// Create home campfire and seed it with convention declarations.
+		homeCampfireID, err := createAndSeedHomeCampfire(cfHome, agentID)
+		if err != nil {
+			// Non-fatal: home campfire creation failure should not block init.
+			fmt.Fprintf(os.Stderr, "warning: could not create home campfire: %v\n", err)
+		}
+
 		if jsonOutput {
-			out := map[string]string{"status": "created", "public_key": agentID.PublicKeyHex(), "location": cfHome}
+			out := map[string]any{
+				"status":     "created",
+				"public_key": agentID.PublicKeyHex(),
+				"location":   cfHome,
+			}
+			if homeCampfireID != "" {
+				out["home_campfire_id"] = homeCampfireID
+			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			return enc.Encode(out)
@@ -120,6 +140,84 @@ Next: cf discover    find campfires
 `, agentID.PublicKeyHex(), identityType, cfHome)
 		return nil
 	},
+}
+
+// createAndSeedHomeCampfire creates a home campfire for the agent, seeds it
+// with the embedded promote declaration and any seed beacon declarations,
+// publishes its beacon, and sets the "home" alias.
+//
+// Returns the campfire ID hex on success, or "" on failure.
+func createAndSeedHomeCampfire(cfHome string, agentID *identity.Identity) (string, error) {
+	// Create campfire keypair (open, no requirements, threshold=1)
+	homeCF, err := campfire.New("open", nil, 1)
+	if err != nil {
+		return "", fmt.Errorf("creating home campfire: %w", err)
+	}
+
+	// Set up filesystem transport
+	transport := fs.New(fs.DefaultBaseDir())
+	if err := transport.Init(homeCF); err != nil {
+		return "", fmt.Errorf("initializing transport: %w", err)
+	}
+
+	// Write agent as the only member
+	if err := transport.WriteMember(homeCF.PublicKeyHex(), campfire.MemberRecord{
+		PublicKey: agentID.PublicKey,
+		JoinedAt:  time.Now().UnixNano(),
+	}); err != nil {
+		return "", fmt.Errorf("writing member record: %w", err)
+	}
+
+	// Seed: post embedded promote declaration + seed beacon declarations
+	seedCampfireFilesystem(homeCF.PublicKeyHex(), transport.CampfireDir(homeCF.PublicKeyHex()), agentID, homeCF, "")
+
+	// Build and publish beacon
+	b, err := beacon.New(
+		homeCF.PublicKey,
+		homeCF.PrivateKey,
+		homeCF.JoinProtocol,
+		homeCF.ReceptionRequirements,
+		beacon.TransportConfig{
+			Protocol: "filesystem",
+			Config:   map[string]string{"dir": transport.CampfireDir(homeCF.PublicKeyHex())},
+		},
+		"home campfire",
+	)
+	if err != nil {
+		return "", fmt.Errorf("creating beacon: %w", err)
+	}
+	if err := beacon.Publish(BeaconDir(), b); err != nil {
+		// Non-fatal: beacon publishing failure doesn't block home campfire use
+		fmt.Fprintf(os.Stderr, "warning: could not publish home campfire beacon: %v\n", err)
+	}
+
+	// Open store and record membership
+	s, err := store.Open(store.StorePath(cfHome))
+	if err != nil {
+		return "", fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   homeCF.PublicKeyHex(),
+		TransportDir: transport.CampfireDir(homeCF.PublicKeyHex()),
+		JoinProtocol: homeCF.JoinProtocol,
+		Role:         store.PeerRoleCreator,
+		JoinedAt:     store.NowNano(),
+		Threshold:    homeCF.Threshold,
+		Description:  "home campfire",
+	}); err != nil {
+		return "", fmt.Errorf("recording membership: %w", err)
+	}
+
+	// Set "home" alias
+	aliases := naming.NewAliasStore(cfHome)
+	if err := aliases.Set("home", homeCF.PublicKeyHex()); err != nil {
+		// Non-fatal: alias failure doesn't block home campfire use
+		fmt.Fprintf(os.Stderr, "warning: could not set home alias: %v\n", err)
+	}
+
+	return homeCF.PublicKeyHex(), nil
 }
 
 const campfireContext = `# Campfire Protocol

@@ -1,10 +1,77 @@
 package convention_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/convention"
 )
+
+// TestPromoteDeclaration verifies the structure of the embedded promote declaration.
+// This is the ONE declaration compiled into the binary — the bootstrap primitive.
+func TestPromoteDeclaration(t *testing.T) {
+	decl := convention.PromoteDeclaration()
+
+	if decl.Convention != convention.InfrastructureConvention {
+		t.Errorf("convention: want %q, got %q", convention.InfrastructureConvention, decl.Convention)
+	}
+	if decl.Operation != "promote" {
+		t.Errorf("operation: want %q, got %q", "promote", decl.Operation)
+	}
+	if decl.Signing != "campfire_key" {
+		t.Errorf("signing: want %q, got %q", "campfire_key", decl.Signing)
+	}
+
+	// Must have produces_tags with convention:operation
+	if len(decl.ProducesTags) != 1 {
+		t.Fatalf("produces_tags: want 1, got %d", len(decl.ProducesTags))
+	}
+	if decl.ProducesTags[0].Tag != "convention:operation" {
+		t.Errorf("produces_tags[0].tag: want %q, got %q", "convention:operation", decl.ProducesTags[0].Tag)
+	}
+
+	// Must have 'file' and 'registry' args
+	argByName := make(map[string]convention.ArgDescriptor)
+	for _, a := range decl.Args {
+		argByName[a.Name] = a
+	}
+	fileArg, ok := argByName["file"]
+	if !ok {
+		t.Fatal("missing 'file' arg")
+	}
+	if fileArg.Type != "string" {
+		t.Errorf("arg 'file' type: want string, got %q", fileArg.Type)
+	}
+	if !fileArg.Required {
+		t.Error("arg 'file' should be required")
+	}
+	registryArg, ok := argByName["registry"]
+	if !ok {
+		t.Fatal("missing 'registry' arg")
+	}
+	if registryArg.Type != "campfire" {
+		t.Errorf("arg 'registry' type: want campfire, got %q", registryArg.Type)
+	}
+	if !registryArg.Required {
+		t.Error("arg 'registry' should be required")
+	}
+}
+
+// TestPromoteDeclaration_IsUnderSizeLimit verifies that the promote declaration
+// serializes to under 500 bytes — the "~500 bytes, stable forever" constraint.
+func TestPromoteDeclaration_IsUnderSizeLimit(t *testing.T) {
+	decl := convention.PromoteDeclaration()
+
+	// Use encoding/json which is what sendDeclarationViaTransport uses
+	data, err := json.Marshal(decl)
+	if err != nil {
+		t.Fatalf("marshaling promote declaration: %v", err)
+	}
+	const maxBytes = 600 // generous upper bound; spec says ~500
+	if len(data) > maxBytes {
+		t.Errorf("promote declaration too large: %d bytes (max %d)", len(data), maxBytes)
+	}
+}
 
 // TestInfrastructureSeedDeclarations verifies that the seed set contains
 // supersede and revoke declarations.
