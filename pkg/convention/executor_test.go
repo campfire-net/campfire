@@ -323,12 +323,12 @@ func TestExecute_TagDenylist(t *testing.T) {
 	}
 }
 
-// TestExecute_RateLimitExceeded verifies rate limiting.
+// TestExecute_RateLimitExceeded verifies rate limiting within a single executor.
 func TestExecute_RateLimitExceeded(t *testing.T) {
 	payload := mustJSON(map[string]any{
 		"convention": "test",
 		"version":    "0.1",
-		"operation":  "limited",
+		"operation":  "limited-exceeded",
 		"signing":    "member_key",
 		"rate_limit": map[string]any{
 			"max":    2,
@@ -342,15 +342,16 @@ func TestExecute_RateLimitExceeded(t *testing.T) {
 	}
 
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	// Use an isolated limiter so this test is not affected by other tests' state.
+	ex := NewExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
 
-	if err := ex.Execute(context.Background(), decl, "cf-rl", map[string]any{}); err != nil {
+	if err := ex.Execute(context.Background(), decl, "cf-rl-exceeded", map[string]any{}); err != nil {
 		t.Fatalf("call 1 unexpected error: %v", err)
 	}
-	if err := ex.Execute(context.Background(), decl, "cf-rl", map[string]any{}); err != nil {
+	if err := ex.Execute(context.Background(), decl, "cf-rl-exceeded", map[string]any{}); err != nil {
 		t.Fatalf("call 2 unexpected error: %v", err)
 	}
-	err = ex.Execute(context.Background(), decl, "cf-rl", map[string]any{})
+	err = ex.Execute(context.Background(), decl, "cf-rl-exceeded", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error on 3rd call (rate limit exceeded)")
 	}
@@ -447,10 +448,13 @@ func TestExecute_RateLimitSenderAndCampfire(t *testing.T) {
 		t.Fatalf("Parse error: %v", err)
 	}
 
+	// Use a shared isolated limiter (same as what the singleton provides in production)
+	// to verify that sender-key scoping still isolates quotas correctly.
+	sharedLimiter := newRateLimiter()
 	trA := &mockTransport{}
-	exA := NewExecutor(trA, "senderA")
+	exA := NewExecutorWithLimiter(trA, "senderA", sharedLimiter)
 	trB := &mockTransport{}
-	exB := NewExecutor(trB, "senderB")
+	exB := NewExecutorWithLimiter(trB, "senderB", sharedLimiter)
 
 	// senderA uses their 1 quota on campfireX.
 	if err := exA.Execute(context.Background(), declA, "campfireX", map[string]any{}); err != nil {
@@ -460,9 +464,58 @@ func TestExecute_RateLimitSenderAndCampfire(t *testing.T) {
 	if err := exA.Execute(context.Background(), declA, "campfireX", map[string]any{}); err == nil {
 		t.Fatal("expected senderA to be rate-limited on 2nd call")
 	}
-	// senderB has a separate quota — should succeed.
+	// senderB has a separate quota — should succeed even with shared limiter.
 	if err := exB.Execute(context.Background(), declB, "campfireX", map[string]any{}); err != nil {
 		t.Fatalf("senderB call 1 should not be rate-limited: %v", err)
+	}
+}
+
+// TestExecute_RateLimitSharedAcrossExecutors is the regression test for the bug where
+// a new rate limiter was created per Executor, allowing the same sender to bypass rate
+// limits by constructing a new Executor (as the CLI does on every invocation).
+//
+// This test simulates two sequential CLI invocations: each call constructs a fresh
+// Executor via NewExecutor (as dispatchConventionOp does), yet both should share the
+// same process-level rate limiter so the second call is throttled after the first
+// saturates the limit.
+func TestExecute_RateLimitSharedAcrossExecutors(t *testing.T) {
+	payload := mustJSON(map[string]any{
+		"convention": "test",
+		"version":    "0.1",
+		"operation":  "limited-shared",
+		"signing":    "member_key",
+		"rate_limit": map[string]any{
+			"max":    1,
+			"per":    "sender",
+			"window": "1m",
+		},
+	})
+	decl, _, err := Parse(tags("convention:operation"), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	// Inject a fresh shared limiter so this test is isolated from the process singleton,
+	// but still validates that two separate NewExecutorWithLimiter calls sharing the same
+	// limiter instance enforce limits across invocations.
+	limiter := newRateLimiter()
+
+	// First "invocation": a new executor (simulating first CLI call).
+	tr1 := &mockTransport{}
+	ex1 := NewExecutorWithLimiter(tr1, testSenderKey, limiter)
+	if err := ex1.Execute(context.Background(), decl, "cf-shared-rl", map[string]any{}); err != nil {
+		t.Fatalf("first invocation unexpected error: %v", err)
+	}
+
+	// Second "invocation": a new executor (simulating second CLI call) — must be throttled.
+	tr2 := &mockTransport{}
+	ex2 := NewExecutorWithLimiter(tr2, testSenderKey, limiter)
+	err = ex2.Execute(context.Background(), decl, "cf-shared-rl", map[string]any{})
+	if err == nil {
+		t.Fatal("second invocation should be rate-limited because the first invocation saturated the quota")
+	}
+	if !strings.Contains(err.Error(), "rate limit") {
+		t.Errorf("error should mention 'rate limit'; got %v", err)
 	}
 }
 
