@@ -7,8 +7,8 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/spf13/cobra"
 )
 
@@ -87,7 +87,7 @@ func runConventionPromote(_ *cobra.Command, args []string) error {
 	allOK := true
 
 	for _, src := range sources {
-		result := promoteSingle(src, registryID, agentID, s, existing)
+		result := promoteSingle(src, registryID, agentID, s, m, existing)
 		results = append(results, result)
 		if result.Error != "" {
 			allOK = false
@@ -125,6 +125,7 @@ func promoteSingle(
 	registryID string,
 	agentID *identity.Identity,
 	s store.Store,
+	m *store.Membership,
 	existing map[string]*convention.Declaration,
 ) promoteResult {
 	result := promoteResult{File: src.name}
@@ -156,8 +157,8 @@ func promoteSingle(
 		return result
 	}
 
-	// Sign and store the message in the local registry campfire.
-	msgID, err := signAndStoreDeclaration(src.payload, registryID, agentID, s)
+	// Send the declaration via the transport so other campfire members can see it.
+	msgID, err := sendDeclarationViaTransport(src.payload, registryID, agentID, s, m)
 	if err != nil {
 		result.Error = fmt.Sprintf("send failed: %s", err)
 		return result
@@ -187,27 +188,39 @@ func loadExistingDeclarations(s store.Store, registryID string) (map[string]*con
 	return result, nil
 }
 
-// signAndStoreDeclaration creates a signed message and stores it in the local store.
-// This uses the local SQLite store directly — suitable for local convention registry
-// campfires. For remote registries the caller would need to use the campfire transport.
-func signAndStoreDeclaration(payload []byte, campfireID string, agentID *identity.Identity, s store.Store) (string, error) {
+// sendDeclarationViaTransport sends a convention declaration message through the
+// campfire transport (filesystem, GitHub, or P2P HTTP) so that other agents
+// syncing the campfire will see the promoted declaration. This mirrors what
+// cf send does — routing is determined by the membership transport type.
+// After writing to transport, the message is also stored locally so that
+// loadExistingDeclarations and other local queries can find it.
+func sendDeclarationViaTransport(payload []byte, campfireID string, agentID *identity.Identity, s store.Store, m *store.Membership) (string, error) {
 	tags := []string{"convention:operation"}
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, payload, tags, nil)
-	if err != nil {
-		return "", fmt.Errorf("creating signed message: %w", err)
+
+	var msgID string
+	switch transport.ResolveType(*m) {
+	case transport.TypeGitHub:
+		result, err := sendGitHub(campfireID, string(payload), tags, nil, "", agentID, s, m)
+		if err != nil {
+			return "", fmt.Errorf("sending via GitHub transport: %w", err)
+		}
+		// GitHub transport stores locally in sendGitHub via s already.
+		return result.ID, nil
+	case transport.TypePeerHTTP:
+		result, err := sendP2PHTTP(campfireID, string(payload), tags, nil, "", agentID, s, m)
+		if err != nil {
+			return "", fmt.Errorf("sending via P2P HTTP transport: %w", err)
+		}
+		// P2P HTTP transport calls s.AddMessage internally.
+		return result.ID, nil
+	default:
+		result, err := sendFilesystem(campfireID, string(payload), tags, nil, "", agentID, m.TransportDir)
+		if err != nil {
+			return "", fmt.Errorf("sending via filesystem transport: %w", err)
+		}
+		msgID = result.ID
+		// Store locally so local queries (conflict detection, loadExistingDeclarations) can find it.
+		s.AddMessage(store.MessageRecordFromMessage(campfireID, result, store.NowNano())) //nolint:errcheck
+		return msgID, nil
 	}
-	rec := store.MessageRecord{
-		ID:         msg.ID,
-		CampfireID: campfireID,
-		Sender:     agentID.PublicKeyHex(),
-		Payload:    payload,
-		Tags:       tags,
-		Timestamp:  msg.Timestamp,
-		Signature:  msg.Signature,
-		ReceivedAt: store.NowNano(),
-	}
-	if _, err := s.AddMessage(rec); err != nil {
-		return "", fmt.Errorf("storing message: %w", err)
-	}
-	return msg.ID, nil
 }
