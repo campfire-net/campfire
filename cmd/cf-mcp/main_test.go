@@ -9,6 +9,86 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Unit tests: helpers
+// ---------------------------------------------------------------------------
+
+// TestShortID tests the shortID length-safe helper.
+func TestShortID(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		n        int
+		expected string
+	}{
+		{"empty string", "", 12, ""},
+		{"shorter than n", "abc", 12, "abc"},
+		{"exactly n chars", "123456789012", 12, "123456789012"},
+		{"longer than n", "1234567890123", 12, "123456789012"},
+		{"long string", "abcdefghijklmnopqrst", 12, "abcdefghijkl"},
+		{"zero length", "abcdefgh", 0, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := shortID(tt.input, tt.n)
+			if result != tt.expected {
+				t.Errorf("shortID(%q, %d) = %q, want %q", tt.input, tt.n, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestShortIDNoPanic verifies that shortID guards against panics when
+// handlers receive malformed campfireIDs shorter than 12 characters.
+// This integration test calls handleSend with a 5-character campfireID
+// and verifies it returns an error response instead of panicking.
+func TestShortIDNoPanic(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Initialize the server to create a valid identity
+	initResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if initResp.Error != nil {
+		t.Fatalf("campfire_init failed: %+v", initResp.Error)
+	}
+
+	// Construct a send request with a short campfireID (not a member scenario).
+	// The server will try to query membership, fail, and hit the error path
+	// that uses shortID to truncate the ID in the error message.
+	params := map[string]interface{}{
+		"campfire_id": "short",  // 5 characters, less than the 12 we try to slice
+		"message":     "test",
+	}
+	resp := srv.handleSend(float64(1), params)
+
+	// Verify we got an error response (not a panic).
+	if resp.Error == nil {
+		t.Fatal("expected error response")
+	}
+	// The error message should contain "not a member" or similar, with the short ID intact.
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
+	}
+	// Verify the error message was constructed safely (should contain "short" or "not a member").
+	if resp.Error.Message == "" {
+		t.Errorf("expected non-empty error message")
+	}
+	// The error message should contain the short ID safely without panic.
+	if !contains(resp.Error.Message, "short") && !contains(resp.Error.Message, "not a member") {
+		t.Errorf("unexpected error message: %s", resp.Error.Message)
+	}
+}
+
+// contains is a helper to check if a string contains a substring.
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
 // Helper: build a server with temp dirs for cfHome and beaconDir.
 // ---------------------------------------------------------------------------
 

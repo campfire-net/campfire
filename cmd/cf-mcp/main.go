@@ -161,6 +161,14 @@ func okResponse(id interface{}, result interface{}) jsonRPCResponse {
 	}
 }
 
+// shortID returns the first n characters of s, or s itself if shorter.
+func shortID(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
 // getStr extracts a string param (returns "" if missing).
 func getStr(params map[string]interface{}, key string) string {
 	if v, ok := params[key]; ok {
@@ -1400,7 +1408,7 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		case "open":
 			// immediately admitted
 		case "invite-only":
-			return errResponse(id, -32000, fmt.Sprintf("campfire is invite-only; ask a member to run 'cf admit %s %s'", campfireID[:12], agentID.PublicKeyHex()))
+			return errResponse(id, -32000, fmt.Sprintf("campfire is invite-only; ask a member to run 'cf admit %s %s'", shortID(campfireID, 12), agentID.PublicKeyHex()))
 		default:
 			return errResponse(id, -32000, fmt.Sprintf("unknown join protocol: %s", state.JoinProtocol))
 		}
@@ -1699,7 +1707,7 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		return errResponse(id, -32000, fmt.Sprintf("querying membership: %v", err))
 	}
 	if m == nil {
-		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", campfireID[:12]))
+		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", shortID(campfireID, 12)))
 	}
 
 	fsT := s.fsTransport()
@@ -2410,7 +2418,7 @@ func (s *server) handleMembers(id interface{}, params map[string]interface{}) js
 		return errResponse(id, -32000, fmt.Sprintf("querying membership: %v", err))
 	}
 	if m == nil {
-		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", campfireID[:12]))
+		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", shortID(campfireID, 12)))
 	}
 
 	transport := s.fsTransport()
@@ -2879,7 +2887,7 @@ func (s *server) handleCreateInvite(id interface{}, params map[string]interface{
 		return errResponse(id, -32000, fmt.Sprintf("querying membership: %v", err))
 	}
 	if membership == nil {
-		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", campfireID[:12]))
+		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", shortID(campfireID, 12)))
 	}
 
 	inviteCode := uuid.New().String()
@@ -2944,7 +2952,7 @@ func (s *server) handleRevokeInvite(id interface{}, params map[string]interface{
 		return errResponse(id, -32000, fmt.Sprintf("querying membership: %v", memberErr))
 	}
 	if membership == nil {
-		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", campfireID[:12]))
+		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", shortID(campfireID, 12)))
 	}
 
 	if err := st.RevokeInvite(campfireID, inviteCode); err != nil {
