@@ -202,6 +202,27 @@ func listOperations(s StoreReader, campfireID, campfireKey, registryCampfireID s
 		}
 	}
 
+	// Transitively expand the revoked set through the supersede chain.
+	// If msg1 is revoked and msg2.supersedes == msg1, then msg2 is also revoked.
+	// If msg3.supersedes == msg2, then msg3 is also revoked. Repeat until stable.
+	// Build a lookup from messageID to the entry that supersedes it (winner only).
+	supersedesBy := make(map[string]string) // target msgID -> winner msgID that supersedes it
+	for targetID, winner := range winnerByTarget {
+		supersedesBy[targetID] = winner.messageID
+	}
+	for {
+		added := false
+		for targetID, supersederID := range supersedesBy {
+			if revoked[targetID] && !revoked[supersederID] {
+				revoked[supersederID] = true
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+
 	// Build final list: include only declarations that are not superseded and not revoked.
 	var decls []*Declaration
 	for _, e := range all {
@@ -210,13 +231,8 @@ func listOperations(s StoreReader, campfireID, campfireKey, registryCampfireID s
 		if supersededIDs[msgID] {
 			continue
 		}
-		// Skip if directly revoked.
+		// Skip if directly or transitively revoked.
 		if revoked[msgID] {
-			continue
-		}
-		// Skip if this declaration supersedes a revoked target (chain invalidation:
-		// revoking msg1 removes msg2 if msg2.supersedes == "msg1").
-		if e.decl.Supersedes != "" && revoked[e.decl.Supersedes] {
 			continue
 		}
 		decls = append(decls, e.decl)
