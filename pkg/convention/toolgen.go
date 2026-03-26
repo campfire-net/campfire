@@ -85,8 +85,13 @@ func ListOperations(s StoreReader, campfireID, campfireKey string) ([]*Declarati
 	}
 
 	// Build revoked set: target_id values from revoke message payloads.
+	// Authorization: when campfireKey is non-empty, only revoke messages sent by the
+	// campfire key are honoured (signing: campfire_key authority check).
 	revoked := make(map[string]bool)
 	for _, msg := range revokeMsgs {
+		if campfireKey != "" && msg.Sender != campfireKey {
+			continue // revoke not signed by campfire key — ignore
+		}
 		var revokePayload struct {
 			TargetID string `json:"target_id"`
 		}

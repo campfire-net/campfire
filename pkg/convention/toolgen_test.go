@@ -2,6 +2,7 @@ package convention
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/store"
@@ -599,6 +600,127 @@ func TestGenerateTool_DescriptionTruncation(t *testing.T) {
 	}
 }
 
+// TestListOperations_RealSQLiteRoundtrip verifies that supersede/revoke filtering
+// works correctly against a real store.Open SQLite database, not just the mock.
+func TestListOperations_RealSQLiteRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+
+	campfireID := "cf-real-test"
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: dir,
+		JoinProtocol: "test",
+		Role:         "full",
+		JoinedAt:     1000,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	v1Payload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.3",
+		"operation":   "post",
+		"description": "Original post op",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+	v2Payload := mustJSON(map[string]any{
+		"convention":  "social-post-format",
+		"version":     "0.4",
+		"operation":   "post",
+		"description": "Updated post op",
+		"supersedes":  "msg1",
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+
+	msg1 := store.MessageRecord{
+		ID:         "msg1",
+		CampfireID: campfireID,
+		Sender:     "sender1",
+		Payload:    v1Payload,
+		Tags:       []string{"convention:operation"},
+		Timestamp:  1000,
+		Signature:  []byte("sig1"),
+		ReceivedAt: 1000,
+	}
+	msg2 := store.MessageRecord{
+		ID:         "msg2",
+		CampfireID: campfireID,
+		Sender:     "sender1",
+		Payload:    v2Payload,
+		Tags:       []string{"convention:operation"},
+		Timestamp:  2000,
+		Signature:  []byte("sig2"),
+		ReceivedAt: 2000,
+	}
+
+	if _, err := s.AddMessage(msg1); err != nil {
+		t.Fatalf("AddMessage msg1: %v", err)
+	}
+	if _, err := s.AddMessage(msg2); err != nil {
+		t.Fatalf("AddMessage msg2: %v", err)
+	}
+
+	decls, err := ListOperations(s, campfireID, "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Fatalf("len(decls) = %d, want 1 (only superseding version)", len(decls))
+	}
+	if decls[0].Version != "0.4" {
+		t.Errorf("expected version 0.4 (newer), got %q", decls[0].Version)
+	}
+	if decls[0].MessageID != "msg2" {
+		t.Errorf("expected messageID msg2, got %q", decls[0].MessageID)
+	}
+}
+
+// TestListOperations_RevokeUnauthorizedSenderIgnored verifies that a revoke message
+// from a sender that is not the campfire key is ignored when campfireKey is non-empty.
+// The signing: campfire_key authority check must be enforced.
+func TestListOperations_RevokeUnauthorizedSenderIgnored(t *testing.T) {
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:        "msg1",
+				Sender:    "sender1",
+				Payload:   socialPostPayload,
+				Tags:      []string{"convention:operation"},
+				Timestamp: 1000,
+			},
+			{
+				ID:        "revoke1",
+				Sender:    "not-the-campfire-key", // unauthorized sender
+				Payload:   []byte(`{"target_id":"msg1"}`),
+				Tags:      []string{"convention:revoke"},
+				Timestamp: 2000,
+			},
+		},
+	}
+
+	campfireKey := "the-real-campfire-key"
+	decls, err := ListOperations(mock, "campfire123", campfireKey)
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	// The revoke is from an unauthorized sender: msg1 must still be present.
+	if len(decls) != 1 {
+		t.Errorf("expected 1 decl (unauthorized revoke ignored), got %d", len(decls))
+	}
+	if len(decls) > 0 && decls[0].Operation != "post" {
+		t.Errorf("expected operation 'post', got %q", decls[0].Operation)
+	}
+}
+
 // mockStore implements StoreReader for testing.
 // It filters records by tags when a MessageFilter is provided.
 type mockStore struct {
@@ -609,30 +731,27 @@ func (m *mockStore) ListMessages(campfireID string, afterTimestamp int64, filter
 	if len(filter) == 0 || len(filter[0].Tags) == 0 {
 		return m.records, nil
 	}
-	// Filter: return records that have ALL the requested tags.
+	// Filter: return records that have ANY of the requested tags (OR semantics),
+	// matching the real store implementation in pkg/store/store.go.
 	wantTags := filter[0].Tags
 	var result []store.MessageRecord
 	for _, rec := range m.records {
-		if mockRecordHasTags(rec, wantTags) {
+		if mockRecordHasAnyTag(rec, wantTags) {
 			result = append(result, rec)
 		}
 	}
 	return result, nil
 }
 
-// mockRecordHasTags returns true if the record contains all wantTags.
-func mockRecordHasTags(rec store.MessageRecord, wantTags []string) bool {
+// mockRecordHasAnyTag returns true if the record contains ANY of wantTags (OR semantics).
+// This matches pkg/store/store.go ListMessages which uses ANY-of-given-tags filtering.
+func mockRecordHasAnyTag(rec store.MessageRecord, wantTags []string) bool {
 	for _, want := range wantTags {
-		found := false
 		for _, have := range rec.Tags {
 			if have == want {
-				found = true
-				break
+				return true
 			}
 		}
-		if !found {
-			return false
-		}
 	}
-	return true
+	return false
 }
