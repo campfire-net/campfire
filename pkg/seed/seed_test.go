@@ -83,7 +83,13 @@ func TestFindSeedBeacon_JSONFallback(t *testing.T) {
 func TestFindSeedBeacon_NoBeacon(t *testing.T) {
 	projectDir := t.TempDir() // empty — no seeds dir
 
-	// No seeds exist; well-known URL will fail (not a real server).
+	// Override the well-known URL with a guaranteed-unreachable address so
+	// this test is not network-dependent. Restore the original after the test.
+	orig := seed.WellKnownURL
+	seed.WellKnownURL = "http://127.0.0.1:0/seed.beacon" // port 0 is always unreachable
+	t.Cleanup(func() { seed.WellKnownURL = orig })
+
+	// No seeds exist; well-known URL will fail (controlled test server).
 	// FindSeedBeacon must return (nil, nil) in this case.
 	found, err := seed.FindSeedBeacon(projectDir)
 	if err != nil {

@@ -26,7 +26,9 @@ import (
 )
 
 // WellKnownURL is the URL for the default seed beacon.
-const WellKnownURL = "https://getcampfire.dev/.well-known/seed.beacon"
+// It is a variable (not a constant) so tests can override it with a
+// controlled httptest server or a guaranteed-unreachable URL.
+var WellKnownURL = "https://getcampfire.dev/.well-known/seed.beacon"
 
 // SeedBeacon describes a seed campfire source.
 // It is stored as a CBOR or JSON file in a seeds directory.
