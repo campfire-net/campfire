@@ -109,6 +109,11 @@ func newSSRFSafeTransport() *nethttp.Transport {
 				return nil, fmt.Errorf("resolving %q: %w", host, err)
 			}
 
+			// Separate tracking: if we encounter any private IPs, block immediately.
+			// If all IPs are public but connections fail, return the last dial error
+			// (not an SSRF message) so callers can distinguish SSRF blocks from
+			// genuine network failures.
+			var lastDialErr error
 			for _, ipStr := range ips {
 				ip := net.ParseIP(ipStr)
 				if ip == nil {
@@ -117,13 +122,19 @@ func newSSRFSafeTransport() *nethttp.Transport {
 				if isPrivateIP(ip) {
 					return nil, fmt.Errorf("connection to %s blocked: resolves to private/internal IP %s", host, ip)
 				}
-				// Attempt connection to the first non-private IP.
-				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-				if err == nil {
+				// Attempt connection to this non-private IP.
+				conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				if dialErr == nil {
 					return conn, nil
 				}
+				lastDialErr = dialErr
 			}
-			return nil, fmt.Errorf("no connectable non-private address for %q", host)
+			if lastDialErr != nil {
+				// Had at least one public IP but all connections failed — surface the
+				// actual network error, not an SSRF message.
+				return nil, lastDialErr
+			}
+			return nil, fmt.Errorf("no connectable address resolved for %q", host)
 		},
 	}
 }
