@@ -67,11 +67,11 @@ func TestRemoteJoin_LocalCampfirePreserved(t *testing.T) {
 // that endpoint and stores membership state.
 func TestRemoteJoin_PeerEndpoint(t *testing.T) {
 	// Bypass SSRF validation so loopback test servers can be used as endpoints.
+	// cfhttp.ValidateJoinerEndpoint now routes through validateJoinerEndpointFunc,
+	// so a single OverrideValidateJoinerEndpointForTest() call is sufficient —
+	// no separate override of ssrfValidateEndpoint is needed.
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
-	origValidate := ssrfValidateEndpoint
-	ssrfValidateEndpoint = func(string) error { return nil }
-	t.Cleanup(func() { ssrfValidateEndpoint = origValidate })
 
 	// Override HTTP client for the transport package to allow loopback.
 	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
@@ -141,11 +141,10 @@ func TestRemoteJoin_PeerEndpoint(t *testing.T) {
 // copy from server A. Server B joins without peer_endpoint.
 func TestRemoteJoin_BeaconResolution(t *testing.T) {
 	// Bypass SSRF validation so loopback test servers can be used as endpoints.
+	// cfhttp.ValidateJoinerEndpoint now routes through validateJoinerEndpointFunc,
+	// so a single OverrideValidateJoinerEndpointForTest() call is sufficient.
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
-	origValidate := ssrfValidateEndpoint
-	ssrfValidateEndpoint = func(string) error { return nil }
-	t.Cleanup(func() { ssrfValidateEndpoint = origValidate })
 	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
 
 	// Server A: hosted HTTP mode — creates the campfire and publishes beacon.
@@ -272,11 +271,10 @@ func TestRemoteJoin_ToolSchemaIncludesPeerEndpoint(t *testing.T) {
 // A reads it (delivery happened via HTTP peer delivery from B to A).
 func TestRemoteJoin_SendAndReadAfterRemoteJoin(t *testing.T) {
 	// Bypass SSRF validation so loopback endpoints work in tests.
+	// cfhttp.ValidateJoinerEndpoint now routes through validateJoinerEndpointFunc,
+	// so a single OverrideValidateJoinerEndpointForTest() call is sufficient.
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
-	origValidate := ssrfValidateEndpoint
-	ssrfValidateEndpoint = func(string) error { return nil }
-	t.Cleanup(func() { ssrfValidateEndpoint = origValidate })
 	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
 
 	// Server A: hosted HTTP mode — owns the campfire.

@@ -50,13 +50,13 @@ var Version = "dev"
 
 // ssrfValidateEndpoint is the SSRF pre-flight check applied to peer endpoints
 // before handleRemoteJoin makes any outbound connection. It is a package-level
-// variable so tests can override it (set to a no-op) when using loopback
-// test servers. Production code must not override this.
+// variable so tests can replace it entirely when needed (e.g. TestSSRFJoin_*
+// tests that want to bypass the pre-flight check to exercise the transport-level
+// TOCTOU guard). Production code must not override this.
 //
-// Note: this calls cfhttp.ValidateJoinerEndpoint, which goes directly to
-// validateJoinerEndpointImpl (not through the test override func var in
-// pkg/transport/http). Tests that need to bypass validation for loopback
-// servers must override this var directly.
+// Note: cfhttp.ValidateJoinerEndpoint routes through validateJoinerEndpointFunc,
+// so cfhttp.OverrideValidateJoinerEndpointForTest() is sufficient for tests that
+// just need loopback endpoints to pass — no separate override of this var is needed.
 var ssrfValidateEndpoint = func(endpoint string) error {
 	return cfhttp.ValidateJoinerEndpoint(endpoint)
 }
