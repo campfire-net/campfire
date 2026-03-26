@@ -416,3 +416,26 @@ func TestAliasStorePermissions(t *testing.T) {
 		t.Errorf("expected 0600 permissions, got %04o", fi.Mode().Perm())
 	}
 }
+
+// TestLooksLikeName verifies bare dot-separated name detection.
+func TestLooksLikeName(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"aietf.social.lobby", true},
+		{"baron.ready.galtrader", true},
+		{"single-segment", false}, // no dots
+		{"cf://aietf.social.lobby", false}, // has cf:// prefix, not a bare name
+		{"abc123.foo", true},
+		{"-bad.segment", false},
+		{"bad-.segment", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		got := LooksLikeName(tc.input)
+		if got != tc.want {
+			t.Errorf("LooksLikeName(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}

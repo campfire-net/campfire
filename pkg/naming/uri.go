@@ -299,6 +299,24 @@ func IsCampfireURI(s string) bool {
 	return strings.HasPrefix(strings.ToLower(s), "cf://")
 }
 
+// LooksLikeName returns true if s looks like a bare dot-separated campfire name
+// (e.g. "aietf.social.lobby") that can be resolved without a cf:// prefix.
+// A valid name has only lowercase alphanumeric + hyphen + dot chars,
+// no leading/trailing dots or hyphens, and valid segments throughout.
+func LooksLikeName(s string) bool {
+	s = strings.ToLower(s)
+	if !strings.Contains(s, ".") {
+		return false
+	}
+	segs := strings.Split(s, ".")
+	for _, seg := range segs {
+		if err := ValidateSegment(seg); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // SanitizeDescription truncates to MaxDescriptionLength and strips control characters.
 func SanitizeDescription(s string) string {
 	// Strip control characters and newlines

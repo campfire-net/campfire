@@ -39,6 +39,11 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 		return aliases.Get(aliasName)
 	}
 
+	// Dot-separated name shorthand: aietf.social.lobby → cf://aietf.social.lobby
+	if strings.Contains(prefix, ".") && naming.LooksLikeName(prefix) {
+		return resolveNamingURI("cf://"+prefix, s)
+	}
+
 	// Exact match: 64 hex chars
 	if len(prefix) == 64 {
 		return prefix, nil
