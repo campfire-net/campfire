@@ -32,6 +32,14 @@ var discoverCmd = &cobra.Command{
 			}
 		}
 
+		// Scan routing:beacon messages from campfire memberships (in-band discovery).
+		// Errors are non-fatal — store may not exist on first run.
+		var campfireBeacons []beacon.Beacon
+		if s, err := openStore(); err == nil {
+			defer s.Close()
+			campfireBeacons, _ = beacon.ScanAllMemberships(s)
+		}
+
 		if jsonOutput {
 			type entry struct {
 				CampfireID            string   `json:"campfire_id"`
@@ -40,17 +48,33 @@ var discoverCmd = &cobra.Command{
 				Transport             string   `json:"transport"`
 				Description           string   `json:"description"`
 				SignatureValid        bool     `json:"signature_valid"`
+				Source                string   `json:"source"`
 			}
-			allBeacons := append(projectBeacons, globalBeacons...)
+			// Collect all beacons with their source label.
+			type srcBeacon struct {
+				b      beacon.Beacon
+				source string
+			}
+			var all []srcBeacon
+			for _, b := range projectBeacons {
+				all = append(all, srcBeacon{b, "project"})
+			}
+			for _, b := range globalBeacons {
+				all = append(all, srcBeacon{b, "global"})
+			}
+			for _, b := range campfireBeacons {
+				all = append(all, srcBeacon{b, "campfire"})
+			}
 			var entries []entry
-			for _, b := range allBeacons {
+			for _, sb := range all {
 				entries = append(entries, entry{
-					CampfireID:            b.CampfireIDHex(),
-					JoinProtocol:          b.JoinProtocol,
-					ReceptionRequirements: b.ReceptionRequirements,
-					Transport:             b.Transport.Protocol,
-					Description:           b.Description,
-					SignatureValid:        b.Verify(),
+					CampfireID:            sb.b.CampfireIDHex(),
+					JoinProtocol:          sb.b.JoinProtocol,
+					ReceptionRequirements: sb.b.ReceptionRequirements,
+					Transport:             sb.b.Transport.Protocol,
+					Description:           sb.b.Description,
+					SignatureValid:        sb.b.Verify(),
+					Source:                sb.source,
 				})
 			}
 			if entries == nil {
@@ -61,7 +85,7 @@ var discoverCmd = &cobra.Command{
 			return enc.Encode(entries)
 		}
 
-		if len(projectBeacons) == 0 && len(globalBeacons) == 0 {
+		if len(projectBeacons) == 0 && len(globalBeacons) == 0 && len(campfireBeacons) == 0 {
 			fmt.Println("No beacons found.")
 			return nil
 		}
@@ -111,6 +135,13 @@ var discoverCmd = &cobra.Command{
 			}
 		} else {
 			for _, b := range globalBeacons {
+				printBeacon(b)
+			}
+		}
+
+		if len(campfireBeacons) > 0 {
+			fmt.Println("Campfire beacons (in-band):")
+			for _, b := range campfireBeacons {
 				printBeacon(b)
 			}
 		}
