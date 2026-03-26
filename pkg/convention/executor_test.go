@@ -557,6 +557,61 @@ func TestExecute_SelfPriorAntecedent(t *testing.T) {
 	}
 }
 
+// intRangeDecl builds a Declaration with a single integer arg with the given Min/Max.
+func intRangeDecl(min, max int) *Declaration {
+	return &Declaration{
+		Convention:  "test",
+		Version:     "0.1",
+		Operation:   "int-range-op",
+		Signing:     "member_key",
+		Antecedents: "none",
+		ProducesTags: []TagRule{
+			{Tag: "test:int-range-op", Cardinality: "exactly_one"},
+		},
+		Args: []ArgDescriptor{
+			{Name: "count", Type: "integer", Required: true, Min: min, Max: max},
+		},
+	}
+}
+
+// TestIntegerRange_MaxEnforcedWhenMinIsZero verifies that Max is enforced even when Min=0.
+// Regression test for the bug where `if desc.Min != 0 || desc.Max != 0` short-circuited
+// Max enforcement when Min was explicitly set to zero (the zero value of int).
+func TestIntegerRange_MaxEnforcedWhenMinIsZero(t *testing.T) {
+	tr := &mockTransport{}
+	ex := NewExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+	decl := intRangeDecl(0, 10)
+
+	// Value within range should pass.
+	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 5}); err != nil {
+		t.Errorf("value=5 with Min=0,Max=10: expected no error, got %v", err)
+	}
+
+	// Value exceeding Max should fail.
+	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 15}); err == nil {
+		t.Error("value=15 with Min=0,Max=10: expected range error, got nil")
+	}
+}
+
+// TestIntegerRange_NegativeRejectedWhenMinIsZero verifies that negative values are
+// rejected when Min=0 (no Max set). Before the fix, the guard `if desc.Min != 0 || desc.Max != 0`
+// evaluated false for Min=0,Max=0, skipping all range validation.
+func TestIntegerRange_NegativeRejectedWhenMinIsZero(t *testing.T) {
+	tr := &mockTransport{}
+	ex := NewExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+	decl := intRangeDecl(0, 0) // Min=0, no Max
+
+	// Zero should pass.
+	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 0}); err != nil {
+		t.Errorf("value=0 with Min=0: expected no error, got %v", err)
+	}
+
+	// Negative value should fail.
+	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": -1}); err == nil {
+		t.Error("value=-1 with Min=0: expected range error, got nil")
+	}
+}
+
 // TestCollectArgValuesForPrefix_NamingNameGlob verifies that the naming:name:* glob
 // correctly matches a single-arg "name" through the HasSuffix fallback.
 func TestCollectArgValuesForPrefix_NamingNameGlob(t *testing.T) {
