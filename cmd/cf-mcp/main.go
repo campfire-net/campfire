@@ -1655,7 +1655,7 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		}
 		if peer.Endpoint != "" {
 			if err := ssrfValidateEndpoint(peer.Endpoint); err != nil {
-				log.Printf("handleRemoteJoin: skipping peer %s: SSRF blocked: %v", peer.PubKeyHex[:8], err)
+				log.Printf("handleRemoteJoin: skipping peer %s: SSRF blocked: %v", shortID(peer.PubKeyHex, 8), err)
 				continue
 			}
 		}
