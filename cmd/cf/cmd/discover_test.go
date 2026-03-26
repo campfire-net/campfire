@@ -4,6 +4,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
 )
 
 func writeTestBeacon(t *testing.T, dir string) (pubHex string) {
@@ -116,5 +120,81 @@ func TestDiscoverProjectBeacons(t *testing.T) {
 	}
 	if projIdx != -1 && globalIdx != -1 && projIdx > globalIdx {
 		t.Errorf("project beacon should appear before global beacon, but positions: project=%d global=%d", projIdx, globalIdx)
+	}
+}
+
+// postBeaconToStore adds a routing:beacon message to the store for a gateway campfire,
+// advertising advPub/advPriv at the given endpoint.
+func postBeaconToStore(t *testing.T, s store.Store, gatewayCampfireID string, advPub ed25519.PublicKey, advPriv ed25519.PrivateKey, msgID string) string {
+	t.Helper()
+	d, err := beacon.SignDeclaration(advPub, advPriv, "http://relay.example.com", "p2p-http", "in-band test campfire", "open")
+	if err != nil {
+		t.Fatalf("SignDeclaration: %v", err)
+	}
+	payload, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	senderPub, senderPriv, _ := ed25519.GenerateKey(rand.Reader)
+	sig := ed25519.Sign(senderPriv, payload)
+	rec := store.MessageRecord{
+		ID:          msgID,
+		CampfireID:  gatewayCampfireID,
+		Sender:      fmt.Sprintf("%x", senderPub),
+		Payload:     payload,
+		Tags:        []string{"routing:beacon"},
+		Antecedents: []string{},
+		Timestamp:   5000,
+		Signature:   sig,
+		Provenance:  []message.ProvenanceHop{},
+		ReceivedAt:  5000,
+	}
+	if _, err := s.AddMessage(rec); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	return d.CampfireID
+}
+
+// TestDiscoverCampfireBeacons verifies that beacons posted as routing:beacon
+// messages to campfire memberships appear under a "Campfire beacons" heading.
+func TestDiscoverCampfireBeacons(t *testing.T) {
+	// Set up a temporary CF_HOME with a store containing a gateway campfire
+	// and a routing:beacon message in it.
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+
+	emptyBeaconDir := t.TempDir()
+	t.Setenv("CF_BEACON_DIR", emptyBeaconDir)
+
+	s, err := store.Open(store.StorePath(cfHomeDir))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	// Register a gateway campfire.
+	gwPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	gwID := fmt.Sprintf("%x", gwPub)
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   gwID,
+		TransportDir: cfHomeDir,
+		JoinProtocol: "open",
+		Role:         "member",
+		JoinedAt:     1,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	// Post a beacon for an advertised campfire.
+	advPub, advPriv, _ := ed25519.GenerateKey(rand.Reader)
+	advertisedID := postBeaconToStore(t, s, gwID, advPub, advPriv, "msg-discover-campfire")
+	s.Close()
+
+	out := captureDiscover(t)
+
+	if !strings.Contains(out, "Campfire beacons") {
+		t.Errorf("expected 'Campfire beacons' heading in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, advertisedID[:12]) {
+		t.Errorf("expected advertised campfire ID %q in output, got:\n%s", advertisedID[:12], out)
 	}
 }

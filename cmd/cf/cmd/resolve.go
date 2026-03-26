@@ -1,17 +1,25 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
+	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
-// resolveCampfireID resolves a prefix (or full ID) to a full 64-char hex campfire ID.
-// It searches the membership table and beacon directories.
+// resolveCampfireID resolves a prefix, full ID, or cf:// URI to a full 64-char hex campfire ID.
+// It searches cf:// URIs first, then the membership table and beacon directories.
 // Returns an error if the prefix is ambiguous or matches nothing.
 func resolveCampfireID(prefix string, s store.Store) (string, error) {
+	// Handle cf:// URIs via naming resolution
+	if naming.IsCampfireURI(prefix) {
+		return resolveNamingURI(prefix, s)
+	}
+
 	// Exact match: 64 hex chars
 	if len(prefix) == 64 {
 		return prefix, nil
@@ -41,6 +49,24 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 
 	// Search default beacon dir.
 	searchBeaconDir(BeaconDir(), prefix, addMatch)
+
+	// Search routing:beacon messages in campfire memberships (in-band discovery).
+	if s != nil {
+		if memberships, err := s.ListMemberships(); err == nil {
+			for _, m := range memberships {
+				bs, err := beacon.ScanCampfire(s, m.CampfireID)
+				if err != nil {
+					continue
+				}
+				for _, b := range bs {
+					id := b.CampfireIDHex()
+					if strings.HasPrefix(id, prefix) {
+						addMatch(id)
+					}
+				}
+			}
+		}
+	}
 
 	// Zero matches.
 	if len(matches) == 0 {
@@ -74,4 +100,37 @@ func searchBeaconDir(dir string, prefix string, addMatch func(string)) {
 			addMatch(id)
 		}
 	}
+}
+
+// resolveNamingURI resolves a cf:// URI to a campfire ID using the naming protocol.
+func resolveNamingURI(uri string, s store.Store) (string, error) {
+	agentID, err := loadIdentity()
+	if err != nil {
+		return "", fmt.Errorf("loading identity for name resolution: %w", err)
+	}
+
+	transport := &naming.CLITransport{
+		Identity: agentID,
+		Store:    s,
+	}
+
+	rootID := getRootRegistryID()
+	if rootID == "" {
+		return "", fmt.Errorf("root registry not configured — set CF_ROOT_REGISTRY or join the root registry campfire")
+	}
+
+	resolver := naming.NewResolver(transport, rootID)
+	result, err := resolver.ResolveURI(context.Background(), uri)
+	if err != nil {
+		return "", fmt.Errorf("resolving cf:// URI: %w", err)
+	}
+	return result.CampfireID, nil
+}
+
+// getRootRegistryID returns the root registry campfire ID from env or config.
+func getRootRegistryID() string {
+	if id := os.Getenv("CF_ROOT_REGISTRY"); id != "" {
+		return strings.TrimSpace(id)
+	}
+	return ""
 }

@@ -1,12 +1,17 @@
 package cmd
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
@@ -130,6 +135,77 @@ func TestResolveCampfireID_NoMatch(t *testing.T) {
 	_, err := resolveCampfireID("deadbeef0000", s)
 	if err == nil {
 		t.Fatal("expected error for no-match prefix, got nil")
+	}
+}
+
+func TestResolveCampfireID_CampfireBeaconMatch(t *testing.T) {
+	// Set up a store with a gateway campfire that has a routing:beacon message.
+	emptyDir := t.TempDir()
+	t.Setenv("CF_BEACON_DIR", emptyDir)
+
+	// Open a temp store
+	s, _ := makeTestStore(t, nil)
+	defer s.Close()
+
+	// Register a gateway campfire
+	gwPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gwID := hex.EncodeToString(gwPub)
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   gwID,
+		TransportDir: emptyDir,
+		JoinProtocol: "open",
+		Role:         "member",
+		JoinedAt:     1,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	// Post a routing:beacon message for an advertised campfire into the gateway
+	advID, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := beacon.SignDeclaration(
+		advID.PublicKey, advID.PrivateKey,
+		"http://relay.example.com", "p2p-http", "resolve test", "open",
+	)
+	if err != nil {
+		t.Fatalf("SignDeclaration: %v", err)
+	}
+	payload, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	senderPub, senderPriv, _ := ed25519.GenerateKey(rand.Reader)
+	sig := ed25519.Sign(senderPriv, payload)
+	_, err = s.AddMessage(store.MessageRecord{
+		ID:          "msg-resolve-test",
+		CampfireID:  gwID,
+		Sender:      hex.EncodeToString(senderPub),
+		Payload:     payload,
+		Tags:        []string{"routing:beacon"},
+		Antecedents: []string{},
+		Timestamp:   5000,
+		Signature:   sig,
+		Provenance:  []message.ProvenanceHop{},
+		ReceivedAt:  5000,
+	})
+	if err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	advertisedID := advID.PublicKeyHex()
+	prefix := advertisedID[:12]
+
+	got, err := resolveCampfireID(prefix, s)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != advertisedID {
+		t.Errorf("got %s, want %s", got, advertisedID)
 	}
 }
 
