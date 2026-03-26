@@ -7,6 +7,11 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
+// loadIdentity loads the agent identity from the identity file.
+func loadIdentity() (*identity.Identity, error) {
+	return identity.Load(IdentityPath())
+}
+
 // openStore opens the campfire store at the default path.
 // The caller is responsible for calling s.Close() (typically via defer).
 func openStore() (store.Store, error) {

@@ -1,0 +1,115 @@
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/spf13/pflag"
+)
+
+// cliStoreReader adapts store.Store to convention.StoreReader.
+type cliStoreReader struct{ s store.Store }
+
+func (r cliStoreReader) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
+	return r.s.ListMessages(campfireID, afterTimestamp, filter...)
+}
+
+// dispatchConventionOp dispatches a convention operation on a campfire.
+// campfireName may be a name, alias, or ID. operationName is the operation to execute.
+// rawArgs are the remaining CLI arguments (flags).
+func dispatchConventionOp(campfireName string, operationName string, rawArgs []string) error {
+	agentID, s, err := requireAgentAndStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	campfireID, err := resolveCampfireID(campfireName, s)
+	if err != nil {
+		return fmt.Errorf("resolving campfire %q: %w", campfireName, err)
+	}
+
+	// Read declarations from this campfire
+	decls, err := convention.ListOperations(cliStoreReader{s}, campfireID, "")
+	if err != nil {
+		return fmt.Errorf("reading declarations from campfire: %w", err)
+	}
+
+	// Default operation (no operation given) = delegate to read subcommand
+	if operationName == "" {
+		s.Close()
+		return readCmd.RunE(readCmd, []string{campfireID})
+	}
+
+	// Find matching declaration
+	var matched *convention.Declaration
+	for _, d := range decls {
+		if d.Operation == operationName {
+			matched = d
+			break
+		}
+	}
+	if matched == nil {
+		var ops []string
+		for _, d := range decls {
+			ops = append(ops, d.Operation)
+		}
+		if len(ops) == 0 {
+			return fmt.Errorf("unknown operation %q — no convention operations declared in campfire %s", operationName, campfireID[:12])
+		}
+		return fmt.Errorf("unknown operation %q — available: %s", operationName, strings.Join(ops, ", "))
+	}
+
+	// Build flag set from declaration args
+	flags := pflag.NewFlagSet("op", pflag.ContinueOnError)
+	for _, arg := range matched.Args {
+		switch {
+		case arg.Repeated:
+			flags.StringSlice(arg.Name, nil, arg.Description)
+		case arg.Type == "boolean":
+			flags.Bool(arg.Name, false, arg.Description)
+		case arg.Type == "integer":
+			flags.Int(arg.Name, 0, arg.Description)
+		default: // string, duration, key, enum
+			flags.String(arg.Name, "", arg.Description)
+		}
+	}
+
+	if err := flags.Parse(rawArgs); err != nil {
+		return fmt.Errorf("parsing flags: %w", err)
+	}
+
+	// Build args map from changed flags only
+	args := make(map[string]any)
+	flags.VisitAll(func(f *pflag.Flag) {
+		if !f.Changed {
+			return
+		}
+		switch f.Value.Type() {
+		case "bool":
+			v, _ := flags.GetBool(f.Name)
+			args[f.Name] = v
+		case "int":
+			v, _ := flags.GetInt(f.Name)
+			args[f.Name] = v
+		case "stringSlice":
+			v, _ := flags.GetStringSlice(f.Name)
+			args[f.Name] = v
+		default:
+			args[f.Name] = f.Value.String()
+		}
+	})
+
+	transport := &cliTransportAdapter{agentID: agentID, store: s}
+	executor := convention.NewExecutor(transport, agentID.PublicKeyHex())
+
+	if err := executor.Execute(context.Background(), matched, campfireID, args); err != nil {
+		return fmt.Errorf("convention operation failed: %w", err)
+	}
+
+	fmt.Printf("ok — operation %q dispatched to campfire %s\n", operationName, campfireID[:12])
+	return nil
+}

@@ -11,13 +11,32 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
-// resolveCampfireID resolves a prefix, full ID, or cf:// URI to a full 64-char hex campfire ID.
-// It searches cf:// URIs first, then the membership table and beacon directories.
+// resolveCampfireID resolves a prefix, full ID, tilde-alias, or cf:// URI to a full 64-char hex campfire ID.
+// It searches cf:// URIs first, then local aliases, then the membership table and beacon directories.
 // Returns an error if the prefix is ambiguous or matches nothing.
 func resolveCampfireID(prefix string, s store.Store) (string, error) {
-	// Handle cf:// URIs via naming resolution
+	// Handle cf:// URIs — may be named, alias, or direct
 	if naming.IsCampfireURI(prefix) {
-		return resolveNamingURI(prefix, s)
+		parsed, err := naming.ParseURI(prefix)
+		if err != nil {
+			return "", fmt.Errorf("parsing URI: %w", err)
+		}
+		switch parsed.Kind {
+		case naming.URIKindDirect:
+			return parsed.CampfireID, nil
+		case naming.URIKindAlias:
+			aliases := naming.NewAliasStore(CFHome())
+			return aliases.Get(parsed.Alias)
+		default:
+			return resolveNamingURI(prefix, s)
+		}
+	}
+
+	// Tilde-alias shorthand: ~aliasname (without cf:// scheme)
+	if strings.HasPrefix(prefix, "~") {
+		aliasName := prefix[1:]
+		aliases := naming.NewAliasStore(CFHome())
+		return aliases.Get(aliasName)
 	}
 
 	// Exact match: 64 hex chars

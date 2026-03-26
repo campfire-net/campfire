@@ -487,3 +487,16 @@ func TestExecute_SelfPriorAntecedent(t *testing.T) {
 		t.Errorf("expected antecedent 'prior-msg-999'; got %v", msg.antecedents)
 	}
 }
+
+// TestCollectArgValuesForPrefix_NamingNameGlob verifies that the naming:name:* glob
+// correctly matches a single-arg "name" through the HasSuffix fallback.
+func TestCollectArgValuesForPrefix_NamingNameGlob(t *testing.T) {
+	args := []ArgDescriptor{
+		{Name: "name", Type: "string"},
+	}
+	provided := map[string]any{"name": "social"}
+	got := collectArgValuesForPrefix(args, provided, "naming:name:")
+	if len(got) != 1 || got[0] != "naming:name:social" {
+		t.Errorf("expected [naming:name:social], got %v", got)
+	}
+}

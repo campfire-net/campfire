@@ -318,8 +318,9 @@ func collectArgValuesForPrefix(argDescs []ArgDescriptor, args map[string]any, pr
 		}
 
 		// Name-based matching: arg "topics" → prefix "topic:".
+		// Also matches when prefix ends with the arg name: "naming:name:" → arg "name".
 		argBase := strings.TrimSuffix(desc.Name, "s") // simple pluralization
-		if argBase == prefixBase || desc.Name == prefixBase {
+		if argBase == prefixBase || desc.Name == prefixBase || strings.HasSuffix(prefix, desc.Name+":") {
 			if desc.Repeated {
 				strs := toStringSlice(val)
 				for _, s := range strs {

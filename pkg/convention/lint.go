@@ -117,7 +117,8 @@ func lintArgToTagMapping(decl *Declaration, result *LintResult) {
 				}
 			} else if arg.Type != "enum" {
 				argBase := strings.TrimSuffix(arg.Name, "s")
-				if argBase == prefixBase || arg.Name == prefixBase {
+				if argBase == prefixBase || arg.Name == prefixBase ||
+					strings.HasSuffix(tagBase, arg.Name+":") {
 					nameCandidates = append(nameCandidates, arg)
 				}
 			}

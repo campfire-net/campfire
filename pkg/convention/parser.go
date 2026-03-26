@@ -218,8 +218,14 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*De
 	}
 
 	// Check 10: Tag denylist.
+	// Exception: the naming-uri convention may produce naming: tags (it IS the naming protocol).
+	skipNamingDeny := decl.Convention == "naming-uri"
 	for i, tr := range decl.ProducesTags {
-		if err := checkDeniedTag(tr.Tag); err != nil {
+		tag := tr.Tag
+		if skipNamingDeny && strings.HasPrefix(tag, "naming:") {
+			continue
+		}
+		if err := checkDeniedTag(tag); err != nil {
 			return nil, nil, fmt.Errorf("produces_tags[%d]: %w", i, err)
 		}
 	}

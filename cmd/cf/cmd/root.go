@@ -48,6 +48,28 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	rootCmd.PersistentFlags().StringVar(&cfHome, "cf-home", "", "path to campfire home directory (default: ~/.campfire)")
+
+	// Allow unknown flags at root level so convention dispatch can capture them.
+	rootCmd.FParseErrWhitelist = cobra.FParseErrWhitelist{UnknownFlags: true}
+	rootCmd.Args = cobra.ArbitraryArgs
+
+	// Root RunE fires when args[0] is not a registered subcommand.
+	// Interprets: cf <campfire> [operation] [--flags...]
+	rootCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return cmd.Help()
+		}
+		campfireName := args[0]
+		operationName := ""
+		var flagArgs []string
+		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+			operationName = args[1]
+			flagArgs = args[2:]
+		} else {
+			flagArgs = args[1:]
+		}
+		return dispatchConventionOp(campfireName, operationName, flagArgs)
+	}
 }
 
 // CFHome returns the resolved campfire home directory.
