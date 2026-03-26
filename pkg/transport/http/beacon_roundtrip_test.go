@@ -38,7 +38,7 @@ func TestBeaconSignDeclarationRoundtrip(t *testing.T) {
 
 	// Verify via HandleBeacon — this is the path used by the router.
 	rt := newRoutingTable()
-	if err := rt.HandleBeacon(rawPayload, "gateway-integration-test"); err != nil {
+	if err := rt.HandleBeacon(rawPayload, "gateway-integration-test", ""); err != nil {
 		t.Fatalf("HandleBeacon rejected a beacon signed by SignDeclaration: %v", err)
 	}
 
