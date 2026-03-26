@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -481,7 +480,7 @@ func validateSingleValue(desc ArgDescriptor, val any) error {
 		if !ok {
 			return fmt.Errorf("expected duration string, got %T", val)
 		}
-		if _, err := parseDurationLocal(s); err != nil {
+		if _, err := parseDuration(s); err != nil {
 			return fmt.Errorf("invalid duration: %w", err)
 		}
 
@@ -587,7 +586,7 @@ func (rl *rateLimiter) Record(key string, limit *RateLimit) {
 	now := time.Now()
 	win, ok := rl.windows[key]
 	if !ok || now.After(win.windowEnd) {
-		dur, _ := parseDurationLocal(limit.Window)
+		dur, _ := parseDuration(limit.Window)
 		if dur == 0 {
 			dur = time.Minute
 		}
@@ -660,36 +659,6 @@ func resolvePayloadMap(m map[string]any, bindings map[string]map[string]any, sel
 }
 
 // ------- Helpers -------
-
-// parseDurationLocal is a local copy of parseDuration to avoid depending on the unexported parser.go version.
-func parseDurationLocal(s string) (time.Duration, error) {
-	if s == "" {
-		return 0, fmt.Errorf("empty duration")
-	}
-	i := 0
-	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-		i++
-	}
-	if i == 0 || i >= len(s) {
-		return 0, fmt.Errorf("invalid duration %q", s)
-	}
-	n, err := strconv.Atoi(s[:i])
-	if err != nil {
-		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
-	}
-	switch s[i:] {
-	case "s":
-		return time.Duration(n) * time.Second, nil
-	case "m":
-		return time.Duration(n) * time.Minute, nil
-	case "h":
-		return time.Duration(n) * time.Hour, nil
-	case "d":
-		return time.Duration(n) * 24 * time.Hour, nil
-	default:
-		return 0, fmt.Errorf("unknown duration unit %q in %q", s[i:], s)
-	}
-}
 
 func contains(slice []string, s string) bool {
 	for _, v := range slice {
