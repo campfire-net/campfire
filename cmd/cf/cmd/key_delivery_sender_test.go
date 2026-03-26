@@ -193,7 +193,8 @@ func TestPollForKeyDelivery_RejectsUnauthorizedSender(t *testing.T) {
 }
 
 // TestPollForKeyDelivery_AcceptsCreatorDelivery verifies that a key-delivery
-// message from the campfire creator (sender == campfireID) is accepted.
+// message from the campfire creator (sender == campfireID) with a valid 64-byte
+// Ed25519 private key is accepted.
 func TestPollForKeyDelivery_AcceptsCreatorDelivery(t *testing.T) {
 	_, srv := newKDFakeServer(t)
 	defer srv.Close()
@@ -219,8 +220,16 @@ func TestPollForKeyDelivery_AcceptsCreatorDelivery(t *testing.T) {
 	trCreator := newKDTransport(t, srv, storeCreator, campfireID, issueNum)
 	trJoiner := newKDTransport(t, srv, storeJoiner, campfireID, issueNum)
 
-	// Creator encrypts a fake campfire key to the joiner's public key.
-	fakeCampfireKey := []byte("fake-campfire-private-key-bytes!") // 32 bytes
+	// Creator encrypts a valid 64-byte Ed25519 private key to the joiner's public key.
+	// Use a real generated key so the payload is a structurally valid Ed25519 private key.
+	fakeCampfireID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generate fake campfire identity: %v", err)
+	}
+	fakeCampfireKey := []byte(fakeCampfireID.PrivateKey) // exactly 64 bytes
+	if len(fakeCampfireKey) != 64 {
+		t.Fatalf("expected 64-byte private key, got %d", len(fakeCampfireKey))
+	}
 	ciphertext, err := identity.EncryptToEd25519Key(joinerID.PublicKey, fakeCampfireKey)
 	if err != nil {
 		t.Fatalf("EncryptToEd25519Key: %v", err)
@@ -239,3 +248,60 @@ func TestPollForKeyDelivery_AcceptsCreatorDelivery(t *testing.T) {
 		t.Errorf("decrypted key mismatch: got %x, want %x", gotKey, fakeCampfireKey)
 	}
 }
+
+// TestPollForKeyDelivery_RejectsMalformedKeyLength verifies that a key-delivery
+// message from the legitimate creator but with a decrypted payload that is not
+// exactly 64 bytes is rejected with an error.
+//
+// This prevents silent acceptance of truncated or garbage keys that would
+// produce an unusable campfire identity (e.g. a 32-byte payload that happens
+// to decrypt successfully but is not a valid Ed25519 private key).
+func TestPollForKeyDelivery_RejectsMalformedKeyLength(t *testing.T) {
+	_, srv := newKDFakeServer(t)
+	defer srv.Close()
+
+	// Creator: the campfire identity (campfireID == creator.PublicKeyHex()).
+	creatorID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generate creator: %v", err)
+	}
+	campfireID := creatorID.PublicKeyHex()
+
+	// Joiner: the agent requesting to join.
+	joinerID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generate joiner: %v", err)
+	}
+
+	storeCreator := openKDStore(t)
+	storeJoiner := openKDStore(t)
+
+	const issueNum = 1
+
+	trCreator := newKDTransport(t, srv, storeCreator, campfireID, issueNum)
+	trJoiner := newKDTransport(t, srv, storeJoiner, campfireID, issueNum)
+
+	// Creator encrypts a 32-byte payload (not a valid Ed25519 private key length).
+	malformedKey := []byte("this-is-only-32-bytes-long-test!") // exactly 32 bytes
+	if len(malformedKey) != 32 {
+		t.Fatalf("test setup: expected 32-byte payload, got %d", len(malformedKey))
+	}
+	ciphertext, err := identity.EncryptToEd25519Key(joinerID.PublicKey, malformedKey)
+	if err != nil {
+		t.Fatalf("EncryptToEd25519Key: %v", err)
+	}
+	payload := hex.EncodeToString(ciphertext)
+
+	// Creator posts the key-delivery comment with the malformed (32-byte) key.
+	postKeyDelivery(t, trCreator, creatorID, campfireID, payload)
+
+	// pollForKeyDelivery must reject the malformed key and return an error.
+	_, err = pollForKeyDelivery(trJoiner, campfireID, joinerID)
+	if err == nil {
+		t.Fatal("pollForKeyDelivery accepted a 32-byte key; expected error for invalid key length")
+	}
+	if !containsStr(err.Error(), "invalid length") {
+		t.Errorf("expected 'invalid length' in error, got: %v", err)
+	}
+}
+
