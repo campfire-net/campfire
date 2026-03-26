@@ -181,6 +181,30 @@ func TestCLIDispatchNoOp_DefaultsToRead(t *testing.T) {
 	}
 }
 
+// TestCLIDispatchNoOp_NoDoubleClose is a regression test for the double-close
+// panic: dispatchConventionOp used to call s.Close() explicitly before delegating
+// to readCmd when operationName == "". The deferred close at the top of the
+// function would then close the already-closed store, causing a panic on the
+// underlying SQLite connection. This test verifies the function does not panic
+// when the empty-operation path is taken.
+func TestCLIDispatchNoOp_NoDoubleClose(t *testing.T) {
+	campfireID, cleanup := setupDispatchEnv(t, nil)
+	defer cleanup()
+
+	// If double-close is present this will panic — caught by testing's recover.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("dispatchConventionOp panicked (double-close regression): %v", r)
+		}
+	}()
+
+	// Call 5 times to exercise any lazy-init paths; a double-close panic on the
+	// first call is sufficient, but repeated calls stress the deferred-only close.
+	for range 5 {
+		_ = dispatchConventionOp(campfireID[:12], "", nil)
+	}
+}
+
 func TestCLITransportAdapter_SendAndRead(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CF_HOME", dir)
