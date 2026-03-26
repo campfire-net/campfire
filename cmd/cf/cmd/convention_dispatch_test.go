@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/convention"
@@ -14,7 +15,21 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/trust"
 )
+
+// countingChainStore wraps a trust.ChainStore and counts calls to ListMessages.
+// It is used exclusively to verify that a warm ChainWalker cache does not
+// re-issue store reads on subsequent listConventionOperations calls.
+type countingChainStore struct {
+	trust.ChainStore
+	listMessagesCalls atomic.Int64
+}
+
+func (c *countingChainStore) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
+	c.listMessagesCalls.Add(1)
+	return c.ChainStore.ListMessages(campfireID, afterTimestamp, filter...)
+}
 
 // setupDispatchEnv creates a temporary CF_HOME with an identity, a store with a
 // membership, and a campfire that has a convention declaration posted to it.
@@ -475,13 +490,30 @@ func TestListConventionOperations_WalkerReuse(t *testing.T) {
 	}
 	defer s.Close()
 
-	// First call — populates the walker cache.
+	// Install a chain-store spy via the test injection hook.
+	// The spy counts every ListMessages call made by the ChainWalker.
+	// Convention reads (inline check, registry declaration reads) go through
+	// cliStoreReader — not through the chain store — so they are not counted.
+	var spy *countingChainStore
+	chainStoreWrapper = func(cs trust.ChainStore) trust.ChainStore {
+		spy = &countingChainStore{ChainStore: cs}
+		return spy
+	}
+	defer func() { chainStoreWrapper = nil }()
+
+	// First call — creates the singleton walker and walks the trust chain.
+	// The chain walk issues ListMessages calls against the chain store;
+	// counter must be > 0 after this call.
 	decls, err := listConventionOperations(context.Background(), s, targetCampfireID)
 	if err != nil {
 		t.Fatalf("first listConventionOperations: %v", err)
 	}
 	if len(decls) != 1 {
 		t.Fatalf("expected 1 decl on first call, got %d", len(decls))
+	}
+
+	if spy == nil {
+		t.Fatal("chainStoreWrapper was never invoked — spy not installed")
 	}
 
 	// Snapshot the walker map after the first call.
@@ -493,7 +525,18 @@ func TestListConventionOperations_WalkerReuse(t *testing.T) {
 		t.Fatal("expected at least one walker in singleton map after first call")
 	}
 
-	// Second call — must reuse the same walker (same map length, same pointer).
+	callsAfterFirst := spy.listMessagesCalls.Load()
+	if callsAfterFirst == 0 {
+		t.Fatal("expected chain store ListMessages to be called during first chain walk, got 0 calls")
+	}
+
+	// Remove the wrapper: the walker is now cached and re-creation won't fire.
+	// The existing walker holds the spy as its chain store already.
+	chainStoreWrapper = nil
+
+	// Second call — must reuse the same walker whose cache is still warm.
+	// WalkChain returns the cached Chain without re-fetching from the chain store.
+	// spy.listMessagesCalls must not increase.
 	decls2, err := listConventionOperations(context.Background(), s, targetCampfireID)
 	if err != nil {
 		t.Fatalf("second listConventionOperations: %v", err)
@@ -509,6 +552,13 @@ func TestListConventionOperations_WalkerReuse(t *testing.T) {
 	if walkerCountAfterSecond != walkerCountAfterFirst {
 		t.Errorf("walker map grew from %d to %d — a new walker was created instead of reusing the singleton",
 			walkerCountAfterFirst, walkerCountAfterSecond)
+	}
+
+	callsAfterSecond := spy.listMessagesCalls.Load()
+	if callsAfterSecond != callsAfterFirst {
+		t.Errorf("chain store ListMessages call count increased from %d to %d on second call — "+
+			"walker cache was not hit, chain was re-fetched from the store",
+			callsAfterFirst, callsAfterSecond)
 	}
 }
 

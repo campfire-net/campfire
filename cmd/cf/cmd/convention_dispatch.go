@@ -23,6 +23,11 @@ var (
 	chainWalkers   = make(map[string]*trust.ChainWalker)
 )
 
+// chainStoreWrapper is an optional hook for tests to observe chain store calls.
+// When non-nil, it wraps the cliChainStore before passing it to getOrCreateWalker.
+// This is the only supported injection point for chain store observation in tests.
+var chainStoreWrapper func(trust.ChainStore) trust.ChainStore
+
 // getOrCreateWalker returns the cached ChainWalker for rootKey, creating one
 // if none exists yet. The supplied store and resolver are used only on first
 // creation; subsequent calls return the existing walker (cache intact).
@@ -90,7 +95,11 @@ func listConventionOperations(ctx context.Context, s store.Store, campfireID str
 	}
 
 	rootKey := operatorRoot.CampfireID
-	walker := getOrCreateWalker(rootKey, cliChainStore{s}, localChainResolver{})
+	var cs trust.ChainStore = cliChainStore{s}
+	if chainStoreWrapper != nil {
+		cs = chainStoreWrapper(cs)
+	}
+	walker := getOrCreateWalker(rootKey, cs, localChainResolver{})
 	chain, chainErr := walker.WalkChain(ctx)
 	if chainErr != nil {
 		// Chain walk failed — fall back to inline declarations (empty here).
