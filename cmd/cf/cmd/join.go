@@ -508,6 +508,13 @@ func pollForKeyDelivery(tr *ghtr.Transport, campfireID string, agentID *identity
 			if err != nil {
 				continue
 			}
+			// Validate the decrypted key is exactly 64 bytes (Ed25519 private key).
+			// A valid Ed25519 private key is 64 bytes: 32-byte seed + 32-byte public key.
+			// Reject malformed plaintext to prevent silent acceptance of truncated or
+			// garbage keys that would produce an unusable campfire identity.
+			if len(plaintext) != 64 {
+				return nil, fmt.Errorf("delivered key has invalid length: got %d bytes, want 64", len(plaintext))
+			}
 			return plaintext, nil
 		}
 		// Key not yet delivered; wait a moment (tests do not reach this path).
