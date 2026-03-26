@@ -2,12 +2,14 @@ package http_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
@@ -207,7 +209,6 @@ func TestSSRFSafeTransportBlocksLoopback(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 // TestSSRFSafeTransport_RedirectToLoopbackBlocked verifies that the SSRF-safe
 // transport's DialContext blocks direct connections to loopback addresses.
 // This tests the transport-layer guard against DNS rebinding to loopback.
@@ -241,7 +242,8 @@ func TestSSRFSafeTransport_UnreachablePublicIPReturnsDialError(t *testing.T) {
 	client := cfhttp.NewSSRFSafeClient()
 	tr := client.Transport.(*http.Transport)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	// Attempt to dial a public IP (1.2.3.4) on a port with no listener.
 	// This should fail with a genuine dial error (connection refused or timeout),
 	// not an SSRF message.
@@ -264,6 +266,9 @@ func TestSSRFSafeTransport_UnreachablePublicIPReturnsDialError(t *testing.T) {
 // literal private IP is passed, the error message does NOT contain the specific IP
 // (to prevent IP enumeration attacks).
 func TestValidateJoinerEndpoint_LiteralIPErrorDoesNotContainIP(t *testing.T) {
+	// Restore real validation; TestMain globally overrides the func-var to a no-op.
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
 	privateIP := "10.0.0.1"
 	endpoint := fmt.Sprintf("http://%s:8080/", privateIP)
 
@@ -287,6 +292,9 @@ func TestValidateJoinerEndpoint_LiteralIPErrorDoesNotContainIP(t *testing.T) {
 // hostname resolves to a private IP, the error message does NOT contain the specific
 // resolved IP (to prevent IP enumeration attacks).
 func TestValidateJoinerEndpoint_ResolvedIPErrorDoesNotContainIP(t *testing.T) {
+	// Restore real validation; TestMain globally overrides the func-var to a no-op.
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
 	// Use a hostname that resolves to a private IP for testing purposes.
 	// We'll use localhost which resolves to 127.0.0.1.
 	endpoint := "http://localhost:8080/"
