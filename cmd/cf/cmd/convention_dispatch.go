@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/naming"
@@ -11,6 +12,38 @@ import (
 	"github.com/campfire-net/campfire/pkg/trust"
 	"github.com/spf13/pflag"
 )
+
+// chainWalkerCache is a singleton registry of ChainWalkers keyed by rootKey.
+// Walkers carry a 5-minute in-memory cache; reusing the same walker instance
+// across listConventionOperations calls means the cache is actually hit.
+// Without this, each call to listConventionOperations instantiates a fresh
+// walker whose cache is always empty.
+var (
+	chainWalkersMu sync.Mutex
+	chainWalkers   = make(map[string]*trust.ChainWalker)
+)
+
+// getOrCreateWalker returns the cached ChainWalker for rootKey, creating one
+// if none exists yet. The supplied store and resolver are used only on first
+// creation; subsequent calls return the existing walker (cache intact).
+func getOrCreateWalker(rootKey string, cs trust.ChainStore, resolver trust.ChainResolver) *trust.ChainWalker {
+	chainWalkersMu.Lock()
+	defer chainWalkersMu.Unlock()
+	if w, ok := chainWalkers[rootKey]; ok {
+		return w
+	}
+	w := trust.NewChainWalker(rootKey, cs, resolver)
+	chainWalkers[rootKey] = w
+	return w
+}
+
+// resetChainWalkers clears the singleton registry. Used in tests to ensure
+// isolation between test cases that use different stores or root keys.
+func resetChainWalkers() {
+	chainWalkersMu.Lock()
+	chainWalkers = make(map[string]*trust.ChainWalker)
+	chainWalkersMu.Unlock()
+}
 
 // cliStoreReader adapts store.Store to convention.StoreReader.
 type cliStoreReader struct{ s store.Store }
@@ -57,7 +90,7 @@ func listConventionOperations(ctx context.Context, s store.Store, campfireID str
 	}
 
 	rootKey := operatorRoot.CampfireID
-	walker := trust.NewChainWalker(rootKey, cliChainStore{s}, localChainResolver{})
+	walker := getOrCreateWalker(rootKey, cliChainStore{s}, localChainResolver{})
 	chain, chainErr := walker.WalkChain(ctx)
 	if chainErr != nil {
 		// Chain walk failed — fall back to inline declarations (empty here).

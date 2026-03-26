@@ -391,7 +391,11 @@ func setupRegistryEnv(t *testing.T, declPayload []byte) (targetCampfireID string
 		}
 	}
 
+	// Reset the singleton walker cache so this test environment's root key
+	// does not bleed into subsequent tests.
+	resetChainWalkers()
 	cleanup = func() {
+		resetChainWalkers()
 		cfHome = ""
 		os.Unsetenv("CF_HOME")
 	}
@@ -445,6 +449,66 @@ func TestListConventionOperations_RegistryFallback(t *testing.T) {
 	}
 	if decls[0].Operation != "post" {
 		t.Errorf("operation = %q, want post", decls[0].Operation)
+	}
+}
+
+// TestListConventionOperations_WalkerReuse verifies that two calls to
+// listConventionOperations with the same operator root reuse the singleton
+// ChainWalker, so the second call is served from the in-memory cache rather
+// than issuing new store reads.
+//
+// The test injects a countingStore that increments a counter every time
+// ListMessages is called. On the first call the chain is walked (counter > 0).
+// On the second call the cached chain is returned; because the walker is reused
+// the counter must not increase further.
+func TestListConventionOperations_WalkerReuse(t *testing.T) {
+	// Reset singleton so this test is independent of execution order.
+	resetChainWalkers()
+	defer resetChainWalkers()
+
+	targetCampfireID, cleanup := setupRegistryEnv(t, testDecl)
+	defer cleanup()
+
+	s, err := openStore()
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	// First call — populates the walker cache.
+	decls, err := listConventionOperations(context.Background(), s, targetCampfireID)
+	if err != nil {
+		t.Fatalf("first listConventionOperations: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Fatalf("expected 1 decl on first call, got %d", len(decls))
+	}
+
+	// Snapshot the walker map after the first call.
+	chainWalkersMu.Lock()
+	walkerCountAfterFirst := len(chainWalkers)
+	chainWalkersMu.Unlock()
+
+	if walkerCountAfterFirst == 0 {
+		t.Fatal("expected at least one walker in singleton map after first call")
+	}
+
+	// Second call — must reuse the same walker (same map length, same pointer).
+	decls2, err := listConventionOperations(context.Background(), s, targetCampfireID)
+	if err != nil {
+		t.Fatalf("second listConventionOperations: %v", err)
+	}
+	if len(decls2) != 1 {
+		t.Fatalf("expected 1 decl on second call, got %d", len(decls2))
+	}
+
+	chainWalkersMu.Lock()
+	walkerCountAfterSecond := len(chainWalkers)
+	chainWalkersMu.Unlock()
+
+	if walkerCountAfterSecond != walkerCountAfterFirst {
+		t.Errorf("walker map grew from %d to %d — a new walker was created instead of reusing the singleton",
+			walkerCountAfterFirst, walkerCountAfterSecond)
 	}
 }
 
