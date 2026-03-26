@@ -61,6 +61,14 @@ var ssrfValidateEndpoint = func(endpoint string) error {
 	return cfhttp.ValidateJoinerEndpoint(endpoint)
 }
 
+// cfhttpJoin is the function used to perform the remote join HTTP call.
+// It is a package-level variable so tests can inject a fake JoinResult
+// without making real network connections. Production code must not override
+// this.
+var cfhttpJoin = func(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint string) (*cfhttp.JoinResult, error) {
+	return cfhttp.Join(peerEndpoint, campfireID, id, myEndpoint)
+}
+
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 types
 // ---------------------------------------------------------------------------
@@ -1561,7 +1569,7 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		myEndpoint = s.externalAddr
 	}
 
-	result, err := cfhttp.Join(peerEndpoint, campfireID, agentID, myEndpoint)
+	result, err := cfhttpJoin(peerEndpoint, campfireID, agentID, myEndpoint)
 	if err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("joining remote campfire via %s: %v", peerEndpoint, err))
 	}
@@ -1636,9 +1644,20 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 	}
 
 	// Store peer endpoints from the join result (includes the admitting member).
+	// Apply SSRF pre-validation to each peer endpoint before storing it: a
+	// malicious remote server could inject private-range addresses into the
+	// Peers list, causing this node to later attempt outbound connections to
+	// internal hosts (via DeliverToAll). Skip any peer whose endpoint fails
+	// validation — do not abort the whole join, as other peers may be valid.
 	for _, peer := range result.Peers {
 		if peer.PubKeyHex == "" {
 			continue
+		}
+		if peer.Endpoint != "" {
+			if err := ssrfValidateEndpoint(peer.Endpoint); err != nil {
+				log.Printf("handleRemoteJoin: skipping peer %s: SSRF blocked: %v", peer.PubKeyHex[:8], err)
+				continue
+			}
 		}
 		st.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 			CampfireID:    campfireID,
