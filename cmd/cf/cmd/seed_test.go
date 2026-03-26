@@ -96,10 +96,6 @@ func TestSeedCampfireFilesystem_WithSeedBeacon(t *testing.T) {
 	}
 
 	// --- Set up a seed campfire with a test declaration ---
-	seedAgentID, err := identity.Generate()
-	if err != nil {
-		t.Fatalf("generating seed agent identity: %v", err)
-	}
 	seedCF, err := campfire.New("open", nil, 1)
 	if err != nil {
 		t.Fatalf("creating seed campfire: %v", err)
@@ -108,8 +104,10 @@ func TestSeedCampfireFilesystem_WithSeedBeacon(t *testing.T) {
 	if err := seedTr.Init(seedCF); err != nil {
 		t.Fatalf("init seed transport: %v", err)
 	}
+	// The seed campfire signs its own messages — CampfireID in the beacon matches
+	// the signing key so verifySeedBeaconSignatures passes.
 	if err := seedTr.WriteMember(seedCF.PublicKeyHex(), campfire.MemberRecord{
-		PublicKey: seedAgentID.PublicKey,
+		PublicKey: seedCF.PublicKey,
 		JoinedAt:  time.Now().UnixNano(),
 	}); err != nil {
 		t.Fatalf("writing seed member: %v", err)
@@ -127,7 +125,8 @@ func TestSeedCampfireFilesystem_WithSeedBeacon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshaling test declaration: %v", err)
 	}
-	testMsg, err := message.NewMessage(seedAgentID.PrivateKey, seedAgentID.PublicKey, testPayload, []string{"convention:operation"}, nil)
+	// Sign with the campfire's own key so the sender matches CampfireID.
+	testMsg, err := message.NewMessage(seedCF.PrivateKey, seedCF.PublicKey, testPayload, []string{"convention:operation"}, nil)
 	if err != nil {
 		t.Fatalf("creating test message: %v", err)
 	}
@@ -395,10 +394,6 @@ func TestSeedCampfireFilesystem_RejectsDeniedTags(t *testing.T) {
 	}
 
 	// --- Build seed campfire ---
-	seedAgentID, err := identity.Generate()
-	if err != nil {
-		t.Fatalf("generating seed agent identity: %v", err)
-	}
 	seedCF, err := campfire.New("open", nil, 1)
 	if err != nil {
 		t.Fatalf("creating seed campfire: %v", err)
@@ -407,8 +402,10 @@ func TestSeedCampfireFilesystem_RejectsDeniedTags(t *testing.T) {
 	if err := seedTr.Init(seedCF); err != nil {
 		t.Fatalf("init seed transport: %v", err)
 	}
+	// The seed campfire signs its own messages — CampfireID in the beacon matches
+	// the signing key so verifySeedBeaconSignatures passes.
 	if err := seedTr.WriteMember(seedCF.PublicKeyHex(), campfire.MemberRecord{
-		PublicKey: seedAgentID.PublicKey,
+		PublicKey: seedCF.PublicKey,
 		JoinedAt:  time.Now().UnixNano(),
 	}); err != nil {
 		t.Fatalf("writing seed member: %v", err)
@@ -429,7 +426,8 @@ func TestSeedCampfireFilesystem_RejectsDeniedTags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshaling bad declaration: %v", err)
 	}
-	badMsg, err := message.NewMessage(seedAgentID.PrivateKey, seedAgentID.PublicKey, badPayload, []string{"convention:operation"}, nil)
+	// Sign with the campfire's own key so the sender matches CampfireID.
+	badMsg, err := message.NewMessage(seedCF.PrivateKey, seedCF.PublicKey, badPayload, []string{"convention:operation"}, nil)
 	if err != nil {
 		t.Fatalf("creating bad message: %v", err)
 	}
@@ -449,7 +447,7 @@ func TestSeedCampfireFilesystem_RejectsDeniedTags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshaling good declaration: %v", err)
 	}
-	goodMsg, err := message.NewMessage(seedAgentID.PrivateKey, seedAgentID.PublicKey, goodPayload, []string{"convention:operation"}, nil)
+	goodMsg, err := message.NewMessage(seedCF.PrivateKey, seedCF.PublicKey, goodPayload, []string{"convention:operation"}, nil)
 	if err != nil {
 		t.Fatalf("creating good message: %v", err)
 	}

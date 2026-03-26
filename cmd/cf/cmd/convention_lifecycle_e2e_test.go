@@ -37,10 +37,6 @@ import (
 func e2eSetupSeedCampfire(t *testing.T, transportBaseDir string, projectDir string) (seedCampfireID string) {
 	t.Helper()
 
-	seedAgentID, err := identity.Generate()
-	if err != nil {
-		t.Fatalf("generating seed agent identity: %v", err)
-	}
 	seedCF, err := campfire.New("open", nil, 1)
 	if err != nil {
 		t.Fatalf("creating seed campfire: %v", err)
@@ -49,8 +45,10 @@ func e2eSetupSeedCampfire(t *testing.T, transportBaseDir string, projectDir stri
 	if err := seedTr.Init(seedCF); err != nil {
 		t.Fatalf("init seed transport: %v", err)
 	}
+	// The seed campfire signs its own messages — CampfireID in the beacon matches
+	// the signing key so verifySeedBeaconSignatures passes.
 	if err := seedTr.WriteMember(seedCF.PublicKeyHex(), campfire.MemberRecord{
-		PublicKey: seedAgentID.PublicKey,
+		PublicKey: seedCF.PublicKey,
 		JoinedAt:  time.Now().UnixNano(),
 	}); err != nil {
 		t.Fatalf("writing seed member: %v", err)
@@ -74,7 +72,8 @@ func e2eSetupSeedCampfire(t *testing.T, transportBaseDir string, projectDir stri
 	if err != nil {
 		t.Fatalf("marshaling seed declaration: %v", err)
 	}
-	seedMsg, err := message.NewMessage(seedAgentID.PrivateKey, seedAgentID.PublicKey, seedPayload, []string{"convention:operation"}, nil)
+	// Sign with the campfire's own key so the sender matches CampfireID.
+	seedMsg, err := message.NewMessage(seedCF.PrivateKey, seedCF.PublicKey, seedPayload, []string{"convention:operation"}, nil)
 	if err != nil {
 		t.Fatalf("creating seed message: %v", err)
 	}
