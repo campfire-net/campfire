@@ -6,10 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
 
 // ---- test payloads ----
@@ -310,7 +314,7 @@ func TestPromote_LintGating(t *testing.T) {
 	defer s.Close()
 
 	agentID := generateTestIdentity(t)
-	registryID := createTestRegistry(t, agentID, s)
+	registryID, m := createTestRegistry(t, agentID, s)
 
 	existing, err := loadExistingDeclarations(s, registryID)
 	if err != nil {
@@ -322,6 +326,7 @@ func TestPromote_LintGating(t *testing.T) {
 		registryID,
 		agentID,
 		s,
+		m,
 		existing,
 	)
 	if result.Error == "" {
@@ -337,7 +342,7 @@ func TestPromote_ConflictDetection(t *testing.T) {
 	defer s.Close()
 
 	agentID := generateTestIdentity(t)
-	registryID := createTestRegistry(t, agentID, s)
+	registryID, m := createTestRegistry(t, agentID, s)
 
 	existing, err := loadExistingDeclarations(s, registryID)
 	if err != nil {
@@ -350,6 +355,7 @@ func TestPromote_ConflictDetection(t *testing.T) {
 		registryID,
 		agentID,
 		s,
+		m,
 		existing,
 	)
 	if result1.Error != "" {
@@ -368,6 +374,7 @@ func TestPromote_ConflictDetection(t *testing.T) {
 		registryID,
 		agentID,
 		s,
+		m,
 		existing2,
 	)
 	if !result2.Skipped {
@@ -380,18 +387,18 @@ func TestPromote_ForceOverwrite(t *testing.T) {
 	defer s.Close()
 
 	agentID := generateTestIdentity(t)
-	registryID := createTestRegistry(t, agentID, s)
+	registryID, m := createTestRegistry(t, agentID, s)
 
 	// First promote.
 	existing, _ := loadExistingDeclarations(s, registryID)
-	promoteSingle(declSource{name: "post.json", payload: validSocialPostPayload}, registryID, agentID, s, existing)
+	promoteSingle(declSource{name: "post.json", payload: validSocialPostPayload}, registryID, agentID, s, m, existing)
 
 	// Second promote with force — must not skip.
 	conventionPromoteForce = true
 	defer func() { conventionPromoteForce = false }()
 
 	existing2, _ := loadExistingDeclarations(s, registryID)
-	result := promoteSingle(declSource{name: "post.json", payload: validSocialPostPayload}, registryID, agentID, s, existing2)
+	result := promoteSingle(declSource{name: "post.json", payload: validSocialPostPayload}, registryID, agentID, s, m, existing2)
 	if result.Skipped {
 		t.Error("expected not skipped when --force is set")
 	}
@@ -405,7 +412,7 @@ func TestLoadExistingDeclarations_Empty(t *testing.T) {
 	defer s.Close()
 
 	agentID := generateTestIdentity(t)
-	registryID := createTestRegistry(t, agentID, s)
+	registryID, _ := createTestRegistry(t, agentID, s)
 
 	existing, err := loadExistingDeclarations(s, registryID)
 	if err != nil {
@@ -436,17 +443,61 @@ func generateTestIdentity(t *testing.T) *identity.Identity {
 	return id
 }
 
-func createTestRegistry(t *testing.T, agentID *identity.Identity, s store.Store) string {
+// createTestRegistry creates a convention registry campfire with a real filesystem
+// transport so that promoteSingle can fan out declarations via transport.
+// Returns the campfire ID and the membership record.
+func createTestRegistry(t *testing.T, agentID *identity.Identity, s store.Store) (string, *store.Membership) {
 	t.Helper()
+
+	// Use agentID as the campfire identity for simplicity.
 	registryID := agentID.PublicKeyHex()
-	if err := s.AddMembership(store.Membership{
+	transportBaseDir := t.TempDir()
+
+	// Create campfire directory structure.
+	cfDir := filepath.Join(transportBaseDir, registryID)
+	for _, sub := range []string{"members", "messages"} {
+		if err := os.MkdirAll(filepath.Join(cfDir, sub), 0755); err != nil {
+			t.Fatalf("creating transport dir %s: %v", sub, err)
+		}
+	}
+
+	// Write campfire state (use agentID as campfire key for test simplicity).
+	state := &campfire.CampfireState{
+		PublicKey:             agentID.PublicKey,
+		PrivateKey:            agentID.PrivateKey,
+		JoinProtocol:          "open",
+		ReceptionRequirements: []string{},
+		CreatedAt:             time.Now().UnixNano(),
+		Threshold:             1,
+	}
+	stateData, err := cfencoding.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshalling campfire state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfDir, "campfire.cbor"), stateData, 0644); err != nil {
+		t.Fatalf("writing campfire state: %v", err)
+	}
+
+	// Register agent as member in the transport.
+	tr := fs.New(transportBaseDir)
+	if err := tr.WriteMember(registryID, campfire.MemberRecord{
+		PublicKey: agentID.PublicKey,
+		JoinedAt:  time.Now().UnixNano(),
+		Role:      campfire.RoleFull,
+	}); err != nil {
+		t.Fatalf("writing member record: %v", err)
+	}
+
+	m := store.Membership{
 		CampfireID:   registryID,
-		TransportDir: t.TempDir(),
+		TransportDir: tr.CampfireDir(registryID),
 		JoinProtocol: "open",
 		Role:         "full",
 		JoinedAt:     store.NowNano(),
-	}); err != nil {
+		Threshold:    1,
+	}
+	if err := s.AddMembership(m); err != nil {
 		t.Fatalf("adding registry membership: %v", err)
 	}
-	return registryID
+	return registryID, &m
 }
