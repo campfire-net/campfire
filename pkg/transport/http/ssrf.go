@@ -120,7 +120,7 @@ func newSSRFSafeTransport() *nethttp.Transport {
 					continue
 				}
 				if isPrivateIP(ip) {
-					return nil, fmt.Errorf("connection to %s blocked: resolves to private/internal IP %s", host, ip)
+					return nil, fmt.Errorf("connection to %s blocked: resolves to a private/internal address", host)
 				}
 				// Attempt connection to this non-private IP.
 				conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
