@@ -534,6 +534,141 @@ func TestLoopDetectionAllowsBeaconWithoutOwnNodeID(t *testing.T) {
 	}
 }
 
+// TestPeerNeedsSet_PopulatedByBeacon verifies that HandleBeacon adds the
+// senderNodeID to the peer needs set for the campfire (§5.3, source: peers
+// that sent a beacon for C through this router).
+func TestPeerNeedsSet_PopulatedByBeacon(t *testing.T) {
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireIDHex := hex.EncodeToString(cfPub)
+
+	rt := newRoutingTableWithNodeID("self-node")
+	ts := time.Now().Unix()
+
+	// senderNodeID is "peerA"; nextHop is also "peerA" (the beacon sender and next_hop are the same peer).
+	path := []string{"originNode", "peerA"}
+	payload := makeBeaconPayloadWithPath(t, cfPriv, cfPub, "http://example.com:8080", "p2p-http", ts, path)
+	if err := rt.HandleBeacon(payload, "gw", "peerA"); err != nil {
+		t.Fatalf("HandleBeacon: %v", err)
+	}
+
+	needs := rt.PeerNeedsSet(campfireIDHex)
+	if needs == nil {
+		t.Fatal("PeerNeedsSet should not be nil after beacon from peerA")
+	}
+	if !needs["peerA"] {
+		t.Errorf("peerA should be in peer needs set, got %v", needs)
+	}
+}
+
+// TestPeerNeedsSet_PopulatedByMessageDelivery verifies that RecordMessageDelivery
+// adds a peer to the peer needs set (§5.3, source: peers that delivered a message for C).
+func TestPeerNeedsSet_PopulatedByMessageDelivery(t *testing.T) {
+	rt := newRoutingTable()
+	campfireID := "test-campfire-id"
+	peerNodeID := "peer-who-delivered"
+
+	// Before recording: set should be nil/empty.
+	if needs := rt.PeerNeedsSet(campfireID); needs != nil {
+		t.Errorf("expected nil peer needs set before delivery, got %v", needs)
+	}
+
+	rt.RecordMessageDelivery(campfireID, peerNodeID)
+
+	needs := rt.PeerNeedsSet(campfireID)
+	if needs == nil {
+		t.Fatal("PeerNeedsSet should not be nil after RecordMessageDelivery")
+	}
+	if !needs[peerNodeID] {
+		t.Errorf("peer %q should be in peer needs set, got %v", peerNodeID, needs)
+	}
+}
+
+// TestPeerNeedsSet_LookupReturnsCorrectPeers verifies that multiple sources
+// (beacon sender, next_hop, message delivery) all contribute to the same
+// campfire's peer needs set and that the set contains all contributors.
+func TestPeerNeedsSet_LookupReturnsCorrectPeers(t *testing.T) {
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireIDHex := hex.EncodeToString(cfPub)
+
+	rt := newRoutingTableWithNodeID("self-node")
+	ts := time.Now().Unix()
+
+	// Source 1: beacon from peerA (adds peerA via senderNodeID).
+	pathA := []string{"originNode", "peerA"}
+	payloadA := makeBeaconPayloadWithPath(t, cfPriv, cfPub, "http://a.example.com:8080", "p2p-http", ts, pathA)
+	if err := rt.HandleBeacon(payloadA, "gw", "peerA"); err != nil {
+		t.Fatalf("HandleBeacon (peerA): %v", err)
+	}
+
+	// Source 2: message delivery from peerB.
+	rt.RecordMessageDelivery(campfireIDHex, "peerB")
+
+	needs := rt.PeerNeedsSet(campfireIDHex)
+	if needs == nil {
+		t.Fatal("PeerNeedsSet should not be nil")
+	}
+	if !needs["peerA"] {
+		t.Errorf("peerA (beacon sender) should be in peer needs set, got %v", needs)
+	}
+	if !needs["peerB"] {
+		t.Errorf("peerB (message delivery) should be in peer needs set, got %v", needs)
+	}
+	if len(needs) != 2 {
+		t.Errorf("expected exactly 2 peers in needs set, got %d: %v", len(needs), needs)
+	}
+}
+
+// TestPeerNeedsSet_EmptyForUnknownCampfire verifies that PeerNeedsSet returns
+// nil for a campfire that has no recorded peers.
+func TestPeerNeedsSet_EmptyForUnknownCampfire(t *testing.T) {
+	rt := newRoutingTable()
+	needs := rt.PeerNeedsSet("completely-unknown-campfire-id")
+	if needs != nil {
+		t.Errorf("expected nil for unknown campfire, got %v", needs)
+	}
+}
+
+// TestPeerNeedsSet_CleanedUpByWithdraw verifies that the peer needs set for a
+// campfire is removed when that campfire's routes are withdrawn.
+func TestPeerNeedsSet_CleanedUpByWithdraw(t *testing.T) {
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireIDHex := hex.EncodeToString(cfPub)
+
+	rt := newRoutingTable()
+
+	// Insert a beacon and record a message delivery to populate peer needs.
+	payload := makeBeaconPayload(t, cfPriv, cfPub, "http://example.com:8080", "p2p-http", "gw")
+	if err := rt.HandleBeacon(payload, "gw", "peerA"); err != nil {
+		t.Fatalf("HandleBeacon: %v", err)
+	}
+	rt.RecordMessageDelivery(campfireIDHex, "peerB")
+
+	// Confirm peer needs set is populated.
+	if needs := rt.PeerNeedsSet(campfireIDHex); len(needs) == 0 {
+		t.Fatal("expected peer needs set to be populated before withdraw")
+	}
+
+	// Withdraw the campfire.
+	withdrawBytes := makeWithdrawPayload(t, cfPriv, cfPub, "going offline")
+	if err := rt.HandleWithdraw(withdrawBytes); err != nil {
+		t.Fatalf("HandleWithdraw: %v", err)
+	}
+
+	// Peer needs set should be cleaned up.
+	if needs := rt.PeerNeedsSet(campfireIDHex); needs != nil {
+		t.Errorf("expected nil peer needs set after withdraw, got %v", needs)
+	}
+}
+
 // TestLegacyBeaconNoPath verifies that a beacon without a path field (legacy
 // v0.4.x node) is still accepted and stored with an empty path.
 func TestLegacyBeaconNoPath(t *testing.T) {
