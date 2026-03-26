@@ -117,19 +117,37 @@ func listOperations(s StoreReader, campfireID, campfireKey, registryCampfireID s
 		}
 	}
 
+	// Build a sender index for all operation messages so that offline-mode revoke
+	// validation can check whether the revoker matches the original declaration's signer.
+	opSenderByMsgID := make(map[string]string, len(opMsgs))
+	for _, m := range opMsgs {
+		opSenderByMsgID[m.ID] = m.Sender
+	}
+
 	// Build revoked set: target_id values from revoke message payloads.
-	// Authorization: when campfireKey is non-empty, only revoke messages sent by the
-	// campfire key are honoured (signing: campfire_key authority check).
+	// Authorization rules (in priority order):
+	//   1. campfireKey non-empty: only revoke messages sent by the campfire key are honoured.
+	//   2. campfireKey empty (offline mode): only the original declaration's signer may revoke
+	//      their own declaration. Revoke messages from any other sender are ignored.
 	revoked := make(map[string]bool)
 	for _, msg := range revokeMsgs {
-		if campfireKey != "" && msg.Sender != campfireKey {
-			continue // revoke not signed by campfire key — ignore
-		}
 		var revokePayload struct {
 			TargetID string `json:"target_id"`
 		}
 		if jsonErr := json.Unmarshal(msg.Payload, &revokePayload); jsonErr != nil {
 			continue
+		}
+		if campfireKey != "" {
+			// Online mode: campfire key has full revoke authority.
+			if msg.Sender != campfireKey {
+				continue // revoke not signed by campfire key — ignore
+			}
+		} else {
+			// Offline mode: only the original signer may revoke their own declaration.
+			originalSigner, known := opSenderByMsgID[revokePayload.TargetID]
+			if !known || msg.Sender != originalSigner {
+				continue // revoker does not match original signer — ignore
+			}
 		}
 		if revokePayload.TargetID != "" {
 			revoked[revokePayload.TargetID] = true

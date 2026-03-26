@@ -421,6 +421,7 @@ func TestListOperations_SupersedesOlderLoses(t *testing.T) {
 
 // TestListOperations_RevokeRemovesDeclaration verifies that a convention:revoke
 // message with target_id pointing at a declaration causes it to disappear.
+// In offline mode (empty campfireKey), the revoke sender must match the original signer.
 func TestListOperations_RevokeRemovesDeclaration(t *testing.T) {
 	mock := &mockStore{
 		records: []store.MessageRecord{
@@ -432,10 +433,10 @@ func TestListOperations_RevokeRemovesDeclaration(t *testing.T) {
 				Timestamp: 1000,
 			},
 			{
-				ID:        "revoke1",
-				Sender:    "campfire-key",
-				Payload:   []byte(`{"target_id":"msg1"}`),
-				Tags:      []string{"convention:revoke"},
+				ID:      "revoke1",
+				Sender:  "sender1", // must match original signer in offline mode
+				Payload: []byte(`{"target_id":"msg1"}`),
+				Tags:    []string{"convention:revoke"},
 				Timestamp: 2000,
 			},
 		},
@@ -452,6 +453,7 @@ func TestListOperations_RevokeRemovesDeclaration(t *testing.T) {
 
 // TestListOperations_RevokeDoesNotAffectOthers verifies that a revoke only removes
 // the targeted declaration, not all declarations.
+// In offline mode (empty campfireKey), the revoke sender must match the original signer.
 func TestListOperations_RevokeDoesNotAffectOthers(t *testing.T) {
 	otherPayload := mustJSON(map[string]any{
 		"convention":  "other-conv",
@@ -479,10 +481,10 @@ func TestListOperations_RevokeDoesNotAffectOthers(t *testing.T) {
 				Timestamp: 1100,
 			},
 			{
-				ID:        "revoke1",
-				Sender:    "campfire-key",
-				Payload:   []byte(`{"target_id":"msg1"}`),
-				Tags:      []string{"convention:revoke"},
+				ID:      "revoke1",
+				Sender:  "sender1", // must match original signer of msg1 in offline mode
+				Payload: []byte(`{"target_id":"msg1"}`),
+				Tags:    []string{"convention:revoke"},
 				Timestamp: 2000,
 			},
 		},
@@ -526,7 +528,8 @@ func TestListOperations_RevokeSupersededTarget(t *testing.T) {
 			{ID: "msg1", Sender: "s1", Payload: v1Payload, Tags: []string{"convention:operation"}, Timestamp: 1000},
 			{ID: "msg2", Sender: "s1", Payload: v2Payload, Tags: []string{"convention:operation"}, Timestamp: 2000},
 			// Revoke targets msg1 (the superseded one): should also remove msg2.
-			{ID: "rev1", Sender: "ck", Payload: []byte(`{"target_id":"msg1"}`), Tags: []string{"convention:revoke"}, Timestamp: 3000},
+			// Sender must match msg1's original signer ("s1") in offline mode.
+			{ID: "rev1", Sender: "s1", Payload: []byte(`{"target_id":"msg1"}`), Tags: []string{"convention:revoke"}, Timestamp: 3000},
 		},
 	}
 
@@ -856,6 +859,82 @@ func TestListOperationsWithRegistry_SameCampfire(t *testing.T) {
 	}
 	if len(decls) != 1 {
 		t.Errorf("expected 1 decl (no double-counting), got %d", len(decls))
+	}
+}
+
+// TestListOperations_RevokeOfflineMode_OriginalSignerHonored verifies that when
+// campfireKey is empty (offline mode), a revoke from the original declaration's
+// signer IS honored.
+//
+// Regression test for: empty campfireKey allowed any sender to revoke any declaration.
+func TestListOperations_RevokeOfflineMode_OriginalSignerHonored(t *testing.T) {
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:        "msg1",
+				Sender:    "original-signer",
+				Payload:   socialPostPayload,
+				Tags:      []string{"convention:operation"},
+				Timestamp: 1000,
+			},
+			{
+				ID:        "revoke1",
+				Sender:    "original-signer", // same key that signed the declaration
+				Payload:   []byte(`{"target_id":"msg1"}`),
+				Tags:      []string{"convention:revoke"},
+				Timestamp: 2000,
+			},
+		},
+	}
+
+	// campfireKey is empty — offline mode
+	decls, err := ListOperations(mock, "campfire123", "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	// The original signer revokes their own declaration — must be honored.
+	if len(decls) != 0 {
+		t.Errorf("expected 0 decls (original signer revoke honored), got %d", len(decls))
+	}
+}
+
+// TestListOperations_RevokeOfflineMode_DifferentSenderIgnored verifies that when
+// campfireKey is empty (offline mode), a revoke from a different sender (not the
+// original declaration's signer) is NOT honored.
+//
+// Regression test for: empty campfireKey skipped all authorization, allowing any
+// sender to revoke any declaration.
+func TestListOperations_RevokeOfflineMode_DifferentSenderIgnored(t *testing.T) {
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:        "msg1",
+				Sender:    "original-signer",
+				Payload:   socialPostPayload,
+				Tags:      []string{"convention:operation"},
+				Timestamp: 1000,
+			},
+			{
+				ID:        "revoke1",
+				Sender:    "attacker-key", // different key — NOT the original signer
+				Payload:   []byte(`{"target_id":"msg1"}`),
+				Tags:      []string{"convention:revoke"},
+				Timestamp: 2000,
+			},
+		},
+	}
+
+	// campfireKey is empty — offline mode
+	decls, err := ListOperations(mock, "campfire123", "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	// Revoke from a different sender must be ignored — declaration must still be present.
+	if len(decls) != 1 {
+		t.Errorf("expected 1 decl (unauthorized revoke ignored in offline mode), got %d", len(decls))
+	}
+	if len(decls) > 0 && decls[0].Operation != "post" {
+		t.Errorf("expected operation 'post', got %q", decls[0].Operation)
 	}
 }
 
