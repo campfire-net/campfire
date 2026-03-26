@@ -249,3 +249,56 @@ func TestSSRFSafeTransport_UnreachablePublicIPReturnsDialError(t *testing.T) {
 		t.Errorf("expected genuine dial error (not SSRF message) for unreachable public IP, got: %v", err)
 	}
 }
+
+// TestValidateJoinerEndpoint_LiteralIPErrorDoesNotContainIP verifies that when a
+// literal private IP is passed, the error message does NOT contain the specific IP
+// (to prevent IP enumeration attacks).
+func TestValidateJoinerEndpoint_LiteralIPErrorDoesNotContainIP(t *testing.T) {
+	privateIP := "10.0.0.1"
+	endpoint := fmt.Sprintf("http://%s:8080/", privateIP)
+
+	err := cfhttp.ValidateJoinerEndpoint(endpoint)
+	if err == nil {
+		t.Fatalf("expected error for private IP %s, got nil", privateIP)
+	}
+
+	errMsg := err.Error()
+	if bytes.Contains([]byte(errMsg), []byte(privateIP)) {
+		t.Errorf("error message contains specific IP %q, should be redacted: %q", privateIP, errMsg)
+	}
+
+	// Message should still indicate it's a private/internal address
+	if !bytes.Contains([]byte(errMsg), []byte("private")) && !bytes.Contains([]byte(errMsg), []byte("internal")) {
+		t.Errorf("error message should mention private/internal, got: %q", errMsg)
+	}
+}
+
+// TestValidateJoinerEndpoint_ResolvedIPErrorDoesNotContainIP verifies that when a
+// hostname resolves to a private IP, the error message does NOT contain the specific
+// resolved IP (to prevent IP enumeration attacks).
+func TestValidateJoinerEndpoint_ResolvedIPErrorDoesNotContainIP(t *testing.T) {
+	// Use a hostname that resolves to a private IP for testing purposes.
+	// We'll use localhost which resolves to 127.0.0.1.
+	endpoint := "http://localhost:8080/"
+
+	err := cfhttp.ValidateJoinerEndpoint(endpoint)
+	if err == nil {
+		t.Fatalf("expected error for localhost (resolves to 127.0.0.1), got nil")
+	}
+
+	errMsg := err.Error()
+	// The error should not contain the resolved IP (127.0.0.1)
+	if bytes.Contains([]byte(errMsg), []byte("127.0.0.1")) {
+		t.Errorf("error message contains resolved IP 127.0.0.1, should be redacted: %q", errMsg)
+	}
+
+	// The error should contain the hostname (since the attacker supplied it)
+	if !bytes.Contains([]byte(errMsg), []byte("localhost")) {
+		t.Errorf("error message should mention hostname 'localhost', got: %q", errMsg)
+	}
+
+	// Message should still indicate it's a private/internal address
+	if !bytes.Contains([]byte(errMsg), []byte("private")) && !bytes.Contains([]byte(errMsg), []byte("internal")) {
+		t.Errorf("error message should mention private/internal, got: %q", errMsg)
+	}
+}

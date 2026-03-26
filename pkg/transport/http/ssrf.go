@@ -63,7 +63,7 @@ func validateJoinerEndpointImpl(endpoint string) error {
 	// If the host is an IP literal, check it directly — no DNS involved.
 	if ip := net.ParseIP(host); ip != nil {
 		if isPrivateIP(ip) {
-			return fmt.Errorf("endpoint resolves to private/internal address %s", ip)
+			return fmt.Errorf("endpoint resolves to a private/internal address")
 		}
 		return nil
 	}
@@ -82,7 +82,7 @@ func validateJoinerEndpointImpl(endpoint string) error {
 			continue
 		}
 		if isPrivateIP(ip) {
-			return fmt.Errorf("endpoint host %q resolves to private/internal address %s", host, ip)
+			return fmt.Errorf("endpoint host %q resolves to a private/internal address", host)
 		}
 	}
 	return nil
