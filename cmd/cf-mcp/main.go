@@ -47,6 +47,19 @@ import (
 // Version is set at build time via ldflags.
 var Version = "dev"
 
+// ssrfValidateEndpoint is the SSRF pre-flight check applied to peer endpoints
+// before handleRemoteJoin makes any outbound connection. It is a package-level
+// variable so tests can override it (set to a no-op) when using loopback
+// test servers. Production code must not override this.
+//
+// Note: this calls cfhttp.ValidateJoinerEndpoint, which goes directly to
+// validateJoinerEndpointImpl (not through the test override func var in
+// pkg/transport/http). Tests that need to bypass validation for loopback
+// servers must override this var directly.
+var ssrfValidateEndpoint = func(endpoint string) error {
+	return cfhttp.ValidateJoinerEndpoint(endpoint)
+}
+
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 types
 // ---------------------------------------------------------------------------
@@ -1497,13 +1510,21 @@ func (s *server) resolveBeaconEndpoint(campfireID string) string {
 // Called from handleJoin when the campfire is not found locally.
 //
 // Flow:
-//  1. Call cfhttp.Join(peerEndpoint, campfireID, agentID, myEndpoint)
-//  2. Write campfire state CBOR to local fs transport dir
-//  3. Write self as a member in the local fs transport
-//  4. Call st.AddMembership so handleRead/handleSend can find the campfire
-//  5. Register peer endpoints from the join result
-//  6. If HTTP transport is running, register the campfire and add server A as peer
+//  1. Validate peerEndpoint against SSRF blocklist (blocks private/internal addresses)
+//  2. Call cfhttp.Join(peerEndpoint, campfireID, agentID, myEndpoint)
+//  3. Write campfire state CBOR to local fs transport dir
+//  4. Write self as a member in the local fs transport
+//  5. Call st.AddMembership so handleRead/handleSend can find the campfire
+//  6. Register peer endpoints from the join result
+//  7. If HTTP transport is running, register the campfire and add server A as peer
 func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{}, campfireID, peerEndpoint string, agentID *identity.Identity, st store.Store) jsonRPCResponse {
+	// SSRF pre-flight: reject private/internal addresses before making any
+	// outbound request. Covers both user-supplied peer_endpoint and
+	// beacon-resolved endpoints (both paths converge here).
+	if err := ssrfValidateEndpoint(peerEndpoint); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("SSRF blocked: %v", err))
+	}
+
 	// Advertise our own endpoint so the remote host can deliver messages back.
 	myEndpoint := ""
 	if s.externalAddr != "" {
@@ -1518,6 +1539,21 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 	// Persist campfire state to local fs transport so handleSend/handleRead can use it.
 	transport := s.fsTransport()
 	campfireDir := transport.CampfireDir(campfireID)
+
+	// If the campfire directory did not exist before this call, clean it up on
+	// any failure after MkdirAll so partial writes don't leave orphaned state.
+	dirExistedBefore := false
+	if _, statErr := os.Stat(campfireDir); statErr == nil {
+		dirExistedBefore = true
+	}
+
+	success := false
+	defer func() {
+		if !success && !dirExistedBefore {
+			os.RemoveAll(campfireDir) //nolint:errcheck
+		}
+	}()
+
 	for _, sub := range []string{"members", "messages"} {
 		if mkErr := os.MkdirAll(filepath.Join(campfireDir, sub), 0755); mkErr != nil {
 			return errResponse(id, -32000, fmt.Sprintf("creating campfire directory: %v", mkErr))
@@ -1611,6 +1647,7 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		"transport":   "p2p-http",
 		"via":         peerEndpoint,
 	})
+	success = true
 	return okResponse(id, joinResult)
 }
 

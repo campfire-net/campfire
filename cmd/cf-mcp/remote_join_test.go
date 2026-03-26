@@ -69,6 +69,9 @@ func TestRemoteJoin_PeerEndpoint(t *testing.T) {
 	// Bypass SSRF validation so loopback test servers can be used as endpoints.
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+	origValidate := ssrfValidateEndpoint
+	ssrfValidateEndpoint = func(string) error { return nil }
+	t.Cleanup(func() { ssrfValidateEndpoint = origValidate })
 
 	// Override HTTP client for the transport package to allow loopback.
 	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
@@ -140,6 +143,9 @@ func TestRemoteJoin_BeaconResolution(t *testing.T) {
 	// Bypass SSRF validation so loopback test servers can be used as endpoints.
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+	origValidate := ssrfValidateEndpoint
+	ssrfValidateEndpoint = func(string) error { return nil }
+	t.Cleanup(func() { ssrfValidateEndpoint = origValidate })
 	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
 
 	// Server A: hosted HTTP mode — creates the campfire and publishes beacon.
@@ -268,6 +274,9 @@ func TestRemoteJoin_SendAndReadAfterRemoteJoin(t *testing.T) {
 	// Bypass SSRF validation so loopback endpoints work in tests.
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+	origValidate := ssrfValidateEndpoint
+	ssrfValidateEndpoint = func(string) error { return nil }
+	t.Cleanup(func() { ssrfValidateEndpoint = origValidate })
 	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
 
 	// Server A: hosted HTTP mode — owns the campfire.
