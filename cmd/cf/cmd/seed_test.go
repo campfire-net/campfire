@@ -377,6 +377,158 @@ func TestCreateFilesystem_SeedsPromoteDeclaration(t *testing.T) {
 	}
 }
 
+// TestSeedCampfireFilesystem_RejectsDeniedTags is a regression test for
+// campfire-agent-icq: seed payloads must be validated through convention.Parse
+// before being copied into the new campfire.
+//
+// Done condition:
+//   - A seed campfire message whose payload produces a denied tag (naming: prefix)
+//     is NOT copied into the new campfire.
+//   - A seed campfire message with a valid payload IS copied.
+func TestSeedCampfireFilesystem_RejectsDeniedTags(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("CF_TRANSPORT_DIR", tmpDir)
+
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating agent identity: %v", err)
+	}
+
+	// --- Build seed campfire ---
+	seedAgentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating seed agent identity: %v", err)
+	}
+	seedCF, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("creating seed campfire: %v", err)
+	}
+	seedTr := fs.New(tmpDir)
+	if err := seedTr.Init(seedCF); err != nil {
+		t.Fatalf("init seed transport: %v", err)
+	}
+	if err := seedTr.WriteMember(seedCF.PublicKeyHex(), campfire.MemberRecord{
+		PublicKey: seedAgentID.PublicKey,
+		JoinedAt:  time.Now().UnixNano(),
+	}); err != nil {
+		t.Fatalf("writing seed member: %v", err)
+	}
+
+	// Message 1: invalid — produces_tags uses the denied "naming:" prefix.
+	// This declaration would bypass convention enforcement without the fix.
+	badDecl := convention.Declaration{
+		Convention: "bad-convention",
+		Version:    "0.1",
+		Operation:  "bad-op",
+		Signing:    "member_key",
+		ProducesTags: []convention.TagRule{
+			{Tag: "naming:bad-tag", Cardinality: "exactly_one"},
+		},
+	}
+	badPayload, err := json.Marshal(badDecl)
+	if err != nil {
+		t.Fatalf("marshaling bad declaration: %v", err)
+	}
+	badMsg, err := message.NewMessage(seedAgentID.PrivateKey, seedAgentID.PublicKey, badPayload, []string{"convention:operation"}, nil)
+	if err != nil {
+		t.Fatalf("creating bad message: %v", err)
+	}
+	if err := seedTr.WriteMessage(seedCF.PublicKeyHex(), badMsg); err != nil {
+		t.Fatalf("writing bad message: %v", err)
+	}
+
+	// Message 2: valid — a well-formed declaration that should be copied.
+	goodDecl := convention.Declaration{
+		Convention:  "valid-seed-convention",
+		Version:     "0.1",
+		Operation:   "valid-seeded-op",
+		Description: "A well-formed declaration that should be copied",
+		Signing:     "member_key",
+	}
+	goodPayload, err := json.Marshal(goodDecl)
+	if err != nil {
+		t.Fatalf("marshaling good declaration: %v", err)
+	}
+	goodMsg, err := message.NewMessage(seedAgentID.PrivateKey, seedAgentID.PublicKey, goodPayload, []string{"convention:operation"}, nil)
+	if err != nil {
+		t.Fatalf("creating good message: %v", err)
+	}
+	if err := seedTr.WriteMessage(seedCF.PublicKeyHex(), goodMsg); err != nil {
+		t.Fatalf("writing good message: %v", err)
+	}
+
+	// --- Point a project dir's seed beacon at the seed campfire ---
+	projectDir := t.TempDir()
+	seedsDir := filepath.Join(projectDir, ".campfire", "seeds")
+	if err := os.MkdirAll(seedsDir, 0700); err != nil {
+		t.Fatalf("creating seeds dir: %v", err)
+	}
+	type seedBeaconCBOR struct {
+		CampfireID string `cbor:"1,keyasint"`
+		Protocol   string `cbor:"2,keyasint"`
+		Dir        string `cbor:"3,keyasint"`
+	}
+	sbData, err := cfencoding.Marshal(seedBeaconCBOR{
+		CampfireID: seedCF.PublicKeyHex(),
+		Protocol:   "filesystem",
+		Dir:        seedTr.CampfireDir(seedCF.PublicKeyHex()),
+	})
+	if err != nil {
+		t.Fatalf("marshaling seed beacon: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seedsDir, "test.beacon"), sbData, 0600); err != nil {
+		t.Fatalf("writing seed beacon: %v", err)
+	}
+
+	// --- Create target campfire and seed it ---
+	targetCF, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("creating target campfire: %v", err)
+	}
+	targetTr := fs.New(tmpDir)
+	if err := targetTr.Init(targetCF); err != nil {
+		t.Fatalf("init target transport: %v", err)
+	}
+	if err := targetTr.WriteMember(targetCF.PublicKeyHex(), campfire.MemberRecord{
+		PublicKey: agentID.PublicKey,
+		JoinedAt:  time.Now().UnixNano(),
+	}); err != nil {
+		t.Fatalf("writing target member: %v", err)
+	}
+
+	seedCampfireFilesystem(targetCF.PublicKeyHex(), targetTr.CampfireDir(targetCF.PublicKeyHex()), agentID, targetCF, projectDir)
+
+	// --- Inspect target campfire messages ---
+	msgs, err := targetTr.ListMessages(targetCF.PublicKeyHex())
+	if err != nil {
+		t.Fatalf("listing messages: %v", err)
+	}
+
+	var foundBad, foundGood bool
+	for _, msg := range msgs {
+		if !hasConventionOperationTag(msg) {
+			continue
+		}
+		var decl convention.Declaration
+		if err := json.Unmarshal(msg.Payload, &decl); err != nil {
+			continue
+		}
+		if decl.Convention == "bad-convention" && decl.Operation == "bad-op" {
+			foundBad = true
+		}
+		if decl.Convention == "valid-seed-convention" && decl.Operation == "valid-seeded-op" {
+			foundGood = true
+		}
+	}
+
+	if foundBad {
+		t.Error("bad declaration (denied naming: tag) was copied into target campfire — validation bypass not fixed")
+	}
+	if !foundGood {
+		t.Error("valid declaration was NOT copied into target campfire — seeding is broken")
+	}
+}
+
 // hasConventionOperationTag checks whether a message has the convention:operation tag.
 func hasConventionOperationTag(msg message.Message) bool {
 	for _, tag := range msg.Tags {

@@ -71,8 +71,15 @@ func seedCampfireFilesystem(
 		return
 	}
 
-	// Step 4: Copy declarations into the new campfire.
+	// Step 4: Copy declarations into the new campfire, validating each payload
+	// through convention.Lint before copying. Messages that fail validation
+	// (denied tags, bogus signing claims, malformed declarations) are skipped.
 	for _, msg := range msgs {
+		lintResult := convention.Lint(msg.Payload)
+		if !lintResult.Valid {
+			fmt.Fprintf(os.Stderr, "warning: skipping invalid seed declaration (validation failed): %v\n", lintResult.Errors)
+			continue
+		}
 		if _, err := sendFilesystem(campfireID, string(msg.Payload), msg.Tags, nil, "", agentID, transportDir); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to copy seed declaration: %v\n", err)
 		}
