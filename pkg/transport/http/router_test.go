@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/campfire-net/campfire/pkg/beacon"
 )
 
 // Unit tests for RoutingTable.
@@ -16,7 +18,7 @@ func makeBeaconPayload(t *testing.T, campfirePriv ed25519.PrivateKey, campfirePu
 	campfireIDHex := hex.EncodeToString(campfirePub)
 	ts := time.Now().Unix()
 
-	signInput := innerBeaconSignInput{
+	decl := beacon.BeaconDeclaration{
 		CampfireID:        campfireIDHex,
 		ConventionVersion: "0.4.2",
 		Description:       "test campfire",
@@ -25,7 +27,7 @@ func makeBeaconPayload(t *testing.T, campfirePriv ed25519.PrivateKey, campfirePu
 		Timestamp:         ts,
 		Transport:         transport,
 	}
-	signBytes, err := json.Marshal(signInput)
+	signBytes, err := beacon.MarshalInnerSignInput(decl)
 	if err != nil {
 		t.Fatalf("marshaling beacon sign input: %v", err)
 	}
@@ -293,7 +295,7 @@ func TestRoutingTableRejectsOldTimestamp(t *testing.T) {
 
 	// Build a beacon with an old timestamp (25 hours ago).
 	oldTS := time.Now().Add(-25 * time.Hour).Unix()
-	signInput := innerBeaconSignInput{
+	oldDecl := beacon.BeaconDeclaration{
 		CampfireID:        campfireIDHex,
 		ConventionVersion: "0.4.2",
 		Description:       "old campfire",
@@ -302,7 +304,7 @@ func TestRoutingTableRejectsOldTimestamp(t *testing.T) {
 		Timestamp:         oldTS,
 		Transport:         "p2p-http",
 	}
-	signBytes, _ := json.Marshal(signInput)
+	signBytes, _ := beacon.MarshalInnerSignInput(oldDecl)
 	sig := ed25519.Sign(cfPriv, signBytes)
 
 	payload := beaconPayload{
