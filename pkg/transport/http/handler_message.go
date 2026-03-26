@@ -118,7 +118,7 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		for _, tag := range msg.Tags {
 			switch tag {
 			case "routing:beacon":
-				if err := h.transport.routingTable.HandleBeacon(msg.Payload, campfireID); err != nil {
+				if err := h.transport.routingTable.HandleBeacon(msg.Payload, campfireID, senderHex); err != nil {
 					log.Printf("handleDeliver: routing:beacon processing failed for campfire %s: %v", campfireID, err)
 				}
 			case "routing:withdraw":

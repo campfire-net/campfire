@@ -390,3 +390,127 @@ func TestScanAllMemberships_DeduplicatesSameCampfire(t *testing.T) {
 		t.Errorf("got %d beacons after dedup, want 1", len(beacons))
 	}
 }
+
+// --- Path Vector Tests (§3 of peering-pathvector-amendment) ---
+
+// TestBeaconDeclaration_PathSerializesDeserializes verifies that the Path field
+// round-trips through JSON correctly.
+func TestBeaconDeclaration_PathSerializesDeserializes(t *testing.T) {
+	pub, priv := testKeypair(t)
+	path := []string{"node-aaa", "node-bbb", "node-ccc"}
+	d, err := SignDeclaration(pub, priv, "http://example.com", "p2p-http", "test", "open", path)
+	if err != nil {
+		t.Fatalf("SignDeclaration with path: %v", err)
+	}
+	if len(d.Path) != 3 {
+		t.Fatalf("Path length = %d, want 3", len(d.Path))
+	}
+	if d.Path[0] != "node-aaa" || d.Path[1] != "node-bbb" || d.Path[2] != "node-ccc" {
+		t.Errorf("Path = %v, want [node-aaa node-bbb node-ccc]", d.Path)
+	}
+
+	// Round-trip through JSON.
+	raw, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var d2 BeaconDeclaration
+	if err := json.Unmarshal(raw, &d2); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(d2.Path) != 3 {
+		t.Fatalf("after round-trip, Path length = %d, want 3", len(d2.Path))
+	}
+	for i, want := range path {
+		if d2.Path[i] != want {
+			t.Errorf("Path[%d] = %s, want %s", i, d2.Path[i], want)
+		}
+	}
+}
+
+// TestMarshalInnerSignInput_IncludesPath verifies that MarshalInnerSignInput
+// includes the path field in the signing input for threshold=1 campfires (§3.2).
+func TestMarshalInnerSignInput_IncludesPath(t *testing.T) {
+	pub, priv := testKeypair(t)
+	path := []string{"node-aaa", "node-bbb"}
+	d, err := SignDeclaration(pub, priv, "http://example.com", "p2p-http", "test", "open", path)
+	if err != nil {
+		t.Fatalf("SignDeclaration: %v", err)
+	}
+
+	// Verify that the signature is valid (path included in signing input).
+	if !VerifyDeclaration(*d) {
+		t.Error("VerifyDeclaration should return true for a declaration with path (threshold=1)")
+	}
+
+	// Verify that tampering with the path invalidates the signature.
+	d.Path = []string{"node-aaa", "node-bbb", "node-evil"}
+	if VerifyDeclaration(*d) {
+		t.Error("VerifyDeclaration should return false after path is tampered (threshold=1)")
+	}
+}
+
+// TestMarshalInnerSignInputNoPath_ExcludesPath verifies that threshold>1
+// campfires sign without path, and that path can be changed freely (§3.2).
+func TestMarshalInnerSignInputNoPath_ExcludesPath(t *testing.T) {
+	pub, priv := testKeypair(t)
+	path := []string{"node-aaa", "node-bbb"}
+	d, err := SignDeclarationThreshold(pub, priv, "http://example.com", "p2p-http", "test", "open", path)
+	if err != nil {
+		t.Fatalf("SignDeclarationThreshold: %v", err)
+	}
+
+	// Verify that the signature is valid despite the path being present.
+	if !VerifyDeclaration(*d) {
+		t.Error("VerifyDeclaration should return true for threshold>1 declaration")
+	}
+
+	// Verify that the path can be updated without invalidating the signature
+	// (path is advisory for threshold>1).
+	d.Path = append(d.Path, "node-ccc")
+	if !VerifyDeclaration(*d) {
+		t.Error("VerifyDeclaration should still return true after path update (threshold>1, path is advisory)")
+	}
+}
+
+// TestMissingPath_TreatedAsEmpty verifies that a beacon without a path field
+// is valid and that Path is nil/empty (backward compatibility §3.3).
+func TestMissingPath_TreatedAsEmpty(t *testing.T) {
+	pub, priv := testKeypair(t)
+	// Sign without a path (legacy beacon).
+	d, err := SignDeclaration(pub, priv, "http://example.com", "p2p-http", "test", "open")
+	if err != nil {
+		t.Fatalf("SignDeclaration (no path): %v", err)
+	}
+	if len(d.Path) != 0 {
+		t.Errorf("Path should be empty for a legacy beacon, got %v", d.Path)
+	}
+
+	// Marshal to JSON — path should be omitted (omitempty).
+	raw, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if _, ok := m["path"]; ok {
+		t.Error("path field should be omitted from JSON when empty (omitempty)")
+	}
+
+	// Parse a beacon JSON without a path field — Path should be nil.
+	noPathJSON := []byte(`{"campfire_id":"` + d.CampfireID + `","endpoint":"http://example.com","transport":"p2p-http","description":"test","join_protocol":"open","timestamp":` + fmt.Sprintf("%d", d.Timestamp) + `,"convention_version":"0.5.0","inner_signature":"` + d.InnerSignature + `"}`)
+	var d2 BeaconDeclaration
+	if err := json.Unmarshal(noPathJSON, &d2); err != nil {
+		t.Fatalf("json.Unmarshal no-path JSON: %v", err)
+	}
+	if d2.Path != nil {
+		t.Errorf("Path should be nil when missing from JSON, got %v", d2.Path)
+	}
+
+	// Verify that a no-path beacon still verifies correctly.
+	if !VerifyDeclaration(d2) {
+		t.Error("VerifyDeclaration should return true for a no-path (legacy) beacon")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -41,18 +42,26 @@ type RouteEntry struct {
 	// InnerTimestamp is the Unix epoch seconds from the beacon's inner_signature payload.
 	// Used to prefer fresher entries when multiple exist for the same campfire_id.
 	InnerTimestamp int64
+	// Path is the ordered list of node_ids this beacon traversed, from origin to
+	// the peer that advertised this route (spec §4, path-vector amendment).
+	// Empty for legacy beacons (pre-v0.5.0).
+	Path []string
+	// NextHop is the node_id of the direct peer that delivered this beacon to us
+	// (spec §4, path-vector amendment). Empty for locally-originated routes.
+	NextHop string
 }
 
 // beaconPayload is the JSON payload of a routing:beacon message (spec §5.1).
 type beaconPayload struct {
-	CampfireID        string `json:"campfire_id"`
-	Endpoint          string `json:"endpoint"`
-	Transport         string `json:"transport"`
-	Description       string `json:"description"`
-	JoinProtocol      string `json:"join_protocol"`
-	Timestamp         int64  `json:"timestamp"`
-	ConventionVersion string `json:"convention_version"`
-	InnerSignature    string `json:"inner_signature"` // hex-encoded ed25519 signature
+	CampfireID        string   `json:"campfire_id"`
+	Endpoint          string   `json:"endpoint"`
+	Transport         string   `json:"transport"`
+	Description       string   `json:"description"`
+	JoinProtocol      string   `json:"join_protocol"`
+	Timestamp         int64    `json:"timestamp"`
+	ConventionVersion string   `json:"convention_version"`
+	InnerSignature    string   `json:"inner_signature"` // hex-encoded ed25519 signature
+	Path              []string `json:"path,omitempty"` // node_ids from origin to advertiser (v0.5.0+)
 }
 
 // withdrawPayload is the JSON payload of a routing:withdraw message (spec §5.2).
@@ -70,6 +79,11 @@ type withdrawPayload struct {
 type RoutingTable struct {
 	mu      sync.RWMutex
 	entries map[string][]RouteEntry // campfire_id → []RouteEntry
+	// NodeID is the hex-encoded Ed25519 public key of this router's transport
+	// identity. Used for loop detection per §4.2 of the path-vector amendment:
+	// beacons whose path contains NodeID are dropped to prevent routing loops.
+	// May be empty — loop detection is skipped when NodeID is not set.
+	NodeID string
 }
 
 // newRoutingTable creates an empty RoutingTable.
@@ -79,13 +93,26 @@ func newRoutingTable() *RoutingTable {
 	}
 }
 
+// newRoutingTableWithNodeID creates a RoutingTable that knows its own node_id.
+// The nodeID is used for path-vector loop detection (spec §4.2).
+func newRoutingTableWithNodeID(nodeID string) *RoutingTable {
+	return &RoutingTable{
+		entries: make(map[string][]RouteEntry),
+		NodeID:  nodeID,
+	}
+}
+
 // HandleBeacon processes a routing:beacon message payload.
 // It verifies the inner_signature, checks the timestamp, enforces the per-campfire_id
 // budget, and inserts or updates the routing table entry.
 //
+// senderNodeID is the node_id of the direct peer that delivered this beacon (used as
+// NextHop in the RouteEntry). Pass an empty string for locally-originated beacons.
+//
 // Returns an error if the beacon is malformed or inner_signature verification fails.
 // Silently ignores duplicates (same campfire_id + endpoint already present).
-func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string) error {
+// Silently drops beacons that contain a routing loop (own node_id in path).
+func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string, senderNodeID string) error {
 	var bp beaconPayload
 	if err := json.Unmarshal(rawPayload, &bp); err != nil {
 		return fmt.Errorf("routing:beacon: unmarshal payload: %w", err)
@@ -105,6 +132,17 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 	beaconTime := time.Unix(bp.Timestamp, 0)
 	if time.Since(beaconTime) > routingTableTTL {
 		return fmt.Errorf("routing:beacon: timestamp too old: %v", beaconTime)
+	}
+
+	// Loop detection (spec §4.2, path-vector amendment): if own node_id appears
+	// in the beacon's path, the beacon has looped — drop it silently.
+	if rt.NodeID != "" && len(bp.Path) > 0 {
+		for _, hop := range bp.Path {
+			if hop == rt.NodeID {
+				log.Printf("routing:beacon: loop detected for campfire_id %s (own node_id %s in path), dropping", bp.CampfireID, rt.NodeID)
+				return nil
+			}
+		}
 	}
 
 	// Decode campfire_id as ed25519 public key.
@@ -142,6 +180,13 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 		return fmt.Errorf("routing:beacon: inner_signature verification failed for campfire_id %s", bp.CampfireID)
 	}
 
+	// Copy path from beacon payload (nil-safe).
+	var path []string
+	if len(bp.Path) > 0 {
+		path = make([]string, len(bp.Path))
+		copy(path, bp.Path)
+	}
+
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
@@ -170,6 +215,8 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 			Received:       time.Now(),
 			Verified:       true,
 			InnerTimestamp: bp.Timestamp,
+			Path:           path,
+			NextHop:        senderNodeID,
 		}
 		rt.entries[bp.CampfireID] = existing
 		return nil
@@ -178,9 +225,11 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 	// Check for duplicate (same campfire_id + endpoint already present).
 	for i, e := range existing {
 		if e.Endpoint == bp.Endpoint {
-			// Refresh the existing entry.
+			// Refresh the existing entry, updating path and next_hop in case they changed.
 			existing[i].Received = time.Now()
 			existing[i].InnerTimestamp = bp.Timestamp
+			existing[i].Path = path
+			existing[i].NextHop = senderNodeID
 			rt.entries[bp.CampfireID] = existing
 			return nil
 		}
@@ -194,6 +243,8 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 		Received:       time.Now(),
 		Verified:       true,
 		InnerTimestamp: bp.Timestamp,
+		Path:           path,
+		NextHop:        senderNodeID,
 	})
 	return nil
 }
@@ -255,7 +306,16 @@ func (rt *RoutingTable) HandleWithdraw(rawPayload []byte) error {
 	return nil
 }
 
-// Lookup returns all known route entries for the given campfire_id.
+// Lookup returns all known route entries for the given campfire_id, sorted by
+// route preference per §4.1 of the path-vector amendment:
+//  1. Shortest path first (fewer hops = less amplification).
+//  2. Among equal-length paths, freshest InnerTimestamp first.
+//  3. Tie-breaker: first received (stability — earlier Received time wins).
+//
+// Legacy beacons (empty Path) sort after path-vector routes of the same length
+// (length 0 < any path, so they sort first numerically — callers should check
+// whether routes have paths when making forwarding decisions).
+//
 // Expired entries (older than routingTableTTL) are filtered out.
 // Returns nil if no routes are known.
 func (rt *RoutingTable) Lookup(campfireID string) []RouteEntry {
@@ -283,6 +343,22 @@ func (rt *RoutingTable) Lookup(campfireID string) []RouteEntry {
 			rt.entries[campfireID] = live
 		}
 	}
+
+	if len(live) == 0 {
+		return nil
+	}
+
+	// Sort by preference: shortest path → freshest timestamp → first received.
+	sort.Slice(live, func(i, j int) bool {
+		pi, pj := len(live[i].Path), len(live[j].Path)
+		if pi != pj {
+			return pi < pj // shorter path is better
+		}
+		if live[i].InnerTimestamp != live[j].InnerTimestamp {
+			return live[i].InnerTimestamp > live[j].InnerTimestamp // fresher is better
+		}
+		return live[i].Received.Before(live[j].Received) // earlier received = more stable
+	})
 
 	return live
 }
