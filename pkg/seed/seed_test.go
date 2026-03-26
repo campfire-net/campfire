@@ -5,8 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
@@ -296,6 +299,121 @@ func TestReadConventionMessages_SignatureVerification_Accept(t *testing.T) {
 	}
 	if string(msgs[0].Payload) != string(declPayload) {
 		t.Errorf("payload mismatch: want %q, got %q", declPayload, msgs[0].Payload)
+	}
+}
+
+// TestFetchWellKnownBeacon_ValidJSON verifies that fetchWellKnownBeacon correctly
+// parses a valid JSON beacon returned by an httptest server.
+func TestFetchWellKnownBeacon_ValidJSON(t *testing.T) {
+	want := seed.SeedBeacon{
+		Protocol: "filesystem",
+		Dir:      "/tmp/seed-campfire",
+	}
+	body, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshaling beacon: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	orig := seed.WellKnownURL
+	seed.WellKnownURL = srv.URL
+	t.Cleanup(func() { seed.WellKnownURL = orig })
+
+	found, err := seed.FindSeedBeacon("")
+	if err != nil {
+		t.Fatalf("FindSeedBeacon: unexpected error: %v", err)
+	}
+	if found == nil {
+		t.Fatal("expected beacon from httptest server, got nil")
+	}
+	if found.Dir != want.Dir {
+		t.Errorf("Dir: want %q, got %q", want.Dir, found.Dir)
+	}
+	if found.Protocol != want.Protocol {
+		t.Errorf("Protocol: want %q, got %q", want.Protocol, found.Protocol)
+	}
+}
+
+// TestFetchWellKnownBeacon_404 verifies that fetchWellKnownBeacon returns nil
+// when the server responds with HTTP 404.
+func TestFetchWellKnownBeacon_404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	orig := seed.WellKnownURL
+	seed.WellKnownURL = srv.URL
+	t.Cleanup(func() { seed.WellKnownURL = orig })
+
+	// FindSeedBeacon treats a failed well-known fetch as non-fatal → (nil, nil).
+	found, err := seed.FindSeedBeacon("")
+	if err != nil {
+		t.Fatalf("FindSeedBeacon: expected no error on 404, got %v", err)
+	}
+	if found != nil {
+		t.Errorf("expected nil beacon on 404, got %+v", found)
+	}
+}
+
+// TestFetchWellKnownBeacon_OversizedBody verifies that fetchWellKnownBeacon
+// rejects a response body that exceeds the 64 KiB limit.
+func TestFetchWellKnownBeacon_OversizedBody(t *testing.T) {
+	// Produce a body slightly larger than 64 KiB that still looks like JSON
+	// (to defeat any early-parse shortcut), but whose real content exceeds the cap.
+	// We build a valid-prefix JSON padded far past the limit so the limit reader
+	// truncates it before json.Unmarshal can see a complete object.
+	over64k := strings.Repeat("x", 65*1024)
+	body := `{"dir":"` + over64k + `"}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	orig := seed.WellKnownURL
+	seed.WellKnownURL = srv.URL
+	t.Cleanup(func() { seed.WellKnownURL = orig })
+
+	// The truncated body will fail JSON/CBOR parsing → FindSeedBeacon returns nil.
+	found, err := seed.FindSeedBeacon("")
+	if err != nil {
+		t.Fatalf("FindSeedBeacon: expected no error (oversized = non-fatal), got %v", err)
+	}
+	if found != nil {
+		t.Errorf("expected nil beacon for oversized body, got %+v", found)
+	}
+}
+
+// TestFetchWellKnownBeacon_InvalidJSON verifies that fetchWellKnownBeacon returns
+// nil when the server responds with a 200 but invalid JSON/CBOR body.
+func TestFetchWellKnownBeacon_InvalidJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("this is not valid json or cbor !!!"))
+	}))
+	defer srv.Close()
+
+	orig := seed.WellKnownURL
+	seed.WellKnownURL = srv.URL
+	t.Cleanup(func() { seed.WellKnownURL = orig })
+
+	// Invalid body → parse fails → FindSeedBeacon returns nil non-fatally.
+	found, err := seed.FindSeedBeacon("")
+	if err != nil {
+		t.Fatalf("FindSeedBeacon: expected no error on invalid JSON, got %v", err)
+	}
+	if found != nil {
+		t.Errorf("expected nil beacon for invalid JSON, got %+v", found)
 	}
 }
 
