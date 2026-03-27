@@ -222,9 +222,10 @@ func TestCoSigning_FlaggedWhenMissing(t *testing.T) {
 	}
 }
 
-// TestCoSigning_AcceptedWithWarning verifies that non-co-signed attestations are still stored.
-// The ErrNotCoSigned is a warning, not a rejection.
-func TestCoSigning_AcceptedWithWarning(t *testing.T) {
+// TestCoSigning_StoredButCappedAtLevel1 verifies that non-co-signed attestations are stored
+// (ErrNotCoSigned is a warning, not a rejection) but cannot elevate an operator above Level 1.
+// See §6.2: "accepted at reduced trust."
+func TestCoSigning_StoredButCappedAtLevel1(t *testing.T) {
 	s := storeWithVerifier("verifier")
 
 	freshTime := time.Now().Add(-1 * time.Hour)
@@ -234,9 +235,10 @@ func TestCoSigning_AcceptedWithWarning(t *testing.T) {
 		t.Errorf("expected ErrNotCoSigned warning, got %v", err)
 	}
 
-	// Despite the warning, the attestation was stored and should count for level computation.
-	if l := s.Level("alice"); l < LevelContactable {
-		t.Errorf("expected at least LevelContactable (non-co-signed stored), got %v", l)
+	// The attestation is stored but MUST NOT elevate alice to Level 2 or 3.
+	// Non-co-signed attestations are capped at Level 1 (Claimed) — §6.2.
+	if l := s.Level("alice"); l >= LevelContactable {
+		t.Errorf("non-co-signed attestation must not grant Level 2+: got %v, want < LevelContactable", l)
 	}
 }
 
@@ -660,6 +662,68 @@ func TestComputeLevelTransitive_FreshTransitiveWinsOverStale(t *testing.T) {
 	// Must return LevelPresent — the fresh transitive attestation wins.
 	if l := s.LevelTransitiveAt("alice", now); l != LevelPresent {
 		t.Errorf("expected LevelPresent (fresh transitive attestation wins over stale), got %v", l)
+	}
+}
+
+// TestCoSigning_NonCoSignedCappedInLevelAt is the regression test for the security finding:
+// a non-co-signed attestation for Level 2 must be capped and NOT grant LevelContactable.
+// See: Security finding — non-co-signed attestations granted full Level 2/3.
+func TestCoSigning_NonCoSignedCappedInLevelAt(t *testing.T) {
+	s := storeWithVerifier("verifier")
+	s.SetSelfClaimed("alice")
+
+	oldTime := time.Now().Add(-8 * 24 * time.Hour) // stale, would be Level 2 if co-signed
+
+	// Step 1: non-co-signed attestation for Level 2.
+	nonCoSigned := makeAttestation("att-noncosigned", "alice", "verifier", oldTime, false)
+	err := s.AddAttestation(nonCoSigned)
+	if !errors.Is(err, ErrNotCoSigned) {
+		t.Fatalf("expected ErrNotCoSigned, got %v", err)
+	}
+
+	// Step 2: LevelAt must NOT return Level 2 — capped by CoSigned=false.
+	if l := s.LevelAt("alice", time.Now()); l >= LevelContactable {
+		t.Errorf("non-co-signed attestation must not grant LevelContactable: got %v", l)
+	}
+
+	// Step 3: add a co-signed attestation for Level 2.
+	coSigned := makeAttestation("att-cosigned", "alice", "verifier", oldTime, true)
+	if err := s.AddAttestation(coSigned); err != nil {
+		t.Fatalf("AddAttestation co-signed failed: %v", err)
+	}
+
+	// Step 4: now LevelAt MUST return at least LevelContactable (Level 2).
+	if l := s.LevelAt("alice", time.Now()); l != LevelContactable {
+		t.Errorf("co-signed attestation must grant LevelContactable: got %v", l)
+	}
+}
+
+// TestCoSigning_NonCoSignedCappedInLevelTransitive verifies the same cap applies in
+// the transitive level computation path.
+func TestCoSigning_NonCoSignedCappedInLevelTransitive(t *testing.T) {
+	s := storeWithVerifier("verifier")
+	s.SetSelfClaimed("alice")
+
+	oldTime := time.Now().Add(-8 * 24 * time.Hour)
+
+	// Step 1: non-co-signed attestation — must not grant Level 2 transitively.
+	nonCoSigned := makeAttestation("att-noncosigned-t", "alice", "verifier", oldTime, false)
+	if err := s.AddAttestation(nonCoSigned); !errors.Is(err, ErrNotCoSigned) {
+		t.Fatalf("expected ErrNotCoSigned, got %v", err)
+	}
+
+	if l := s.LevelTransitiveAt("alice", time.Now()); l >= LevelContactable {
+		t.Errorf("non-co-signed attestation must not grant LevelContactable transitively: got %v", l)
+	}
+
+	// Step 2: add co-signed attestation — now Level 2 must be granted.
+	coSigned := makeAttestation("att-cosigned-t", "alice", "verifier", oldTime, true)
+	if err := s.AddAttestation(coSigned); err != nil {
+		t.Fatalf("AddAttestation co-signed failed: %v", err)
+	}
+
+	if l := s.LevelTransitiveAt("alice", time.Now()); l != LevelContactable {
+		t.Errorf("co-signed attestation must grant LevelContactable transitively: got %v", l)
 	}
 }
 
