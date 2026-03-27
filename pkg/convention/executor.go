@@ -372,12 +372,22 @@ func collectArgValuesForPrefix(argDescs []ArgDescriptor, args map[string]any, pr
 // ------- Arg validation -------
 
 // validateArgs checks all declared args against provided values, applies defaults,
-// and returns the resolved args map.
+// strips undeclared args (strict allow-listing), and returns the cleaned resolved args map.
+// Any argument not present in descs is silently stripped.
 func validateArgs(descs []ArgDescriptor, provided map[string]any) (map[string]any, error) {
-	resolved := make(map[string]any, len(provided))
-	// Copy provided values.
+	// Build allow-list of declared arg names.
+	declared := make(map[string]struct{}, len(descs))
+	for _, desc := range descs {
+		declared[desc.Name] = struct{}{}
+	}
+
+	// Copy only declared args; strip undeclared ones.
+	resolved := make(map[string]any, len(descs))
 	for k, v := range provided {
-		resolved[k] = v
+		if _, ok := declared[k]; ok {
+			resolved[k] = v
+		}
+		// Undeclared args are silently dropped -- strict allow-listing.
 	}
 
 	for _, desc := range descs {
