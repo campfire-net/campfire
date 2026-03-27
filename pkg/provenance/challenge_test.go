@@ -27,6 +27,7 @@ func validResponse(ch *Challenge) *ChallengeResponse {
 	return &ChallengeResponse{
 		AntecedentID:    ch.ID,
 		ResponderKey:    ch.TargetKey,
+		MessageSender:   ch.TargetKey, // cryptographic envelope sender — must match TargetKey
 		TargetKey:       ch.TargetKey,
 		Nonce:           ch.Nonce,
 		ContactMethod:   "cf://my-campfire",
@@ -289,6 +290,39 @@ func TestValidateResponse_WrongResponder(t *testing.T) {
 	}
 }
 
+// TestValidateResponse_MissingMessageSender verifies that a response without a
+// MessageSender is rejected. Callers MUST populate this from the transport envelope
+// before calling ValidateResponse. (Regression: campfire-agent-4bn)
+func TestValidateResponse_MissingMessageSender(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+	ch := issueTestChallenge(t, c, "msg-sender-missing-001", now)
+	resp := validResponse(ch)
+	resp.MessageSender = "" // simulate caller that omits the envelope sender
+
+	_, err := c.ValidateResponse(resp, now.Add(10*time.Second))
+	if err == nil {
+		t.Error("expected error for missing MessageSender, got nil")
+	}
+}
+
+// TestValidateResponse_WrongMessageSender verifies that a response whose MessageSender
+// does not match the challenge TargetKey is rejected. This prevents a campfire member
+// from forging an operator-verify response on behalf of another operator.
+// (Regression: campfire-agent-4bn)
+func TestValidateResponse_WrongMessageSender(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+	ch := issueTestChallenge(t, c, "msg-sender-wrong-001", now)
+	resp := validResponse(ch)
+	resp.MessageSender = "impostor-member-key-zzz" // different campfire member forging response
+
+	_, err := c.ValidateResponse(resp, now.Add(10*time.Second))
+	if err == nil {
+		t.Error("expected error for wrong MessageSender (forged response), got nil")
+	}
+}
+
 // TestValidateResponse_OneTimeUse verifies a challenge cannot be answered twice.
 func TestValidateResponse_OneTimeUse(t *testing.T) {
 	c := NewChallenger()
@@ -383,6 +417,7 @@ func TestCreateAttestation_SelfAttestation(t *testing.T) {
 	resp := &ChallengeResponse{
 		AntecedentID:  ch.ID,
 		ResponderKey:  ch.TargetKey,
+		MessageSender: ch.TargetKey, // cryptographic envelope sender
 		TargetKey:     ch.TargetKey,
 		Nonce:         ch.Nonce,
 		ContactMethod: "cf://self",
@@ -437,6 +472,7 @@ func TestFullFlow_ChallengeResponseAttestation(t *testing.T) {
 	resp := &ChallengeResponse{
 		AntecedentID:    ch.ID,
 		ResponderKey:    testTargetKey,
+		MessageSender:   testTargetKey, // cryptographic envelope sender
 		TargetKey:       testTargetKey,
 		Nonce:           ch.Nonce,
 		ContactMethod:   "cf://contact-campfire",

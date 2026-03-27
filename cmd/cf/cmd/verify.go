@@ -203,6 +203,11 @@ func resolveCallbackCampfire(s store.Store) (string, error) {
 }
 
 // waitForVerifyResponse polls for a matching operator-verify response.
+//
+// Security: msg.Sender (the cryptographic signer of the campfire message) is
+// checked against ch.TargetKey before parsing. Messages from other senders are
+// silently skipped — a forged operator-verify from any other campfire member
+// cannot be accepted as a valid response (campfire-agent-34c).
 func waitForVerifyResponse(ch *provenance.Challenge, callbackCampfireID string, timeout time.Duration, s store.Store) (*provenance.ChallengeResponse, error) {
 	deadline := time.Now().Add(timeout)
 	pollInterval := 2 * time.Second
@@ -211,8 +216,18 @@ func waitForVerifyResponse(ch *provenance.Challenge, callbackCampfireID string, 
 		msgs, err := s.ListMessages(callbackCampfireID, 0)
 		if err == nil {
 			for _, msg := range msgs {
+				// Reject messages not signed by the target operator.
+				// msg.Sender is hex-encoded Ed25519 public key from the
+				// transport envelope — this is the cryptographic sender,
+				// not a self-reported field.
+				if msg.Sender != ch.TargetKey {
+					continue
+				}
 				resp, ok := parseVerifyResponse(msg.Payload, ch)
 				if ok {
+					// Populate MessageSender so ValidateResponse can
+					// perform its own envelope-sender check (campfire-agent-4bn).
+					resp.MessageSender = msg.Sender
 					return resp, nil
 				}
 			}
