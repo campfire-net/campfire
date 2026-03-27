@@ -128,32 +128,57 @@ type server struct {
 	st              store.Store       // non-nil in session mode; already-open store shared from Session
 	sess            *Session          // non-nil in session mode; back-reference used to persist auditWriter across requests
 	conventionTools *conventionToolMap // dynamic convention-declared tools per session
-	joinMu          sync.Mutex         // guards joinLock map
-	joinLock        map[string]*sync.Mutex // per-campfireID mutex; prevents concurrent-join cleanup race
+	joinMu          sync.Mutex              // guards joinLock map
+	joinLock        map[string]*joinEntry   // per-campfireID entry; evicted when refcount drops to zero
 }
 
 func (s *server) identityPath() string {
 	return filepath.Join(s.cfHome, "identity.json")
 }
 
-// getJoinMutex returns the per-campfireID mutex for serializing concurrent
-// handleRemoteJoin calls. Concurrent joins for different campfireIDs proceed
-// in parallel; joins for the same campfireID are serialized to prevent the
-// TOCTOU cleanup race (a failing concurrent call from deleting state written
-// by a succeeding concurrent call).
-//
-// The mutex map grows unboundedly — GC of idle entries is a future concern.
-func (s *server) getJoinMutex(campfireID string) *sync.Mutex {
-	s.joinMu.Lock()
-	defer s.joinMu.Unlock()
-	if s.joinLock == nil {
-		s.joinLock = make(map[string]*sync.Mutex)
-	}
-	if _, ok := s.joinLock[campfireID]; !ok {
-		s.joinLock[campfireID] = &sync.Mutex{}
-	}
-	return s.joinLock[campfireID]
+// joinEntry is a reference-counted per-campfireID mutex entry.
+// When refs drops to zero the entry is evicted from the map.
+type joinEntry struct {
+	mu   sync.Mutex
+	refs int
 }
+
+// acquireJoinMutex returns the per-campfireID mutex locked and ready for use.
+// Concurrent joins for different campfireIDs proceed in parallel; joins for
+// the same campfireID are serialized to prevent the TOCTOU cleanup race.
+// Call releaseJoinMutex when done — it unlocks the mutex and evicts the map
+// entry when no other goroutine holds a reference.
+func (s *server) acquireJoinMutex(campfireID string) *joinEntry {
+	s.joinMu.Lock()
+	if s.joinLock == nil {
+		s.joinLock = make(map[string]*joinEntry)
+	}
+	e, ok := s.joinLock[campfireID]
+	if !ok {
+		e = &joinEntry{}
+		s.joinLock[campfireID] = e
+	}
+	e.refs++
+	s.joinMu.Unlock()
+
+	e.mu.Lock()
+	return e
+}
+
+// releaseJoinMutex unlocks the entry and evicts it from the map when no
+// other goroutine holds a reference, bounding the map to active campfires.
+func (s *server) releaseJoinMutex(campfireID string, e *joinEntry) {
+	e.mu.Unlock()
+
+	s.joinMu.Lock()
+	e.refs--
+	if e.refs == 0 {
+		delete(s.joinLock, campfireID)
+	}
+	s.joinMu.Unlock()
+}
+
+
 
 func (s *server) storePath() string {
 	return store.StorePath(s.cfHome)
@@ -1576,9 +1601,8 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 	// cleanup race: without this lock, two concurrent calls can both observe
 	// dirExistedBefore=false, then the failing call's defer runs RemoveAll on
 	// the directory that the succeeding call already populated.
-	joinMu := s.getJoinMutex(campfireID)
-	joinMu.Lock()
-	defer joinMu.Unlock()
+	je := s.acquireJoinMutex(campfireID)
+	defer s.releaseJoinMutex(campfireID, je)
 
 	// Persist campfire state to local fs transport so handleSend/handleRead can use it.
 	transport := s.fsTransport()

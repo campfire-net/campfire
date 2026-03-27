@@ -108,7 +108,7 @@ func TestCLIDispatchConventionOp(t *testing.T) {
 	campfireID, cleanup := setupDispatchEnv(t, testDecl)
 	defer cleanup()
 
-	err := dispatchConventionOp(campfireID[:12], "post", []string{"--text", "hello world"})
+	err := dispatchConventionOp(context.Background(), campfireID[:12], "post", []string{"--text", "hello world"})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestCLIDispatchUnknownOp(t *testing.T) {
 	campfireID, cleanup := setupDispatchEnv(t, testDecl)
 	defer cleanup()
 
-	err := dispatchConventionOp(campfireID[:12], "bogus-operation", nil)
+	err := dispatchConventionOp(context.Background(), campfireID[:12], "bogus-operation", nil)
 	if err == nil {
 		t.Fatal("expected error for unknown operation, got nil")
 	}
@@ -170,7 +170,7 @@ func TestCLIDispatchNoOp_DefaultsToRead(t *testing.T) {
 	// readCmd.RunE will fail because the test store has no messages, but the
 	// important thing is it doesn't error on "no operation" — it reaches readCmd.
 	// We can verify indirectly: the function should not return "unknown operation".
-	err := dispatchConventionOp(campfireID[:12], "", nil)
+	err := dispatchConventionOp(context.Background(), campfireID[:12], "", nil)
 	// May succeed (empty read) or fail on transport, but should NOT be an "unknown operation" error
 	// Error is acceptable (empty store, transport errors) — just not an "unknown operation" error
 	if err != nil && err.Error() == "unknown operation" {
@@ -198,7 +198,7 @@ func TestCLIDispatchNoOp_NoDoubleClose(t *testing.T) {
 	// Call 5 times to exercise any lazy-init paths; a double-close panic on the
 	// first call is sufficient, but repeated calls stress the deferred-only close.
 	for range 5 {
-		_ = dispatchConventionOp(campfireID[:12], "", nil)
+		_ = dispatchConventionOp(context.Background(), campfireID[:12], "", nil)
 	}
 }
 

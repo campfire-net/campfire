@@ -2,8 +2,8 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -38,8 +38,8 @@ func TestCLITransportSendCampfireKeySignedStub(t *testing.T) {
 	if msgID != "" {
 		t.Errorf("SendCampfireKeySigned: expected empty msgID on error, got %q", msgID)
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("SendCampfireKeySigned: expected 'not yet implemented' in error, got: %v", err)
+	if !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("SendCampfireKeySigned: expected ErrNotImplemented, got: %v", err)
 	}
 }
 
@@ -70,7 +70,7 @@ func TestCLITransportSendFutureAndAwaitStub(t *testing.T) {
 	if result != nil {
 		t.Errorf("SendFutureAndAwait: expected nil result on error, got %v", result)
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("SendFutureAndAwait: expected 'not yet implemented' in error, got: %v", err)
+	if !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("SendFutureAndAwait: expected ErrNotImplemented, got: %v", err)
 	}
 }

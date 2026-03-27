@@ -68,7 +68,7 @@ func init() {
 		} else {
 			flagArgs = args[1:]
 		}
-		return dispatchConventionOp(campfireName, operationName, flagArgs)
+		return dispatchConventionOp(cmd.Context(), campfireName, operationName, flagArgs)
 	}
 }
 
