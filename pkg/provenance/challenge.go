@@ -261,7 +261,7 @@ func (c *Challenger) ValidateResponse(resp *ChallengeResponse, now time.Time) (*
 // allow self-attestation (§10.5).
 //
 // The attestationID should be derived from the response message ID in production.
-func CreateAttestation(store *Store, attestationID string, ch *Challenge, resp *ChallengeResponse, now time.Time) (*Attestation, error) {
+func CreateAttestation(store AttestationStore, attestationID string, ch *Challenge, resp *ChallengeResponse, now time.Time) (*Attestation, error) {
 	if store == nil {
 		return nil, errors.New("provenance: nil store")
 	}
