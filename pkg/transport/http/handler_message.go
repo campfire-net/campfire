@@ -277,21 +277,28 @@ func (h *handler) forwardMessage(campfireID, senderHex string, msg *message.Mess
 	var targetEndpoints []string
 
 	if hasPathVectorRoutes {
-		// Path-vector forwarding: forwarding_set = (PeerNeedsSet ∪ NextHops) - sender.
+		// Path-vector forwarding with bloom filter pruning:
+		// forwarding_set = bloom_filter((PeerNeedsSet ∪ NextHops) - sender).
+		// The bloom filter check prunes peers whose downstream does not include
+		// this campfire, approximating a per-campfire shortest-path tree (SPT).
 		forwardingSet := make(map[string]bool)
 
-		// Add routing next_hops.
+		// Add routing next_hops, pruned by bloom filter.
 		for _, route := range routes {
 			if route.NextHop != "" && route.NextHop != senderHex {
-				forwardingSet[route.NextHop] = true
+				if h.transport.routingTable.PeerBloomCheck(route.NextHop, campfireID) {
+					forwardingSet[route.NextHop] = true
+				}
 			}
 		}
 
-		// Union with peer-needs-set.
+		// Union with peer-needs-set (also bloom-checked).
 		peerNeeds := h.transport.routingTable.PeerNeedsSet(campfireID)
 		for nodeID := range peerNeeds {
 			if nodeID != senderHex {
-				forwardingSet[nodeID] = true
+				if h.transport.routingTable.PeerBloomCheck(nodeID, campfireID) {
+					forwardingSet[nodeID] = true
+				}
 			}
 		}
 
