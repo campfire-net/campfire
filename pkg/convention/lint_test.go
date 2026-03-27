@@ -241,3 +241,116 @@ func TestLint_EnumTagMismatchWarning(t *testing.T) {
 		t.Errorf("expected enum_tag_mismatch warning, got warnings: %v", result.Warnings)
 	}
 }
+
+// TestLint_UnmappableTag verifies that a glob tag with no matching arg produces an
+// unmappable_tag error (lintArgToTagMapping error path).
+func TestLint_UnmappableTag(t *testing.T) {
+	payload := mustJSON(map[string]any{
+		"convention": "my-convention",
+		"version":    "0.1",
+		"operation":  "op",
+		"signing":    "member_key",
+		"produces_tags": []any{
+			map[string]any{
+				"tag":         "widget:*",
+				"cardinality": "zero_to_many",
+			},
+		},
+		// No args declared at all — no arg can satisfy "widget:*"
+	})
+	result := Lint(payload)
+	if result.Valid {
+		t.Errorf("expected Valid=false for unmappable glob tag, got errors: %v", result.Errors)
+	}
+	found := false
+	for _, e := range result.Errors {
+		if e.Code == "unmappable_tag" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected unmappable_tag error, got: %v", result.Errors)
+	}
+}
+
+// TestLint_ExactEnumCandidateSatisfiesGlob verifies that an enum arg whose values
+// already include the tag prefix satisfies the glob (no warning or error).
+func TestLint_ExactEnumCandidateSatisfiesGlob(t *testing.T) {
+	payload := mustJSON(map[string]any{
+		"convention": "my-convention",
+		"version":    "0.1",
+		"operation":  "op",
+		"signing":    "member_key",
+		"produces_tags": []any{
+			map[string]any{
+				"tag":         "social:*",
+				"cardinality": "zero_to_many",
+				"values":      []string{"social:need", "social:have"},
+			},
+		},
+		"args": []any{
+			map[string]any{
+				"name":   "coord",
+				"type":   "enum",
+				"values": []string{"social:need", "social:have"}, // correct prefix
+			},
+		},
+	})
+	result := Lint(payload)
+	if !result.Valid {
+		t.Errorf("expected Valid=true when enum values have correct prefix, got errors: %v", result.Errors)
+	}
+	// Should have no enum_tag_mismatch warnings
+	for _, w := range result.Warnings {
+		if w.Code == "enum_tag_mismatch" {
+			t.Errorf("unexpected enum_tag_mismatch warning: %v", w)
+		}
+	}
+}
+
+// TestLint_NonEnumNameCandidateSatisfiesGlob verifies that a non-enum arg whose
+// name matches the prefix base satisfies the glob.
+func TestLint_NonEnumNameCandidateSatisfiesGlob(t *testing.T) {
+	payload := mustJSON(map[string]any{
+		"convention": "my-convention",
+		"version":    "0.1",
+		"operation":  "op",
+		"signing":    "member_key",
+		"produces_tags": []any{
+			map[string]any{
+				"tag":         "topic:*",
+				"cardinality": "zero_to_many",
+			},
+		},
+		"args": []any{
+			map[string]any{
+				"name":     "topics",
+				"type":     "string",
+				"repeated": true,
+			},
+		},
+	})
+	result := Lint(payload)
+	if !result.Valid {
+		t.Errorf("expected Valid=true when non-enum arg name matches prefix, got errors: %v", result.Errors)
+	}
+}
+
+// TestLint_StaticTagOnly verifies that a static (non-glob) tag in produces_tags
+// is passed through lintArgToTagMapping without error.
+func TestLint_StaticTagOnly(t *testing.T) {
+	payload := mustJSON(map[string]any{
+		"convention": "my-convention",
+		"version":    "0.1",
+		"operation":  "op",
+		"signing":    "member_key",
+		"produces_tags": []any{
+			map[string]any{"tag": "status:ok", "cardinality": "exactly_one"},
+		},
+	})
+	result := Lint(payload)
+	if !result.Valid {
+		t.Errorf("expected Valid=true for static tag, got errors: %v", result.Errors)
+	}
+}

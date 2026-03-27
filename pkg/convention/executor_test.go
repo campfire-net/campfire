@@ -485,13 +485,15 @@ func TestExecute_RateLimitSenderAndCampfire(t *testing.T) {
 func TestExecute_RateLimitSharedAcrossExecutors(t *testing.T) {
 	// Reset the process-level singleton so this test starts with a clean slate,
 	// regardless of what other tests have executed. Restore on cleanup.
+	// We do NOT copy sync.Once by value (go vet rejects it); instead we save
+	// only the limiter pointer and reset the Once to a fresh value in both
+	// the setup and the cleanup.
 	origLimiter := globalRateLimiter
-	origOnce := globalRateLimiterOnce
 	globalRateLimiter = nil
 	globalRateLimiterOnce = sync.Once{}
 	t.Cleanup(func() {
 		globalRateLimiter = origLimiter
-		globalRateLimiterOnce = origOnce
+		globalRateLimiterOnce = sync.Once{}
 	})
 
 	payload := mustJSON(map[string]any{
@@ -785,5 +787,410 @@ func TestCollectArgValuesForPrefix_NamingNameGlob(t *testing.T) {
 	got := collectArgValuesForPrefix(args, provided, "naming:name:")
 	if len(got) != 1 || got[0] != "naming:name:social" {
 		t.Errorf("expected [naming:name:social], got %v", got)
+	}
+}
+
+// ---- Item 2: toStringSlice — []any and string branches ----
+
+// TestToStringSlice_AnySlice exercises the []any branch.
+func TestToStringSlice_AnySlice(t *testing.T) {
+	input := []any{"x", "y", 42} // 42 is not a string — should be skipped
+	got := toStringSlice(input)
+	if len(got) != 2 || got[0] != "x" || got[1] != "y" {
+		t.Errorf("[]any branch: expected [x y], got %v", got)
+	}
+}
+
+// TestToStringSlice_StringScalar exercises the single-string branch.
+func TestToStringSlice_StringScalar(t *testing.T) {
+	got := toStringSlice("hello")
+	if len(got) != 1 || got[0] != "hello" {
+		t.Errorf("string branch: expected [hello], got %v", got)
+	}
+}
+
+// TestToStringSlice_Unknown verifies that unrecognised types return nil.
+func TestToStringSlice_Unknown(t *testing.T) {
+	got := toStringSlice(42)
+	if got != nil {
+		t.Errorf("unknown type: expected nil, got %v", got)
+	}
+}
+
+// ---- Item 3: validateSingleValue — missing type branches ----
+
+// TestValidateSingleValue_Boolean verifies bool type validation.
+func TestValidateSingleValue_Boolean(t *testing.T) {
+	desc := ArgDescriptor{Name: "flag", Type: "boolean"}
+	if err := validateSingleValue(desc, true); err != nil {
+		t.Errorf("true: unexpected error: %v", err)
+	}
+	if err := validateSingleValue(desc, false); err != nil {
+		t.Errorf("false: unexpected error: %v", err)
+	}
+	if err := validateSingleValue(desc, "not-a-bool"); err == nil {
+		t.Error("string for boolean: expected error, got nil")
+	}
+}
+
+// TestValidateSingleValue_Duration verifies duration string validation.
+func TestValidateSingleValue_Duration(t *testing.T) {
+	desc := ArgDescriptor{Name: "ttl", Type: "duration"}
+	if err := validateSingleValue(desc, "5m"); err != nil {
+		t.Errorf("valid duration: unexpected error: %v", err)
+	}
+	if err := validateSingleValue(desc, "invalid"); err == nil {
+		t.Error("invalid duration: expected error, got nil")
+	}
+	if err := validateSingleValue(desc, 42); err == nil {
+		t.Error("non-string duration: expected error, got nil")
+	}
+}
+
+// TestValidateSingleValue_Key verifies key type: 64 hex chars required.
+func TestValidateSingleValue_Key(t *testing.T) {
+	desc := ArgDescriptor{Name: "agent_key", Type: "key"}
+	validKey := strings.Repeat("a", 64)
+	if err := validateSingleValue(desc, validKey); err != nil {
+		t.Errorf("valid key: unexpected error: %v", err)
+	}
+	if err := validateSingleValue(desc, strings.Repeat("a", 32)); err == nil {
+		t.Error("too-short key: expected error, got nil")
+	}
+	if err := validateSingleValue(desc, strings.Repeat("Z", 64)); err == nil {
+		t.Error("non-hex key (uppercase Z): expected error, got nil")
+	}
+	if err := validateSingleValue(desc, 99); err == nil {
+		t.Error("non-string key: expected error, got nil")
+	}
+}
+
+// TestValidateSingleValue_CampfireAndMessageID verifies campfire/message_id types.
+func TestValidateSingleValue_CampfireAndMessageID(t *testing.T) {
+	for _, typ := range []string{"campfire", "message_id"} {
+		desc := ArgDescriptor{Name: "x", Type: typ}
+		if err := validateSingleValue(desc, "some-id"); err != nil {
+			t.Errorf("%s with value: unexpected error: %v", typ, err)
+		}
+		if err := validateSingleValue(desc, nil); err == nil {
+			t.Errorf("%s with nil: expected error, got nil", typ)
+		}
+	}
+}
+
+// TestValidateSingleValue_JSON verifies json type: must be a valid JSON string.
+func TestValidateSingleValue_JSON(t *testing.T) {
+	desc := ArgDescriptor{Name: "data", Type: "json"}
+	if err := validateSingleValue(desc, `{"key":"val"}`); err != nil {
+		t.Errorf("valid JSON: unexpected error: %v", err)
+	}
+	if err := validateSingleValue(desc, `{bad json`); err == nil {
+		t.Error("invalid JSON: expected error, got nil")
+	}
+	if err := validateSingleValue(desc, 42); err == nil {
+		t.Error("non-string JSON: expected error, got nil")
+	}
+	if err := validateSingleValue(desc, nil); err == nil {
+		t.Error("nil JSON: expected error, got nil")
+	}
+}
+
+// TestValidateSingleValue_TagSet verifies tag_set type: must be []string.
+func TestValidateSingleValue_TagSet(t *testing.T) {
+	desc := ArgDescriptor{Name: "tags", Type: "tag_set"}
+	if err := validateSingleValue(desc, []string{"a:b", "c:d"}); err != nil {
+		t.Errorf("valid tag_set: unexpected error: %v", err)
+	}
+	if err := validateSingleValue(desc, "not-a-slice"); err == nil {
+		t.Error("string for tag_set: expected error, got nil")
+	}
+	if err := validateSingleValue(desc, nil); err == nil {
+		t.Error("nil tag_set: expected error, got nil")
+	}
+}
+
+// TestValidateSingleValue_Integer_Types exercises int64 and json.Number paths.
+func TestValidateSingleValue_Integer_Types(t *testing.T) {
+	desc := ArgDescriptor{Name: "n", Type: "integer"}
+	// int64
+	if err := validateSingleValue(desc, int64(5)); err != nil {
+		t.Errorf("int64: unexpected error: %v", err)
+	}
+	// json.Number valid
+	if err := validateSingleValue(desc, json.Number("7")); err != nil {
+		t.Errorf("json.Number valid: unexpected error: %v", err)
+	}
+	// json.Number invalid
+	if err := validateSingleValue(desc, json.Number("not-a-number")); err == nil {
+		t.Error("json.Number invalid: expected error, got nil")
+	}
+	// completely wrong type
+	if err := validateSingleValue(desc, "text"); err == nil {
+		t.Error("string for integer: expected error, got nil")
+	}
+}
+
+// ---- Item 4: baseProperty — 7 arg types not exercised ----
+
+// TestBaseProperty_AllTypes verifies baseProperty for all arg types including
+// the default fallback for unknown types.
+func TestBaseProperty_AllTypes(t *testing.T) {
+	cases := []struct {
+		arg      ArgDescriptor
+		wantType string
+		wantKey  string // optional extra key to check
+	}{
+		{ArgDescriptor{Name: "s", Type: "string"}, "string", ""},
+		{ArgDescriptor{Name: "s", Type: "string", MaxLength: 5, Pattern: "^a$"}, "string", "maxLength"},
+		{ArgDescriptor{Name: "i", Type: "integer"}, "integer", ""},
+		{ArgDescriptor{Name: "i", Type: "integer", Max: 10}, "integer", "maximum"},
+		{ArgDescriptor{Name: "d", Type: "duration"}, "string", "pattern"},
+		{ArgDescriptor{Name: "b", Type: "boolean"}, "boolean", ""},
+		{ArgDescriptor{Name: "k", Type: "key"}, "string", "pattern"},
+		{ArgDescriptor{Name: "c", Type: "campfire"}, "string", "description"},
+		{ArgDescriptor{Name: "m", Type: "message_id"}, "string", "description"},
+		{ArgDescriptor{Name: "j", Type: "json"}, "object", ""},
+		{ArgDescriptor{Name: "ts", Type: "tag_set"}, "array", ""},
+		{ArgDescriptor{Name: "e", Type: "enum", Values: []string{"a", "b"}}, "string", "enum"},
+		{ArgDescriptor{Name: "u", Type: "unknown-type"}, "string", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.arg.Type, func(t *testing.T) {
+			prop := baseProperty(c.arg)
+			if prop["type"] != c.wantType {
+				t.Errorf("type: want %q, got %q", c.wantType, prop["type"])
+			}
+			if c.wantKey != "" {
+				if _, ok := prop[c.wantKey]; !ok {
+					t.Errorf("expected key %q in property map %v", c.wantKey, prop)
+				}
+			}
+		})
+	}
+}
+
+// TestBaseProperty_Integer_MinSet verifies that minimum is only emitted when MinSet=true.
+func TestBaseProperty_Integer_MinSet(t *testing.T) {
+	withMin := ArgDescriptor{Name: "n", Type: "integer", Min: 3, MinSet: true}
+	p := baseProperty(withMin)
+	if p["minimum"] != 3 {
+		t.Errorf("MinSet=true: expected minimum=3, got %v", p["minimum"])
+	}
+
+	withoutMin := ArgDescriptor{Name: "n", Type: "integer", Min: 0, MinSet: false}
+	p2 := baseProperty(withoutMin)
+	if _, ok := p2["minimum"]; ok {
+		t.Errorf("MinSet=false: minimum should not be present, got %v", p2)
+	}
+}
+
+// ---- Item 7: composeTags — static at_most_one, zero_to_many max, exactly_one empty ----
+
+// TestComposeTags_StaticAtMostOne verifies that a static (non-glob) at_most_one tag
+// is not emitted (it's optional and no arg maps to it).
+func TestComposeTags_StaticAtMostOne(t *testing.T) {
+	decl := &Declaration{
+		Convention:  "test",
+		Version:     "0.1",
+		Operation:   "op",
+		Signing:     "member_key",
+		Antecedents: "none",
+		ProducesTags: []TagRule{
+			{Tag: "social:post", Cardinality: "exactly_one"},
+			{Tag: "optional:flag", Cardinality: "at_most_one"}, // static, optional
+		},
+	}
+	tagList, err := composeTags(decl, map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, tg := range tagList {
+		if tg == "optional:flag" {
+			t.Errorf("static at_most_one tag should not be emitted; got %v", tagList)
+		}
+	}
+}
+
+// TestComposeTags_ZeroToMany_MaxExceeded verifies that zero_to_many with a max
+// returns an error when the limit is breached.
+func TestComposeTags_ZeroToMany_MaxExceeded(t *testing.T) {
+	decl := &Declaration{
+		Convention:  "test",
+		Version:     "0.1",
+		Operation:   "op",
+		Signing:     "member_key",
+		Antecedents: "none",
+		ProducesTags: []TagRule{
+			{Tag: "topic:*", Cardinality: "zero_to_many", Max: 2},
+		},
+		Args: []ArgDescriptor{
+			{Name: "topics", Type: "string", Repeated: true},
+		},
+	}
+	args := map[string]any{"topics": []string{"a", "b", "c"}} // 3 > max 2
+	_, err := composeTags(decl, args)
+	if err == nil {
+		t.Error("expected error for zero_to_many exceeding max, got nil")
+	}
+	if !strings.Contains(err.Error(), "max") {
+		t.Errorf("error should mention 'max'; got %v", err)
+	}
+}
+
+// TestComposeTags_ExactlyOne_EmptyArgValues verifies that an exactly_one glob
+// with no matching arg values emits nothing (no error).
+func TestComposeTags_ExactlyOne_EmptyArgValues(t *testing.T) {
+	decl := &Declaration{
+		Convention:  "test",
+		Version:     "0.1",
+		Operation:   "op",
+		Signing:     "member_key",
+		Antecedents: "none",
+		ProducesTags: []TagRule{
+			{Tag: "social:*", Cardinality: "exactly_one"},
+		},
+		Args: []ArgDescriptor{
+			{Name: "coord", Type: "enum", Values: []string{"social:upvote"}},
+		},
+	}
+	// No "coord" arg provided — collectArgValuesForPrefix returns empty.
+	_, err := composeTags(decl, map[string]any{})
+	if err != nil {
+		t.Errorf("exactly_one with zero values should not error; got %v", err)
+	}
+}
+
+// TestComposeTags_AtMostOne_TooMany verifies at_most_one returns error with >1 value.
+func TestComposeTags_AtMostOne_TooMany(t *testing.T) {
+	decl := &Declaration{
+		Convention:  "test",
+		Version:     "0.1",
+		Operation:   "op",
+		Signing:     "member_key",
+		Antecedents: "none",
+		ProducesTags: []TagRule{
+			{Tag: "type:*", Cardinality: "at_most_one"},
+		},
+		Args: []ArgDescriptor{
+			{Name: "types", Type: "string", Repeated: true},
+		},
+	}
+	args := map[string]any{"types": []string{"a", "b"}} // 2 > at_most_one
+	_, err := composeTags(decl, args)
+	if err == nil {
+		t.Error("expected error for at_most_one with 2 values, got nil")
+	}
+}
+
+// ---- Item 8: executeStep default branch and resolveAntecedents unrecognized rule ----
+
+// TestExecuteStep_UnknownAction verifies that executeStep returns an error for
+// an unrecognized step action (the default branch).
+func TestExecuteStep_UnknownAction(t *testing.T) {
+	tr := &mockTransport{}
+	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+	step := Step{Action: "unsupported-action"}
+	err := ex.executeStep(context.Background(), step, "cf-test", make(map[string]map[string]any))
+	if err == nil {
+		t.Error("expected error for unknown step action, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown step action") {
+		t.Errorf("error should mention 'unknown step action'; got %v", err)
+	}
+}
+
+// TestResolveAntecedents_UnrecognizedRule verifies that an unrecognized antecedent
+// rule returns an appropriate error.
+func TestResolveAntecedents_UnrecognizedRule(t *testing.T) {
+	tr := &mockTransport{}
+	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+	decl := &Declaration{
+		Convention:  "test",
+		Version:     "0.1",
+		Operation:   "op",
+		Signing:     "member_key",
+		Antecedents: "unrecognized_rule",
+	}
+	_, err := ex.resolveAntecedents(context.Background(), decl, "cf-test", map[string]any{})
+	if err == nil {
+		t.Error("expected error for unrecognized antecedent rule, got nil")
+	}
+	if !strings.Contains(err.Error(), "unrecognized") {
+		t.Errorf("error should mention 'unrecognized'; got %v", err)
+	}
+}
+
+// ---- Item 10: executeQueryStep — future_payload marshal path and non-JSON raw result ----
+
+// TestExecuteQueryStep_FuturePayload verifies that a step with future_payload
+// correctly marshals and passes the payload to SendFutureAndAwait.
+func TestExecuteQueryStep_FuturePayload(t *testing.T) {
+	futureResult, _ := json.Marshal(map[string]any{"msg_id": "response-msg-123"})
+	tr := &mockTransport{futureResult: futureResult}
+	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+
+	step := Step{
+		Action: "query",
+		FuturePayload: map[string]any{
+			"lookup_key": "some-value",
+		},
+		FutureTags:    []string{"lookup:request"},
+		ResultBinding: "lookup_result",
+	}
+	bindings := make(map[string]map[string]any)
+	if err := ex.executeStep(context.Background(), step, "cf-test", bindings); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The result should be bound under "lookup_result"
+	if bound, ok := bindings["lookup_result"]; !ok {
+		t.Error("expected result binding 'lookup_result' to be set")
+	} else if bound["msg_id"] != "response-msg-123" {
+		t.Errorf("expected msg_id=response-msg-123, got %v", bound["msg_id"])
+	}
+}
+
+// TestExecuteQueryStep_NonJSONRawResult verifies that when SendFutureAndAwait returns
+// non-JSON bytes, the result is stored under the "raw" key.
+func TestExecuteQueryStep_NonJSONRawResult(t *testing.T) {
+	tr := &mockTransport{futureResult: []byte("plain text response")}
+	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+
+	step := Step{
+		Action:        "query",
+		FutureTags:    []string{"lookup:request"},
+		ResultBinding: "lookup_result",
+	}
+	bindings := make(map[string]map[string]any)
+	if err := ex.executeStep(context.Background(), step, "cf-test", bindings); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	bound, ok := bindings["lookup_result"]
+	if !ok {
+		t.Fatal("expected result binding 'lookup_result' to be set")
+	}
+	if raw, ok := bound["raw"]; !ok {
+		t.Error("expected 'raw' key in binding for non-JSON result")
+	} else if raw != "plain text response" {
+		t.Errorf("expected raw='plain text response', got %v", raw)
+	}
+}
+
+// TestExecuteQueryStep_NoResultBinding verifies that when ResultBinding is empty,
+// the step completes without error and no bindings are created.
+func TestExecuteQueryStep_NoResultBinding(t *testing.T) {
+	tr := &mockTransport{futureResult: []byte(`{"msg_id":"x"}`)}
+	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+
+	step := Step{
+		Action:     "query",
+		FutureTags: []string{"lookup:request"},
+		// No ResultBinding
+	}
+	bindings := make(map[string]map[string]any)
+	if err := ex.executeStep(context.Background(), step, "cf-test", bindings); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(bindings) != 0 {
+		t.Errorf("expected no bindings when ResultBinding is empty, got %v", bindings)
 	}
 }
