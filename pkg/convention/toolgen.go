@@ -144,8 +144,12 @@ func listOperations(s StoreReader, campfireID, campfireKey, registryCampfireID s
 			}
 		} else {
 			// Offline mode: only the original signer may revoke their own declaration.
+			// Empty sender is never a valid revoker — reject immediately.
+			if msg.Sender == "" {
+				continue // empty sender cannot authorize a revoke
+			}
 			originalSigner, known := opSenderByMsgID[revokePayload.TargetID]
-			if !known || msg.Sender != originalSigner {
+			if !known || originalSigner == "" || msg.Sender != originalSigner {
 				continue // revoker does not match original signer — ignore
 			}
 		}

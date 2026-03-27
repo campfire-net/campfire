@@ -1183,3 +1183,59 @@ func (m *multiCampfireStore) ListMessages(campfireID string, afterTimestamp int6
 	}
 	return result, nil
 }
+
+func TestListOperations_RevokeOfflineMode_EmptySenderRejected(t *testing.T) {
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:        "msg1",
+				Sender:    "",
+				Payload:   socialPostPayload,
+				Tags:      []string{ConventionOperationTag},
+				Timestamp: 1000,
+			},
+			{
+				ID:        "revoke1",
+				Sender:    "",
+				Payload:   []byte(`{"target_id":"msg1"}`),
+				Tags:      []string{"convention:revoke"},
+				Timestamp: 2000,
+			},
+		},
+	}
+	decls, err := ListOperations(mock, "test-cf", "")
+	if err != nil {
+		t.Fatalf("ListOperations failed: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Fatalf("expected 1 declaration (empty-sender revoke rejected), got %d", len(decls))
+	}
+}
+
+func TestListOperations_RevokeOfflineMode_EmptySenderRevokerIgnored(t *testing.T) {
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:        "msg1",
+				Sender:    "real-signer",
+				Payload:   socialPostPayload,
+				Tags:      []string{ConventionOperationTag},
+				Timestamp: 1000,
+			},
+			{
+				ID:        "revoke1",
+				Sender:    "",
+				Payload:   []byte(`{"target_id":"msg1"}`),
+				Tags:      []string{"convention:revoke"},
+				Timestamp: 2000,
+			},
+		},
+	}
+	decls, err := ListOperations(mock, "test-cf", "")
+	if err != nil {
+		t.Fatalf("ListOperations failed: %v", err)
+	}
+	if len(decls) != 1 {
+		t.Fatalf("expected 1 declaration (empty-sender revoker ignored), got %d", len(decls))
+	}
+}
