@@ -37,6 +37,11 @@ type Declaration struct {
 	Signing         string          `json:"signing"`
 	RateLimit       *RateLimit      `json:"rate_limit,omitempty"`
 	Steps           []Step          `json:"steps,omitempty"`
+	// MinOperatorLevel is the minimum operator provenance level required to
+	// execute this operation. 0 means no restriction (default). The executor
+	// checks the sender's level against this value before dispatching.
+	// See Operator Provenance Convention v0.1 §8.
+	MinOperatorLevel int `json:"min_operator_level,omitempty"`
 	// Source metadata (populated during Parse, not from JSON payload)
 	MessageID string    `json:"-"`
 	SignerKey string    `json:"-"`

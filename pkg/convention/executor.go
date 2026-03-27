@@ -25,11 +25,20 @@ type MessageRecord struct {
 	Tags   []string
 }
 
+// ProvenanceChecker returns the operator provenance level for a given public key.
+// The Executor calls this before dispatching gated operations.
+// See Operator Provenance Convention v0.1 §8.1.
+type ProvenanceChecker interface {
+	// Level returns the provenance level (0–3) for the given public key.
+	Level(key string) int
+}
+
 // Executor runs convention operations: validates args, composes tags, and sends messages.
 type Executor struct {
 	transport   ExecutorTransport
 	selfKey     string
 	rateLimiter *rateLimiter
+	provenance  ProvenanceChecker
 }
 
 // globalRateLimiter is a process-level singleton so that rate limit state persists
@@ -59,6 +68,16 @@ func NewExecutor(transport ExecutorTransport, selfKey string) *Executor {
 	}
 }
 
+// WithProvenance attaches a ProvenanceChecker to the Executor.
+// When set, the executor enforces min_operator_level gates declared in convention
+// operations. Operations with min_operator_level > 0 are rejected unless the
+// sender's provenance level meets or exceeds the declared minimum.
+// See Operator Provenance Convention v0.1 §8.
+func (e *Executor) WithProvenance(checker ProvenanceChecker) *Executor {
+	e.provenance = checker
+	return e
+}
+
 // newExecutorWithLimiter creates an Executor with an explicit rate limiter.
 // Use this in tests that need isolated rate limit state.
 func newExecutorWithLimiter(transport ExecutorTransport, selfKey string, rl *rateLimiter) *Executor {
@@ -71,6 +90,19 @@ func newExecutorWithLimiter(transport ExecutorTransport, selfKey string, rl *rat
 
 // Execute validates args, composes tags, enforces rate limits, and sends messages.
 func (e *Executor) Execute(ctx context.Context, decl *Declaration, campfireID string, args map[string]any) error {
+	// Operator provenance gate: reject if sender's level is below the declared minimum.
+	// See Operator Provenance Convention v0.1 §8.1.
+	if decl.MinOperatorLevel > 0 {
+		senderLevel := 0
+		if e.provenance != nil {
+			senderLevel = e.provenance.Level(e.selfKey)
+		}
+		if senderLevel < decl.MinOperatorLevel {
+			return fmt.Errorf("operator provenance level %d insufficient: operation %q requires level %d",
+				senderLevel, decl.Convention+":"+decl.Operation, decl.MinOperatorLevel)
+		}
+	}
+
 	if len(decl.Steps) > 0 {
 		return e.executeWorkflow(ctx, decl, campfireID, args)
 	}
