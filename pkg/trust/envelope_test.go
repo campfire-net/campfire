@@ -340,3 +340,66 @@ func containsStep(steps []string, step string) bool {
 	}
 	return false
 }
+
+// TestBuildEnvelope_JoinProtocol_InviteOnly verifies that WithJoinProtocol sets
+// join_protocol in campfire_asserted.
+func TestBuildEnvelope_JoinProtocol_InviteOnly(t *testing.T) {
+	env := BuildEnvelope("campfire-abc", TrustAdopted, "content",
+		WithJoinProtocol("invite-only"),
+	)
+	if env.CampfireAsserted.JoinProtocol != "invite-only" {
+		t.Errorf("expected join_protocol=invite-only, got %q", env.CampfireAsserted.JoinProtocol)
+	}
+
+	// Verify it appears in JSON.
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	var ca CampfireAssertedFields
+	if err := json.Unmarshal(raw["campfire_asserted"], &ca); err != nil {
+		t.Fatalf("unmarshal campfire_asserted: %v", err)
+	}
+	if ca.JoinProtocol != "invite-only" {
+		t.Errorf("campfire_asserted.join_protocol = %q, want invite-only", ca.JoinProtocol)
+	}
+}
+
+// TestBuildEnvelope_JoinProtocol_Open verifies "open" is passed through.
+func TestBuildEnvelope_JoinProtocol_Open(t *testing.T) {
+	env := BuildEnvelope("campfire-def", TrustUnknown, "content",
+		WithJoinProtocol("open"),
+	)
+	if env.CampfireAsserted.JoinProtocol != "open" {
+		t.Errorf("expected join_protocol=open, got %q", env.CampfireAsserted.JoinProtocol)
+	}
+}
+
+// TestBuildEnvelope_JoinProtocol_Absent verifies that when WithJoinProtocol is
+// not called, join_protocol is absent from JSON (omitempty).
+func TestBuildEnvelope_JoinProtocol_Absent(t *testing.T) {
+	env := BuildEnvelope("campfire-ghi", TrustUnknown, "content")
+	if env.CampfireAsserted.JoinProtocol != "" {
+		t.Errorf("expected empty join_protocol, got %q", env.CampfireAsserted.JoinProtocol)
+	}
+
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	var caRaw map[string]json.RawMessage
+	if err := json.Unmarshal(raw["campfire_asserted"], &caRaw); err != nil {
+		t.Fatalf("unmarshal campfire_asserted: %v", err)
+	}
+	if _, ok := caRaw["join_protocol"]; ok {
+		t.Error("join_protocol should be absent from JSON when not set (omitempty)")
+	}
+}

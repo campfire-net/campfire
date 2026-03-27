@@ -125,10 +125,16 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 	// without requiring a separate cf read.
 	syncCampfire(campfireID, &m, agentID, s)
 
+	// Compare fingerprints against local policy (Trust v0.2 §5.3).
+	report := compareJoinedCampfire(s, campfireID)
+
 	if jsonOutput {
-		out := map[string]string{
-			"campfire_id": campfireID,
-			"status":      "joined",
+		out := map[string]interface{}{
+			"campfire_id":       campfireID,
+			"status":            "joined",
+			"trust_status":      string(report.OverallStatus),
+			"fingerprint_match": report.FingerprintMatch,
+			"conventions":       report.Conventions,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -136,6 +142,7 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 	}
 
 	fmt.Printf("Joined campfire %s\n", campfireID[:12])
+	printCompatibilityReport(report)
 	return nil
 }
 
@@ -263,13 +270,19 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	// without requiring a separate cf read.
 	syncCampfire(campfireID, &p2pMembership, agentID, s)
 
+	// Compare fingerprints against local policy (Trust v0.2 §5.3).
+	p2pReport := compareJoinedCampfire(s, campfireID)
+
 	if jsonOutput {
 		out := map[string]interface{}{
-			"campfire_id":  campfireID,
-			"status":       "joined",
-			"transport":    "p2p-http",
-			"peers":        len(result.Peers),
-			"has_priv_key": len(result.CampfirePrivKey) > 0,
+			"campfire_id":       campfireID,
+			"status":            "joined",
+			"transport":         "p2p-http",
+			"peers":             len(result.Peers),
+			"has_priv_key":      len(result.CampfirePrivKey) > 0,
+			"trust_status":      string(p2pReport.OverallStatus),
+			"fingerprint_match": p2pReport.FingerprintMatch,
+			"conventions":       p2pReport.Conventions,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -277,6 +290,7 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	}
 
 	fmt.Printf("Joined campfire %s\n", campfireID[:12])
+	printCompatibilityReport(p2pReport)
 	return nil
 }
 
@@ -439,11 +453,17 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 	// without requiring a separate cf read.
 	syncCampfire(campfireID, &ghMembership, agentID, s)
 
+	// Compare fingerprints against local policy (Trust v0.2 §5.3).
+	ghReport := compareJoinedCampfire(s, campfireID)
+
 	if jsonOutput {
-		out := map[string]string{
-			"campfire_id": campfireID,
-			"status":      "joined",
-			"transport":   "github",
+		out := map[string]interface{}{
+			"campfire_id":       campfireID,
+			"status":            "joined",
+			"transport":         "github",
+			"trust_status":      string(ghReport.OverallStatus),
+			"fingerprint_match": ghReport.FingerprintMatch,
+			"conventions":       ghReport.Conventions,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -451,6 +471,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 	}
 
 	fmt.Printf("Joined campfire %s\n", campfireID[:min(len(campfireID), 16)])
+	printCompatibilityReport(ghReport)
 	return nil
 }
 

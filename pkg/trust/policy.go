@@ -306,6 +306,92 @@ func (e *PolicyEngine) EvaluateCampfire(decls []*convention.Declaration) (TrustS
 	return TrustUnknown, false
 }
 
+// ConventionCompatibility holds the per-convention result of a campfire comparison.
+type ConventionCompatibility struct {
+	Convention      string      `json:"convention"`
+	Operation       string      `json:"operation"`
+	Status          TrustStatus `json:"status"`
+	FingerprintMatch bool       `json:"fingerprint_match"`
+	LocalFingerprint  string    `json:"local_fingerprint,omitempty"`
+	RemoteFingerprint string    `json:"remote_fingerprint,omitempty"`
+}
+
+// CampfireCompatibilityReport is the result of comparing a campfire's declarations
+// against the local policy engine per Trust Convention v0.2 §5.3, §13.1.
+type CampfireCompatibilityReport struct {
+	OverallStatus    TrustStatus               `json:"trust_status"`
+	FingerprintMatch bool                      `json:"fingerprint_match"`
+	Conventions      []ConventionCompatibility `json:"conventions"`
+}
+
+// CompareCampfireDeclarations compares a set of incoming declarations from a campfire
+// against the local policy engine and returns a per-convention compatibility report.
+// Used by cf join to display trust status immediately after joining.
+func (e *PolicyEngine) CompareCampfireDeclarations(decls []*convention.Declaration) *CampfireCompatibilityReport {
+	report := &CampfireCompatibilityReport{
+		Conventions: make([]ConventionCompatibility, 0, len(decls)),
+	}
+
+	if len(decls) == 0 {
+		report.OverallStatus = TrustUnknown
+		report.FingerprintMatch = false
+		return report
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	allAdopted := true
+	allMatch := true
+	anyDivergent := false
+
+	for _, decl := range decls {
+		incoming := SemanticFingerprint(decl)
+		adopted, isAdopted := e.adopted[adoptKey(decl.Convention, decl.Operation)]
+
+		cc := ConventionCompatibility{
+			Convention:        decl.Convention,
+			Operation:         decl.Operation,
+			RemoteFingerprint: incoming,
+		}
+
+		if !isAdopted {
+			cc.Status = TrustUnknown
+			cc.FingerprintMatch = false
+			allAdopted = false
+			allMatch = false
+		} else {
+			cc.LocalFingerprint = adopted.Fingerprint
+			cc.FingerprintMatch = adopted.Fingerprint == incoming
+			if cc.FingerprintMatch {
+				cc.Status = TrustAdopted
+			} else {
+				cc.Status = TrustDivergent
+				anyDivergent = true
+				allAdopted = false
+				allMatch = false
+			}
+		}
+		report.Conventions = append(report.Conventions, cc)
+	}
+
+	if anyDivergent {
+		report.OverallStatus = TrustDivergent
+		report.FingerprintMatch = false
+	} else if allAdopted && allMatch {
+		report.OverallStatus = TrustAdopted
+		report.FingerprintMatch = true
+	} else if allMatch {
+		report.OverallStatus = TrustCompatible
+		report.FingerprintMatch = true
+	} else {
+		report.OverallStatus = TrustUnknown
+		report.FingerprintMatch = false
+	}
+
+	return report
+}
+
 // TryAutoAdopt attempts to auto-adopt an incoming declaration from a source.
 // Returns (adopted=true) if auto-adoption succeeded.
 // Returns (adopted=false, held=true) if blocked by fingerprint mismatch.
@@ -367,3 +453,4 @@ func (e *PolicyEngine) TryAutoAdopt(decl *convention.Declaration, sourceID strin
 
 	return false, false
 }
+

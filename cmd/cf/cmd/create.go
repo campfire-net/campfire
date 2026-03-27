@@ -42,6 +42,21 @@ var createCmd = &cobra.Command{
 			return fmt.Errorf("loading identity (run 'cf init' first): %w", err)
 		}
 
+		// Resolve join protocol: if not explicitly set (empty string), inherit from
+		// the parent campfire. If there is no parent in scope, default to "open".
+		if createProtocol == "" {
+			createProtocol = "open" // fallback if no parent
+			if rootCampfireID, _, ok := ProjectRoot(); ok {
+				ps, serr := openStore()
+				if serr == nil {
+					if m, merr := ps.GetMembership(rootCampfireID); merr == nil && m != nil && m.JoinProtocol != "" {
+						createProtocol = m.JoinProtocol
+					}
+					ps.Close()
+				}
+			}
+		}
+
 		// Create campfire
 		cf, err := campfire.New(createProtocol, createRequire, createThreshold)
 		if err != nil {
@@ -479,7 +494,7 @@ func buildThresholdShareProvider(s store.Store) cfhttp.ThresholdShareProvider {
 
 
 func init() {
-	createCmd.Flags().String("protocol", "open", "join protocol: open, invite-only")
+	createCmd.Flags().String("protocol", "", "join protocol: open, invite-only (default: inherit parent campfire, or open if none)")
 	createCmd.Flags().StringSlice("require", nil, "reception requirements (tags)")
 	createCmd.Flags().String("description", "", "campfire description")
 	createCmd.Flags().Uint("threshold", 1, "signature threshold (1=any member, >1=FROST multi-party, Phase 2)")
