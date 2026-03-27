@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/provenance"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/trust"
 )
@@ -134,9 +136,32 @@ func (s *server) handleConventionTool(id interface{}, entry *conventionToolEntry
 // envelopedResponse wraps a campfire content response in the safety envelope.
 // Trust v0.2: trust_status is "unknown" by default. The policy engine (when
 // attached) evaluates conventions to compute the actual status.
+// Operator Provenance Convention v0.1 §8.2: the sender's provenance level is
+// computed from the local attestation store and embedded as operator_provenance
+// in runtime_computed.
 func (s *server) envelopedResponse(id interface{}, campfireID string, content interface{}) jsonRPCResponse {
 	status := trust.TrustUnknown
-	env := trust.BuildEnvelope(campfireID, status, content)
+
+	opts := []trust.EnvelopeOption{}
+
+	// Wire in operator provenance: load the local attestation store and compute
+	// the provenance level for the agent's own public key.
+	// Operator Provenance Convention v0.1 §8.2 / Trust Convention v0.2 §6.3.
+	if agentID, err := identity.Load(s.identityPath()); err == nil {
+		storePath := filepath.Join(s.cfHome, "attestations.json")
+		var ps provenance.AttestationStore
+		fs, psErr := provenance.NewFileStore(storePath, provenance.DefaultConfig())
+		if psErr != nil {
+			// Degrade gracefully: fall back to in-memory store (level 0 — anonymous).
+			ps = provenance.NewStore(provenance.DefaultConfig())
+		} else {
+			ps = fs
+		}
+		level := int(ps.Level(agentID.PublicKeyHex()))
+		opts = append(opts, trust.WithOperatorProvenance(level))
+	}
+
+	env := trust.BuildEnvelope(campfireID, status, content, opts...)
 	envJSON, err := json.MarshalIndent(env, "", "  ")
 	if err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("marshaling envelope: %v", err))
