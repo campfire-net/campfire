@@ -296,14 +296,10 @@ func (e *PolicyEngine) EvaluateCampfire(decls []*convention.Declaration) (TrustS
 
 		if !isAdopted {
 			allAdopted = false
-			// Not in policy — check if compatible fingerprint (hypothetical match).
-			// We check all known adoptions for same fingerprint.
-			for _, ac := range e.adopted {
-				if ac.Fingerprint == fp {
-					anyMatch = true
-					break
-				}
-			}
+			// Not in policy — convention is unknown to local policy.
+			// Do NOT scan other adopted conventions for fingerprint matches: a
+			// hash collision across different (convention, operation) pairs is
+			// meaningless and would produce a spurious TrustCompatible result.
 			continue
 		}
 
