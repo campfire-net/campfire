@@ -59,6 +59,12 @@ type ChallengeResponse struct {
 	// MUST match Challenge.TargetKey.
 	ResponderKey string
 
+	// MessageSender is the cryptographic sender key extracted from the campfire
+	// message envelope (hex-encoded Ed25519 public key). Callers MUST populate
+	// this from the transport layer before passing to ValidateResponse. It is
+	// verified against TargetKey to prevent forged responses from other members.
+	MessageSender string
+
 	// TargetKey is echoed from the challenge. Runtime MUST verify match (§12.2).
 	TargetKey string
 
@@ -226,6 +232,19 @@ func (c *Challenger) ValidateResponse(resp *ChallengeResponse, now time.Time) (*
 	// Responder must be the target operator.
 	if resp.ResponderKey != ch.TargetKey {
 		return nil, fmt.Errorf("provenance: responder_key %q does not match challenge target_key %q", resp.ResponderKey, ch.TargetKey)
+	}
+
+	// Cryptographic sender verification (§12.2): the campfire message envelope
+	// sender MUST match the challenge target_key. This prevents any campfire
+	// member from forging an operator-verify response on behalf of the target.
+	// Callers populate MessageSender from the transport layer before calling
+	// ValidateResponse. A missing MessageSender is an error — callers that omit
+	// it cannot satisfy this check.
+	if resp.MessageSender == "" {
+		return nil, fmt.Errorf("provenance: message_sender not set — caller must populate from transport envelope before calling ValidateResponse")
+	}
+	if resp.MessageSender != ch.TargetKey {
+		return nil, fmt.Errorf("provenance: message envelope sender %q does not match challenge target_key %q — forged response rejected", resp.MessageSender, ch.TargetKey)
 	}
 
 	// Consume the challenge (one-time use).
