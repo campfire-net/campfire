@@ -57,6 +57,11 @@ func NewFileChallenger(path string) (*FileChallenger, error) {
 			inner.targetTimestamps = state.TargetTimestamps
 		}
 		inner.mu.Unlock()
+
+		// Evict expired challenges loaded from disk. Without this, a long-lived
+		// state file would re-hydrate arbitrarily old challenges on every restart,
+		// growing unbounded across process lifecycles.
+		inner.PruneExpired(time.Now())
 	}
 
 	return &FileChallenger{path: path, inner: inner}, nil
@@ -92,6 +97,19 @@ func (fc *FileChallenger) IssueChallenge(id, initiatorKey, targetKey, callbackCa
 	}
 
 	return ch, nil
+}
+
+// PruneExpired evicts all challenges that have exceeded their TTL and persists
+// the updated state to disk. Callers may use this for explicit cleanup at startup
+// or from a background goroutine. Lazy eviction via IssueChallenge handles the
+// common case.
+func (fc *FileChallenger) PruneExpired(now time.Time) error {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+
+	fc.inner.PruneExpired(now)
+
+	return fc.flush()
 }
 
 // ValidateResponse validates a challenge response and persists the updated state

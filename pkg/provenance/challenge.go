@@ -108,6 +108,17 @@ func NewChallenger() *Challenger {
 	}
 }
 
+// PruneExpired evicts all challenges that have exceeded their TTL. It is safe
+// to call at any time (e.g., from a background cleanup goroutine or at startup).
+// For most callers, lazy eviction via IssueChallenge is sufficient; this method
+// is provided for hosts that issue challenges infrequently and want deterministic
+// cleanup.
+func (c *Challenger) PruneExpired(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneExpiredChallenges(now)
+}
+
 // GenerateNonce creates a cryptographically random 32-byte nonce (hex-encoded).
 func GenerateNonce() (string, error) {
 	b := make([]byte, challengeNonceBytes)
@@ -147,6 +158,11 @@ func (c *Challenger) IssueChallenge(id, initiatorKey, targetKey, callbackCampfir
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Evict expired challenges before adding a new one. This keeps the active
+	// map bounded: at most one unexpired challenge per target per rate window,
+	// and stale entries from offline/unresponsive targets are cleaned up here.
+	c.pruneExpiredChallenges(now)
+
 	// Target-side rate limiting: §12.1.
 	// Count challenges received by this target within the rate window.
 	c.pruneTargetTimestamps(targetKey, now)
@@ -167,6 +183,21 @@ func (c *Challenger) IssueChallenge(id, initiatorKey, targetKey, callbackCampfir
 	c.targetTimestamps[targetKey] = append(c.targetTimestamps[targetKey], now)
 
 	return ch, nil
+}
+
+// pruneExpiredChallenges removes challenges from the active map that are past
+// their TTL. This is lazy eviction: called from IssueChallenge so that
+// long-lived Challenger instances don't accumulate unanswered challenges without
+// bound. Challenges that were never answered (target offline, etc.) are cleaned
+// up here rather than waiting for a ValidateResponse call that may never arrive.
+//
+// Must be called with c.mu held.
+func (c *Challenger) pruneExpiredChallenges(now time.Time) {
+	for id, ch := range c.active {
+		if now.Sub(ch.IssuedAt) > challengeTTL {
+			delete(c.active, id)
+		}
+	}
 }
 
 // pruneTargetTimestamps removes timestamps outside the rate window.

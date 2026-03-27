@@ -617,6 +617,140 @@ func TestCreateAttestation_EmptyProofToken(t *testing.T) {
 	}
 }
 
+// --- Regression: unanswered challenges accumulate unbounded (campfire-agent-t0r) ---
+//
+// Before this fix, IssueChallenge added entries to the active map but nothing ever
+// removed challenges that were never answered (target offline, ignored, etc.).
+// Over time, the active map grew without bound. With FileChallenger, this leak
+// also persisted across restarts.
+
+// TestChallenger_ExpiredChallengeEvictedOnNextIssue verifies that an expired,
+// unanswered challenge is removed from the active map when the next IssueChallenge
+// call is made. (Regression: campfire-agent-t0r)
+func TestChallenger_ExpiredChallengeEvictedOnNextIssue(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+
+	// Issue a challenge that will expire.
+	issueTestChallenge(t, c, "msg-expire-unanswered-001", now)
+
+	// Verify it's in the active map.
+	c.mu.Lock()
+	initialSize := len(c.active)
+	c.mu.Unlock()
+	if initialSize != 1 {
+		t.Fatalf("expected 1 active challenge, got %d", initialSize)
+	}
+
+	// Advance time past TTL and issue another challenge.
+	future := now.Add(challengeTTL + time.Second)
+	issueTestChallenge(t, c, "msg-new-after-expiry-001", future)
+
+	// The expired challenge must have been evicted; only the new one remains.
+	c.mu.Lock()
+	afterSize := len(c.active)
+	_, expiredStillPresent := c.active["msg-expire-unanswered-001"]
+	c.mu.Unlock()
+
+	if expiredStillPresent {
+		t.Error("expired unanswered challenge was not evicted from the active map")
+	}
+	if afterSize != 1 {
+		t.Errorf("expected 1 active challenge after eviction, got %d", afterSize)
+	}
+}
+
+// TestChallenger_ExpiredChallengeCannotBeValidated verifies that an unanswered
+// challenge cannot be validated after its TTL expires. (Regression: campfire-agent-t0r)
+func TestChallenger_ExpiredChallengeCannotBeValidated(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+
+	ch := issueTestChallenge(t, c, "msg-expire-validate-001", now)
+
+	// Advance time past TTL and issue a new challenge to trigger eviction.
+	future := now.Add(challengeTTL + time.Second)
+	issueTestChallenge(t, c, "msg-new-trigger-001", future)
+
+	// Attempt to validate the expired (now-evicted) challenge.
+	resp := validResponse(ch)
+	_, err := c.ValidateResponse(resp, future.Add(time.Second))
+	if err != ErrChallengeNotFound {
+		t.Errorf("expected ErrChallengeNotFound for evicted expired challenge, got %v", err)
+	}
+}
+
+// TestChallenger_ActiveMapBoundedUnderLoad verifies that the active map does not grow
+// without bound when many challenges are issued but none are answered.
+// (Regression: campfire-agent-t0r)
+func TestChallenger_ActiveMapBoundedUnderLoad(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+
+	// Issue max challenges against distinct target keys (to avoid the rate limit).
+	// These will all expire without being answered.
+	for i := 0; i < 20; i++ {
+		target := testTargetKey + "-bounded-" + string(rune('a'+i))
+		id := "msg-bounded-" + string(rune('a'+i))
+		_, err := c.IssueChallenge(id, testInitiatorKey, target, testCallback, now)
+		if err != nil {
+			t.Fatalf("IssueChallenge %d: unexpected error: %v", i, err)
+		}
+	}
+
+	// Sanity: 20 unanswered challenges in map.
+	c.mu.Lock()
+	beforeSize := len(c.active)
+	c.mu.Unlock()
+	if beforeSize != 20 {
+		t.Fatalf("expected 20 active challenges before eviction, got %d", beforeSize)
+	}
+
+	// Advance past TTL and issue one more challenge to trigger lazy eviction.
+	future := now.Add(challengeTTL + time.Second)
+	_, err := c.IssueChallenge("msg-bounded-trigger", testInitiatorKey, testTargetKey+"-new", testCallback, future)
+	if err != nil {
+		t.Fatalf("trigger IssueChallenge: unexpected error: %v", err)
+	}
+
+	// All 20 expired challenges must be gone; only the new one remains.
+	c.mu.Lock()
+	afterSize := len(c.active)
+	c.mu.Unlock()
+	if afterSize != 1 {
+		t.Errorf("expected active map to contain only 1 challenge after TTL eviction, got %d", afterSize)
+	}
+}
+
+// TestChallenger_PruneExpired verifies the explicit PruneExpired method evicts
+// challenges past their TTL without requiring a new IssueChallenge call.
+// (Regression: campfire-agent-t0r)
+func TestChallenger_PruneExpired(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+
+	issueTestChallenge(t, c, "msg-prune-001", now)
+	issueTestChallenge(t, c, "msg-prune-002", now)
+
+	// Prune while still fresh — nothing should be removed.
+	c.PruneExpired(now.Add(time.Second))
+	c.mu.Lock()
+	sizeBeforeExpiry := len(c.active)
+	c.mu.Unlock()
+	if sizeBeforeExpiry != 2 {
+		t.Errorf("expected 2 active challenges before TTL, got %d", sizeBeforeExpiry)
+	}
+
+	// Prune after TTL — both must be removed.
+	c.PruneExpired(now.Add(challengeTTL + time.Second))
+	c.mu.Lock()
+	sizeAfterExpiry := len(c.active)
+	c.mu.Unlock()
+	if sizeAfterExpiry != 0 {
+		t.Errorf("expected 0 active challenges after PruneExpired past TTL, got %d", sizeAfterExpiry)
+	}
+}
+
 // TestValidateResponse_AllKnownProofTypesAccepted verifies that all five recognized
 // proof types pass validation when a non-empty proof_token is provided.
 // This ensures the valid set doesn't accidentally exclude any spec-defined type.
