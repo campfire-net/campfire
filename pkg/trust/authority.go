@@ -23,9 +23,10 @@ const (
 	AuthorityUntrusted   AuthorityLevel = "untrusted"   // from member key or unrecognized
 )
 
-// ResolveAuthority classifies a declaration's authority given a trust chain.
+// ResolveAuthority classifies a declaration's authority.
 // §5: SignerType drives the classification; the campfire-key gate is enforced here.
-func ResolveAuthority(decl *convention.Declaration, chain *Chain) AuthorityLevel {
+// In Trust v0.2 the chain parameter is unused (no chain verification). Pass nil.
+func ResolveAuthority(decl *convention.Declaration, chain interface{}) AuthorityLevel {
 	// Campfire-key gate: signing="campfire_key" requires at least campfire key authority.
 	// If the declared signing is campfire_key but the actual signer type is a member key,
 	// the declaration is gated — treat as untrusted.
@@ -214,7 +215,7 @@ func SemanticFingerprint(decl *convention.Declaration) string {
 
 	data, _ := json.Marshal(sf)
 	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
+	return "sha256:" + hex.EncodeToString(h[:])
 }
 
 // CompareVersions returns true if version a supersedes version b.

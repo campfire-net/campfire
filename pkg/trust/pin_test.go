@@ -43,7 +43,7 @@ func TestPinStore_SameContentNoChange(t *testing.T) {
 		ContentHash: sha256Hex(payload),
 		SignerKey:   signerKey,
 		SignerType:  SignerCampfireKey,
-		ChainStatus: TrustVerified,
+		TrustStatus: TrustAdopted,
 		PinnedAt:   time.Now(),
 	})
 
@@ -64,7 +64,7 @@ func TestPinStore_HigherAuthorityReplaces(t *testing.T) {
 		ContentHash: sha256Hex([]byte("old-payload")),
 		SignerKey:   "old-signer",
 		SignerType:  SignerCampfireKey,
-		ChainStatus: TrustVerified,
+		TrustStatus: TrustAdopted,
 		PinnedAt:   time.Now(),
 	})
 
@@ -86,7 +86,7 @@ func TestPinStore_LowerAuthorityRejected(t *testing.T) {
 		ContentHash: sha256Hex([]byte("original-payload")),
 		SignerKey:   "campfire-signer",
 		SignerType:  SignerCampfireKey,
-		ChainStatus: TrustVerified,
+		TrustStatus: TrustAdopted,
 		PinnedAt:   time.Now(),
 	})
 
@@ -116,7 +116,7 @@ func TestPinStore_Persistence(t *testing.T) {
 		ContentHash: "abc123",
 		SignerKey:   "signer-key-hex",
 		SignerType:  SignerConventionRegistry,
-		ChainStatus: TrustVerified,
+		TrustStatus: TrustAdopted,
 		PinnedAt:   now,
 	})
 
@@ -161,7 +161,7 @@ func TestPinStore_TamperedHMAC(t *testing.T) {
 		ContentHash: "abc123",
 		SignerKey:   "signer-key-hex",
 		SignerType:  SignerCampfireKey,
-		ChainStatus: TrustVerified,
+		TrustStatus: TrustAdopted,
 		PinnedAt:   time.Now(),
 	})
 
