@@ -938,6 +938,82 @@ func TestListOperations_RevokeOfflineMode_DifferentSenderIgnored(t *testing.T) {
 	}
 }
 
+// TestListOperations_RevokeOfflineMode_EmptySenderRejected verifies that in offline
+// mode, a revoke message with an empty sender field is rejected even if the original
+// declaration also has an empty sender. Empty sender must never match as a wildcard.
+//
+// Regression test for: empty-sender messages matched any revoker in offline mode
+// because "" == "" was treated as valid authorization.
+func TestListOperations_RevokeOfflineMode_EmptySenderRejected(t *testing.T) {
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:        "msg1",
+				Sender:    "", // original declaration has empty sender
+				Payload:   socialPostPayload,
+				Tags:      []string{ConventionOperationTag},
+				Timestamp: 1000,
+			},
+			{
+				ID:        "revoke1",
+				Sender:    "", // revoke message also has empty sender — must be rejected
+				Payload:   []byte(`{"target_id":"msg1"}`),
+				Tags:      []string{"convention:revoke"},
+				Timestamp: 2000,
+			},
+		},
+	}
+
+	// campfireKey is empty — offline mode
+	decls, err := ListOperations(mock, "campfire123", "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	// Empty-sender revoke must be rejected — declaration must still be present.
+	if len(decls) != 1 {
+		t.Errorf("expected 1 decl (empty-sender revoke must be rejected in offline mode), got %d", len(decls))
+	}
+}
+
+// TestListOperations_RevokeOfflineMode_EmptySenderRevokerIgnored verifies that in
+// offline mode, a revoke message with an empty sender cannot revoke a declaration
+// that has a non-empty original signer.
+//
+// Regression test for: empty-sender messages bypassed authorization in offline mode.
+func TestListOperations_RevokeOfflineMode_EmptySenderRevokerIgnored(t *testing.T) {
+	mock := &mockStore{
+		records: []store.MessageRecord{
+			{
+				ID:        "msg1",
+				Sender:    "real-signer", // original declaration has real sender
+				Payload:   socialPostPayload,
+				Tags:      []string{ConventionOperationTag},
+				Timestamp: 1000,
+			},
+			{
+				ID:        "revoke1",
+				Sender:    "", // empty sender attempting to revoke — must be rejected
+				Payload:   []byte(`{"target_id":"msg1"}`),
+				Tags:      []string{"convention:revoke"},
+				Timestamp: 2000,
+			},
+		},
+	}
+
+	// campfireKey is empty — offline mode
+	decls, err := ListOperations(mock, "campfire123", "")
+	if err != nil {
+		t.Fatalf("ListOperations: %v", err)
+	}
+	// Empty-sender revoke must be rejected — declaration must still be present.
+	if len(decls) != 1 {
+		t.Errorf("expected 1 decl (empty-sender cannot revoke real-signer declaration), got %d", len(decls))
+	}
+	if len(decls) > 0 && decls[0].Operation != "post" {
+		t.Errorf("expected operation 'post', got %q", decls[0].Operation)
+	}
+}
+
 // TestListOperations_TransitiveRevokeChain_RealSQLite verifies that revoking msg1
 // cascades transitively: msg2.supersedes=msg1, msg3.supersedes=msg2 →
 // all three are excluded from ListOperations.
