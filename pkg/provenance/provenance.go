@@ -215,6 +215,12 @@ func (s *Store) LevelAt(key string, now time.Time) Level {
 			continue // self-attestation always rejected
 		}
 
+		// Non-co-signed attestations are capped at Level 1 (Claimed). They cannot
+		// elevate an operator to Level 2 or 3. See §6.2: "accepted at reduced trust."
+		if !a.CoSigned {
+			continue
+		}
+
 		// Must be a direct attestation or from a trusted verifier.
 		if !s.isVerifierTrusted(a.VerifierKey, 0) {
 			continue
@@ -281,6 +287,12 @@ func (s *Store) computeLevelTransitive(key string, now time.Time, depth int) Lev
 			continue
 		}
 
+		// Non-co-signed attestations are capped at Level 1 (Claimed). They cannot
+		// elevate an operator to Level 2 or 3. See §6.2: "accepted at reduced trust."
+		if !a.CoSigned {
+			continue
+		}
+
 		// Transitivity checks verifier_key (not campfire trust): §7.1.
 		// The verifier key must be trusted at the current depth.
 		if !s.isVerifierTrusted(a.VerifierKey, depth) {
@@ -319,6 +331,10 @@ func (s *Store) computeLevelTransitive(key string, now time.Time, depth int) Lev
 				continue
 			}
 			if a.VerifierKey == a.TargetKey && !s.config.AllowSelfAttestation {
+				continue
+			}
+			// Non-co-signed attestations cannot convey transitive trust. See §6.2.
+			if !a.CoSigned {
 				continue
 			}
 			// The intermediary must itself be a trusted verifier — being merely
