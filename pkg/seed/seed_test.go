@@ -347,14 +347,14 @@ func TestReadConventionMessages_SignatureVerification_Accept(t *testing.T) {
 	}
 }
 
-// TestFetchWellKnownBeacon_ValidJSON verifies that fetchWellKnownBeacon correctly
-// parses a valid JSON beacon returned by an httptest server.
-// campfire_id is required — beacons without it are rejected.
-func TestFetchWellKnownBeacon_ValidJSON(t *testing.T) {
+// TestFetchWellKnownBeacon_ValidJSON_WithURL verifies that fetchWellKnownBeacon
+// correctly parses a valid JSON beacon returned by an httptest server when the
+// beacon uses URL (not Dir). Network beacons may not carry a Dir field.
+func TestFetchWellKnownBeacon_ValidJSON_WithURL(t *testing.T) {
 	want := seed.SeedBeacon{
 		CampfireID: "testcampfire",
-		Protocol:   "filesystem",
-		Dir:        "/tmp/seed-campfire",
+		Protocol:   "http",
+		URL:        "https://seed.example.com/campfire",
 	}
 	body, err := json.Marshal(want)
 	if err != nil {
@@ -379,11 +379,82 @@ func TestFetchWellKnownBeacon_ValidJSON(t *testing.T) {
 	if found == nil {
 		t.Fatal("expected beacon from httptest server, got nil")
 	}
-	if found.Dir != want.Dir {
-		t.Errorf("Dir: want %q, got %q", want.Dir, found.Dir)
+	if found.URL != want.URL {
+		t.Errorf("URL: want %q, got %q", want.URL, found.URL)
 	}
 	if found.Protocol != want.Protocol {
 		t.Errorf("Protocol: want %q, got %q", want.Protocol, found.Protocol)
+	}
+}
+
+// TestFetchWellKnownBeacon_RejectsDir verifies that a network-fetched seed beacon
+// containing a Dir field is rejected. Dir is a local filesystem path — accepting
+// it from a network source would allow a remote server to redirect the client to
+// read arbitrary local files.
+func TestFetchWellKnownBeacon_RejectsDir(t *testing.T) {
+	// Beacon carries a Dir field (filesystem path) — must be rejected when network-fetched.
+	malicious := seed.SeedBeacon{
+		CampfireID: "testcampfire",
+		Protocol:   "filesystem",
+		Dir:        "/etc/passwd",
+	}
+	body, err := json.Marshal(malicious)
+	if err != nil {
+		t.Fatalf("marshaling beacon: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	orig := seed.WellKnownURL
+	seed.WellKnownURL = srv.URL
+	t.Cleanup(func() { seed.WellKnownURL = orig })
+
+	// The Dir field on a network beacon must cause the beacon to be rejected.
+	// FindSeedBeacon treats a failed well-known fetch as non-fatal → (nil, nil).
+	found, err := seed.FindSeedBeacon("")
+	if err != nil {
+		t.Fatalf("FindSeedBeacon: expected non-fatal rejection (nil, nil), got error: %v", err)
+	}
+	if found != nil {
+		t.Errorf("expected network beacon with Dir to be rejected (got nil), but got %+v", found)
+	}
+}
+
+// TestFetchWellKnownBeacon_RejectsDirCBOR verifies that the Dir rejection also
+// applies to CBOR-encoded network beacons (not just JSON).
+func TestFetchWellKnownBeacon_RejectsDirCBOR(t *testing.T) {
+	malicious := seed.SeedBeacon{
+		CampfireID: "testcampfire",
+		Protocol:   "filesystem",
+		Dir:        "/tmp/sensitive-data",
+	}
+	body, err := cfencoding.Marshal(malicious)
+	if err != nil {
+		t.Fatalf("marshaling beacon as CBOR: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/cbor")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	orig := seed.WellKnownURL
+	seed.WellKnownURL = srv.URL
+	t.Cleanup(func() { seed.WellKnownURL = orig })
+
+	found, err := seed.FindSeedBeacon("")
+	if err != nil {
+		t.Fatalf("FindSeedBeacon: expected non-fatal rejection (nil, nil), got error: %v", err)
+	}
+	if found != nil {
+		t.Errorf("expected CBOR network beacon with Dir to be rejected, but got %+v", found)
 	}
 }
 

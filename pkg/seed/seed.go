@@ -161,6 +161,11 @@ func parseSeedBeacon(data []byte) *SeedBeacon {
 
 // fetchWellKnownBeacon fetches and parses a seed beacon from the given URL.
 // Returns (nil, err) on any failure — callers treat this as non-fatal.
+//
+// Network-fetched beacons are not permitted to contain a Dir field. A Dir
+// field in a network beacon would allow a remote server to point the client
+// at an arbitrary local filesystem path, enabling local file disclosure.
+// Only filesystem-discovered beacons may carry a Dir field.
 func fetchWellKnownBeacon(url string) (*SeedBeacon, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(url)
@@ -182,6 +187,15 @@ func fetchWellKnownBeacon(url string) (*SeedBeacon, error) {
 	if sb == nil {
 		return nil, fmt.Errorf("invalid or incomplete seed beacon at %s", url)
 	}
+
+	// Security: reject network beacons that carry a Dir field. The Dir field
+	// names a local filesystem path; honoring it from a network source would
+	// allow a remote server to redirect the client to read arbitrary local
+	// files. Dir is only valid for filesystem-discovered beacons.
+	if sb.Dir != "" {
+		return nil, fmt.Errorf("network-fetched seed beacon from %s must not contain a Dir field (filesystem path %q from network source rejected)", url, sb.Dir)
+	}
+
 	return sb, nil
 }
 
