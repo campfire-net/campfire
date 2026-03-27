@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/convention"
@@ -204,14 +205,18 @@ func ReadConventionMessages(sb *SeedBeacon) ([]ConventionMessage, error) {
 		if sb.Dir == "" {
 			return nil, fmt.Errorf("seed beacon has no dir for filesystem transport")
 		}
-		msgs, err := readFilesystemConventionMessages(sb.Dir)
+		safeDir, err := validateSeedDir(sb.Dir)
+		if err != nil {
+			return nil, fmt.Errorf("seed beacon dir rejected: %w", err)
+		}
+		msgs, err := readFilesystemConventionMessages(safeDir)
 		if err != nil {
 			return nil, err
 		}
 		// When CampfireID is set, verify at least one message is signed by the
 		// campfire key. Reject the entire seed if none validates.
 		if sb.CampfireID != "" {
-			if err := verifySeedBeaconSignatures(sb.CampfireID, sb.Dir); err != nil {
+			if err := verifySeedBeaconSignatures(sb.CampfireID, safeDir); err != nil {
 				return nil, err
 			}
 		}
@@ -219,6 +224,61 @@ func ReadConventionMessages(sb *SeedBeacon) ([]ConventionMessage, error) {
 	default:
 		return nil, fmt.Errorf("unknown seed beacon protocol %q", proto)
 	}
+}
+
+// validateSeedDir validates a seed beacon Dir path against path traversal attacks.
+//
+// Rules (in order):
+//  1. Reject paths containing null bytes.
+//  2. Reject relative paths — Dir must be absolute so its origin is unambiguous.
+//  3. Reject paths containing ".." components before cleaning — the raw path
+//     must not attempt to traverse upward regardless of where it resolves to.
+//  4. Resolve symlinks and return the canonical absolute path.
+//
+// Returns the resolved canonical path on success, or an error if the path is
+// suspicious or cannot be resolved.
+func validateSeedDir(dir string) (string, error) {
+	// Reject null bytes (null byte injection attack).
+	if strings.Contains(dir, "\x00") {
+		return "", fmt.Errorf("path contains null byte")
+	}
+
+	// Reject relative paths. A relative Dir is ambiguous and cannot be safely
+	// validated — the seed beacon must use an absolute path.
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("path must be absolute, got %q", dir)
+	}
+
+	// Reject paths that contain ".." components in the raw (pre-clean) form.
+	// filepath.Clean would silently resolve these — we want to catch them
+	// explicitly so an attacker cannot use /tmp/campfire/../../etc/passwd.
+	// We check each component of the path before cleaning.
+	for _, part := range strings.Split(filepath.ToSlash(dir), "/") {
+		if part == ".." {
+			return "", fmt.Errorf("path contains traversal component %q in %q", part, dir)
+		}
+	}
+
+	// Clean the path (removes redundant slashes, "." components, etc.).
+	cleaned := filepath.Clean(dir)
+
+	// Resolve symlinks to get the true canonical path. If the directory does
+	// not yet exist, EvalSymlinks fails — accept the cleaned path and let the
+	// caller handle the absent directory gracefully (returns (nil, nil)).
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cleaned, nil
+		}
+		return "", fmt.Errorf("cannot resolve symlinks in %q: %w", cleaned, err)
+	}
+
+	// After symlink resolution the path must still be absolute.
+	if !filepath.IsAbs(resolved) {
+		return "", fmt.Errorf("resolved path is not absolute: %q", resolved)
+	}
+
+	return resolved, nil
 }
 
 // verifySeedBeaconSignatures checks that at least one message in campfireDir/messages/
