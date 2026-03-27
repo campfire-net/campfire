@@ -238,7 +238,7 @@ func TestPolicyEngine_AutoAdopt_FingerprintMismatchBlocked(t *testing.T) {
 	if !ok {
 		t.Fatal("expected original adoption to be preserved")
 	}
-	fp1 := SemanticFingerprint(declV1)
+	fp1, _ := SemanticFingerprint(declV1)
 	if ac.Fingerprint != fp1 {
 		t.Error("original fingerprint should be preserved after blocked auto-adoption")
 	}
@@ -262,7 +262,9 @@ func TestPolicyEngine_AutoAdopt_SameFingerprintUpdate(t *testing.T) {
 	})
 
 	// Semantic fingerprints should match (operational fields differ, semantic fields same).
-	if SemanticFingerprint(declV1) != SemanticFingerprint(declV2) {
+	sfA, _ := SemanticFingerprint(declV1)
+	sfB, _ := SemanticFingerprint(declV2)
+	if sfA != sfB {
 		t.Skip("fingerprints differ — operational fields are affecting semantics, skipping test")
 	}
 
@@ -378,7 +380,7 @@ func TestPolicyEngine_ListAdopted(t *testing.T) {
 // TestSemanticFingerprint_AlgorithmPrefix verifies that fingerprints include sha256: prefix per §5.4.
 func TestSemanticFingerprint_AlgorithmPrefix(t *testing.T) {
 	decl := makeDeclWithArgs("social", "post", "body")
-	fp := SemanticFingerprint(decl)
+	fp, _ := SemanticFingerprint(decl)
 	if !strings.HasPrefix(fp, "sha256:") {
 		t.Errorf("expected fingerprint to start with 'sha256:', got %q", fp)
 	}

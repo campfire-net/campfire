@@ -47,7 +47,7 @@ func loadPinStore() (*trust.PinStore, error) {
 // adopted conventions per Trust Convention v0.2 §4.
 func loadLocalPolicyEngine(s store.Store) *trust.PolicyEngine {
 	engine := trust.NewPolicyEngine()
-	homeID, err := resolveCampfireID("home", s)
+	homeID, err := resolveCampfireID("~home", s)
 	if err != nil {
 		engine.MarkInitialized()
 		return engine

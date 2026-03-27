@@ -151,8 +151,8 @@ func TestSemanticFingerprint_Match(t *testing.T) {
 		// Operational fields differ — fingerprint should still match.
 		RateLimit: &convention.RateLimit{Max: 10, Per: "sender", Window: "1m"},
 	}
-	h1 := SemanticFingerprint(decl1)
-	h2 := SemanticFingerprint(decl2)
+	h1, _ := SemanticFingerprint(decl1)
+	h2, _ := SemanticFingerprint(decl2)
 	if h1 != h2 {
 		t.Errorf("expected same fingerprint, got %q vs %q", h1, h2)
 	}
@@ -174,8 +174,8 @@ func TestSemanticFingerprint_Mismatch(t *testing.T) {
 		Antecedents: "none",
 		Signing:     "member_key",
 	}
-	h1 := SemanticFingerprint(decl1)
-	h2 := SemanticFingerprint(decl2)
+	h1, _ := SemanticFingerprint(decl1)
+	h2, _ := SemanticFingerprint(decl2)
 	if h1 == h2 {
 		t.Error("expected different fingerprints for different arg types, got same")
 	}

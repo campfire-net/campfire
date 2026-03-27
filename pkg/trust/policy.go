@@ -83,9 +83,9 @@ type AutoAdoptRule struct {
 //   - Enforces auto-adoption constraints (fingerprint mismatch blocks auto-adoption)
 //   - Maintains bootstrap ordering (trust → provenance → gated ops)
 type PolicyEngine struct {
-	mu         sync.RWMutex
-	adopted    map[string]*AdoptedConvention // key: convention+":"+operation
-	autoAdopt  map[string]*AutoAdoptRule     // key: sourceID
+	mu          sync.RWMutex
+	adopted     map[string]*AdoptedConvention // key: convention+":"+operation
+	autoAdopt   map[string]*AutoAdoptRule     // key: sourceID
 	initialized bool
 }
 
@@ -110,7 +110,11 @@ func (e *PolicyEngine) SeedConventions(decls []*convention.Declaration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, decl := range decls {
-		fp := SemanticFingerprint(decl)
+		fp, err := SemanticFingerprint(decl)
+		if err != nil {
+			// Skip declarations that cannot be fingerprinted — treat as unknown.
+			continue
+		}
 		key := adoptKey(decl.Convention, decl.Operation)
 		if _, exists := e.adopted[key]; !exists {
 			e.adopted[key] = &AdoptedConvention{
@@ -144,10 +148,14 @@ func (e *PolicyEngine) IsInitialized() bool {
 
 // Adopt adds or replaces a convention in the local policy.
 // This is the explicit operator action for adopting a convention.
-func (e *PolicyEngine) Adopt(decl *convention.Declaration, source AdoptionSource, sourceID string) {
+// Returns an error if the declaration cannot be fingerprinted.
+func (e *PolicyEngine) Adopt(decl *convention.Declaration, source AdoptionSource, sourceID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	fp := SemanticFingerprint(decl)
+	fp, err := SemanticFingerprint(decl)
+	if err != nil {
+		return fmt.Errorf("Adopt: %w", err)
+	}
 	key := adoptKey(decl.Convention, decl.Operation)
 	e.adopted[key] = &AdoptedConvention{
 		Convention:  decl.Convention,
@@ -158,6 +166,7 @@ func (e *PolicyEngine) Adopt(decl *convention.Declaration, source AdoptionSource
 		SourceID:    sourceID,
 		AdoptedAt:   time.Now(),
 	}
+	return nil
 }
 
 // Revoke removes a convention from the local policy.
@@ -201,7 +210,7 @@ func (e *PolicyEngine) SetAutoAdoptRule(sourceID string, scope AutoAdoptScope) {
 
 // EvaluationResult holds the result of evaluating an incoming declaration.
 type EvaluationResult struct {
-	Status          TrustStatus
+	Status           TrustStatus
 	FingerprintMatch bool
 	// Held is true when auto-adoption was blocked due to a fingerprint mismatch.
 	Held bool
@@ -218,7 +227,14 @@ type EvaluationResult struct {
 //   - "divergent":  convention is adopted/known but fingerprints mismatch
 //   - "unknown":    convention not encountered before
 func (e *PolicyEngine) Evaluate(decl *convention.Declaration) EvaluationResult {
-	fp := SemanticFingerprint(decl)
+	fp, err := SemanticFingerprint(decl)
+	if err != nil {
+		return EvaluationResult{
+			Status:           TrustUnknown,
+			FingerprintMatch: false,
+			Reason:           "declaration fingerprint failed: " + err.Error(),
+		}
+	}
 
 	e.mu.RLock()
 	adopted, isAdopted := e.adopted[adoptKey(decl.Convention, decl.Operation)]
@@ -270,7 +286,12 @@ func (e *PolicyEngine) EvaluateCampfire(decls []*convention.Declaration) (TrustS
 	anyDivergent := false
 
 	for _, decl := range decls {
-		fp := SemanticFingerprint(decl)
+		fp, err := SemanticFingerprint(decl)
+		if err != nil {
+			// Cannot fingerprint — treat as unknown, not adopted.
+			allAdopted = false
+			continue
+		}
 		adopted, isAdopted := e.adopted[adoptKey(decl.Convention, decl.Operation)]
 
 		if !isAdopted {
@@ -308,12 +329,12 @@ func (e *PolicyEngine) EvaluateCampfire(decls []*convention.Declaration) (TrustS
 
 // ConventionCompatibility holds the per-convention result of a campfire comparison.
 type ConventionCompatibility struct {
-	Convention      string      `json:"convention"`
-	Operation       string      `json:"operation"`
-	Status          TrustStatus `json:"status"`
-	FingerprintMatch bool       `json:"fingerprint_match"`
-	LocalFingerprint  string    `json:"local_fingerprint,omitempty"`
-	RemoteFingerprint string    `json:"remote_fingerprint,omitempty"`
+	Convention        string      `json:"convention"`
+	Operation         string      `json:"operation"`
+	Status            TrustStatus `json:"status"`
+	FingerprintMatch  bool        `json:"fingerprint_match"`
+	LocalFingerprint  string      `json:"local_fingerprint,omitempty"`
+	RemoteFingerprint string      `json:"remote_fingerprint,omitempty"`
 }
 
 // CampfireCompatibilityReport is the result of comparing a campfire's declarations
@@ -346,7 +367,7 @@ func (e *PolicyEngine) CompareCampfireDeclarations(decls []*convention.Declarati
 	anyDivergent := false
 
 	for _, decl := range decls {
-		incoming := SemanticFingerprint(decl)
+		incoming, err := SemanticFingerprint(decl)
 		adopted, isAdopted := e.adopted[adoptKey(decl.Convention, decl.Operation)]
 
 		cc := ConventionCompatibility{
@@ -355,7 +376,14 @@ func (e *PolicyEngine) CompareCampfireDeclarations(decls []*convention.Declarati
 			RemoteFingerprint: incoming,
 		}
 
-		if !isAdopted {
+		if err != nil {
+			// Cannot fingerprint — treat as unknown.
+			cc.Status = TrustUnknown
+			cc.FingerprintMatch = false
+			cc.RemoteFingerprint = ""
+			allAdopted = false
+			allMatch = false
+		} else if !isAdopted {
 			cc.Status = TrustUnknown
 			cc.FingerprintMatch = false
 			allAdopted = false
@@ -411,7 +439,11 @@ func (e *PolicyEngine) TryAutoAdopt(decl *convention.Declaration, sourceID strin
 	}
 
 	key := adoptKey(decl.Convention, decl.Operation)
-	fp := SemanticFingerprint(decl)
+	fp, err := SemanticFingerprint(decl)
+	if err != nil {
+		// Cannot fingerprint — block adoption, do not hold (not a mismatch, just invalid).
+		return false, false
+	}
 	existing, isAdopted := e.adopted[key]
 
 	if isAdopted {
@@ -453,4 +485,3 @@ func (e *PolicyEngine) TryAutoAdopt(decl *convention.Declaration, sourceID strin
 
 	return false, false
 }
-
