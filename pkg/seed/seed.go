@@ -248,12 +248,18 @@ func ReadConventionMessages(sb *SeedBeacon) ([]ConventionMessage, error) {
 		if sb.CampfireID == "" {
 			return nil, fmt.Errorf("seed beacon missing campfire_id: signature verification is mandatory")
 		}
-		msgs, err := readFilesystemConventionMessages(safeDir)
+		expectedPub, err := decodeCampfireID(sb.CampfireID)
+		if err != nil {
+			return nil, fmt.Errorf("seed beacon campfire_id invalid: %w", err)
+		}
+		msgs, err := readFilesystemConventionMessages(safeDir, expectedPub)
 		if err != nil {
 			return nil, err
 		}
-		// Signature verification is always required — not conditioned on CampfireID
-		// being set. Beacons without a valid campfire_id were already rejected above.
+		// Belt-and-suspenders: ensure at least one valid message was found.
+		// Per-message verification in readFilesystemConventionMessages already
+		// rejects individual unsigned/bad-signature messages, so this catches
+		// the case where the directory is empty or contains no valid messages.
 		if err := verifySeedBeaconSignatures(sb.CampfireID, safeDir); err != nil {
 			return nil, err
 		}
@@ -318,6 +324,19 @@ func validateSeedDir(dir string) (string, error) {
 	return resolved, nil
 }
 
+// decodeCampfireID decodes a hex campfire_id into an ed25519.PublicKey.
+// Returns an error if the hex is invalid or the key has the wrong length.
+func decodeCampfireID(campfireID string) (ed25519.PublicKey, error) {
+	pub, err := hex.DecodeString(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("not valid hex: %w", err)
+	}
+	if len(pub) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("wrong length (want %d bytes, got %d)", ed25519.PublicKeySize, len(pub))
+	}
+	return ed25519.PublicKey(pub), nil
+}
+
 // verifySeedBeaconSignatures checks that at least one message in campfireDir/messages/
 // is validly signed by the key whose hex encoding matches campfireID.
 // Returns an error if no valid message is found.
@@ -368,11 +387,15 @@ func verifySeedBeaconSignatures(campfireID string, campfireDir string) error {
 // readFilesystemConventionMessages reads convention:operation messages from
 // the messages directory of a filesystem campfire at campfireDir.
 //
+// expectedPub is the ed25519 public key that must have signed every loaded message.
+// Messages with missing, invalid, or mismatched signatures are rejected with an error
+// identifying the offending filename. Every returned message is individually verified.
+//
 // Resource limits (constants above) guard against malicious seed directories:
 //   - Rejects directories with more than MaxSeedFileCount files.
 //   - Skips individual files larger than MaxSeedFileSizeBytes.
 //   - Rejects the directory when aggregate bytes read exceed MaxSeedAggregateSizeBytes.
-func readFilesystemConventionMessages(campfireDir string) ([]ConventionMessage, error) {
+func readFilesystemConventionMessages(campfireDir string, expectedPub ed25519.PublicKey) ([]ConventionMessage, error) {
 	messagesDir := filepath.Join(campfireDir, "messages")
 	entries, err := os.ReadDir(messagesDir)
 	if err != nil {
@@ -393,10 +416,7 @@ func readFilesystemConventionMessages(campfireDir string) ([]ConventionMessage, 
 		return nil, fmt.Errorf("seed directory %s contains %d files, exceeding the limit of %d", messagesDir, cborCount, MaxSeedFileCount)
 	}
 
-	type rawMessage struct {
-		Payload []byte   `cbor:"3,keyasint"`
-		Tags    []string `cbor:"4,keyasint"`
-	}
+	expectedPubHex := hex.EncodeToString(expectedPub)
 
 	var (
 		result        []ConventionMessage
@@ -427,16 +447,31 @@ func readFilesystemConventionMessages(campfireDir string) ([]ConventionMessage, 
 		}
 		aggregateSize += int64(len(data))
 
-		var raw rawMessage
-		if err := cfencoding.Unmarshal(data, &raw); err != nil {
+		var msg message.Message
+		if err := cfencoding.Unmarshal(data, &msg); err != nil {
 			continue // skip unparseable files
 		}
-		if !hasTag(raw.Tags, convention.ConventionOperationTag) {
+		if !hasTag(msg.Tags, convention.ConventionOperationTag) {
 			continue // only convention declarations
 		}
+
+		// Per-message signature verification: every convention:operation message
+		// must be signed by the key declared in the beacon's campfire_id.
+		// Reject messages with missing, invalid, or mismatched signatures — they
+		// could indicate tampering or accidental corruption.
+		if len(msg.Sender) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("seed message %q has missing or malformed sender key (campfire_id mismatch)", e.Name())
+		}
+		if hex.EncodeToString(msg.Sender) != expectedPubHex {
+			return nil, fmt.Errorf("seed message %q sender key does not match beacon campfire_id (got %x, want %s)", e.Name(), msg.Sender, expectedPubHex)
+		}
+		if !msg.VerifySignature() {
+			return nil, fmt.Errorf("seed message %q has invalid Ed25519 signature", e.Name())
+		}
+
 		result = append(result, ConventionMessage{
-			Payload: raw.Payload,
-			Tags:    raw.Tags,
+			Payload: msg.Payload,
+			Tags:    msg.Tags,
 		})
 	}
 	return result, nil
