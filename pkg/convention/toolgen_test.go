@@ -938,6 +938,98 @@ func TestListOperations_RevokeOfflineMode_DifferentSenderIgnored(t *testing.T) {
 	}
 }
 
+// TestListOperationsWithRegistry_OfflineRevoke_OriginalSignerHonored verifies that
+// when campfireKey is empty (offline mode), a revoke targeting a registry-merged
+// declaration IS honored when the revoker matches the original declaration's signer.
+//
+// Regression test for: opSenderByMsgID built before registry merge — offline revoke
+// of registry declarations fails silently (3q8 finding 6). The sender index must
+// include registry-merged messages so that offline revoke authorization succeeds.
+func TestListOperationsWithRegistry_OfflineRevoke_OriginalSignerHonored(t *testing.T) {
+	// inline campfire has no operation declarations.
+	// registry campfire has one declaration posted by "reg-signer".
+	// inline campfire has a revoke targeting the registry declaration, also by "reg-signer".
+	multi := &multiCampfireStore{
+		stores: map[string][]store.MessageRecord{
+			"inline-cf": {
+				{
+					ID:        "revoke1",
+					Sender:    "reg-signer", // same key that signed the registry declaration
+					Payload:   []byte(`{"target_id":"reg-msg1"}`),
+					Tags:      []string{"convention:revoke"},
+					Timestamp: 2000,
+				},
+			},
+			"reg-cf": {
+				{
+					ID:        "reg-msg1",
+					Sender:    "reg-signer",
+					Payload:   socialPostPayload,
+					Tags:      []string{ConventionOperationTag},
+					Timestamp: 1000,
+				},
+			},
+		},
+	}
+
+	// campfireKey is empty — offline mode
+	decls, err := ListOperationsWithRegistry(multi, "inline-cf", "", "reg-cf")
+	if err != nil {
+		t.Fatalf("ListOperationsWithRegistry: %v", err)
+	}
+	// The original signer revokes their own registry declaration — must be honored.
+	if len(decls) != 0 {
+		t.Errorf("expected 0 decls (original signer revoke of registry decl honored), got %d", len(decls))
+	}
+}
+
+// TestListOperationsWithRegistry_OfflineRevoke_DifferentSenderIgnored verifies that
+// when campfireKey is empty (offline mode), a revoke targeting a registry-merged
+// declaration from a different sender is NOT honored.
+//
+// Regression test for: opSenderByMsgID built before registry merge — offline revoke
+// of registry declarations fails silently (3q8 finding 6). When the sender index
+// includes registry-merged messages, unauthorized revoke attempts must be rejected.
+func TestListOperationsWithRegistry_OfflineRevoke_DifferentSenderIgnored(t *testing.T) {
+	// inline campfire has no operation declarations, but has a revoke from "attacker-key".
+	// registry campfire has one declaration posted by "reg-signer".
+	multi := &multiCampfireStore{
+		stores: map[string][]store.MessageRecord{
+			"inline-cf": {
+				{
+					ID:        "revoke1",
+					Sender:    "attacker-key", // NOT the registry declaration's signer
+					Payload:   []byte(`{"target_id":"reg-msg1"}`),
+					Tags:      []string{"convention:revoke"},
+					Timestamp: 2000,
+				},
+			},
+			"reg-cf": {
+				{
+					ID:        "reg-msg1",
+					Sender:    "reg-signer",
+					Payload:   socialPostPayload,
+					Tags:      []string{ConventionOperationTag},
+					Timestamp: 1000,
+				},
+			},
+		},
+	}
+
+	// campfireKey is empty — offline mode
+	decls, err := ListOperationsWithRegistry(multi, "inline-cf", "", "reg-cf")
+	if err != nil {
+		t.Fatalf("ListOperationsWithRegistry: %v", err)
+	}
+	// Revoke from attacker must be ignored — registry declaration must still be present.
+	if len(decls) != 1 {
+		t.Errorf("expected 1 decl (unauthorized revoke of registry decl ignored), got %d", len(decls))
+	}
+	if len(decls) > 0 && decls[0].Operation != "post" {
+		t.Errorf("expected operation 'post', got %q", decls[0].Operation)
+	}
+}
+
 // TestListOperations_TransitiveRevokeChain_RealSQLite verifies that revoking msg1
 // cascades transitively: msg2.supersedes=msg1, msg3.supersedes=msg2 →
 // all three are excluded from ListOperations.
