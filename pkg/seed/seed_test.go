@@ -898,3 +898,197 @@ func hasTag(tags []string, tag string) bool {
 	}
 	return false
 }
+
+// TestReadConventionMessages_PerMessageSig_UnsignedRejected verifies that a
+// convention:operation message with no signature is individually rejected, even
+// when the beacon campfire_id is valid. An unsigned message must never be loaded.
+func TestReadConventionMessages_PerMessageSig_UnsignedRejected(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write one valid signed message so verifySeedBeaconSignatures would pass
+	// if per-message checking were absent.
+	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "valid-op"})
+	validMsg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	if err != nil {
+		t.Fatalf("creating valid message: %v", err)
+	}
+	writeMsgToDir(t, messagesDir, "0000000001-valid.cbor", validMsg)
+
+	// Write a second convention:operation message that has its signature zeroed —
+	// simulating a message stored without a signature (unsigned).
+	unsignedPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "unsigned-op"})
+	unsignedMsg, err := message.NewMessage(priv, pub, unsignedPayload, []string{convention.ConventionOperationTag}, nil)
+	if err != nil {
+		t.Fatalf("creating unsigned message: %v", err)
+	}
+	unsignedMsg.Signature = nil // strip the signature
+	writeMsgToDir(t, messagesDir, "0000000002-unsigned.cbor", unsignedMsg)
+
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(pub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	_, err = seed.ReadConventionMessages(sb)
+	if err == nil {
+		t.Fatal("expected per-message signature check to reject unsigned message, got nil error")
+	}
+	// Error should identify the offending file.
+	if !strings.Contains(err.Error(), "0000000002-unsigned.cbor") {
+		t.Errorf("expected error to name the offending file, got: %v", err)
+	}
+}
+
+// TestReadConventionMessages_PerMessageSig_TamperedRejected verifies that a
+// convention:operation message whose signature bytes have been corrupted is
+// individually rejected. Tampered signatures must never result in loaded messages.
+func TestReadConventionMessages_PerMessageSig_TamperedRejected(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write one valid signed message so the directory is non-empty.
+	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "valid-op"})
+	validMsg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	if err != nil {
+		t.Fatalf("creating valid message: %v", err)
+	}
+	writeMsgToDir(t, messagesDir, "0000000001-valid.cbor", validMsg)
+
+	// Write a second message with a corrupted (bit-flipped) signature.
+	tamperedPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "tampered-op"})
+	tamperedMsg, err := message.NewMessage(priv, pub, tamperedPayload, []string{convention.ConventionOperationTag}, nil)
+	if err != nil {
+		t.Fatalf("creating tampered message: %v", err)
+	}
+	// Flip the first byte of the signature to corrupt it.
+	tamperedMsg.Signature[0] ^= 0xFF
+	writeMsgToDir(t, messagesDir, "0000000002-tampered.cbor", tamperedMsg)
+
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(pub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	_, err = seed.ReadConventionMessages(sb)
+	if err == nil {
+		t.Fatal("expected per-message signature check to reject tampered signature, got nil error")
+	}
+	if !strings.Contains(err.Error(), "0000000002-tampered.cbor") {
+		t.Errorf("expected error to name the offending file, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("expected error to say 'invalid', got: %v", err)
+	}
+}
+
+// TestReadConventionMessages_PerMessageSig_WrongKeyRejected verifies that a
+// convention:operation message signed by a key other than the beacon campfire_id
+// is individually rejected, even if the signature itself is cryptographically valid.
+// Only messages signed by the declared campfire key are trusted.
+func TestReadConventionMessages_PerMessageSig_WrongKeyRejected(t *testing.T) {
+	// Beacon key — this is what campfire_id names.
+	beaconPub, beaconPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating beacon keypair: %v", err)
+	}
+	// Attacker key — a different, unrelated key.
+	attackerPub, attackerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating attacker keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write one valid message signed by the beacon key so the directory is non-empty.
+	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "valid-op"})
+	validMsg, err := message.NewMessage(beaconPriv, beaconPub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	if err != nil {
+		t.Fatalf("creating valid message: %v", err)
+	}
+	writeMsgToDir(t, messagesDir, "0000000001-valid.cbor", validMsg)
+
+	// Write a second convention:operation message signed by the attacker key.
+	// The signature is cryptographically valid for the attacker key, but the
+	// sender is not the beacon key — it must be rejected.
+	attackerPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "injected-op"})
+	attackerMsg, err := message.NewMessage(attackerPriv, attackerPub, attackerPayload, []string{convention.ConventionOperationTag}, nil)
+	if err != nil {
+		t.Fatalf("creating attacker message: %v", err)
+	}
+	writeMsgToDir(t, messagesDir, "0000000002-attacker.cbor", attackerMsg)
+
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(beaconPub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	_, err = seed.ReadConventionMessages(sb)
+	if err == nil {
+		t.Fatal("expected per-message signature check to reject attacker-signed message, got nil error")
+	}
+	if !strings.Contains(err.Error(), "0000000002-attacker.cbor") {
+		t.Errorf("expected error to name the offending file, got: %v", err)
+	}
+	// Suppress unused variable warning.
+	_ = attackerPub
+}
+
+// TestReadConventionMessages_PerMessageSig_AllValidAccepted verifies that a
+// directory containing multiple convention:operation messages — all correctly
+// signed by the beacon key — returns all of them without error.
+func TestReadConventionMessages_PerMessageSig_AllValidAccepted(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	const msgCount = 3
+	for i := 0; i < msgCount; i++ {
+		payload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": fmt.Sprintf("op-%d", i)})
+		msg, err := message.NewMessage(priv, pub, payload, []string{convention.ConventionOperationTag}, nil)
+		if err != nil {
+			t.Fatalf("creating message %d: %v", i, err)
+		}
+		writeMsgToDir(t, messagesDir, fmt.Sprintf("%010d-msg.cbor", i+1), msg)
+	}
+
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(pub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	msgs, err := seed.ReadConventionMessages(sb)
+	if err != nil {
+		t.Fatalf("expected all valid messages to be accepted, got error: %v", err)
+	}
+	if len(msgs) != msgCount {
+		t.Fatalf("expected %d messages, got %d", msgCount, len(msgs))
+	}
+}
