@@ -5,45 +5,46 @@ import (
 	"testing"
 )
 
-// TestBuildEnvelope_Verified checks that TrustVerified propagates to the envelope.
-func TestBuildEnvelope_Verified(t *testing.T) {
-	env := BuildEnvelope("campfire-abc", TrustVerified, "hello")
-	if env.RuntimeComputed.TrustChain != TrustVerified {
-		t.Errorf("expected TrustVerified, got %q", env.RuntimeComputed.TrustChain)
+// TestBuildEnvelope_Adopted checks that TrustAdopted propagates to the envelope.
+func TestBuildEnvelope_Adopted(t *testing.T) {
+	env := BuildEnvelope("campfire-abc", TrustAdopted, "hello")
+	if env.RuntimeComputed.TrustStatus != TrustAdopted {
+		t.Errorf("expected TrustAdopted, got %q", env.RuntimeComputed.TrustStatus)
 	}
 }
 
-// TestBuildEnvelope_Unverified checks that TrustUnverified propagates.
-func TestBuildEnvelope_Unverified(t *testing.T) {
-	env := BuildEnvelope("campfire-abc", TrustUnverified, "hello")
-	if env.RuntimeComputed.TrustChain != TrustUnverified {
-		t.Errorf("expected TrustUnverified, got %q", env.RuntimeComputed.TrustChain)
+// TestBuildEnvelope_Unknown checks that TrustUnknown propagates.
+func TestBuildEnvelope_Unknown(t *testing.T) {
+	env := BuildEnvelope("campfire-abc", TrustUnknown, "hello")
+	if env.RuntimeComputed.TrustStatus != TrustUnknown {
+		t.Errorf("expected TrustUnknown, got %q", env.RuntimeComputed.TrustStatus)
 	}
 }
 
-// TestBuildEnvelope_CrossRoot checks that TrustCrossRoot propagates.
-func TestBuildEnvelope_CrossRoot(t *testing.T) {
-	env := BuildEnvelope("campfire-abc", TrustCrossRoot, "hello")
-	if env.RuntimeComputed.TrustChain != TrustCrossRoot {
-		t.Errorf("expected TrustCrossRoot, got %q", env.RuntimeComputed.TrustChain)
+// TestBuildEnvelope_Compatible checks that TrustCompatible propagates.
+func TestBuildEnvelope_Compatible(t *testing.T) {
+	env := BuildEnvelope("campfire-abc", TrustCompatible, "hello")
+	if env.RuntimeComputed.TrustStatus != TrustCompatible {
+		t.Errorf("expected TrustCompatible, got %q", env.RuntimeComputed.TrustStatus)
 	}
 }
 
-// TestBuildEnvelope_Relayed checks that TrustRelayed propagates.
-func TestBuildEnvelope_Relayed(t *testing.T) {
-	env := BuildEnvelope("campfire-abc", TrustRelayed, "hello")
-	if env.RuntimeComputed.TrustChain != TrustRelayed {
-		t.Errorf("expected TrustRelayed, got %q", env.RuntimeComputed.TrustChain)
+// TestBuildEnvelope_Divergent checks that TrustDivergent propagates.
+func TestBuildEnvelope_Divergent(t *testing.T) {
+	env := BuildEnvelope("campfire-abc", TrustDivergent, "hello")
+	if env.RuntimeComputed.TrustStatus != TrustDivergent {
+		t.Errorf("expected TrustDivergent, got %q", env.RuntimeComputed.TrustStatus)
 	}
 }
 
-// TestBuildEnvelope_Structure verifies the full JSON shape matches §6.1.
+// TestBuildEnvelope_Structure verifies the full JSON shape matches Trust v0.2 §6.1.
 func TestBuildEnvelope_Structure(t *testing.T) {
-	env := BuildEnvelope("campfire-xyz", TrustVerified, "test content",
+	env := BuildEnvelope("campfire-xyz", TrustAdopted, "test content",
 		WithCampfireName("my-campfire"),
 		WithDirectoryRegistration(true),
 		WithMemberCount(5),
 		WithCreatedAge("2d"),
+		WithFingerprintMatch(true),
 	)
 
 	data, err := json.Marshal(env)
@@ -71,7 +72,7 @@ func TestBuildEnvelope_Structure(t *testing.T) {
 		t.Errorf("expected campfire_id=campfire-xyz, got %q", verified.CampfireID)
 	}
 
-	// runtime_computed fields
+	// runtime_computed fields — v0.2 uses trust_status + fingerprint_match
 	var rc RuntimeComputedFields
 	if err := json.Unmarshal(raw["runtime_computed"], &rc); err != nil {
 		t.Fatalf("unmarshal runtime_computed failed: %v", err)
@@ -82,8 +83,26 @@ func TestBuildEnvelope_Structure(t *testing.T) {
 	if !rc.RegisteredInDirectory {
 		t.Error("expected registered_in_directory=true")
 	}
-	if rc.TrustChain != TrustVerified {
-		t.Errorf("expected trust_chain=verified, got %q", rc.TrustChain)
+	if rc.TrustStatus != TrustAdopted {
+		t.Errorf("expected trust_status=adopted, got %q", rc.TrustStatus)
+	}
+	if !rc.FingerprintMatch {
+		t.Error("expected fingerprint_match=true")
+	}
+
+	// Verify JSON has trust_status and fingerprint_match (not trust_chain)
+	var rcRaw map[string]json.RawMessage
+	if err := json.Unmarshal(raw["runtime_computed"], &rcRaw); err != nil {
+		t.Fatalf("unmarshal runtime_computed raw failed: %v", err)
+	}
+	if _, ok := rcRaw["trust_status"]; !ok {
+		t.Error("expected 'trust_status' in runtime_computed JSON (v0.2)")
+	}
+	if _, ok := rcRaw["fingerprint_match"]; !ok {
+		t.Error("expected 'fingerprint_match' in runtime_computed JSON (v0.2)")
+	}
+	if _, ok := rcRaw["trust_chain"]; ok {
+		t.Error("'trust_chain' must not appear in runtime_computed JSON (v0.2 — removed)")
 	}
 
 	// campfire_asserted fields
@@ -110,7 +129,7 @@ func TestBuildEnvelope_Structure(t *testing.T) {
 
 // TestBuildEnvelope_WithOptions verifies option application.
 func TestBuildEnvelope_WithOptions(t *testing.T) {
-	env := BuildEnvelope("cf-1", TrustCrossRoot, nil,
+	env := BuildEnvelope("cf-1", TrustCompatible, nil,
 		WithCampfireName("test-fire"),
 		WithDirectoryRegistration(false),
 		WithMemberCount(42),
@@ -296,7 +315,7 @@ func TestSanitizeContent_Nested(t *testing.T) {
 // TestBuildEnvelope_ContentSanitized checks that content with control chars is sanitized in the envelope.
 func TestBuildEnvelope_ContentSanitized(t *testing.T) {
 	dirty := "hello\x01\x02world"
-	env := BuildEnvelope("cf-dirty", TrustVerified, dirty)
+	env := BuildEnvelope("cf-dirty", TrustAdopted, dirty)
 
 	sanitized, ok := env.Tainted.Content.(string)
 	if !ok {

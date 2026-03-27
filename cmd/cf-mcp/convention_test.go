@@ -221,8 +221,8 @@ func TestEnvelopedResponse(t *testing.T) {
 	if env.Verified.CampfireID != "test-campfire-id" {
 		t.Errorf("expected campfire_id 'test-campfire-id', got %q", env.Verified.CampfireID)
 	}
-	if env.RuntimeComputed.TrustChain != trust.TrustUnverified {
-		t.Errorf("expected trust_chain 'unverified' (no chain walker), got %q", env.RuntimeComputed.TrustChain)
+	if env.RuntimeComputed.TrustStatus != trust.TrustUnknown {
+		t.Errorf("expected trust_status 'unknown' (no policy engine attached), got %q", env.RuntimeComputed.TrustStatus)
 	}
 	if env.Tainted.ContentClassification != "tainted" {
 		t.Errorf("expected content_classification 'tainted', got %q", env.Tainted.ContentClassification)

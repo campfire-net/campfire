@@ -132,15 +132,10 @@ func (s *server) handleConventionTool(id interface{}, entry *conventionToolEntry
 }
 
 // envelopedResponse wraps a campfire content response in the safety envelope.
+// Trust v0.2: trust_status is "unknown" by default. The policy engine (when
+// attached) evaluates conventions to compute the actual status.
 func (s *server) envelopedResponse(id interface{}, campfireID string, content interface{}) jsonRPCResponse {
-	status := trust.TrustUnverified
-	if s.chainWalker != nil {
-		var err error
-		status, err = s.chainWalker.ChainStatus(context.Background(), campfireID)
-		if err != nil {
-			status = trust.TrustUnverified
-		}
-	}
+	status := trust.TrustUnknown
 	env := trust.BuildEnvelope(campfireID, status, content)
 	envJSON, err := json.MarshalIndent(env, "", "  ")
 	if err != nil {

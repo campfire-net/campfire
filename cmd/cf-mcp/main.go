@@ -39,7 +39,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/trust"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	"github.com/google/uuid"
@@ -129,7 +128,6 @@ type server struct {
 	st              store.Store       // non-nil in session mode; already-open store shared from Session
 	sess            *Session          // non-nil in session mode; back-reference used to persist auditWriter across requests
 	conventionTools *conventionToolMap // dynamic convention-declared tools per session
-	chainWalker     *trust.ChainWalker // trust chain walker for envelope metadata
 	joinMu          sync.Mutex         // guards joinLock map
 	joinLock        map[string]*sync.Mutex // per-campfireID mutex; prevents concurrent-join cleanup race
 }

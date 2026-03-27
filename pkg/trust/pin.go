@@ -50,7 +50,7 @@ type Pin struct {
 	ContentHash string      `json:"content_hash"` // SHA-256 of declaration payload
 	SignerKey   string      `json:"signer_key"`   // hex-encoded public key
 	SignerType  SignerType  `json:"signer_type"`
-	ChainStatus TrustStatus `json:"chain_status"`
+	TrustStatus TrustStatus `json:"trust_status"`
 	PinnedAt   time.Time   `json:"pinned_at"`
 }
 

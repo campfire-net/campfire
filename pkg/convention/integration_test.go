@@ -321,16 +321,16 @@ func TestIntegration_EnvelopeWrapping(t *testing.T) {
 		"message": "hello world",
 	}
 
-	env := trust.BuildEnvelope(campfireID, trust.TrustVerified, content)
+	env := trust.BuildEnvelope(campfireID, trust.TrustAdopted, content)
 
 	// verified.campfire_id must be present.
 	if env.Verified.CampfireID != campfireID {
 		t.Errorf("verified.campfire_id: want %q, got %q", campfireID, env.Verified.CampfireID)
 	}
 
-	// runtime_computed.trust_chain must be "verified".
-	if env.RuntimeComputed.TrustChain != trust.TrustVerified {
-		t.Errorf("runtime_computed.trust_chain: want %q, got %q", trust.TrustVerified, env.RuntimeComputed.TrustChain)
+	// runtime_computed.trust_status must be "adopted".
+	if env.RuntimeComputed.TrustStatus != trust.TrustAdopted {
+		t.Errorf("runtime_computed.trust_status: want %q, got %q", trust.TrustAdopted, env.RuntimeComputed.TrustStatus)
 	}
 
 	// tainted.content_classification must be "tainted".
@@ -351,7 +351,7 @@ func TestIntegration_EnvelopeWrapping(t *testing.T) {
 	mimicContent := map[string]any{
 		"verified": "i am definitely verified",
 	}
-	env2 := trust.BuildEnvelope(campfireID, trust.TrustVerified, mimicContent)
+	env2 := trust.BuildEnvelope(campfireID, trust.TrustAdopted, mimicContent)
 	sanitized2, ok := env2.Tainted.Content.(map[string]any)
 	if !ok {
 		t.Fatalf("tainted.content not a map: %T", env2.Tainted.Content)
