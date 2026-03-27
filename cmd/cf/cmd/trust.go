@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/trust"
 	"github.com/spf13/cobra"
 )
@@ -43,3 +45,18 @@ func loadPinStore() (*trust.PinStore, error) {
 //
 // The home campfire's convention:operation messages are the agent's locally
 // adopted conventions per Trust Convention v0.2 §4.
+func loadLocalPolicyEngine(s store.Store) *trust.PolicyEngine {
+	engine := trust.NewPolicyEngine()
+	homeID, err := resolveCampfireID("home", s)
+	if err != nil {
+		engine.MarkInitialized()
+		return engine
+	}
+	decls, err := listConventionOperations(context.Background(), s, homeID)
+	if err != nil || len(decls) == 0 {
+		engine.MarkInitialized()
+		return engine
+	}
+	engine.SeedConventions(decls)
+	return engine
+}
