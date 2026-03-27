@@ -1,0 +1,29 @@
+{
+  "convention": "operator-provenance",
+  "version": "0.1",
+  "operation": "operator-revoke",
+  "description": "Revoke a prior operator provenance attestation. Must be signed by the key that holds the attestation. The attestation is marked revoked and will no longer count toward the operator provenance level.",
+  "signing": "member_key",
+  "antecedents": "exactly_one(target)",
+  "args": [
+    {
+      "name": "attestation_id",
+      "type": "message_id",
+      "required": true,
+      "description": "Message ID of the operator-verify attestation being revoked"
+    },
+    {
+      "name": "reason",
+      "type": "string",
+      "required": false,
+      "max_length": 512,
+      "description": "Why the attestation is being revoked (optional)"
+    }
+  ],
+  "produces_tags": [
+    {
+      "tag": "provenance:revoke",
+      "cardinality": "exactly_one"
+    }
+  ]
+}
