@@ -60,6 +60,25 @@ func Lint(payload []byte) *LintResult {
 		})
 	}
 
+	// Security: re-enforce the full tag denylist unconditionally, regardless of
+	// convention type. Parse grants exemptions to convention-extension (and
+	// naming-uri) because those specific conventions are infrastructure that may
+	// legitimately produce reserved tags when authorised by a real campfire key.
+	// Lint uses synthetic keys (senderKey == campfireKey), so Parse's exemptions
+	// pass without real authorisation. Any user-submitted declaration — including
+	// one claiming convention: "convention-extension" — must not produce denied
+	// tags through the Lint path.
+	for i, tr := range decl.ProducesTags {
+		if err := checkDeniedTag(tr.Tag); err != nil {
+			result.Errors = append(result.Errors, LintFinding{
+				Severity: LintError,
+				Code:     "denied_tag",
+				Field:    fmt.Sprintf("produces_tags[%d]", i),
+				Message:  err.Error(),
+			})
+		}
+	}
+
 	// Additional lint checks beyond Parse.
 	lintArgToTagMapping(decl, result)
 
