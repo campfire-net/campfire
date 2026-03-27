@@ -174,17 +174,19 @@ type semanticStepEntry struct {
 
 // semanticFields is the structure hashed by SemanticFingerprint.
 type semanticFields struct {
-	Args        []semanticArgEntry  `json:"args"`
-	ProducesTags []semanticTagEntry `json:"produces_tags"`
-	Antecedents string              `json:"antecedents"`
-	Signing     string              `json:"signing"`
-	Steps       []semanticStepEntry `json:"steps"`
+	Args         []semanticArgEntry  `json:"args"`
+	ProducesTags []semanticTagEntry  `json:"produces_tags"`
+	Antecedents  string              `json:"antecedents"`
+	Signing      string              `json:"signing"`
+	Steps        []semanticStepEntry `json:"steps"`
 }
 
 // SemanticFingerprint computes a SHA-256 hash of all semantic fields from a declaration.
 // Two declarations with identical semantic fields produce identical fingerprints regardless
 // of operational field differences (max_length, rate_limit, etc.).
-func SemanticFingerprint(decl *convention.Declaration) string {
+// Returns an error if the declaration cannot be marshaled — callers should treat this as
+// TrustUnknown rather than comparing against the empty-hash sentinel value.
+func SemanticFingerprint(decl *convention.Declaration) (string, error) {
 	// Args: sorted by name, capturing only semantic fields.
 	args := make([]semanticArgEntry, len(decl.Args))
 	for i, a := range decl.Args {
@@ -213,9 +215,12 @@ func SemanticFingerprint(decl *convention.Declaration) string {
 		Steps:        steps,
 	}
 
-	data, _ := json.Marshal(sf)
+	data, err := json.Marshal(sf)
+	if err != nil {
+		return "", fmt.Errorf("SemanticFingerprint: marshal failed: %w", err)
+	}
 	h := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(h[:])
+	return "sha256:" + hex.EncodeToString(h[:]), nil
 }
 
 // CompareVersions returns true if version a supersedes version b.
