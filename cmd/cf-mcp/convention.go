@@ -117,6 +117,21 @@ func (s *server) handleConventionTool(id interface{}, entry *conventionToolEntry
 		agentKey = agentID.PublicKeyHex()
 	}
 	executor := convention.NewExecutor(transport, agentKey)
+
+	// Wire in the provenance store so min_operator_level gates are enforced.
+	// Without this, senderLevel defaults to 0 inside Execute and all gated
+	// operations (e.g. core:peer-establish, core:peer-withdraw) are permanently
+	// blocked. Operator Provenance Convention v0.1 §8.1.
+	storePath := filepath.Join(s.cfHome, "attestations.json")
+	var ps provenance.AttestationStore
+	fs, psErr := provenance.NewFileStore(storePath, provenance.DefaultConfig())
+	if psErr != nil {
+		ps = provenance.NewStore(provenance.DefaultConfig())
+	} else {
+		ps = fs
+	}
+	executor.WithProvenance(&provenanceCheckerAdapter{store: ps})
+
 	ctx, cancel := context.WithTimeout(context.Background(), conventionToolTimeout)
 	defer cancel()
 
@@ -167,6 +182,18 @@ func (s *server) envelopedResponse(id interface{}, campfireID string, content in
 		return errResponse(id, -32000, fmt.Sprintf("marshaling envelope: %v", err))
 	}
 	return okResponse(id, toolResult(string(envJSON)))
+}
+
+// provenanceCheckerAdapter adapts provenance.AttestationStore to
+// convention.ProvenanceChecker. The AttestationStore.Level method returns
+// provenance.Level (a named int type), while ProvenanceChecker.Level must
+// return a plain int — an explicit adapter is required.
+type provenanceCheckerAdapter struct {
+	store provenance.AttestationStore
+}
+
+func (a *provenanceCheckerAdapter) Level(key string) int {
+	return int(a.store.Level(key))
 }
 
 // storeReaderAdapter adapts store.Store to convention.StoreReader.

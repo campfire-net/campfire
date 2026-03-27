@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/convention"
@@ -394,5 +395,142 @@ func TestEnvelopedResponse_OperatorProvenance_Anonymous(t *testing.T) {
 	wantLevel := int(provenance.LevelAnonymous) // 0
 	if gotLevel != wantLevel {
 		t.Errorf("operator_provenance: got %d, want %d (%s)", gotLevel, wantLevel, provenance.LevelAnonymous)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regression test: MCP path must wire WithProvenance into the executor.
+//
+// Before the fix in campfire-agent-2uh, handleConventionTool created the
+// executor without calling WithProvenance, so senderLevel was always 0 inside
+// Execute. That meant:
+//   - Operations with min_operator_level=2 were permanently blocked (level 0
+//     < 2 → always rejected), even for verified operators.
+//   - There was no way for a legitimate operator to unblock them through the
+//     MCP path, because the provenance store was never consulted.
+//
+// These two tests pin the corrected behavior end-to-end through
+// handleConventionTool: level 0 → rejected; level 2 → accepted.
+// ---------------------------------------------------------------------------
+
+// buildGatedConventionEntry builds a conventionToolEntry for an operation
+// requiring the given min_operator_level. The declaration JSON is parsed
+// through the standard convention.Parse path so all field mappings are
+// exercised.
+func buildGatedConventionEntry(t *testing.T, minLevel int) *conventionToolEntry {
+	t.Helper()
+	payload, err := json.Marshal(map[string]interface{}{
+		"convention":         "peering",
+		"version":            "0.3",
+		"operation":          "core-peer-establish",
+		"description":        "Establish a core peering link",
+		"min_operator_level": minLevel,
+		"produces_tags": []interface{}{
+			map[string]interface{}{"tag": "peering:core", "cardinality": "exactly_one"},
+		},
+		"args": []interface{}{
+			map[string]interface{}{"name": "peer_key", "type": "string", "required": true, "max_length": 64},
+		},
+		"antecedents": "none",
+		"signing":     "member_key",
+	})
+	if err != nil {
+		t.Fatalf("buildGatedConventionEntry: marshal: %v", err)
+	}
+	tags := []string{convention.ConventionOperationTag}
+	decl, _, parseErr := convention.Parse(tags, payload, strings.Repeat("a", 64), strings.Repeat("b", 64))
+	if parseErr != nil {
+		t.Fatalf("buildGatedConventionEntry: parse: %v", parseErr)
+	}
+	return &conventionToolEntry{
+		decl:       decl,
+		campfireID: "test-campfire-id",
+	}
+}
+
+// TestHandleConventionTool_MinOperatorLevel_Level0Rejected verifies that
+// handleConventionTool rejects a min_operator_level=2 operation when the
+// server's identity has provenance level 0 (anonymous, no attestations).
+//
+// Regression for campfire-agent-2uh: before the fix, the executor was created
+// without WithProvenance so the gate always used senderLevel=0. For a level-2
+// gate that means the operation was always rejected regardless of actual
+// operator level — this test confirms the rejection still happens for the
+// right reason (provenance gate enforced).
+func TestHandleConventionTool_MinOperatorLevel_Level0Rejected(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+
+	// Generate and save an identity with no attestations (level 0 = anonymous).
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	if err := agentID.Save(srv.identityPath()); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	entry := buildGatedConventionEntry(t, 2)
+	args := map[string]interface{}{
+		"peer_key": strings.Repeat("c", 64),
+	}
+	resp := srv.handleConventionTool(float64(1), entry, args)
+
+	// Must be rejected: anonymous level 0 < required level 2.
+	if resp.Error == nil {
+		t.Fatal("expected rejection for level-0 operator on min_operator_level=2 gate, got nil error")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "operator provenance level") {
+		t.Errorf("expected provenance error message, got: %q", resp.Error.Message)
+	}
+}
+
+// TestHandleConventionTool_MinOperatorLevel_ClaimedLevelAccepted verifies that
+// handleConventionTool allows a min_operator_level=1 operation when the
+// server's identity has provenance level 1 (self-claimed).
+//
+// Regression for campfire-agent-2uh: before the fix, WithProvenance was never
+// called on the executor, so even an operator with sufficient provenance level
+// was rejected because senderLevel defaulted to 0. This test confirms the fix:
+// the provenance store is now consulted and a level-1 operator passes a
+// min_operator_level=1 gate through the full MCP handler path.
+func TestHandleConventionTool_MinOperatorLevel_ClaimedLevelAccepted(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+
+	// Generate and save an identity.
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	if err := agentID.Save(srv.identityPath()); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	// Set provenance level 1 (Claimed) for this identity in the local store.
+	// This is the simplest provenance level to set directly without a
+	// challenge/response ceremony.
+	storePath := filepath.Join(srv.cfHome, "attestations.json")
+	ps, err := provenance.NewFileStore(storePath, provenance.DefaultConfig())
+	if err != nil {
+		t.Fatalf("opening provenance store: %v", err)
+	}
+	if err := ps.SetSelfClaimed(agentID.PublicKeyHex()); err != nil {
+		t.Fatalf("setting self-claimed: %v", err)
+	}
+
+	// Use min_operator_level=1: the claimed identity should satisfy the gate.
+	entry := buildGatedConventionEntry(t, 1)
+	args := map[string]interface{}{
+		"peer_key": strings.Repeat("d", 64),
+	}
+	resp := srv.handleConventionTool(float64(1), entry, args)
+
+	// Must succeed: level 1 meets the min_operator_level=1 requirement.
+	// Before the fix, this would have returned an error because the executor
+	// was created without WithProvenance and senderLevel was always 0.
+	if resp.Error != nil {
+		t.Errorf("expected success for level-1 operator on min_operator_level=1 gate, got error: %q", resp.Error.Message)
 	}
 }
