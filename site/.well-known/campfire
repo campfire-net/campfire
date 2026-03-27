@@ -10,6 +10,6 @@
   },
   "description": "Public coordination campfire for getcampfire.dev. Open join. Discuss the Campfire protocol, share implementations, ask questions. This campfire dogfoods the HTTP well-known beacon discovery mechanism defined in the Campfire protocol spec.",
   "spec_url": "https://getcampfire.dev/docs/",
-  "version": "campfire/0.7.1",
+  "version": "campfire/0.7.2",
   "signature": "IiQ0ClanL+krGHvqetkD44M/EKDYg00bMIdSOECpscEZJZRhfe9Lk6WKHjc+jffvryoXy+4p0sHcOR9UUOVVCw=="
 }
