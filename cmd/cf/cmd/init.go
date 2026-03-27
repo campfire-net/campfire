@@ -148,8 +148,9 @@ Next: cf discover    find campfires
 //
 // Returns the campfire ID hex on success, or "" on failure.
 func createAndSeedHomeCampfire(cfHome string, agentID *identity.Identity) (string, error) {
-	// Create campfire keypair (open, no requirements, threshold=1)
-	homeCF, err := campfire.New("open", nil, 1)
+	// Create campfire keypair (invite-only, no requirements, threshold=1).
+	// The home campfire is private by default — the owner invites members explicitly.
+	homeCF, err := campfire.New("invite-only", nil, 1)
 	if err != nil {
 		return "", fmt.Errorf("creating home campfire: %w", err)
 	}

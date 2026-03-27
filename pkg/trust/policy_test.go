@@ -459,3 +459,155 @@ func TestBuildEnvelope_AllTrustStatuses(t *testing.T) {
 		}
 	}
 }
+
+// --- CompareCampfireDeclarations tests (Trust v0.2 §5.3) ---
+
+// TestCompareCampfireDeclarations_AllAdopted verifies that all-adopted declarations
+// produce TrustAdopted with fingerprint_match=true.
+func TestCompareCampfireDeclarations_AllAdopted(t *testing.T) {
+	e := NewPolicyEngine()
+	decl1 := makeDeclWithArgs("social", "post", "body")
+	decl2 := makeDeclWithArgs("trust", "verify", "key")
+
+	e.Adopt(decl1, SourceSeed, "")
+	e.Adopt(decl2, SourceSeed, "")
+
+	report := e.CompareCampfireDeclarations([]*convention.Declaration{decl1, decl2})
+
+	if report.OverallStatus != TrustAdopted {
+		t.Errorf("expected TrustAdopted, got %q", report.OverallStatus)
+	}
+	if !report.FingerprintMatch {
+		t.Error("expected FingerprintMatch=true for all-adopted campfire")
+	}
+	if len(report.Conventions) != 2 {
+		t.Errorf("expected 2 convention results, got %d", len(report.Conventions))
+	}
+	for _, c := range report.Conventions {
+		if c.Status != TrustAdopted {
+			t.Errorf("expected adopted status for %s:%s, got %q", c.Convention, c.Operation, c.Status)
+		}
+		if !c.FingerprintMatch {
+			t.Errorf("expected fingerprint_match=true for %s:%s", c.Convention, c.Operation)
+		}
+		if !strings.HasPrefix(c.RemoteFingerprint, "sha256:") {
+			t.Errorf("expected sha256: prefix on remote fingerprint, got %q", c.RemoteFingerprint)
+		}
+		if !strings.HasPrefix(c.LocalFingerprint, "sha256:") {
+			t.Errorf("expected sha256: prefix on local fingerprint, got %q", c.LocalFingerprint)
+		}
+	}
+}
+
+// TestCompareCampfireDeclarations_Divergent verifies that fingerprint mismatch
+// produces TrustDivergent with per-convention detail.
+func TestCompareCampfireDeclarations_Divergent(t *testing.T) {
+	e := NewPolicyEngine()
+
+	// Locally adopted: v1 with "body" arg.
+	declV1 := makeDeclWithArgs("social", "post", "body")
+	e.Adopt(declV1, SourceSeed, "")
+
+	// Campfire sends v2 with additional "topic" arg — different fingerprint.
+	declV2 := makeDeclWithArgs("social", "post", "body", "topic")
+
+	report := e.CompareCampfireDeclarations([]*convention.Declaration{declV2})
+
+	if report.OverallStatus != TrustDivergent {
+		t.Errorf("expected TrustDivergent, got %q", report.OverallStatus)
+	}
+	if report.FingerprintMatch {
+		t.Error("expected FingerprintMatch=false for divergent campfire")
+	}
+	if len(report.Conventions) != 1 {
+		t.Fatalf("expected 1 convention result, got %d", len(report.Conventions))
+	}
+	c := report.Conventions[0]
+	if c.Status != TrustDivergent {
+		t.Errorf("expected TrustDivergent for social:post, got %q", c.Status)
+	}
+	if c.FingerprintMatch {
+		t.Error("expected fingerprint_match=false for divergent convention")
+	}
+	// Both fingerprints should be present and differ.
+	if c.LocalFingerprint == "" {
+		t.Error("expected local fingerprint to be populated for adopted convention")
+	}
+	if c.RemoteFingerprint == "" {
+		t.Error("expected remote fingerprint to be populated")
+	}
+	if c.LocalFingerprint == c.RemoteFingerprint {
+		t.Error("local and remote fingerprints should differ for divergent convention")
+	}
+	// Both must have sha256: prefix.
+	if !strings.HasPrefix(c.LocalFingerprint, "sha256:") {
+		t.Errorf("local fingerprint missing sha256: prefix: %q", c.LocalFingerprint)
+	}
+	if !strings.HasPrefix(c.RemoteFingerprint, "sha256:") {
+		t.Errorf("remote fingerprint missing sha256: prefix: %q", c.RemoteFingerprint)
+	}
+}
+
+// TestCompareCampfireDeclarations_MixedStatuses verifies per-convention status
+// when a campfire has both adopted and unknown conventions.
+func TestCompareCampfireDeclarations_MixedStatuses(t *testing.T) {
+	e := NewPolicyEngine()
+
+	// Adopt one convention.
+	knownDecl := makeDeclWithArgs("social", "post", "body")
+	e.Adopt(knownDecl, SourceSeed, "")
+
+	// Campfire also has an unknown convention.
+	unknownDecl := makeDeclWithArgs("unknown-protocol", "ping", "nonce")
+
+	report := e.CompareCampfireDeclarations([]*convention.Declaration{knownDecl, unknownDecl})
+
+	if len(report.Conventions) != 2 {
+		t.Fatalf("expected 2 convention results, got %d", len(report.Conventions))
+	}
+
+	statuses := make(map[string]TrustStatus)
+	for _, c := range report.Conventions {
+		statuses[c.Convention+":"+c.Operation] = c.Status
+	}
+
+	if statuses["social:post"] != TrustAdopted {
+		t.Errorf("expected social:post=TrustAdopted, got %q", statuses["social:post"])
+	}
+	if statuses["unknown-protocol:ping"] != TrustUnknown {
+		t.Errorf("expected unknown-protocol:ping=TrustUnknown, got %q", statuses["unknown-protocol:ping"])
+	}
+}
+
+// TestCompareCampfireDeclarations_Empty verifies that empty declarations return
+// TrustUnknown with empty convention list.
+func TestCompareCampfireDeclarations_Empty(t *testing.T) {
+	e := NewPolicyEngine()
+	report := e.CompareCampfireDeclarations(nil)
+
+	if report.OverallStatus != TrustUnknown {
+		t.Errorf("expected TrustUnknown for empty declarations, got %q", report.OverallStatus)
+	}
+	if len(report.Conventions) != 0 {
+		t.Errorf("expected empty conventions list, got %d entries", len(report.Conventions))
+	}
+}
+
+// TestCompareCampfireDeclarations_FingerprintPrefix verifies that all fingerprints
+// in the report use the sha256: prefix per Trust v0.2 §5.4.
+func TestCompareCampfireDeclarations_FingerprintPrefix(t *testing.T) {
+	e := NewPolicyEngine()
+	decl := makeDeclWithArgs("social", "post", "body")
+	e.Adopt(decl, SourceSeed, "")
+
+	report := e.CompareCampfireDeclarations([]*convention.Declaration{decl})
+
+	for _, c := range report.Conventions {
+		if c.RemoteFingerprint != "" && !strings.HasPrefix(c.RemoteFingerprint, "sha256:") {
+			t.Errorf("remote fingerprint missing sha256: prefix: %q", c.RemoteFingerprint)
+		}
+		if c.LocalFingerprint != "" && !strings.HasPrefix(c.LocalFingerprint, "sha256:") {
+			t.Errorf("local fingerprint missing sha256: prefix: %q", c.LocalFingerprint)
+		}
+	}
+}

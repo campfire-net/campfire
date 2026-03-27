@@ -33,8 +33,9 @@ type RuntimeComputedFields struct {
 
 // CampfireAssertedFields holds campfire-reported data that is not independently verifiable.
 type CampfireAssertedFields struct {
-	MemberCount int    `json:"member_count,omitempty"`
-	CreatedAge  string `json:"created_age,omitempty"`
+	MemberCount  int    `json:"member_count,omitempty"`
+	CreatedAge   string `json:"created_age,omitempty"`
+	JoinProtocol string `json:"join_protocol,omitempty"`
 }
 
 // TaintedFields holds member-generated content that must be treated as untrusted.
@@ -49,6 +50,7 @@ type envelopeConfig struct {
 	registeredInDirectory bool
 	memberCount           int
 	createdAge            string
+	joinProtocol          string
 	maxStringLen          int
 	fingerprintMatch      bool
 	operatorProvenance    *int
@@ -82,6 +84,14 @@ func WithMemberCount(count int) EnvelopeOption {
 func WithCreatedAge(age string) EnvelopeOption {
 	return func(c *envelopeConfig) {
 		c.createdAge = age
+	}
+}
+
+// WithJoinProtocol sets the join_protocol in campfire_asserted.
+// Valid values: "open", "invite-only". Reported as campfire-asserted (not cryptographically verified).
+func WithJoinProtocol(protocol string) EnvelopeOption {
+	return func(c *envelopeConfig) {
+		c.joinProtocol = protocol
 	}
 }
 
@@ -144,8 +154,9 @@ func BuildEnvelope(campfireID string, trustStatus TrustStatus, content any, opts
 			OperatorProvenance:    cfg.operatorProvenance,
 		},
 		CampfireAsserted: CampfireAssertedFields{
-			MemberCount: cfg.memberCount,
-			CreatedAge:  cfg.createdAge,
+			MemberCount:  cfg.memberCount,
+			CreatedAge:   cfg.createdAge,
+			JoinProtocol: cfg.joinProtocol,
 		},
 		Tainted: TaintedFields{
 			ContentClassification: "tainted",
