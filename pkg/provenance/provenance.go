@@ -321,6 +321,14 @@ func (s *Store) computeLevelTransitive(key string, now time.Time, depth int) Lev
 			if a.VerifierKey == a.TargetKey && !s.config.AllowSelfAttestation {
 				continue
 			}
+			// The intermediary must itself be a trusted verifier — being merely
+			// attested (having provenance) is not sufficient to convey trust
+			// transitively. An untrusted intermediary cannot bridge two trusted
+			// parties: trust flows only through agents explicitly listed in
+			// TrustedVerifierKeys at the appropriate depth.
+			if !s.isVerifierTrusted(a.VerifierKey, depth) {
+				continue
+			}
 			// Recurse: check if the verifier itself is provenance-elevated
 			// to authorize transitive trust.
 			// Depth increments for the next hop.

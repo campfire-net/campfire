@@ -662,3 +662,54 @@ func TestComputeLevelTransitive_FreshTransitiveWinsOverStale(t *testing.T) {
 		t.Errorf("expected LevelPresent (fresh transitive attestation wins over stale), got %v", l)
 	}
 }
+
+// TestComputeLevelTransitive_UntrustedIntermediaryCannotBridge verifies that an
+// untrusted intermediary (one not in TrustedVerifierKeys) cannot convey transitive
+// trust from a trusted agent to a target.
+//
+// Regression: before the fix, computeLevelTransitive allowed an untrusted intermediary
+// to bridge two parties by checking only whether the intermediary's computed trust level
+// was >= LevelContactable — without verifying that the intermediary itself was an
+// explicitly trusted verifier. This let an attested-but-not-trusted agent inflate the
+// trust level of arbitrary targets.
+//
+// Setup: trusted-verifier → untrusted-intermediary (attested, but NOT in TrustedVerifierKeys)
+//        untrusted-intermediary → target-c
+//
+// Expected: target-c does NOT receive transitive trust through untrusted-intermediary.
+func TestComputeLevelTransitive_UntrustedIntermediaryCannotBridge(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.FreshnessWindow = 24 * time.Hour
+	cfg.MaxTransitivityDepth = 2
+	// Only "trusted-verifier" is in the trusted set.
+	// "untrusted-intermediary" is intentionally NOT added to TrustedVerifierKeys.
+	cfg.TrustedVerifierKeys["trusted-verifier"] = 2
+	s := NewStore(cfg)
+
+	now := time.Now()
+	freshTime := now.Add(-1 * time.Hour)
+
+	// trusted-verifier attests untrusted-intermediary — so intermediary has provenance
+	// (LevelPresent when queried directly), but is NOT a trusted verifier itself.
+	intermediaryAtt := makeAttestation("att-intermediary", "untrusted-intermediary", "trusted-verifier", freshTime, true)
+	if err := s.AddAttestation(intermediaryAtt); err != nil {
+		t.Fatalf("AddAttestation for untrusted-intermediary failed: %v", err)
+	}
+
+	// untrusted-intermediary attests target-c.
+	targetAtt := makeAttestation("att-target-c", "target-c", "untrusted-intermediary", freshTime, true)
+	if err := s.AddAttestation(targetAtt); err != nil {
+		t.Fatalf("AddAttestation for target-c failed: %v", err)
+	}
+
+	// Verify that untrusted-intermediary itself has provenance (precondition for the bug).
+	if l := s.LevelTransitive("untrusted-intermediary"); l < LevelContactable {
+		t.Skipf("precondition failed: untrusted-intermediary should have LevelContactable from trusted-verifier; got %v", l)
+	}
+
+	// target-c must NOT receive transitive trust through untrusted-intermediary, because
+	// untrusted-intermediary is not in TrustedVerifierKeys.
+	if l := s.LevelTransitive("target-c"); l >= LevelContactable {
+		t.Errorf("untrusted intermediary must not bridge transitive trust: expected target-c below LevelContactable, got %v", l)
+	}
+}
