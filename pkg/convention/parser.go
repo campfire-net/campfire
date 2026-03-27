@@ -18,6 +18,10 @@ const (
 	SignerMemberKey          SignerType = "member_key"
 )
 
+// maxRateLimitCeiling is the maximum allowed value for rate_limit.max in a
+// convention declaration. Values above this are clamped with a warning.
+const maxRateLimitCeiling = 100
+
 // Declaration is a parsed convention:operation message.
 type Declaration struct {
 	Convention      string          `json:"convention"`
@@ -48,11 +52,37 @@ type ArgDescriptor struct {
 	Description string   `json:"description,omitempty"`
 	MaxLength   int      `json:"max_length,omitempty"`
 	Min         int      `json:"min,omitempty"`
+	MinSet      bool     `json:"-"` // populated by UnmarshalJSON; true when "min" was explicitly present
 	Max         int      `json:"max,omitempty"`
 	MaxCount    int      `json:"max_count,omitempty"`
 	Pattern     string   `json:"pattern,omitempty"`
 	Values      []string `json:"values,omitempty"`
 	Repeated    bool     `json:"repeated,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler for ArgDescriptor so that MinSet is
+// populated correctly: it is true only when the "min" key was explicitly present
+// in the JSON object, allowing callers to distinguish "min=0 declared" from
+// "min not declared" (both produce Min==0 at the Go level).
+// Regression fix: campfire-agent-bnq — negative values were rejected when min
+// was not declared because the zero value of Min (int) enforced a floor of 0.
+func (a *ArgDescriptor) UnmarshalJSON(data []byte) error {
+	// Inspect raw keys to detect whether "min" was explicitly present.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	// Alias type to avoid infinite recursion during standard decode.
+	type argAlias ArgDescriptor
+	var alias argAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*a = ArgDescriptor(alias)
+
+	_, a.MinSet = raw["min"]
+	return nil
 }
 
 // TagRule describes a tag that an operation produces.
@@ -467,9 +497,9 @@ func checkDeniedTag(tag string) error {
 
 // clampRateLimit enforces ceiling values and validates the per field.
 func clampRateLimit(rl *RateLimit, result *ConformanceResult) {
-	if rl.Max > 100 {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("rate_limit.max clamped from %d to 100", rl.Max))
-		rl.Max = 100
+	if rl.Max > maxRateLimitCeiling {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("rate_limit.max clamped from %d to %d", rl.Max, maxRateLimitCeiling))
+		rl.Max = maxRateLimitCeiling
 	}
 	if rl.Window != "" {
 		d, err := parseDuration(rl.Window)

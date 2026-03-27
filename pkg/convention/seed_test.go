@@ -1,19 +1,17 @@
-package convention_test
+package convention
 
 import (
 	"encoding/json"
 	"testing"
-
-	"github.com/campfire-net/campfire/pkg/convention"
 )
 
 // TestPromoteDeclaration verifies the structure of the embedded promote declaration.
 // This is the ONE declaration compiled into the binary — the bootstrap primitive.
 func TestPromoteDeclaration(t *testing.T) {
-	decl := convention.PromoteDeclaration()
+	decl := PromoteDeclaration()
 
-	if decl.Convention != convention.InfrastructureConvention {
-		t.Errorf("convention: want %q, got %q", convention.InfrastructureConvention, decl.Convention)
+	if decl.Convention != InfrastructureConvention {
+		t.Errorf("convention: want %q, got %q", InfrastructureConvention, decl.Convention)
 	}
 	if decl.Operation != "promote" {
 		t.Errorf("operation: want %q, got %q", "promote", decl.Operation)
@@ -26,12 +24,12 @@ func TestPromoteDeclaration(t *testing.T) {
 	if len(decl.ProducesTags) != 1 {
 		t.Fatalf("produces_tags: want 1, got %d", len(decl.ProducesTags))
 	}
-	if decl.ProducesTags[0].Tag != convention.ConventionOperationTag {
-		t.Errorf("produces_tags[0].tag: want %q, got %q", convention.ConventionOperationTag, decl.ProducesTags[0].Tag)
+	if decl.ProducesTags[0].Tag != ConventionOperationTag {
+		t.Errorf("produces_tags[0].tag: want %q, got %q", ConventionOperationTag, decl.ProducesTags[0].Tag)
 	}
 
 	// Must have 'file' and 'registry' args
-	argByName := make(map[string]convention.ArgDescriptor)
+	argByName := make(map[string]ArgDescriptor)
 	for _, a := range decl.Args {
 		argByName[a.Name] = a
 	}
@@ -60,7 +58,7 @@ func TestPromoteDeclaration(t *testing.T) {
 // TestPromoteDeclaration_IsUnderSizeLimit verifies that the promote declaration
 // serializes to under 500 bytes — the "~500 bytes, stable forever" constraint.
 func TestPromoteDeclaration_IsUnderSizeLimit(t *testing.T) {
-	decl := convention.PromoteDeclaration()
+	decl := PromoteDeclaration()
 
 	// Use encoding/json which is what sendDeclarationViaTransport uses
 	data, err := json.Marshal(decl)
@@ -76,12 +74,12 @@ func TestPromoteDeclaration_IsUnderSizeLimit(t *testing.T) {
 // TestInfrastructureSeedDeclarations verifies that the seed set contains
 // supersede and revoke declarations.
 func TestInfrastructureSeedDeclarations(t *testing.T) {
-	decls := convention.InfrastructureSeedDeclarations()
+	decls := infrastructureSeedDeclarations()
 	if len(decls) != 2 {
 		t.Fatalf("expected 2 seed declarations, got %d", len(decls))
 	}
 
-	ops := make(map[string]*convention.Declaration)
+	ops := make(map[string]*Declaration)
 	for _, d := range decls {
 		ops[d.Operation] = d
 	}
@@ -96,10 +94,10 @@ func TestInfrastructureSeedDeclarations(t *testing.T) {
 
 // TestSupersedeDeclaration verifies the structure of the supersede declaration.
 func TestSupersedeDeclaration(t *testing.T) {
-	decl := convention.SupersedeDeclaration()
+	decl := SupersedeDeclaration()
 
-	if decl.Convention != convention.InfrastructureConvention {
-		t.Errorf("convention: want %q, got %q", convention.InfrastructureConvention, decl.Convention)
+	if decl.Convention != InfrastructureConvention {
+		t.Errorf("convention: want %q, got %q", InfrastructureConvention, decl.Convention)
 	}
 	if decl.Operation != "supersede" {
 		t.Errorf("operation: want %q, got %q", "supersede", decl.Operation)
@@ -112,15 +110,15 @@ func TestSupersedeDeclaration(t *testing.T) {
 	if len(decl.ProducesTags) != 1 {
 		t.Fatalf("produces_tags: want 1, got %d", len(decl.ProducesTags))
 	}
-	if decl.ProducesTags[0].Tag != convention.ConventionOperationTag {
-		t.Errorf("produces_tags[0].tag: want %q, got %q", convention.ConventionOperationTag, decl.ProducesTags[0].Tag)
+	if decl.ProducesTags[0].Tag != ConventionOperationTag {
+		t.Errorf("produces_tags[0].tag: want %q, got %q", ConventionOperationTag, decl.ProducesTags[0].Tag)
 	}
 	if decl.ProducesTags[0].Cardinality != "exactly_one" {
 		t.Errorf("produces_tags[0].cardinality: want %q, got %q", "exactly_one", decl.ProducesTags[0].Cardinality)
 	}
 
 	// Must have file and supersedes args
-	argByName := make(map[string]convention.ArgDescriptor)
+	argByName := make(map[string]ArgDescriptor)
 	for _, a := range decl.Args {
 		argByName[a.Name] = a
 	}
@@ -150,10 +148,10 @@ func TestSupersedeDeclaration(t *testing.T) {
 
 // TestRevokeDeclaration verifies the structure of the revoke declaration.
 func TestRevokeDeclaration(t *testing.T) {
-	decl := convention.RevokeDeclaration()
+	decl := RevokeDeclaration()
 
-	if decl.Convention != convention.InfrastructureConvention {
-		t.Errorf("convention: want %q, got %q", convention.InfrastructureConvention, decl.Convention)
+	if decl.Convention != InfrastructureConvention {
+		t.Errorf("convention: want %q, got %q", InfrastructureConvention, decl.Convention)
 	}
 	if decl.Operation != "revoke" {
 		t.Errorf("operation: want %q, got %q", "revoke", decl.Operation)
@@ -205,7 +203,7 @@ func TestSupersedeDeclaration_ParsesWithConventionExtensionException(t *testing.
 		"signing": "campfire_key"
 	}`)
 	campfireKey := "deadbeef" + seedRepeatStr('0', 56)
-	decl, result, err := convention.Parse([]string{convention.ConventionOperationTag}, payload, campfireKey, campfireKey)
+	decl, result, err := Parse([]string{ConventionOperationTag}, payload, campfireKey, campfireKey)
 	if err != nil {
 		t.Fatalf("Parse supersede decl: %v", err)
 	}
@@ -233,7 +231,7 @@ func TestRevokeDeclaration_ParsesWithConventionExtensionException(t *testing.T) 
 		"signing": "campfire_key"
 	}`)
 	campfireKey := "deadbeef" + seedRepeatStr('0', 56)
-	decl, result, err := convention.Parse([]string{convention.ConventionOperationTag}, payload, campfireKey, campfireKey)
+	decl, result, err := Parse([]string{ConventionOperationTag}, payload, campfireKey, campfireKey)
 	if err != nil {
 		t.Fatalf("Parse revoke decl: %v", err)
 	}

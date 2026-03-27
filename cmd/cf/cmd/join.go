@@ -51,7 +51,7 @@ var joinCmd = &cobra.Command{
 		// Check if already a member
 		existingMembership, _ := s.GetMembership(campfireID)
 		if existingMembership != nil {
-			return fmt.Errorf("already a member of campfire %s", campfireID[:12])
+			return fmt.Errorf("already a member of campfire %s", campfireID[:shortIDLen])
 		}
 
 		// Route based on --via flag (p2p-http), GitHub Issue URL, or filesystem (default).
@@ -93,7 +93,7 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 			// Immediately admitted via admitFSMemberIfNew below.
 		case "invite-only":
 			return fmt.Errorf("campfire %s is invite-only; ask a member to run 'cf admit %s %s'",
-				campfireID[:12], campfireID[:12], agentID.PublicKeyHex())
+				campfireID[:shortIDLen], campfireID[:shortIDLen], agentID.PublicKeyHex())
 		default:
 			return fmt.Errorf("unknown join protocol: %s", state.JoinProtocol)
 		}
@@ -141,7 +141,7 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 		return enc.Encode(out)
 	}
 
-	fmt.Printf("Joined campfire %s\n", campfireID[:12])
+	fmt.Printf("Joined campfire %s\n", campfireID[:shortIDLen])
 	printCompatibilityReport(report)
 	return nil
 }
@@ -289,7 +289,7 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 		return enc.Encode(out)
 	}
 
-	fmt.Printf("Joined campfire %s\n", campfireID[:12])
+	fmt.Printf("Joined campfire %s\n", campfireID[:shortIDLen])
 	printCompatibilityReport(p2pReport)
 	return nil
 }

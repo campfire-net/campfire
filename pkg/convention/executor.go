@@ -59,9 +59,9 @@ func NewExecutor(transport ExecutorTransport, selfKey string) *Executor {
 	}
 }
 
-// NewExecutorWithLimiter creates an Executor with an explicit rate limiter.
+// newExecutorWithLimiter creates an Executor with an explicit rate limiter.
 // Use this in tests that need isolated rate limit state.
-func NewExecutorWithLimiter(transport ExecutorTransport, selfKey string, rl *rateLimiter) *Executor {
+func newExecutorWithLimiter(transport ExecutorTransport, selfKey string, rl *rateLimiter) *Executor {
 	return &Executor{
 		transport:   transport,
 		selfKey:     selfKey,
@@ -464,8 +464,12 @@ func validateSingleValue(desc ArgDescriptor, val any) error {
 		default:
 			return fmt.Errorf("expected integer, got %T", val)
 		}
-		if n < desc.Min {
-			return fmt.Errorf("value %d out of range [%d, %d]", n, desc.Min, desc.Max)
+		// Only enforce min when it was explicitly declared in the convention JSON
+		// (MinSet=true). When undeclared, Min is the zero value (0) and must not
+		// impose a floor — callers should be free to pass negative integers.
+		// Regression fix: campfire-agent-bnq.
+		if desc.MinSet && n < desc.Min {
+			return fmt.Errorf("value %d is below min %d", n, desc.Min)
 		}
 		if desc.Max != 0 && n > desc.Max {
 			return fmt.Errorf("value %d out of range [%d, %d]", n, desc.Min, desc.Max)
@@ -531,29 +535,42 @@ func validateSingleValue(desc ArgDescriptor, val any) error {
 	return nil
 }
 
-// matchPattern validates s against pattern with a 1ms deadline.
+// matchPatternTimeout is the deadline for a single regex match.
+// The previous 1ms deadline caused false rejections under CPU load (campfire-agent-3bx).
+const matchPatternTimeout = 100 * time.Millisecond
+
+// matchPattern validates s against pattern with a deadline to guard against
+// catastrophic backtracking. The goroutine is signalled via a done channel so
+// it exits promptly when the timeout fires instead of leaking (campfire-agent-i3p).
 func matchPattern(pattern, s string) error {
 	re, err := regexp.Compile("^(?:" + pattern + ")$")
 	if err != nil {
 		return fmt.Errorf("invalid pattern %q: %w", pattern, err)
 	}
 
-	// Use a channel with timeout to guard against catastrophic backtracking.
 	type result struct {
 		matched bool
 	}
 	ch := make(chan result, 1)
+	done := make(chan struct{})
 	go func() {
-		ch <- result{matched: re.MatchString(s)}
+		matched := re.MatchString(s)
+		select {
+		case ch <- result{matched: matched}:
+		case <-done:
+			// Caller timed out; discard result and exit cleanly.
+		}
 	}()
 
 	select {
 	case r := <-ch:
+		close(done)
 		if !r.matched {
 			return fmt.Errorf("value %q does not match pattern %q", s, pattern)
 		}
 		return nil
-	case <-time.After(time.Millisecond):
+	case <-time.After(matchPatternTimeout):
+		close(done)
 		return fmt.Errorf("pattern match timeout for pattern %q", pattern)
 	}
 }
