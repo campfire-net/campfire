@@ -1,0 +1,69 @@
+{
+  "convention": "operator-provenance",
+  "version": "0.1",
+  "operation": "operator-verify",
+  "description": "Respond to an operator-challenge with a human-presence proof. The response is signed by the operator key, binding the nonce and proof together. Becomes the attestation message on validation.",
+  "signing": "member_key",
+  "antecedents": "exactly_one(target)",
+  "args": [
+    {
+      "name": "nonce",
+      "type": "string",
+      "required": true,
+      "max_length": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Echoed from the challenge (must match exactly)"
+    },
+    {
+      "name": "target_key",
+      "type": "key",
+      "required": true,
+      "description": "Echoed from the challenge (runtime MUST verify match)"
+    },
+    {
+      "name": "contact_method",
+      "type": "string",
+      "required": true,
+      "max_length": 512,
+      "description": "URI where the challenge was received"
+    },
+    {
+      "name": "proof_type",
+      "type": "enum",
+      "required": true,
+      "values": [
+        "captcha",
+        "totp",
+        "hardware",
+        "sms",
+        "email-link"
+      ],
+      "description": "Type of human-presence proof included"
+    },
+    {
+      "name": "proof_token",
+      "type": "string",
+      "required": true,
+      "max_length": 4096,
+      "description": "The proof itself"
+    },
+    {
+      "name": "proof_provenance",
+      "type": "string",
+      "required": true,
+      "max_length": 4096,
+      "description": "Issuer signature or attestation for the proof"
+    }
+  ],
+  "produces_tags": [
+    {
+      "tag": "provenance:verify",
+      "cardinality": "exactly_one"
+    }
+  ],
+  "rate_limit": {
+    "max": 10,
+    "per": "sender",
+    "window": "1h"
+  }
+}

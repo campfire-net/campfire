@@ -1,0 +1,41 @@
+{
+  "convention": "operator-provenance",
+  "version": "0.1",
+  "operation": "operator-challenge",
+  "description": "Send a verification challenge to an operator's declared contact method. The target must respond via operator-verify within the challenge TTL (5 minutes). Rate limit: 10 challenges/hour per target from all senders combined.",
+  "signing": "member_key",
+  "antecedents": "none",
+  "args": [
+    {
+      "name": "target_key",
+      "type": "key",
+      "required": true,
+      "description": "Public key of the operator being challenged"
+    },
+    {
+      "name": "nonce",
+      "type": "string",
+      "required": true,
+      "max_length": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Cryptographically random 32-byte challenge value (hex-encoded)"
+    },
+    {
+      "name": "callback_campfire",
+      "type": "campfire",
+      "required": true,
+      "description": "Campfire ID where the operator-verify response should be sent"
+    }
+  ],
+  "produces_tags": [
+    {
+      "tag": "provenance:challenge",
+      "cardinality": "exactly_one"
+    }
+  ],
+  "rate_limit": {
+    "max": 10,
+    "per": "sender",
+    "window": "1h"
+  }
+}
