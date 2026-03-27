@@ -1,6 +1,7 @@
 package convention
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -293,7 +294,7 @@ func TestListOperations(t *testing.T) {
 		},
 	}
 
-	decls, err := ListOperations(mock, "campfire123", "")
+	decls, err := ListOperations(context.Background(), mock, "campfire123", "")
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -348,7 +349,7 @@ func TestListOperations_SupersedesNewerWins(t *testing.T) {
 		},
 	}
 
-	decls, err := ListOperations(mock, "campfire123", "")
+	decls, err := ListOperations(context.Background(), mock, "campfire123", "")
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -401,7 +402,7 @@ func TestListOperations_SupersedesOlderLoses(t *testing.T) {
 		},
 	}
 
-	decls, err := ListOperations(mock, "campfire123", "")
+	decls, err := ListOperations(context.Background(), mock, "campfire123", "")
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -442,7 +443,7 @@ func TestListOperations_RevokeRemovesDeclaration(t *testing.T) {
 		},
 	}
 
-	decls, err := ListOperations(mock, "campfire123", "")
+	decls, err := ListOperations(context.Background(), mock, "campfire123", "")
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -490,7 +491,7 @@ func TestListOperations_RevokeDoesNotAffectOthers(t *testing.T) {
 		},
 	}
 
-	decls, err := ListOperations(mock, "campfire123", "")
+	decls, err := ListOperations(context.Background(), mock, "campfire123", "")
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -533,7 +534,7 @@ func TestListOperations_RevokeSupersededTarget(t *testing.T) {
 		},
 	}
 
-	decls, err := ListOperations(mock, "campfire123", "")
+	decls, err := ListOperations(context.Background(), mock, "campfire123", "")
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -672,7 +673,7 @@ func TestListOperations_RealSQLiteRoundtrip(t *testing.T) {
 		t.Fatalf("AddMessage msg2: %v", err)
 	}
 
-	decls, err := ListOperations(s, campfireID, "")
+	decls, err := ListOperations(context.Background(), s, campfireID, "")
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -711,7 +712,7 @@ func TestListOperations_RevokeUnauthorizedSenderIgnored(t *testing.T) {
 	}
 
 	campfireKey := "the-real-campfire-key"
-	decls, err := ListOperations(mock, "campfire123", campfireKey)
+	decls, err := ListOperations(context.Background(), mock, "campfire123", campfireKey)
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -743,7 +744,7 @@ func TestListOperationsWithRegistry_FallsThrough(t *testing.T) {
 		},
 	}
 
-	decls, err := ListOperationsWithRegistry(multi, "inline-cf", "", "reg-cf")
+	decls, err := ListOperationsWithRegistry(context.Background(), multi, "inline-cf", "", "reg-cf")
 	if err != nil {
 		t.Fatalf("ListOperationsWithRegistry: %v", err)
 	}
@@ -800,7 +801,7 @@ func TestListOperationsWithRegistry_RegistrySupersedes(t *testing.T) {
 		},
 	}
 
-	decls, err := ListOperationsWithRegistry(multi, "inline-cf", "", "reg-cf")
+	decls, err := ListOperationsWithRegistry(context.Background(), multi, "inline-cf", "", "reg-cf")
 	if err != nil {
 		t.Fatalf("ListOperationsWithRegistry: %v", err)
 	}
@@ -829,7 +830,7 @@ func TestListOperationsWithRegistry_EmptyRegistry(t *testing.T) {
 		},
 	}
 
-	decls, err := ListOperationsWithRegistry(mock, "campfire123", "", "")
+	decls, err := ListOperationsWithRegistry(context.Background(), mock, "campfire123", "", "")
 	if err != nil {
 		t.Fatalf("ListOperationsWithRegistry: %v", err)
 	}
@@ -853,7 +854,7 @@ func TestListOperationsWithRegistry_SameCampfire(t *testing.T) {
 	}
 
 	// Same campfire for both inline and registry — should still return 1 decl.
-	decls, err := ListOperationsWithRegistry(mock, "campfire123", "", "campfire123")
+	decls, err := ListOperationsWithRegistry(context.Background(), mock, "campfire123", "", "campfire123")
 	if err != nil {
 		t.Fatalf("ListOperationsWithRegistry: %v", err)
 	}
@@ -888,7 +889,7 @@ func TestListOperations_RevokeOfflineMode_OriginalSignerHonored(t *testing.T) {
 	}
 
 	// campfireKey is empty — offline mode
-	decls, err := ListOperations(mock, "campfire123", "")
+	decls, err := ListOperations(context.Background(), mock, "campfire123", "")
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -925,7 +926,7 @@ func TestListOperations_RevokeOfflineMode_DifferentSenderIgnored(t *testing.T) {
 	}
 
 	// campfireKey is empty — offline mode
-	decls, err := ListOperations(mock, "campfire123", "")
+	decls, err := ListOperations(context.Background(), mock, "campfire123", "")
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -973,7 +974,7 @@ func TestListOperationsWithRegistry_OfflineRevoke_OriginalSignerHonored(t *testi
 	}
 
 	// campfireKey is empty — offline mode
-	decls, err := ListOperationsWithRegistry(multi, "inline-cf", "", "reg-cf")
+	decls, err := ListOperationsWithRegistry(context.Background(), multi, "inline-cf", "", "reg-cf")
 	if err != nil {
 		t.Fatalf("ListOperationsWithRegistry: %v", err)
 	}
@@ -1017,7 +1018,7 @@ func TestListOperationsWithRegistry_OfflineRevoke_DifferentSenderIgnored(t *test
 	}
 
 	// campfireKey is empty — offline mode
-	decls, err := ListOperationsWithRegistry(multi, "inline-cf", "", "reg-cf")
+	decls, err := ListOperationsWithRegistry(context.Background(), multi, "inline-cf", "", "reg-cf")
 	if err != nil {
 		t.Fatalf("ListOperationsWithRegistry: %v", err)
 	}
@@ -1115,7 +1116,7 @@ func TestListOperations_TransitiveRevokeChain_RealSQLite(t *testing.T) {
 		}
 	}
 
-	decls, err := ListOperations(s, campfireID, "")
+	decls, err := ListOperations(context.Background(), s, campfireID, "")
 	if err != nil {
 		t.Fatalf("ListOperations: %v", err)
 	}
@@ -1203,7 +1204,7 @@ func TestListOperations_RevokeOfflineMode_EmptySenderRejected(t *testing.T) {
 			},
 		},
 	}
-	decls, err := ListOperations(mock, "test-cf", "")
+	decls, err := ListOperations(context.Background(), mock, "test-cf", "")
 	if err != nil {
 		t.Fatalf("ListOperations failed: %v", err)
 	}
@@ -1231,11 +1232,124 @@ func TestListOperations_RevokeOfflineMode_EmptySenderRevokerIgnored(t *testing.T
 			},
 		},
 	}
-	decls, err := ListOperations(mock, "test-cf", "")
+	decls, err := ListOperations(context.Background(), mock, "test-cf", "")
 	if err != nil {
 		t.Fatalf("ListOperations failed: %v", err)
 	}
 	if len(decls) != 1 {
 		t.Fatalf("expected 1 declaration (empty-sender revoker ignored), got %d", len(decls))
+	}
+}
+
+// TestListOperations_OfflineRevoke_RealSQLite verifies that in offline mode
+// (campfireKey empty), a revoke from the original declaration signer is honored
+// and a revoke from a different sender is ignored — tested against a real
+// store.Open SQLite database (not a mock) for the 3q8 logic path.
+func TestListOperations_OfflineRevoke_RealSQLite(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "offline-revoke.db")
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+
+	campfireID := "cf-offline-revoke-test"
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: dir,
+		JoinProtocol: "test",
+		Role:         "full",
+		JoinedAt:     1000,
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	// msg1: declaration posted by "original-signer".
+	msgs := []store.MessageRecord{
+		{
+			ID:        "osr-msg1",
+			CampfireID: campfireID,
+			Sender:    "original-signer",
+			Payload:   socialPostPayload,
+			Tags:      []string{ConventionOperationTag},
+			Timestamp: 1000,
+			Signature: []byte("sig1"),
+			ReceivedAt: 1000,
+		},
+		// revoke1: from the original signer — must be honored in offline mode.
+		{
+			ID:        "osr-revoke1",
+			CampfireID: campfireID,
+			Sender:    "original-signer",
+			Payload:   []byte(`{"target_id":"osr-msg1"}`),
+			Tags:      []string{"convention:revoke"},
+			Timestamp: 2000,
+			Signature: []byte("rev-sig1"),
+			ReceivedAt: 2000,
+		},
+	}
+	for _, m := range msgs {
+		if _, addErr := s.AddMessage(m); addErr != nil {
+			t.Fatalf("AddMessage %s: %v", m.ID, addErr)
+		}
+	}
+
+	// campfireKey is empty — offline mode.
+	decls, err := ListOperations(context.Background(), s, campfireID, "")
+	if err != nil {
+		t.Fatalf("ListOperations (original-signer revoke): %v", err)
+	}
+	// The original signer's own revoke must be honored.
+	if len(decls) != 0 {
+		t.Errorf("expected 0 decls (original-signer revoke honored), got %d", len(decls))
+	}
+
+	// Now add a second declaration and a revoke from a different sender.
+	moreRecords := []store.MessageRecord{
+		{
+			ID:        "osr-msg2",
+			CampfireID: campfireID,
+			Sender:    "legit-signer",
+			Payload:   socialPostPayload,
+			Tags:      []string{ConventionOperationTag},
+			Timestamp: 3000,
+			Signature: []byte("sig2"),
+			ReceivedAt: 3000,
+		},
+		// revoke2: from an attacker — must be ignored in offline mode.
+		{
+			ID:        "osr-revoke2",
+			CampfireID: campfireID,
+			Sender:    "attacker-key",
+			Payload:   []byte(`{"target_id":"osr-msg2"}`),
+			Tags:      []string{"convention:revoke"},
+			Timestamp: 4000,
+			Signature: []byte("atk-sig"),
+			ReceivedAt: 4000,
+		},
+	}
+	for _, m := range moreRecords {
+		if _, addErr := s.AddMessage(m); addErr != nil {
+			t.Fatalf("AddMessage %s: %v", m.ID, addErr)
+		}
+	}
+
+	decls2, err := ListOperations(context.Background(), s, campfireID, "")
+	if err != nil {
+		t.Fatalf("ListOperations (attacker revoke): %v", err)
+	}
+	// Attacker's revoke must be ignored; legit-signer's declaration survives.
+	// (osr-msg1 is still revoked from the first half of the test.)
+	if len(decls2) != 1 {
+		ids := make([]string, len(decls2))
+		for i, d := range decls2 {
+			ids[i] = d.MessageID
+		}
+		t.Errorf("expected 1 decl (attacker revoke ignored, legit decl survives), got %d: %v", len(decls2), ids)
+	}
+	if len(decls2) > 0 && decls2[0].MessageID != "osr-msg2" {
+		t.Errorf("expected surviving decl to be osr-msg2, got %s", decls2[0].MessageID)
 	}
 }

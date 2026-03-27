@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,9 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 )
+
+// ErrNotImplemented is returned by stub transport methods that are not yet implemented.
+var ErrNotImplemented = errors.New("not yet implemented")
 
 // cliTransportAdapter implements convention.ExecutorTransport using the local store.
 type cliTransportAdapter struct {
@@ -39,7 +43,7 @@ func (a *cliTransportAdapter) SendMessage(ctx context.Context, campfireID string
 }
 
 func (a *cliTransportAdapter) SendCampfireKeySigned(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
-	return "", fmt.Errorf("campfire-key signing not yet implemented in CLI transport adapter")
+	return "", fmt.Errorf("campfire-key signing: %w", ErrNotImplemented)
 }
 
 func (a *cliTransportAdapter) ReadMessages(ctx context.Context, campfireID string, tags []string) ([]convention.MessageRecord, error) {
@@ -59,5 +63,5 @@ func (a *cliTransportAdapter) ReadMessages(ctx context.Context, campfireID strin
 }
 
 func (a *cliTransportAdapter) SendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) ([]byte, error) {
-	return nil, fmt.Errorf("future/await not yet implemented in CLI transport adapter")
+	return nil, fmt.Errorf("future/await: %w", ErrNotImplemented)
 }

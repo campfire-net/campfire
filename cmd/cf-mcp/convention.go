@@ -62,7 +62,7 @@ func (m *conventionToolMap) list() []convention.MCPToolInfo {
 // filters through the authority resolver. Only declarations with at least
 // AuthorityOperational survive (untrusted member declarations are dropped).
 func readDeclarations(st store.Store, campfireID, campfireKey string) ([]*convention.Declaration, error) {
-	decls, err := convention.ListOperations(storeReaderAdapter{st}, campfireID, campfireKey)
+	decls, err := convention.ListOperations(context.Background(), storeReaderAdapter{st}, campfireID, campfireKey)
 	if err != nil {
 		return nil, fmt.Errorf("listing operations: %w", err)
 	}

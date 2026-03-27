@@ -33,7 +33,7 @@ func listConventionOperations(ctx context.Context, s store.Store, campfireID str
 // dispatchConventionOp dispatches a convention operation on a campfire.
 // campfireName may be a name, alias, or ID. operationName is the operation to execute.
 // rawArgs are the remaining CLI arguments (flags).
-func dispatchConventionOp(campfireName string, operationName string, rawArgs []string) error {
+func dispatchConventionOp(ctx context.Context, campfireName string, operationName string, rawArgs []string) error {
 	agentID, s, err := requireAgentAndStore()
 	if err != nil {
 		return err
@@ -46,7 +46,7 @@ func dispatchConventionOp(campfireName string, operationName string, rawArgs []s
 	}
 
 	// Read declarations from this campfire.
-	decls, err := listConventionOperations(context.Background(), s, campfireID)
+	decls, err := listConventionOperations(ctx, s, campfireID)
 	if err != nil {
 		return fmt.Errorf("reading declarations from campfire: %w", err)
 	}
@@ -120,7 +120,7 @@ func dispatchConventionOp(campfireName string, operationName string, rawArgs []s
 	transport := &cliTransportAdapter{agentID: agentID, store: s}
 	executor := convention.NewExecutor(transport, agentID.PublicKeyHex())
 
-	if err := executor.Execute(context.Background(), matched, campfireID, args); err != nil {
+	if err := executor.Execute(ctx, matched, campfireID, args); err != nil {
 		return fmt.Errorf("convention operation failed: %w", err)
 	}
 

@@ -11,6 +11,7 @@ package cmd
 //   registry fallback (ListOperationsWithRegistry reads from registry campfire)
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -391,7 +392,7 @@ func TestConventionLifecycleE2E(t *testing.T) {
 	_ = postDeclV2Payload // used for reference; actual supersede uses postDeclPayload variant
 
 	readerA := cliStoreReader{storeA}
-	decls, err := convention.ListOperations(readerA, campfireID, "")
+	decls, err := convention.ListOperations(context.Background(), readerA, campfireID, "")
 	if err != nil {
 		t.Fatalf("Stage 5: ListOperations failed: %v", err)
 	}
@@ -421,7 +422,7 @@ func TestConventionLifecycleE2E(t *testing.T) {
 	// We use agent A's key (campfire owner / convention authority).
 	e2eWriteRevokeToStore(t, storeA, agentA, campfireID, postV2MsgID)
 
-	declsAfterRevoke, err := convention.ListOperations(readerA, campfireID, "")
+	declsAfterRevoke, err := convention.ListOperations(context.Background(), readerA, campfireID, "")
 	if err != nil {
 		t.Fatalf("Stage 6: ListOperations after revoke failed: %v", err)
 	}
@@ -530,7 +531,7 @@ func TestConventionLifecycleE2E(t *testing.T) {
 	}
 
 	// Verify bare target has no convention:operation declarations inline.
-	bareInlineDecls, err := convention.ListOperations(readerA, bareTargetID, "")
+	bareInlineDecls, err := convention.ListOperations(context.Background(), readerA, bareTargetID, "")
 	if err != nil {
 		t.Fatalf("Stage 7: ListOperations on bare target: %v", err)
 	}
@@ -539,7 +540,7 @@ func TestConventionLifecycleE2E(t *testing.T) {
 	}
 
 	// ListOperationsWithRegistry: should return registry-op from the registry campfire.
-	regDecls, err := convention.ListOperationsWithRegistry(readerA, bareTargetID, "", registryID)
+	regDecls, err := convention.ListOperationsWithRegistry(context.Background(), readerA, bareTargetID, "", registryID)
 	if err != nil {
 		t.Fatalf("Stage 7: ListOperationsWithRegistry failed: %v", err)
 	}
@@ -635,7 +636,7 @@ func TestConventionLifecycleE2E_SupersedeRevoke_Isolated(t *testing.T) {
 
 	// Verify v1 is visible.
 	reader := cliStoreReader{s}
-	decls, err := convention.ListOperations(reader, campfireID, "")
+	decls, err := convention.ListOperations(context.Background(), reader, campfireID, "")
 	if err != nil {
 		t.Fatalf("ListOperations after v1: %v", err)
 	}
@@ -648,7 +649,7 @@ func TestConventionLifecycleE2E_SupersedeRevoke_Isolated(t *testing.T) {
 	v2ID := e2eWriteDeclarationToStore(t, s, agentID, campfireID, v2Payload, v1ID)
 
 	// v1 must be gone, v2 must be present.
-	decls, err = convention.ListOperations(reader, campfireID, "")
+	decls, err = convention.ListOperations(context.Background(), reader, campfireID, "")
 	if err != nil {
 		t.Fatalf("ListOperations after supersede: %v", err)
 	}
@@ -663,7 +664,7 @@ func TestConventionLifecycleE2E_SupersedeRevoke_Isolated(t *testing.T) {
 	e2eWriteRevokeToStore(t, s, agentID, campfireID, v2ID)
 
 	// Neither v1 nor v2 should appear (chain invalidation).
-	decls, err = convention.ListOperations(reader, campfireID, "")
+	decls, err = convention.ListOperations(context.Background(), reader, campfireID, "")
 	if err != nil {
 		t.Fatalf("ListOperations after revoke: %v", err)
 	}
