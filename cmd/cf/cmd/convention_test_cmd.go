@@ -198,31 +198,7 @@ func newDigitalTwin() (*digitalTwin, error) {
 		s:               s,
 	}
 
-	// Seed root registry with a naming:registration → convention registry.
-	if err := twin.seedRootRegistry(rootCampfireID); err != nil {
-		twin.close()
-		return nil, fmt.Errorf("seeding root registry: %w", err)
-	}
-
 	return twin, nil
-}
-
-// seedRootRegistry adds the minimal messages for WalkChain to find the convention registry.
-func (t *digitalTwin) seedRootRegistry(rootCampfireID string) error {
-	rec := store.MessageRecord{
-		ID:         "root-seed-" + rootCampfireID[:8],
-		CampfireID: rootCampfireID,
-		Sender:     t.rootID.PublicKeyHex(),
-		Payload:    []byte(t.conventionRegID),
-		Tags:       []string{"naming:registration"},
-		Timestamp:  store.NowNano(),
-		Signature:  []byte("synthetic"),
-		ReceivedAt: store.NowNano(),
-	}
-	if _, err := t.s.AddMessage(rec); err != nil {
-		return fmt.Errorf("adding root seed message: %w", err)
-	}
-	return nil
 }
 
 // testDeclaration runs the full test pipeline for a single declaration.
@@ -306,7 +282,7 @@ func (t *digitalTwin) testDeclaration(src declSource) declTestResult {
 	result.Steps = append(result.Steps, step4)
 
 	// Step 5: Envelope.
-	env := trust.BuildEnvelope(t.conventionRegID, trust.TrustUnverified, map[string]any{"test": true})
+	env := trust.BuildEnvelope(t.conventionRegID, trust.TrustUnknown, map[string]any{"test": true})
 	step5 := declTestStep{Name: "envelope"}
 	if env.Tainted.ContentClassification != "tainted" {
 		step5.Pass = false
@@ -314,7 +290,7 @@ func (t *digitalTwin) testDeclaration(src declSource) declTestResult {
 		result.Pass = false
 	} else {
 		step5.Pass = true
-		step5.Note = fmt.Sprintf("trust_chain=%s", env.RuntimeComputed.TrustChain)
+		step5.Note = fmt.Sprintf("trust_status=%s", env.RuntimeComputed.TrustStatus)
 	}
 	result.Steps = append(result.Steps, step5)
 

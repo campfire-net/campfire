@@ -11,7 +11,6 @@ package cmd
 //   registry fallback (ListOperationsWithRegistry reads from registry campfire)
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -687,43 +686,6 @@ func e2eFindByMsgID(decls []*convention.Declaration, msgID string) bool {
 	return false
 }
 
-// TestConventionLifecycleE2E_RegistryFallback_ViaChainWalker tests that
-// listConventionOperations (which uses the ChainWalker) falls through to a
-// convention registry when no inline declarations exist.
-func TestConventionLifecycleE2E_RegistryFallback_ViaChainWalker(t *testing.T) {
-	// Reuse setupRegistryEnv which already wires the full chain:
-	// operator root → naming:registration → convRegistry → convention:operation declaration.
-	targetCampfireID, cleanup := setupRegistryEnv(t, testDecl)
-	defer cleanup()
-
-	s, err := openStore()
-	if err != nil {
-		t.Fatalf("opening store: %v", err)
-	}
-	defer s.Close()
-
-	decls, err := listConventionOperations(context.Background(), s, targetCampfireID)
-	if err != nil {
-		t.Fatalf("listConventionOperations: %v", err)
-	}
-	if len(decls) == 0 {
-		t.Fatal("expected declarations from registry via ChainWalker, got none")
-	}
-	found := false
-	for _, d := range decls {
-		if d.Operation == "post" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected 'post' operation from registry, got: %v", func() []string {
-			var ops []string
-			for _, d := range decls {
-				ops = append(ops, d.Operation)
-			}
-			return ops
-		}())
-	}
-	t.Logf("ChainWalker registry fallback OK: %d declarations from registry", len(decls))
-}
+// Note: TestConventionLifecycleE2E_RegistryFallback_ViaChainWalker was removed in
+// Trust v0.2. The chain walker registry fallback is no longer supported — conventions
+// are read directly from campfires (inline). See Trust Convention v0.2 §4, §5.

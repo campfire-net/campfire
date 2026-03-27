@@ -1,7 +1,10 @@
 package trust
 
 // Envelope wraps campfire content with trust and safety metadata
-// per Trust Convention v0.1 §6.
+// per Trust Convention v0.2 §6.
+//
+// v0.2 replaces trust_chain (chain position) with trust_status (local policy
+// compatibility) and adds fingerprint_match per §6.2.
 type Envelope struct {
 	Verified         VerifiedFields         `json:"verified"`
 	RuntimeComputed  RuntimeComputedFields  `json:"runtime_computed"`
@@ -15,11 +18,17 @@ type VerifiedFields struct {
 }
 
 // RuntimeComputedFields holds fields computed at runtime, not signed by any party.
+// trust_status and fingerprint_match replace trust_chain (v0.1) per Trust v0.2 §6.2.
 type RuntimeComputedFields struct {
 	CampfireName          string      `json:"campfire_name"`
 	RegisteredInDirectory bool        `json:"registered_in_directory"`
-	TrustChain            TrustStatus `json:"trust_chain"`
+	TrustStatus           TrustStatus `json:"trust_status"`
+	FingerprintMatch      bool        `json:"fingerprint_match"`
 	SanitizationApplied   []string    `json:"sanitization_applied"`
+	// OperatorProvenance is the sender's operator provenance level (0–3).
+	// See Operator Provenance Convention v0.1 §8.2 and Trust Convention v0.2 §6.3.
+	// Null/absent means provenance has not been computed (e.g. during bootstrap).
+	OperatorProvenance *int `json:"operator_provenance,omitempty"`
 }
 
 // CampfireAssertedFields holds campfire-reported data that is not independently verifiable.
@@ -41,6 +50,8 @@ type envelopeConfig struct {
 	memberCount           int
 	createdAge            string
 	maxStringLen          int
+	fingerprintMatch      bool
+	operatorProvenance    *int
 }
 
 // EnvelopeOption configures envelope building.
@@ -81,8 +92,28 @@ func WithMaxStringLen(maxLen int) EnvelopeOption {
 	}
 }
 
-// BuildEnvelope creates a safety envelope for campfire content per Trust Convention §6.
-func BuildEnvelope(campfireID string, chainStatus TrustStatus, content any, opts ...EnvelopeOption) *Envelope {
+// WithFingerprintMatch sets the fingerprint_match field in runtime_computed.
+// True means the campfire's conventions have matching semantic fingerprints
+// with the agent's local policy.
+func WithFingerprintMatch(match bool) EnvelopeOption {
+	return func(c *envelopeConfig) {
+		c.fingerprintMatch = match
+	}
+}
+
+// WithOperatorProvenance sets the operator_provenance level in runtime_computed.
+// The level is 0–3 per Operator Provenance Convention v0.1 §4.
+// Call with nil to explicitly omit the field (e.g. during bootstrap init).
+func WithOperatorProvenance(level int) EnvelopeOption {
+	return func(c *envelopeConfig) {
+		c.operatorProvenance = &level
+	}
+}
+
+// BuildEnvelope creates a safety envelope for campfire content per Trust Convention v0.2 §6.
+// trustStatus is the campfire's relationship to the agent's local policy (§6.2).
+// fingerprintMatch indicates whether the campfire's semantic fingerprints match the local policy.
+func BuildEnvelope(campfireID string, trustStatus TrustStatus, content any, opts ...EnvelopeOption) *Envelope {
 	cfg := &envelopeConfig{
 		maxStringLen: 1024,
 	}
@@ -107,8 +138,10 @@ func BuildEnvelope(campfireID string, chainStatus TrustStatus, content any, opts
 		RuntimeComputed: RuntimeComputedFields{
 			CampfireName:          campfireName,
 			RegisteredInDirectory: cfg.registeredInDirectory,
-			TrustChain:            chainStatus,
+			TrustStatus:           trustStatus,
+			FingerprintMatch:      cfg.fingerprintMatch,
 			SanitizationApplied:   steps,
+			OperatorProvenance:    cfg.operatorProvenance,
 		},
 		CampfireAsserted: CampfireAssertedFields{
 			MemberCount: cfg.memberCount,

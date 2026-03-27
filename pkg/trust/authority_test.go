@@ -34,8 +34,7 @@ func argWith(name, typ string, maxLen, min, max, maxCount int, values []string) 
 // TestResolveAuthority_RegistryDeclaration — convention_registry signer → AuthoritySemantic.
 func TestResolveAuthority_RegistryDeclaration(t *testing.T) {
 	decl := declWithSignerType(convention.SignerConventionRegistry)
-	chain := &Chain{}
-	got := ResolveAuthority(decl, chain)
+	got := ResolveAuthority(decl, nil)
 	if got != AuthoritySemantic {
 		t.Errorf("expected AuthoritySemantic, got %q", got)
 	}
@@ -44,8 +43,7 @@ func TestResolveAuthority_RegistryDeclaration(t *testing.T) {
 // TestResolveAuthority_CampfireKeyDeclaration — campfire_key signer → AuthorityOperational.
 func TestResolveAuthority_CampfireKeyDeclaration(t *testing.T) {
 	decl := declWithSignerType(convention.SignerCampfireKey)
-	chain := &Chain{}
-	got := ResolveAuthority(decl, chain)
+	got := ResolveAuthority(decl, nil)
 	if got != AuthorityOperational {
 		t.Errorf("expected AuthorityOperational, got %q", got)
 	}
@@ -54,8 +52,7 @@ func TestResolveAuthority_CampfireKeyDeclaration(t *testing.T) {
 // TestResolveAuthority_MemberDeclaration — member_key signer → AuthorityUntrusted.
 func TestResolveAuthority_MemberDeclaration(t *testing.T) {
 	decl := declWithSignerType(convention.SignerMemberKey)
-	chain := &Chain{}
-	got := ResolveAuthority(decl, chain)
+	got := ResolveAuthority(decl, nil)
 	if got != AuthorityUntrusted {
 		t.Errorf("expected AuthorityUntrusted, got %q", got)
 	}
@@ -191,8 +188,7 @@ func TestCampfireKeyGate(t *testing.T) {
 		SignerType: convention.SignerMemberKey, // mismatch
 		Antecedents: "none",
 	}
-	chain := &Chain{}
-	got := ResolveAuthority(decl, chain)
+	got := ResolveAuthority(decl, nil)
 	// A member key claiming campfire_key signing is gated → untrusted.
 	if got != AuthorityUntrusted {
 		t.Errorf("expected AuthorityUntrusted for mismatched campfire_key gate, got %q", got)
