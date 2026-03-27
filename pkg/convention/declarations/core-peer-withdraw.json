@@ -1,0 +1,35 @@
+{
+  "convention": "peering",
+  "version": "0.1",
+  "operation": "core-peer-withdraw",
+  "description": "Withdraw from a core peering link. Signals to other nodes that this peer is no longer participating in core relay. Requires operator level 2 (contactable) to match the establishment requirement and ensure orderly tear-down by accountable operators.",
+  "signing": "member_key",
+  "antecedents": "none",
+  "min_operator_level": 2,
+  "args": [
+    {
+      "name": "peer_key",
+      "type": "key",
+      "required": true,
+      "description": "Ed25519 public key of the peer node being withdrawn from"
+    },
+    {
+      "name": "reason",
+      "type": "string",
+      "required": false,
+      "max_length": 512,
+      "description": "Optional human-readable reason for withdrawal"
+    }
+  ],
+  "produces_tags": [
+    {
+      "tag": "peering:withdraw",
+      "cardinality": "exactly_one"
+    }
+  ],
+  "rate_limit": {
+    "max": 20,
+    "per": "sender",
+    "window": "1h"
+  }
+}

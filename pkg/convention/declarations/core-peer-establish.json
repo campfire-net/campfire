@@ -1,0 +1,42 @@
+{
+  "convention": "peering",
+  "version": "0.1",
+  "operation": "core-peer-establish",
+  "description": "Establish a core peering link with another campfire node. Core peering enables direct message relay, membership management, and epoch key distribution between nodes. Requires operator level 2 (contactable) to ensure accountability for participants in the core relay infrastructure.",
+  "signing": "member_key",
+  "antecedents": "none",
+  "min_operator_level": 2,
+  "args": [
+    {
+      "name": "peer_key",
+      "type": "key",
+      "required": true,
+      "description": "Ed25519 public key of the peer node"
+    },
+    {
+      "name": "peer_endpoint",
+      "type": "string",
+      "required": true,
+      "max_length": 512,
+      "description": "Transport endpoint URL of the peer node"
+    },
+    {
+      "name": "transport",
+      "type": "enum",
+      "required": true,
+      "values": ["http", "https"],
+      "description": "Transport protocol used to reach the peer"
+    }
+  ],
+  "produces_tags": [
+    {
+      "tag": "peering:core",
+      "cardinality": "exactly_one"
+    }
+  ],
+  "rate_limit": {
+    "max": 10,
+    "per": "sender",
+    "window": "1h"
+  }
+}
