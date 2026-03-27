@@ -237,6 +237,51 @@ func TestReadConventionMessages_NoCampfireIDRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for beacon without campfire_id, got nil")
 	}
+	if !strings.Contains(err.Error(), "campfire_id") {
+		t.Errorf("expected error to mention campfire_id, got: %v", err)
+	}
+}
+
+// TestReadConventionMessages_NoCampfireIDWithMessagesRejected is the exact
+// attack scenario from finding oey-3: a seed beacon with no campfire_id but
+// with messages present in the directory. Previously, the empty campfire_id
+// caused verifySeedBeaconSignatures to be skipped entirely, allowing unsigned
+// messages to be loaded. This test proves the bypass is impossible.
+func TestReadConventionMessages_NoCampfireIDWithMessagesRejected(t *testing.T) {
+	// Create a legitimate keypair for signing — but the beacon won't name it.
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write a valid, signed convention message to the messages dir.
+	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
+	msg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	if err != nil {
+		t.Fatalf("creating message: %v", err)
+	}
+	writeMsgToDir(t, messagesDir, "0000000001-msg.cbor", msg)
+
+	// Beacon has a valid Dir and messages are present — but campfire_id is empty.
+	// Before the ncq fix, this would load messages without any signature check.
+	sb := &seed.SeedBeacon{
+		Protocol: "filesystem",
+		Dir:      campfireDir,
+		// CampfireID intentionally absent — this is the attack vector
+	}
+	msgs, err := seed.ReadConventionMessages(sb)
+	if err == nil {
+		t.Fatalf("expected error: unsigned seed beacon with messages must be rejected, but got %d messages", len(msgs))
+	}
+	if !strings.Contains(err.Error(), "campfire_id") {
+		t.Errorf("expected error to mention campfire_id, got: %v", err)
+	}
 }
 
 // TestReadConventionMessages_NoDirInBeacon verifies that an error is returned
