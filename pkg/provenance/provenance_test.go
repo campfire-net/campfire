@@ -609,3 +609,56 @@ func TestLevelTransitiveAt_FreshWinsOverStale(t *testing.T) {
 		t.Errorf("expected LevelPresent (fresh attestation wins over stale), got %v", l)
 	}
 }
+
+// TestComputeLevelTransitive_FreshTransitiveWinsOverStale verifies the bugfix for the
+// transitive fallback path: a fresher transitive attestation must not be shadowed by a
+// stale one encountered earlier in the slice.
+//
+// Regression: before the fix, the transitive loop returned LevelContactable on the first
+// matching transitive attestation, silently ignoring any fresher attestation that would
+// have produced LevelPresent.
+func TestComputeLevelTransitive_FreshTransitiveWinsOverStale(t *testing.T) {
+	// Setup: "intermediary" is trusted as a verifier.
+	// "intermediary" itself has a direct attestation from a root verifier — giving it
+	// LevelPresent. Alice has TWO transitive attestations from intermediary:
+	//   1. Stale — added first, outside freshness window → would give LevelContactable
+	//   2. Fresh — added second, inside freshness window → should give LevelPresent
+	//
+	// Before the fix: the transitive loop returned on the first match (stale), so
+	// LevelTransitiveAt returned LevelContactable instead of LevelPresent.
+
+	cfg := DefaultConfig()
+	cfg.FreshnessWindow = 1 * time.Hour
+	cfg.MaxTransitivityDepth = 1
+	// Trust intermediary as a direct verifier (depth 0).
+	cfg.TrustedVerifierKeys["intermediary"] = 0
+	s := NewStore(cfg)
+
+	now := time.Now()
+
+	// Give intermediary a fresh direct attestation so computeLevelTransitive(intermediary)
+	// returns LevelPresent, authorizing it as a transitive voucher.
+	intermediaryAtt := makeAttestation("att-intermediary", "intermediary", "intermediary-root", now.Add(-10*time.Minute), true)
+	// intermediary-root needs to be trusted for intermediary's attestation to count.
+	s.TrustVerifier("intermediary-root", 0)
+	if err := s.AddAttestation(intermediaryAtt); err != nil {
+		t.Fatalf("AddAttestation intermediary failed: %v", err)
+	}
+
+	// Alice: stale transitive attestation from intermediary (added first).
+	staleAtt := makeAttestation("att-alice-stale", "alice", "intermediary", now.Add(-3*time.Hour), true)
+	if err := s.AddAttestation(staleAtt); err != nil {
+		t.Fatalf("AddAttestation stale failed: %v", err)
+	}
+
+	// Alice: fresh transitive attestation from intermediary (added second).
+	freshAtt := makeAttestation("att-alice-fresh", "alice", "intermediary", now.Add(-20*time.Minute), true)
+	if err := s.AddAttestation(freshAtt); err != nil {
+		t.Fatalf("AddAttestation fresh failed: %v", err)
+	}
+
+	// Must return LevelPresent — the fresh transitive attestation wins.
+	if l := s.LevelTransitiveAt("alice", now); l != LevelPresent {
+		t.Errorf("expected LevelPresent (fresh transitive attestation wins over stale), got %v", l)
+	}
+}

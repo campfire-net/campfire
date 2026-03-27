@@ -310,6 +310,9 @@ func (s *Store) computeLevelTransitive(key string, now time.Time, depth int) Lev
 	}
 
 	// Try transitive attestations: look at keys that can vouch for target.
+	// Scan ALL transitive attestations and track the best level — do not return
+	// on the first match. A fresher transitive attestation must not be shadowed
+	// by a stale one encountered earlier.
 	if depth < s.config.MaxTransitivityDepth {
 		for _, a := range attestations {
 			if a.Revoked {
@@ -329,9 +332,16 @@ func (s *Store) computeLevelTransitive(key string, now time.Time, depth int) Lev
 						continue
 					}
 				}
-				// Transitive attestation: can elevate to level 2 only.
-				return LevelContactable
+				// Fresh transitive attestation elevates to level 3; stale to level 2.
+				if s.config.FreshnessWindow > 0 && now.Sub(a.VerifiedAt) <= s.config.FreshnessWindow {
+					best = LevelPresent
+				} else if best < LevelContactable {
+					best = LevelContactable
+				}
 			}
+		}
+		if best >= LevelContactable {
+			return best
 		}
 	}
 
