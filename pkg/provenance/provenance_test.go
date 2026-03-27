@@ -551,3 +551,61 @@ func TestTrustVerifier_Dynamic(t *testing.T) {
 		t.Errorf("expected at least LevelContactable after trusting verifier, got %v", l)
 	}
 }
+
+// --- regression tests ---
+
+// TestLevelAt_FreshWinsOverStale is a regression test for the bug where LevelAt returned
+// the first valid attestation (insertion order) rather than the best. If a stale (level 2)
+// attestation is inserted before a fresh (level 3) one, LevelAt must still return level 3.
+func TestLevelAt_FreshWinsOverStale(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.TrustedVerifierKeys["verifier"] = 0
+	cfg.FreshnessWindow = 1 * time.Hour
+	s := NewStore(cfg)
+
+	now := time.Now()
+
+	// Stale attestation added FIRST (2 hours ago — outside 1h freshness window → level 2).
+	staleAtt := makeAttestation("att-stale", "alice", "verifier", now.Add(-2*time.Hour), true)
+	if err := s.AddAttestation(staleAtt); err != nil {
+		t.Fatalf("AddAttestation stale failed: %v", err)
+	}
+
+	// Fresh attestation added SECOND (30 minutes ago — inside 1h freshness window → level 3).
+	freshAtt := makeAttestation("att-fresh", "alice", "verifier", now.Add(-30*time.Minute), true)
+	if err := s.AddAttestation(freshAtt); err != nil {
+		t.Fatalf("AddAttestation fresh failed: %v", err)
+	}
+
+	// Must return level 3 — the fresh attestation wins regardless of insertion order.
+	if l := s.LevelAt("alice", now); l != LevelPresent {
+		t.Errorf("expected LevelPresent (fresh attestation wins over stale), got %v", l)
+	}
+}
+
+// TestLevelTransitiveAt_FreshWinsOverStale is the same regression test for LevelTransitiveAt.
+func TestLevelTransitiveAt_FreshWinsOverStale(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.TrustedVerifierKeys["verifier"] = 0
+	cfg.FreshnessWindow = 1 * time.Hour
+	s := NewStore(cfg)
+
+	now := time.Now()
+
+	// Stale attestation added FIRST.
+	staleAtt := makeAttestation("att-stale", "alice", "verifier", now.Add(-2*time.Hour), true)
+	if err := s.AddAttestation(staleAtt); err != nil {
+		t.Fatalf("AddAttestation stale failed: %v", err)
+	}
+
+	// Fresh attestation added SECOND.
+	freshAtt := makeAttestation("att-fresh", "alice", "verifier", now.Add(-30*time.Minute), true)
+	if err := s.AddAttestation(freshAtt); err != nil {
+		t.Fatalf("AddAttestation fresh failed: %v", err)
+	}
+
+	// Must return level 3 — the fresh attestation wins regardless of insertion order.
+	if l := s.LevelTransitiveAt("alice", now); l != LevelPresent {
+		t.Errorf("expected LevelPresent (fresh attestation wins over stale), got %v", l)
+	}
+}

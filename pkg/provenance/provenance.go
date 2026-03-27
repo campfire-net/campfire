@@ -203,6 +203,9 @@ func (s *Store) LevelAt(key string, now time.Time) Level {
 	defer s.mu.RUnlock()
 
 	// Check for valid attestations (level 2+).
+	// Iterate ALL attestations and track the maximum level found — do not return
+	// on the first match. An older stale attestation must not shadow a fresher one.
+	best := LevelAnonymous
 	attestations := s.attestations[key]
 	for _, a := range attestations {
 		if a.Revoked {
@@ -226,11 +229,17 @@ func (s *Store) LevelAt(key string, now time.Time) Level {
 
 		// Level 3: fresh attestation (within freshness window).
 		if s.config.FreshnessWindow > 0 && now.Sub(a.VerifiedAt) <= s.config.FreshnessWindow {
-			return LevelPresent
+			best = LevelPresent
+			continue // already at max — keep scanning but can't go higher
 		}
 
 		// Level 2: valid attestation exists.
-		return LevelContactable
+		if best < LevelContactable {
+			best = LevelContactable
+		}
+	}
+	if best >= LevelContactable {
+		return best
 	}
 
 	// Level 1: self-claimed profile exists.
@@ -260,6 +269,9 @@ func (s *Store) LevelTransitiveAt(key string, now time.Time) Level {
 // computeLevelTransitive is the internal recursive implementation.
 // depth tracks the current transitivity depth to enforce MaxTransitivityDepth.
 func (s *Store) computeLevelTransitive(key string, now time.Time, depth int) Level {
+	// Iterate ALL attestations and track the maximum level found — do not return
+	// on the first match. An older stale attestation must not shadow a fresher one.
+	best := LevelAnonymous
 	attestations := s.attestations[key]
 	for _, a := range attestations {
 		if a.Revoked {
@@ -284,11 +296,17 @@ func (s *Store) computeLevelTransitive(key string, now time.Time, depth int) Lev
 
 		// Level 3: fresh attestation.
 		if s.config.FreshnessWindow > 0 && now.Sub(a.VerifiedAt) <= s.config.FreshnessWindow {
-			return LevelPresent
+			best = LevelPresent
+			continue // already at max — keep scanning but can't go higher
 		}
 
 		// Level 2: valid attestation exists.
-		return LevelContactable
+		if best < LevelContactable {
+			best = LevelContactable
+		}
+	}
+	if best >= LevelContactable {
+		return best
 	}
 
 	// Try transitive attestations: look at keys that can vouch for target.
