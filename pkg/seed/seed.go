@@ -38,8 +38,9 @@ var WellKnownURL = "https://getcampfire.dev/.well-known/seed.beacon"
 // SeedBeacon describes a seed campfire source.
 // It is stored as a CBOR or JSON file in a seeds directory.
 type SeedBeacon struct {
-	// CampfireID is the 64-char hex ID of the seed campfire (optional;
-	// used for informational purposes).
+	// CampfireID is the 64-char hex ID of the seed campfire (required).
+	// Beacons without a CampfireID are rejected — signature verification is
+	// mandatory and requires a known campfire public key.
 	CampfireID string `cbor:"1,keyasint" json:"campfire_id,omitempty"`
 
 	// Protocol is the transport type: "filesystem" or "http".
@@ -140,17 +141,18 @@ func scanSeedsDir(dir string) (*SeedBeacon, error) {
 }
 
 // parseSeedBeacon parses a CBOR or JSON-encoded SeedBeacon.
-// Returns nil if the data is invalid or the beacon is incomplete.
+// Returns nil if the data is invalid, the beacon is incomplete, or
+// campfire_id is absent (required for signature verification).
 func parseSeedBeacon(data []byte) *SeedBeacon {
 	var sb SeedBeacon
 	if err := cfencoding.Unmarshal(data, &sb); err == nil {
-		if sb.Dir != "" || sb.URL != "" {
+		if (sb.Dir != "" || sb.URL != "") && sb.CampfireID != "" {
 			return &sb
 		}
 	}
 	// Try JSON fallback
 	if err := json.Unmarshal(data, &sb); err == nil {
-		if sb.Dir != "" || sb.URL != "" {
+		if (sb.Dir != "" || sb.URL != "") && sb.CampfireID != "" {
 			return &sb
 		}
 	}
@@ -188,9 +190,10 @@ func fetchWellKnownBeacon(url string) (*SeedBeacon, error) {
 // For filesystem protocol: reads CBOR message files from <Dir>/messages/ and
 // returns those tagged with "convention:operation".
 //
-// When sb.CampfireID is set, at least one convention message must be signed by
+// CampfireID is required. At least one convention message must be signed by
 // the key matching CampfireID. If no message validates, the seed is rejected
-// and an error is returned.
+// and an error is returned. Beacons without a CampfireID are rejected outright —
+// there is no unsigned/unverified fallback mode.
 //
 // Returns (nil, nil) when the messages directory is absent (empty seed campfire).
 func ReadConventionMessages(sb *SeedBeacon) ([]ConventionMessage, error) {
@@ -209,16 +212,20 @@ func ReadConventionMessages(sb *SeedBeacon) ([]ConventionMessage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("seed beacon dir rejected: %w", err)
 		}
+		// CampfireID is mandatory — reject beacons without it before doing any
+		// filesystem work. parseSeedBeacon enforces this at load time, but
+		// callers can construct a SeedBeacon directly, so we check again here.
+		if sb.CampfireID == "" {
+			return nil, fmt.Errorf("seed beacon missing campfire_id: signature verification is mandatory")
+		}
 		msgs, err := readFilesystemConventionMessages(safeDir)
 		if err != nil {
 			return nil, err
 		}
-		// When CampfireID is set, verify at least one message is signed by the
-		// campfire key. Reject the entire seed if none validates.
-		if sb.CampfireID != "" {
-			if err := verifySeedBeaconSignatures(sb.CampfireID, safeDir); err != nil {
-				return nil, err
-			}
+		// Signature verification is always required — not conditioned on CampfireID
+		// being set. Beacons without a valid campfire_id were already rejected above.
+		if err := verifySeedBeaconSignatures(sb.CampfireID, safeDir); err != nil {
+			return nil, err
 		}
 		return msgs, nil
 	default:
