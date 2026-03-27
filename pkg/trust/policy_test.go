@@ -190,6 +190,50 @@ func TestPolicyEngine_EvaluateCampfire_Empty(t *testing.T) {
 	}
 }
 
+// TestPolicyEngine_EvaluateCampfire_CrossConventionFingerprintNoSpuriousCompatible is a
+// regression test for a bug where EvaluateCampfire returned TrustCompatible when a campfire
+// presented a declaration from an unknown convention whose fingerprint happened to match an
+// adopted convention from a different (convention, operation) pair.
+//
+// Two conventions with the same semantic fields (same args) produce identical fingerprints.
+// If the local policy adopts "social:post" and a campfire presents "payment:send" with
+// identical args, the fingerprints are equal — but that must NOT produce TrustCompatible.
+// The result must be TrustUnknown because the campfire's convention is not in local policy.
+func TestPolicyEngine_EvaluateCampfire_CrossConventionFingerprintNoSpuriousCompatible(t *testing.T) {
+	e := NewPolicyEngine()
+
+	// Adopt "social:post" with arg "body".
+	adopted := makeDeclWithArgs("social", "post", "body")
+	e.Adopt(adopted, SourceSeed, "")
+
+	// Verify both declarations produce the same fingerprint (identical semantic fields).
+	incomingDecl := makeDeclWithArgs("payment", "send", "body")
+	fpAdopted, err := SemanticFingerprint(adopted)
+	if err != nil {
+		t.Fatalf("fingerprint of adopted decl failed: %v", err)
+	}
+	fpIncoming, err := SemanticFingerprint(incomingDecl)
+	if err != nil {
+		t.Fatalf("fingerprint of incoming decl failed: %v", err)
+	}
+	if fpAdopted != fpIncoming {
+		t.Skipf("fingerprints differ (%s vs %s) — test precondition not met; skip", fpAdopted, fpIncoming)
+	}
+
+	// The campfire presents "payment:send" — not in local policy.
+	// Even though the fingerprint matches "social:post", the result must NOT be TrustCompatible.
+	status, match := e.EvaluateCampfire([]*convention.Declaration{incomingDecl})
+	if status == TrustCompatible {
+		t.Errorf("spurious TrustCompatible: cross-convention fingerprint match must not produce TrustCompatible, got %q", status)
+	}
+	if match {
+		t.Error("spurious match=true: cross-convention fingerprint match must not set match=true")
+	}
+	if status != TrustUnknown {
+		t.Errorf("expected TrustUnknown for unknown convention with cross-convention fingerprint collision, got %q", status)
+	}
+}
+
 // TestPolicyEngine_AutoAdopt_NewConvention verifies auto-adoption of new conventions.
 func TestPolicyEngine_AutoAdopt_NewConvention(t *testing.T) {
 	e := NewPolicyEngine()
