@@ -247,6 +247,23 @@ func (c *Challenger) ValidateResponse(resp *ChallengeResponse, now time.Time) (*
 		return nil, fmt.Errorf("provenance: message envelope sender %q does not match challenge target_key %q — forged response rejected", resp.MessageSender, ch.TargetKey)
 	}
 
+	// Proof validation (§5.3, §12.2): proof_type and proof_token are required fields.
+	// An empty proof_type means there is no declared proof mechanism — the attestation
+	// would carry no evidence of human presence and MUST be rejected.
+	// An unknown proof_type is also rejected — accepting unrecognized types would allow
+	// an attacker to submit arbitrary strings and bypass proof verification.
+	// An empty proof_token means the proof itself is absent — regardless of what
+	// proof_type claims, there is nothing to verify.
+	if resp.ProofType == "" {
+		return nil, ErrEmptyProofType
+	}
+	if !validProofTypes[resp.ProofType] {
+		return nil, ErrUnknownProofType
+	}
+	if resp.ProofToken == "" {
+		return nil, ErrEmptyProofToken
+	}
+
 	// Consume the challenge (one-time use).
 	delete(c.active, ch.ID)
 
@@ -275,6 +292,21 @@ func CreateAttestation(store AttestationStore, attestationID string, ch *Challen
 		return nil, errors.New("provenance: nil response")
 	}
 
+	// Proof validation (§5.3, §12.2): defense-in-depth check mirroring the validation
+	// in ValidateResponse. CreateAttestation may be called with a manually constructed
+	// ChallengeResponse (e.g., in tests or future callers that bypass ValidateResponse),
+	// so the proof invariants are enforced here too. An attestation built on an empty or
+	// unknown proof_type, or an empty proof_token, is not a valid attestation.
+	if resp.ProofType == "" {
+		return nil, ErrEmptyProofType
+	}
+	if !validProofTypes[resp.ProofType] {
+		return nil, ErrUnknownProofType
+	}
+	if resp.ProofToken == "" {
+		return nil, ErrEmptyProofToken
+	}
+
 	a := &Attestation{
 		ID:              attestationID,
 		TargetKey:       ch.TargetKey,
@@ -294,6 +326,18 @@ func CreateAttestation(store AttestationStore, attestationID string, ch *Challen
 	return a, nil
 }
 
+// validProofTypes is the set of accepted proof_type values per §5.3.
+// An attestation with an unrecognized proof_type is rejected — accepting unknown
+// proof types would allow an attacker to smuggle unverifiable "proofs" past the
+// validation layer.
+var validProofTypes = map[ProofType]bool{
+	ProofCaptcha:   true,
+	ProofTOTP:      true,
+	ProofHardware:  true,
+	ProofSMS:       true,
+	ProofEmailLink: true,
+}
+
 // Challenge-response sentinel errors.
 var (
 	// ErrRateLimitExceeded is returned when a target key has received the maximum
@@ -310,4 +354,18 @@ var (
 	// ErrMissingAntecedent is returned when a response does not include an antecedent
 	// message ID. See §12.2.
 	ErrMissingAntecedent = errors.New("provenance: response missing antecedent (MUST reference challenge message ID)")
+
+	// ErrEmptyProofType is returned when proof_type is empty. See §5.3, §12.2.
+	// An attestation without a proof_type provides no evidence of human presence
+	// and MUST be rejected.
+	ErrEmptyProofType = errors.New("provenance: proof_type must not be empty")
+
+	// ErrUnknownProofType is returned when proof_type is not a recognized value.
+	// See §5.3. Accepting unknown proof types would allow unverifiable claims.
+	ErrUnknownProofType = errors.New("provenance: proof_type is not a recognized value (must be one of: captcha, totp, hardware, sms, email-link)")
+
+	// ErrEmptyProofToken is returned when proof_token is empty. See §5.3, §12.2.
+	// Without a proof_token there is no actual proof — the attestation would be
+	// meaningless and MUST be rejected.
+	ErrEmptyProofToken = errors.New("provenance: proof_token must not be empty")
 )
