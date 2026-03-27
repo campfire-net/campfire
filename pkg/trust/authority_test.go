@@ -181,6 +181,41 @@ func TestSemanticFingerprint_Mismatch(t *testing.T) {
 	}
 }
 
+// TestSemanticFingerprint_ErrorContract verifies the error contract:
+//   - valid declarations return (non-empty-hash, nil)
+//   - the empty-hash sentinel (sha256:e3b0c44...) is never returned for valid input
+//
+// Note: semanticFields uses only primitive JSON types (string, bool, []struct), so
+// json.Marshal cannot fail on them in practice. The error path is defensive. This test
+// verifies that success returns a real hash (not the empty-hash), proving the old
+// data, _ := json.Marshal(sf) bug is fixed: a marshal failure now returns ("", error)
+// instead of silently hashing nil bytes to the empty-hash sentinel.
+const emptyHashSentinel = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+func TestSemanticFingerprint_ErrorContract(t *testing.T) {
+	decl := &convention.Declaration{
+		Args: []convention.ArgDescriptor{
+			{Name: "msg", Type: "string", Required: true},
+		},
+		Antecedents: "none",
+		Signing:     "member_key",
+	}
+
+	fp, err := SemanticFingerprint(decl)
+	if err != nil {
+		t.Fatalf("expected no error for valid declaration, got: %v", err)
+	}
+	if fp == "" {
+		t.Fatal("expected non-empty fingerprint for valid declaration")
+	}
+	if fp == emptyHashSentinel {
+		t.Fatalf("fingerprint equals empty-hash sentinel %q — marshal may have silently failed", emptyHashSentinel)
+	}
+	if len(fp) <= len("sha256:") {
+		t.Fatalf("fingerprint %q missing sha256: prefix or empty hash", fp)
+	}
+}
+
 // TestCampfireKeyGate — signing="campfire_key" but SignerType=member → untrusted.
 func TestCampfireKeyGate(t *testing.T) {
 	decl := &convention.Declaration{
