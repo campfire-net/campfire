@@ -67,7 +67,7 @@ var profileUpdatePayload = []byte(`{
       {
         "action": "query",
         "description": "Find prior profile",
-        "future_tags": ["future", "profile:query"],
+        "future_tags": ["profile:pending-query", "profile:query"],
         "future_payload": {"query_type": "by_key", "key": "$self_key"},
         "result_binding": "prior_profile"
       },

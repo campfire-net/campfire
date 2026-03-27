@@ -612,6 +612,106 @@ func TestIntegerRange_NegativeRejectedWhenMinIsZero(t *testing.T) {
 	}
 }
 
+// TestValidateArgs_StripUndeclared verifies that undeclared args are stripped and
+// only allow-listed (declared) args pass through validation.
+func TestValidateArgs_StripUndeclared(t *testing.T) {
+	descs := []ArgDescriptor{
+		{Name: "text", Type: "string", Required: true},
+		{Name: "channel", Type: "string"},
+	}
+	provided := map[string]any{
+		"text":     "hello",
+		"channel":  "general",
+		"injected": "evil_value",  // undeclared — must be stripped
+		"extra":    42,            // undeclared — must be stripped
+	}
+
+	resolved, err := validateArgs(descs, provided)
+	if err != nil {
+		t.Fatalf("validateArgs returned unexpected error: %v", err)
+	}
+	if _, ok := resolved["injected"]; ok {
+		t.Error("undeclared arg 'injected' should have been stripped but was present in resolved args")
+	}
+	if _, ok := resolved["extra"]; ok {
+		t.Error("undeclared arg 'extra' should have been stripped but was present in resolved args")
+	}
+	if v, ok := resolved["text"]; !ok || v != "hello" {
+		t.Errorf("declared arg 'text' should be present with value 'hello', got %v (ok=%v)", v, ok)
+	}
+	if v, ok := resolved["channel"]; !ok || v != "general" {
+		t.Errorf("declared arg 'channel' should be present with value 'general', got %v (ok=%v)", v, ok)
+	}
+	// Exactly declared args only.
+	if len(resolved) != 2 {
+		t.Errorf("expected 2 resolved args (declared only), got %d: %v", len(resolved), resolved)
+	}
+}
+
+// TestValidateArgs_StripUndeclared_OnlyExtra verifies stripping when all provided args
+// are undeclared — resolved map should be empty after stripping.
+func TestValidateArgs_StripUndeclared_OnlyExtra(t *testing.T) {
+	descs := []ArgDescriptor{
+		{Name: "body", Type: "string"},
+	}
+	provided := map[string]any{
+		"undeclared_key": "value",
+	}
+
+	resolved, err := validateArgs(descs, provided)
+	if err != nil {
+		t.Fatalf("validateArgs returned unexpected error: %v", err)
+	}
+	if _, ok := resolved["undeclared_key"]; ok {
+		t.Error("undeclared arg 'undeclared_key' must be stripped")
+	}
+	if len(resolved) != 0 {
+		t.Errorf("expected 0 resolved args after stripping all undeclared, got %d: %v", len(resolved), resolved)
+	}
+}
+
+// TestValidateArgs_StripUndeclared_ViaExecute verifies that undeclared args are stripped
+// end-to-end through the Executor.Execute path, not just via validateArgs directly.
+func TestValidateArgs_StripUndeclared_ViaExecute(t *testing.T) {
+	tr := &mockTransport{}
+	ex := NewExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+
+	decl := &Declaration{
+		Convention: "social",
+		Operation:  "post",
+		Args: []ArgDescriptor{
+			{Name: "text", Type: "string", Required: true},
+		},
+		ProducesTags: []TagRule{
+			{Tag: "social:post", Cardinality: "exactly_one"},
+		},
+	}
+
+	err := ex.Execute(context.Background(), decl, "cf-testfire", map[string]any{
+		"text":          "hello world",
+		"injected_arg":  "should_not_appear",
+	})
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+
+	if len(tr.sentMessages) == 0 {
+		t.Fatal("expected a message to be sent")
+	}
+
+	// Decode the payload and verify injected_arg is absent.
+	var payload map[string]any
+	if err := json.Unmarshal(tr.sentMessages[0].payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if _, ok := payload["injected_arg"]; ok {
+		t.Error("undeclared arg 'injected_arg' must not appear in outgoing message payload")
+	}
+	if v, ok := payload["text"]; !ok || v != "hello world" {
+		t.Errorf("declared arg 'text' should be in payload with value 'hello world', got %v (ok=%v)", v, ok)
+	}
+}
+
 // TestCollectArgValuesForPrefix_NamingNameGlob verifies that the naming:name:* glob
 // correctly matches a single-arg "name" through the HasSuffix fallback.
 func TestCollectArgValuesForPrefix_NamingNameGlob(t *testing.T) {
