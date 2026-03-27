@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/provenance"
 	"github.com/campfire-net/campfire/pkg/trust"
 )
 
@@ -274,5 +277,122 @@ func TestConventionToolsInToolsList(t *testing.T) {
 	}
 	if !staticFound {
 		t.Error("static tool 'campfire_init' missing from tools/list response")
+	}
+}
+
+// TestEnvelopedResponse_OperatorProvenance verifies that operator_provenance is
+// populated in the envelope's runtime_computed section when the agent's identity
+// has a self-claimed profile in the local provenance store.
+//
+// Regression test for: operator_provenance never set in production BuildEnvelope calls.
+// Refs: Operator Provenance Convention v0.1 §8.2, Trust Convention v0.2 §6.3.
+func TestEnvelopedResponse_OperatorProvenance(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Create and save an identity for the server.
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	idPath := srv.identityPath()
+	if err := agentID.Save(idPath); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	// Mark the agent as self-claimed (level 1: Claimed) in the persisted store.
+	// This does not require trusted verifier config — it is set directly.
+	// Operator Provenance Convention v0.1 §4.2.
+	storePath := filepath.Join(srv.cfHome, "attestations.json")
+	ps, err := provenance.NewFileStore(storePath, provenance.DefaultConfig())
+	if err != nil {
+		t.Fatalf("opening provenance store: %v", err)
+	}
+	if err := ps.SetSelfClaimed(agentID.PublicKeyHex()); err != nil {
+		t.Fatalf("setting self-claimed: %v", err)
+	}
+
+	// Call envelopedResponse through the production path.
+	resp := srv.envelopedResponse(float64(1), "test-campfire-id", map[string]string{
+		"message": "hello",
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+
+	// Extract the envelope JSON from the tool result.
+	b, _ := json.Marshal(resp.Result)
+	var result map[string]interface{}
+	if err := json.Unmarshal(b, &result); err != nil {
+		t.Fatalf("unmarshaling result: %v", err)
+	}
+	content, _ := result["content"].([]interface{})
+	if len(content) == 0 {
+		t.Fatal("expected content in result")
+	}
+	textEntry, _ := content[0].(map[string]interface{})
+	text, _ := textEntry["text"].(string)
+
+	var env trust.Envelope
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("unmarshaling envelope: %v", err)
+	}
+
+	// Assert operator_provenance is set (not nil) and reflects level 1 (Claimed).
+	if env.RuntimeComputed.OperatorProvenance == nil {
+		t.Fatal("operator_provenance is nil: production BuildEnvelope did not wire provenance data")
+	}
+	gotLevel := *env.RuntimeComputed.OperatorProvenance
+	wantLevel := int(provenance.LevelClaimed) // 1: self-asserted profile
+	if gotLevel != wantLevel {
+		t.Errorf("operator_provenance: got %d, want %d (%s)", gotLevel, wantLevel, provenance.LevelClaimed)
+	}
+}
+
+// TestEnvelopedResponse_OperatorProvenance_Anonymous verifies that operator_provenance
+// defaults to level 0 (Anonymous) when no attestations exist for the agent.
+func TestEnvelopedResponse_OperatorProvenance_Anonymous(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Create and save an identity for the server — no attestations.
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	if err := agentID.Save(srv.identityPath()); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	resp := srv.envelopedResponse(float64(1), "test-campfire-id", map[string]string{
+		"message": "hello",
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+
+	b, _ := json.Marshal(resp.Result)
+	var result map[string]interface{}
+	if err := json.Unmarshal(b, &result); err != nil {
+		t.Fatalf("unmarshaling result: %v", err)
+	}
+	content, _ := result["content"].([]interface{})
+	if len(content) == 0 {
+		t.Fatal("expected content in result")
+	}
+	textEntry, _ := content[0].(map[string]interface{})
+	text, _ := textEntry["text"].(string)
+
+	var env trust.Envelope
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("unmarshaling envelope: %v", err)
+	}
+
+	// Assert operator_provenance is set to level 0 (Anonymous) — not nil.
+	if env.RuntimeComputed.OperatorProvenance == nil {
+		t.Fatal("operator_provenance is nil: expected level 0 (Anonymous) for agent with no attestations")
+	}
+	gotLevel := *env.RuntimeComputed.OperatorProvenance
+	wantLevel := int(provenance.LevelAnonymous) // 0
+	if gotLevel != wantLevel {
+		t.Errorf("operator_provenance: got %d, want %d (%s)", gotLevel, wantLevel, provenance.LevelAnonymous)
 	}
 }
