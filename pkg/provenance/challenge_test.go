@@ -415,13 +415,15 @@ func TestCreateAttestation_SelfAttestation(t *testing.T) {
 	c.mu.Unlock()
 
 	resp := &ChallengeResponse{
-		AntecedentID:  ch.ID,
-		ResponderKey:  ch.TargetKey,
-		MessageSender: ch.TargetKey, // cryptographic envelope sender
-		TargetKey:     ch.TargetKey,
-		Nonce:         ch.Nonce,
-		ContactMethod: "cf://self",
-		ProofType:     ProofCaptcha,
+		AntecedentID:    ch.ID,
+		ResponderKey:    ch.TargetKey,
+		MessageSender:   ch.TargetKey, // cryptographic envelope sender
+		TargetKey:       ch.TargetKey,
+		Nonce:           ch.Nonce,
+		ContactMethod:   "cf://self",
+		ProofType:       ProofCaptcha,
+		ProofToken:      "solved-captcha-token",
+		ProofProvenance: "captcha-service-sig",
 	}
 
 	matched, err := c.ValidateResponse(resp, now.Add(10*time.Second))
@@ -441,7 +443,12 @@ func TestCreateAttestation_SelfAttestation(t *testing.T) {
 func TestCreateAttestation_NilInputs(t *testing.T) {
 	store := NewStore(DefaultConfig())
 	ch := &Challenge{ID: "x", TargetKey: "t", InitiatorKey: "i", Nonce: "n"}
-	resp := &ChallengeResponse{}
+	// resp must have valid proof fields — the nil/empty-arg checks for store, ID,
+	// challenge, and response are all checked before proof validation.
+	resp := &ChallengeResponse{
+		ProofType:  ProofCaptcha,
+		ProofToken: "token",
+	}
 
 	if _, err := CreateAttestation(nil, "id", ch, resp, time.Now()); err == nil {
 		t.Error("expected error for nil store")
@@ -503,5 +510,136 @@ func TestFullFlow_ChallengeResponseAttestation(t *testing.T) {
 	level := store.LevelAt(testTargetKey, verifiedAt)
 	if level < LevelContactable {
 		t.Errorf("expected LevelContactable (2) or better, got %v", level)
+	}
+}
+
+// --- Regression: proof_type and proof_token validation (campfire-agent-feo) ---
+//
+// Before this fix, CreateAttestation and ValidateResponse accepted responses with
+// empty proof_type or proof_token. An agent could submit empty proof fields and
+// receive a valid attestation — bypassing human-presence verification entirely.
+
+// TestValidateResponse_EmptyProofType verifies that a response with an empty proof_type
+// is rejected. An attestation without a declared proof mechanism has no evidence of
+// human presence and MUST NOT be accepted. (Regression: campfire-agent-feo)
+func TestValidateResponse_EmptyProofType(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+	ch := issueTestChallenge(t, c, "msg-proof-type-empty-001", now)
+	resp := validResponse(ch)
+	resp.ProofType = "" // strip proof_type
+
+	_, err := c.ValidateResponse(resp, now.Add(10*time.Second))
+	if err != ErrEmptyProofType {
+		t.Errorf("expected ErrEmptyProofType for empty proof_type, got %v", err)
+	}
+}
+
+// TestValidateResponse_UnknownProofType verifies that a response with an unrecognized
+// proof_type is rejected. Accepting unknown proof types would let an attacker smuggle
+// unverifiable "proofs" past validation. (Regression: campfire-agent-feo)
+func TestValidateResponse_UnknownProofType(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+	ch := issueTestChallenge(t, c, "msg-proof-type-unknown-001", now)
+	resp := validResponse(ch)
+	resp.ProofType = ProofType("brain-scan") // unrecognized proof type
+
+	_, err := c.ValidateResponse(resp, now.Add(10*time.Second))
+	if err != ErrUnknownProofType {
+		t.Errorf("expected ErrUnknownProofType for unrecognized proof_type, got %v", err)
+	}
+}
+
+// TestValidateResponse_EmptyProofToken verifies that a response with an empty proof_token
+// is rejected. Without an actual token there is nothing to verify — the attestation has
+// no human-presence evidence. (Regression: campfire-agent-feo)
+func TestValidateResponse_EmptyProofToken(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+	ch := issueTestChallenge(t, c, "msg-proof-token-empty-001", now)
+	resp := validResponse(ch)
+	resp.ProofToken = "" // strip proof_token
+
+	_, err := c.ValidateResponse(resp, now.Add(10*time.Second))
+	if err != ErrEmptyProofToken {
+		t.Errorf("expected ErrEmptyProofToken for empty proof_token, got %v", err)
+	}
+}
+
+// TestCreateAttestation_EmptyProofType verifies that CreateAttestation rejects a
+// response with an empty proof_type. This is a defense-in-depth check: CreateAttestation
+// may be called with a manually constructed ChallengeResponse without going through
+// ValidateResponse. (Regression: campfire-agent-feo)
+func TestCreateAttestation_EmptyProofType(t *testing.T) {
+	store := NewStore(DefaultConfig())
+	ch := &Challenge{ID: "x", TargetKey: "target", InitiatorKey: "initiator", Nonce: "n"}
+	resp := &ChallengeResponse{
+		ProofType:  "", // empty — no proof mechanism declared
+		ProofToken: "some-token",
+	}
+
+	_, err := CreateAttestation(store, "attest-id", ch, resp, time.Now())
+	if err != ErrEmptyProofType {
+		t.Errorf("expected ErrEmptyProofType, got %v", err)
+	}
+}
+
+// TestCreateAttestation_UnknownProofType verifies that CreateAttestation rejects a
+// response with an unrecognized proof_type. (Regression: campfire-agent-feo)
+func TestCreateAttestation_UnknownProofType(t *testing.T) {
+	store := NewStore(DefaultConfig())
+	ch := &Challenge{ID: "x", TargetKey: "target", InitiatorKey: "initiator", Nonce: "n"}
+	resp := &ChallengeResponse{
+		ProofType:  ProofType("retinal-scan"), // not in the recognized set
+		ProofToken: "some-token",
+	}
+
+	_, err := CreateAttestation(store, "attest-id", ch, resp, time.Now())
+	if err != ErrUnknownProofType {
+		t.Errorf("expected ErrUnknownProofType, got %v", err)
+	}
+}
+
+// TestCreateAttestation_EmptyProofToken verifies that CreateAttestation rejects a
+// response with an empty proof_token. (Regression: campfire-agent-feo)
+func TestCreateAttestation_EmptyProofToken(t *testing.T) {
+	store := NewStore(DefaultConfig())
+	ch := &Challenge{ID: "x", TargetKey: "target", InitiatorKey: "initiator", Nonce: "n"}
+	resp := &ChallengeResponse{
+		ProofType:  ProofCaptcha,
+		ProofToken: "", // empty — no actual proof provided
+	}
+
+	_, err := CreateAttestation(store, "attest-id", ch, resp, time.Now())
+	if err != ErrEmptyProofToken {
+		t.Errorf("expected ErrEmptyProofToken, got %v", err)
+	}
+}
+
+// TestValidateResponse_AllKnownProofTypesAccepted verifies that all five recognized
+// proof types pass validation when a non-empty proof_token is provided.
+// This ensures the valid set doesn't accidentally exclude any spec-defined type.
+func TestValidateResponse_AllKnownProofTypesAccepted(t *testing.T) {
+	knownTypes := []ProofType{
+		ProofCaptcha,
+		ProofTOTP,
+		ProofHardware,
+		ProofSMS,
+		ProofEmailLink,
+	}
+
+	for _, pt := range knownTypes {
+		c := NewChallenger()
+		now := time.Now()
+		ch := issueTestChallenge(t, c, "msg-pt-"+string(pt)+"-001", now)
+		resp := validResponse(ch)
+		resp.ProofType = pt
+		resp.ProofToken = "valid-token-for-" + string(pt)
+
+		_, err := c.ValidateResponse(resp, now.Add(10*time.Second))
+		if err != nil {
+			t.Errorf("proof_type %q should be accepted, got error: %v", pt, err)
+		}
 	}
 }
