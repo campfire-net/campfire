@@ -367,3 +367,102 @@ func (e *PolicyEngine) TryAutoAdopt(decl *convention.Declaration, sourceID strin
 
 	return false, false
 }
+
+// ConventionCompatibility holds the compatibility result for a single convention
+// declaration. Produced by CompareCampfireDeclarations per Trust v0.2 §5.3.
+type ConventionCompatibility struct {
+	Convention       string      `json:"convention"`
+	Operation        string      `json:"operation"`
+	Status           TrustStatus `json:"status"`
+	FingerprintMatch bool        `json:"fingerprint_match"`
+	// LocalFingerprint is the fingerprint of the locally adopted convention (sha256:hex).
+	LocalFingerprint string `json:"local_fingerprint,omitempty"`
+	// RemoteFingerprint is the fingerprint of the campfire's declaration (sha256:hex).
+	RemoteFingerprint string `json:"remote_fingerprint,omitempty"`
+}
+
+// CampfireCompatibilityReport summarizes per-convention fingerprint compatibility
+// between a campfire and the local policy engine.
+// Produced by CompareCampfireDeclarations for cf join and cf bridge.
+type CampfireCompatibilityReport struct {
+	// OverallStatus is the aggregate trust status for the campfire per §6.2.
+	OverallStatus TrustStatus `json:"trust_status"`
+	// FingerprintMatch is true when all campfire declarations match local policy fingerprints.
+	FingerprintMatch bool `json:"fingerprint_match"`
+	// Conventions is the per-convention breakdown.
+	Conventions []ConventionCompatibility `json:"conventions"`
+}
+
+// CompareCampfireDeclarations evaluates a campfire's declarations against the local
+// policy engine and returns a per-convention compatibility report. This is the
+// fingerprint comparison logic run automatically on cf join per Trust v0.2 §5.3.
+//
+// The overall trust status follows EvaluateCampfire semantics:
+//   - "adopted":    all declarations are adopted and fingerprints match
+//   - "compatible": fingerprints match but not explicitly adopted
+//   - "divergent":  any adopted convention has a fingerprint mismatch
+//   - "unknown":    no declarations, or all conventions unknown to local policy
+func (e *PolicyEngine) CompareCampfireDeclarations(decls []*convention.Declaration) *CampfireCompatibilityReport {
+	report := &CampfireCompatibilityReport{
+		Conventions: make([]ConventionCompatibility, 0, len(decls)),
+	}
+
+	if len(decls) == 0 {
+		report.OverallStatus = TrustUnknown
+		report.FingerprintMatch = false
+		return report
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	allAdopted := true
+	allMatch := true
+	anyDivergent := false
+
+	for _, decl := range decls {
+		incoming := SemanticFingerprint(decl)
+		adopted, isAdopted := e.adopted[adoptKey(decl.Convention, decl.Operation)]
+
+		cc := ConventionCompatibility{
+			Convention:        decl.Convention,
+			Operation:         decl.Operation,
+			RemoteFingerprint: incoming,
+		}
+
+		if !isAdopted {
+			cc.Status = TrustUnknown
+			cc.FingerprintMatch = false
+			allAdopted = false
+			allMatch = false
+		} else {
+			cc.LocalFingerprint = adopted.Fingerprint
+			cc.FingerprintMatch = adopted.Fingerprint == incoming
+			if cc.FingerprintMatch {
+				cc.Status = TrustAdopted
+			} else {
+				cc.Status = TrustDivergent
+				anyDivergent = true
+				allAdopted = false
+				allMatch = false
+			}
+		}
+		report.Conventions = append(report.Conventions, cc)
+	}
+
+	if anyDivergent {
+		report.OverallStatus = TrustDivergent
+		report.FingerprintMatch = false
+	} else if allAdopted && allMatch {
+		report.OverallStatus = TrustAdopted
+		report.FingerprintMatch = true
+	} else if allMatch {
+		report.OverallStatus = TrustCompatible
+		report.FingerprintMatch = true
+	} else {
+		report.OverallStatus = TrustUnknown
+		report.FingerprintMatch = false
+	}
+
+	return report
+}
