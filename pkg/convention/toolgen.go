@@ -1,11 +1,17 @@
 package convention
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/store"
 )
+
+// maxToolDescriptionLen is the maximum number of characters included in the
+// MCP tool description field. Longer descriptions are truncated.
+const maxToolDescriptionLen = 80
 
 // MCPToolInfo describes a tool for the MCP protocol.
 type MCPToolInfo struct {
@@ -31,8 +37,8 @@ func GenerateTool(decl *Declaration, campfireID string) (*MCPToolInfo, error) {
 		return nil, err
 	}
 	desc := decl.Description
-	if len(desc) > 80 {
-		desc = desc[:80]
+	if len(desc) > maxToolDescriptionLen {
+		desc = desc[:maxToolDescriptionLen]
 	}
 	return &MCPToolInfo{
 		Name:        decl.Operation,
@@ -67,8 +73,8 @@ func GenerateToolName(decl *Declaration, existing map[string]bool) string {
 // extension "revoke" operation) permanently remove a declaration from the list.
 // A revoked declaration disappears entirely. Revoking a superseded declaration
 // also removes the superseding declaration (chain invalidation).
-func ListOperations(s StoreReader, campfireID, campfireKey string) ([]*Declaration, error) {
-	return listOperations(s, campfireID, campfireKey, "")
+func ListOperations(ctx context.Context, s StoreReader, campfireID, campfireKey string) ([]*Declaration, error) {
+	return listOperations(ctx, s, campfireID, campfireKey, "")
 }
 
 // ListOperationsWithRegistry reads declarations from campfireID (inline) and, when
@@ -76,19 +82,23 @@ func ListOperations(s StoreReader, campfireID, campfireKey string) ([]*Declarati
 // Messages from both sources are merged before supersede and revoke filtering,
 // so registry declarations can supersede inline ones via the Supersedes field.
 // When registryCampfireID is empty, this is identical to ListOperations.
-func ListOperationsWithRegistry(s StoreReader, campfireID, campfireKey, registryCampfireID string) ([]*Declaration, error) {
-	return listOperations(s, campfireID, campfireKey, registryCampfireID)
+func ListOperationsWithRegistry(ctx context.Context, s StoreReader, campfireID, campfireKey, registryCampfireID string) ([]*Declaration, error) {
+	return listOperations(ctx, s, campfireID, campfireKey, registryCampfireID)
 }
 
 // listOperations is the shared implementation used by ListOperations and
 // ListOperationsWithRegistry.
-func listOperations(s StoreReader, campfireID, campfireKey, registryCampfireID string) ([]*Declaration, error) {
+func listOperations(ctx context.Context, s StoreReader, campfireID, campfireKey, registryCampfireID string) ([]*Declaration, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Collect operation declarations.
 	opMsgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{
 		Tags: []string{ConventionOperationTag},
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing operation declarations: %w", err)
 	}
 
 	// Collect revoke messages.
@@ -96,7 +106,7 @@ func listOperations(s StoreReader, campfireID, campfireKey, registryCampfireID s
 		Tags: []string{conventionRevokeTag},
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing revoke messages: %w", err)
 	}
 
 	// When a registry campfire is provided, merge its declarations and revokes
@@ -311,7 +321,7 @@ func baseProperty(arg ArgDescriptor) map[string]any {
 
 	case "integer":
 		p := map[string]any{"type": "integer"}
-		if arg.Min != 0 {
+		if arg.MinSet {
 			p["minimum"] = arg.Min
 		}
 		if arg.Max != 0 {

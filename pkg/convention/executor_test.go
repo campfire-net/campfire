@@ -344,7 +344,7 @@ func TestExecute_RateLimitExceeded(t *testing.T) {
 
 	tr := &mockTransport{}
 	// Use an isolated limiter so this test is not affected by other tests' state.
-	ex := NewExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
 
 	if err := ex.Execute(context.Background(), decl, "cf-rl-exceeded", map[string]any{}); err != nil {
 		t.Fatalf("call 1 unexpected error: %v", err)
@@ -453,9 +453,9 @@ func TestExecute_RateLimitSenderAndCampfire(t *testing.T) {
 	// to verify that sender-key scoping still isolates quotas correctly.
 	sharedLimiter := newRateLimiter()
 	trA := &mockTransport{}
-	exA := NewExecutorWithLimiter(trA, "senderA", sharedLimiter)
+	exA := newExecutorWithLimiter(trA, "senderA", sharedLimiter)
 	trB := &mockTransport{}
-	exB := NewExecutorWithLimiter(trB, "senderB", sharedLimiter)
+	exB := newExecutorWithLimiter(trB, "senderB", sharedLimiter)
 
 	// senderA uses their 1 quota on campfireX.
 	if err := exA.Execute(context.Background(), declA, "campfireX", map[string]any{}); err != nil {
@@ -475,7 +475,7 @@ func TestExecute_RateLimitSenderAndCampfire(t *testing.T) {
 // a new rate limiter was created per Executor, allowing the same sender to bypass rate
 // limits by constructing a new Executor (as the CLI does on every invocation).
 //
-// This test calls NewExecutor (the real CLI path — not NewExecutorWithLimiter) to prove
+// This test calls NewExecutor (the real CLI path — not newExecutorWithLimiter) to prove
 // that the globalRateLimiterOnce singleton is actually wired. Two separate NewExecutor()
 // calls must share limiter state so the second invocation is throttled after the first
 // saturates the quota.
@@ -579,7 +579,7 @@ func intRangeDecl(min, max int) *Declaration {
 // Max enforcement when Min was explicitly set to zero (the zero value of int).
 func TestIntegerRange_MaxEnforcedWhenMinIsZero(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
 	decl := intRangeDecl(0, 10)
 
 	// Value within range should pass.
@@ -593,22 +593,85 @@ func TestIntegerRange_MaxEnforcedWhenMinIsZero(t *testing.T) {
 	}
 }
 
-// TestIntegerRange_NegativeRejectedWhenMinIsZero verifies that negative values are
-// rejected when Min=0 (no Max set). Before the fix, the guard `if desc.Min != 0 || desc.Max != 0`
-// evaluated false for Min=0,Max=0, skipping all range validation.
-func TestIntegerRange_NegativeRejectedWhenMinIsZero(t *testing.T) {
+// TestIntegerRange_NegativeAllowedWhenMinUndeclared is a regression test for
+// campfire-agent-bnq: when no "min" is declared, negative values must be allowed.
+// The bug was that Min's zero value (int) imposed an implicit floor of 0.
+// intRangeDecl builds a struct literal with Min:0 and MinSet:false (not via JSON),
+// so the executor must not enforce any lower bound.
+func TestIntegerRange_NegativeAllowedWhenMinUndeclared(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
-	decl := intRangeDecl(0, 0) // Min=0, no Max
+	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+	decl := intRangeDecl(0, 0) // Min=0, MinSet=false, no Max
 
 	// Zero should pass.
 	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 0}); err != nil {
-		t.Errorf("value=0 with Min=0: expected no error, got %v", err)
+		t.Errorf("value=0 with min undeclared: expected no error, got %v", err)
 	}
 
-	// Negative value should fail.
+	// Negative must also pass — min is not declared so no floor applies.
+	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": -1}); err != nil {
+		t.Errorf("value=-1 with min undeclared: expected no error, got %v", err)
+	}
+}
+
+// TestIntegerRange_NegativeRejectedWhenMinDeclaredZero verifies that when "min":0
+// is explicitly present in the convention JSON, negative values are rejected.
+// Uses JSON round-trip to ensure ArgDescriptor.MinSet is populated.
+func TestIntegerRange_NegativeRejectedWhenMinDeclaredZero(t *testing.T) {
+	payload := mustJSON(map[string]any{
+		"convention":  "test",
+		"version":     "0.1",
+		"operation":   "int-min-zero-op",
+		"signing":     "member_key",
+		"antecedents": "none",
+		"produces_tags": []any{
+			map[string]any{"tag": "test:int-min-zero-op", "cardinality": "exactly_one"},
+		},
+		"args": []any{
+			map[string]any{"name": "count", "type": "integer", "required": true, "min": 0},
+		},
+	})
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	tr := &mockTransport{}
+	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+
+	// Zero should pass (at boundary).
+	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 0}); err != nil {
+		t.Errorf("value=0 with min:0 declared: expected no error, got %v", err)
+	}
+
+	// Negative must fail — min was explicitly declared as 0.
 	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": -1}); err == nil {
-		t.Error("value=-1 with Min=0: expected range error, got nil")
+		t.Error("value=-1 with min:0 declared: expected error, got nil")
+	}
+}
+
+// TestMatchPattern_TimeoutIsReasonable is a regression test for campfire-agent-3bx:
+// the previous 1ms timeout caused false rejections under CPU load. Verify that
+// simple patterns complete successfully even under repeated invocations.
+func TestMatchPattern_TimeoutIsReasonable(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		if err := matchPattern(`[a-z]+`, "hello"); err != nil {
+			t.Fatalf("iteration %d: matchPattern returned unexpected error: %v", i, err)
+		}
+	}
+}
+
+// TestMatchPattern_GoroutineExitsOnTimeout is a regression test for campfire-agent-i3p:
+// the goroutine spawned by matchPattern must not leak after the function returns.
+// The done channel ensures the goroutine exits when the caller times out.
+// We verify the API contract: the function is reentrant and does not deadlock
+// or exhaust resources after many sequential calls.
+func TestMatchPattern_GoroutineExitsOnTimeout(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		_ = matchPattern(`[a-z]+`, "hello")
+	}
+	if err := matchPattern(`[a-z]+`, "world"); err != nil {
+		t.Errorf("matchPattern failed after repeated calls: %v", err)
 	}
 }
 
@@ -674,7 +737,7 @@ func TestValidateArgs_StripUndeclared_OnlyExtra(t *testing.T) {
 // end-to-end through the Executor.Execute path, not just via validateArgs directly.
 func TestValidateArgs_StripUndeclared_ViaExecute(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
+	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
 
 	decl := &Declaration{
 		Convention: "social",

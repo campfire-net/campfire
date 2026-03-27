@@ -7,6 +7,10 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
+// shortIDLen is the number of characters used when displaying a campfire or
+// sub-campfire ID in user-facing output.
+const shortIDLen = 12
+
 // loadIdentity loads the agent identity from the identity file.
 func loadIdentity() (*identity.Identity, error) {
 	return identity.Load(IdentityPath())

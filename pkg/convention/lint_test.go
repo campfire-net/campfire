@@ -147,7 +147,7 @@ func TestLint_ConventionExtension_LegitimateOperationsBlockedByLint(t *testing.T
 	// Lint should reject it even though Parse allows it for convention-extension + real campfire key.
 	payload := mustJSON(map[string]any{
 		"convention":  InfrastructureConvention,
-		"version":     InfrastructureVersion,
+		"version":     infrastructureVersion,
 		"operation":   "promote",
 		"description": "Publish a validated convention declaration to a convention registry campfire",
 		"signing":     "campfire_key",

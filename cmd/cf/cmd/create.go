@@ -148,8 +148,8 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 
 		// Send announcement to root campfire (best-effort, non-fatal)
 		subShortID := cf.PublicKeyHex()
-		if len(subShortID) > 12 {
-			subShortID = subShortID[:12]
+		if len(subShortID) > shortIDLen {
+			subShortID = subShortID[:shortIDLen]
 		}
 		announcePayload := fmt.Sprintf("sub-campfire created: %s (%s)", description, subShortID)
 		rootMembership, merr := s.GetMembership(rootCampfireID)
@@ -483,8 +483,8 @@ func buildThresholdShareProvider(s store.Store) cfhttp.ThresholdShareProvider {
 		}
 		if share == nil {
 			shortID := campfireID
-		if len(shortID) > 12 {
-			shortID = shortID[:12]
+		if len(shortID) > shortIDLen {
+			shortID = shortID[:shortIDLen]
 		}
 		return 0, nil, fmt.Errorf("no threshold share found for campfire %s", shortID)
 		}

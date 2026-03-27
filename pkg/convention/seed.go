@@ -3,8 +3,8 @@ package convention
 // InfrastructureConvention is the convention name for convention-extension operations.
 const InfrastructureConvention = "convention-extension"
 
-// InfrastructureVersion is the version for built-in convention-extension declarations.
-const InfrastructureVersion = "0.1"
+// infrastructureVersion is the version for built-in convention-extension declarations.
+const infrastructureVersion = "0.1"
 
 // PromoteDeclaration returns the built-in "promote" operation declaration for
 // convention-extension. A promote operation publishes a validated convention
@@ -18,7 +18,7 @@ const InfrastructureVersion = "0.1"
 func PromoteDeclaration() *Declaration {
 	return &Declaration{
 		Convention:  InfrastructureConvention,
-		Version:     InfrastructureVersion,
+		Version:     infrastructureVersion,
 		Operation:   "promote",
 		Description: "Publish a validated convention declaration to a convention registry campfire",
 		ProducesTags: []TagRule{
@@ -49,7 +49,7 @@ func PromoteDeclaration() *Declaration {
 func SupersedeDeclaration() *Declaration {
 	return &Declaration{
 		Convention:  InfrastructureConvention,
-		Version:     InfrastructureVersion,
+		Version:     infrastructureVersion,
 		Operation:   "supersede",
 		Description: "Replace a convention declaration with a newer version",
 		ProducesTags: []TagRule{
@@ -80,7 +80,7 @@ func SupersedeDeclaration() *Declaration {
 func RevokeDeclaration() *Declaration {
 	return &Declaration{
 		Convention:  InfrastructureConvention,
-		Version:     InfrastructureVersion,
+		Version:     infrastructureVersion,
 		Operation:   "revoke",
 		Description: "Permanently revoke a convention declaration",
 		ProducesTags: []TagRule{
@@ -99,10 +99,10 @@ func RevokeDeclaration() *Declaration {
 	}
 }
 
-// InfrastructureSeedDeclarations returns all built-in convention-extension
+// infrastructureSeedDeclarations returns all built-in convention-extension
 // declarations. These are pre-seeded into convention campfires so that agents
 // can use supersede and revoke operations without bootstrapping.
-func InfrastructureSeedDeclarations() []*Declaration {
+func infrastructureSeedDeclarations() []*Declaration {
 	return []*Declaration{
 		SupersedeDeclaration(),
 		RevokeDeclaration(),

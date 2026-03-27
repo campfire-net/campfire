@@ -23,7 +23,7 @@ func (r cliStoreReader) ListMessages(campfireID string, afterTimestamp int64, fi
 // not traced to an external root. Operators promote declarations into their campfires.
 func listConventionOperations(ctx context.Context, s store.Store, campfireID string) ([]*convention.Declaration, error) {
 	reader := cliStoreReader{s}
-	decls, err := convention.ListOperations(reader, campfireID, "")
+	decls, err := convention.ListOperations(ctx, reader, campfireID, "")
 	if err != nil {
 		return nil, fmt.Errorf("reading inline declarations: %w", err)
 	}
@@ -72,7 +72,7 @@ func dispatchConventionOp(campfireName string, operationName string, rawArgs []s
 			ops = append(ops, d.Operation)
 		}
 		if len(ops) == 0 {
-			return fmt.Errorf("unknown operation %q — no convention operations declared in campfire %s", operationName, campfireID[:12])
+			return fmt.Errorf("unknown operation %q — no convention operations declared in campfire %s", operationName, campfireID[:shortIDLen])
 		}
 		return fmt.Errorf("unknown operation %q — available: %s", operationName, strings.Join(ops, ", "))
 	}
@@ -124,6 +124,6 @@ func dispatchConventionOp(campfireName string, operationName string, rawArgs []s
 		return fmt.Errorf("convention operation failed: %w", err)
 	}
 
-	fmt.Printf("ok — operation %q dispatched to campfire %s\n", operationName, campfireID[:12])
+	fmt.Printf("ok — operation %q dispatched to campfire %s\n", operationName, campfireID[:shortIDLen])
 	return nil
 }
