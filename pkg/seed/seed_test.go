@@ -418,6 +418,133 @@ func TestFetchWellKnownBeacon_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestReadConventionMessages_PathTraversal verifies that path traversal attempts
+// via SeedBeacon.Dir are rejected before any filesystem reads occur.
+func TestReadConventionMessages_PathTraversal(t *testing.T) {
+	// Create a legitimate campfire directory so the traversal target exists.
+	legitimateDir := t.TempDir()
+
+	cases := []struct {
+		name string
+		dir  string
+	}{
+		{
+			name: "dotdot relative path",
+			dir:  "../../../etc/passwd",
+		},
+		{
+			name: "dotdot from temp dir",
+			// Construct a path that goes up from the temp dir then back to etc.
+			dir: legitimateDir + "/../../etc",
+		},
+		{
+			name: "null byte in path",
+			dir:  "/tmp/seed\x00/../../etc/passwd",
+		},
+		{
+			name: "relative path no traversal",
+			dir:  "relative/path/to/campfire",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := &seed.SeedBeacon{
+				Protocol: "filesystem",
+				Dir:      tc.dir,
+			}
+			_, err := seed.ReadConventionMessages(sb)
+			if err == nil {
+				t.Fatalf("expected path traversal to be rejected for dir %q, got nil error", tc.dir)
+			}
+		})
+	}
+}
+
+// TestReadConventionMessages_SymlinkTraversal verifies that a symlink pointing
+// outside the seed directory is resolved and not treated as a traversal attack
+// (symlinks to legitimate locations must still work, but the resolved path is used).
+func TestReadConventionMessages_SymlinkTraversal(t *testing.T) {
+	// Build a real campfire dir with a convention message.
+	targetDir := t.TempDir()
+	messagesDir := filepath.Join(targetDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write a convention message to the target.
+	type rawMsg struct {
+		Payload []byte   `cbor:"3,keyasint"`
+		Tags    []string `cbor:"4,keyasint"`
+	}
+	decl := map[string]any{"convention": "test", "version": "0.1", "operation": "op"}
+	declPayload, _ := json.Marshal(decl)
+	data, err := cfencoding.Marshal(rawMsg{Payload: declPayload, Tags: []string{convention.ConventionOperationTag}})
+	if err != nil {
+		t.Fatalf("marshaling message: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(messagesDir, "0000000001-test.cbor"), data, 0600); err != nil {
+		t.Fatalf("writing message: %v", err)
+	}
+
+	// Create a symlink pointing to the target directory.
+	symlinkBase := t.TempDir()
+	symlinkPath := filepath.Join(symlinkBase, "symlinked-campfire")
+	if err := os.Symlink(targetDir, symlinkPath); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+
+	// Reading through a symlink that points to a legitimate dir should succeed —
+	// validateSeedDir resolves symlinks and the resolved path is used.
+	sb := &seed.SeedBeacon{
+		Protocol: "filesystem",
+		Dir:      symlinkPath,
+	}
+	msgs, err := seed.ReadConventionMessages(sb)
+	if err != nil {
+		t.Fatalf("ReadConventionMessages through symlink: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message through symlink, got %d", len(msgs))
+	}
+}
+
+// TestReadConventionMessages_LegitimateAbsPath verifies that a legitimate
+// absolute path (no traversal) continues to work correctly after the fix.
+func TestReadConventionMessages_LegitimateAbsPath(t *testing.T) {
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	type rawMsg struct {
+		Payload []byte   `cbor:"3,keyasint"`
+		Tags    []string `cbor:"4,keyasint"`
+	}
+	decl := map[string]any{"convention": "test", "version": "0.1", "operation": "op"}
+	declPayload, _ := json.Marshal(decl)
+	data, err := cfencoding.Marshal(rawMsg{Payload: declPayload, Tags: []string{convention.ConventionOperationTag}})
+	if err != nil {
+		t.Fatalf("marshaling message: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(messagesDir, "0000000001-ok.cbor"), data, 0600); err != nil {
+		t.Fatalf("writing message: %v", err)
+	}
+
+	sb := &seed.SeedBeacon{
+		Protocol: "filesystem",
+		Dir:      campfireDir,
+	}
+	msgs, err := seed.ReadConventionMessages(sb)
+	if err != nil {
+		t.Fatalf("ReadConventionMessages with legitimate path: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+}
+
 // writeMsgToDir writes a signed message.Message as CBOR to the given directory.
 func writeMsgToDir(t *testing.T, dir, filename string, msg *message.Message) {
 	t.Helper()
