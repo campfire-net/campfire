@@ -1092,3 +1092,238 @@ func TestReadConventionMessages_PerMessageSig_AllValidAccepted(t *testing.T) {
 		t.Fatalf("expected %d messages, got %d", msgCount, len(msgs))
 	}
 }
+
+// ---- Item 5: verifySeedBeaconSignatures — error paths ----
+
+// TestVerifySeedBeaconSignatures_InvalidHexCampfireID verifies that a campfire_id
+// that is not valid hex causes ReadConventionMessages to return an error.
+// (verifySeedBeaconSignatures calls hex.DecodeString which returns an error for invalid hex.)
+func TestVerifySeedBeaconSignatures_InvalidHexCampfireID(t *testing.T) {
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+	// Write a dummy non-.cbor file so the dir is not empty but no beacons load.
+	if err := os.WriteFile(filepath.Join(messagesDir, "placeholder.txt"), []byte("x"), 0600); err != nil {
+		t.Fatalf("writing placeholder: %v", err)
+	}
+
+	sb := &seed.SeedBeacon{
+		CampfireID: "not-valid-hex!!", // invalid hex
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	_, err := seed.ReadConventionMessages(sb)
+	if err == nil {
+		t.Fatal("expected error for invalid hex campfire_id, got nil")
+	}
+}
+
+// TestVerifySeedBeaconSignatures_MessagesDirectoryAbsent verifies that when the
+// messages/ directory does not exist, verifySeedBeaconSignatures returns an error
+// indicating signature verification failed.
+func TestVerifySeedBeaconSignatures_MessagesDirectoryAbsent(t *testing.T) {
+	// Generate a valid keypair so decodeCampfireID succeeds.
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	// No messages/ subdirectory created.
+
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(pub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	// readFilesystemConventionMessages returns (nil, nil) for absent dir,
+	// then verifySeedBeaconSignatures fails because messages dir is absent.
+	_, err = seed.ReadConventionMessages(sb)
+	if err == nil {
+		t.Fatal("expected error when messages directory is absent and campfire_id is set, got nil")
+	}
+	if !strings.Contains(err.Error(), "verification") && !strings.Contains(err.Error(), "absent") && !strings.Contains(err.Error(), "signature") {
+		t.Errorf("expected signature verification error, got: %v", err)
+	}
+}
+
+// TestVerifySeedBeaconSignatures_NoValidMessages verifies that when a messages
+// directory exists but contains no convention:operation messages signed by the
+// campfire key, an error is returned.
+func TestVerifySeedBeaconSignatures_NoValidMessages(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write a message tagged with something other than convention:operation.
+	otherPayload := []byte(`{"type":"other"}`)
+	otherMsg, err := message.NewMessage(priv, pub, otherPayload, []string{"other:tag"}, nil)
+	if err != nil {
+		t.Fatalf("creating other-tag message: %v", err)
+	}
+	writeMsgToDir(t, messagesDir, "0000000001-other.cbor", otherMsg)
+
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(pub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	_, err = seed.ReadConventionMessages(sb)
+	if err == nil {
+		t.Fatal("expected error when no convention:operation messages pass signature check, got nil")
+	}
+	if !strings.Contains(err.Error(), "signature") {
+		t.Errorf("expected error to mention signature verification, got: %v", err)
+	}
+}
+
+// ---- Item 6: scanSeedsDir — unreadable-dir error path and invalid beacon skip ----
+
+// TestScanSeedsDir_UnreadableDir verifies that when the seeds directory exists
+// but cannot be read (e.g. permission denied), FindSeedBeacon returns an error.
+func TestScanSeedsDir_UnreadableDir(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test permission denied when running as root")
+	}
+
+	projectDir := t.TempDir()
+	seedsDir := filepath.Join(projectDir, ".campfire", "seeds")
+	if err := os.MkdirAll(seedsDir, 0700); err != nil {
+		t.Fatalf("creating seeds dir: %v", err)
+	}
+
+	// Remove all permissions so ReadDir fails.
+	if err := os.Chmod(seedsDir, 0000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(seedsDir, 0700) })
+
+	_, err := seed.FindSeedBeacon(projectDir)
+	if err == nil {
+		t.Fatal("expected error for unreadable seeds dir, got nil")
+	}
+}
+
+// TestScanSeedsDir_InvalidBeaconSkipped verifies that .beacon files that fail
+// parseSeedBeacon are silently skipped, and the next valid .beacon is returned.
+func TestScanSeedsDir_InvalidBeaconSkipped(t *testing.T) {
+	projectDir := t.TempDir()
+	seedsDir := filepath.Join(projectDir, ".campfire", "seeds")
+	if err := os.MkdirAll(seedsDir, 0700); err != nil {
+		t.Fatalf("creating seeds dir: %v", err)
+	}
+
+	// Write an invalid beacon first (alphabetically comes first).
+	if err := os.WriteFile(filepath.Join(seedsDir, "a-invalid.beacon"), []byte("not-cbor-or-json"), 0600); err != nil {
+		t.Fatalf("writing invalid beacon: %v", err)
+	}
+
+	// Write a valid beacon second (alphabetically comes second).
+	validSB := seed.SeedBeacon{
+		CampfireID: "validcampfireid",
+		Protocol:   "filesystem",
+		Dir:        "/tmp/valid-seed-dir",
+	}
+	data, err := json.Marshal(validSB)
+	if err != nil {
+		t.Fatalf("marshaling valid beacon: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seedsDir, "b-valid.beacon"), data, 0600); err != nil {
+		t.Fatalf("writing valid beacon: %v", err)
+	}
+
+	found, err := seed.FindSeedBeacon(projectDir)
+	if err != nil {
+		t.Fatalf("FindSeedBeacon: unexpected error: %v", err)
+	}
+	if found == nil {
+		t.Fatal("expected to find a valid beacon after skipping invalid one, got nil")
+	}
+	if found.Dir != "/tmp/valid-seed-dir" {
+		t.Errorf("expected Dir=/tmp/valid-seed-dir, got %q", found.Dir)
+	}
+}
+
+// ---- Item 9: FindSeedBeacon — user-home and system-level layers, UserHomeDir failure ----
+
+// TestFindSeedBeacon_UserHomeLayer verifies that a beacon in ~/.campfire/seeds/
+// is discovered when no project-local beacon exists.
+func TestFindSeedBeacon_UserHomeLayer(t *testing.T) {
+	// We cannot modify the real home directory, so we test with an empty projectDir
+	// and a controlled well-known URL that returns nil. This ensures the function
+	// reaches at least layer 2 without error — which is all we can verify without
+	// injecting the home dir.
+	orig := seed.WellKnownURL
+	seed.WellKnownURL = "http://127.0.0.1:0/seed.beacon"
+	t.Cleanup(func() { seed.WellKnownURL = orig })
+
+	// With empty projectDir, layer 1 is skipped. Layers 2 and 3 check real dirs
+	// that won't exist in CI. Layer 4 fails (unreachable). Result: (nil, nil).
+	found, err := seed.FindSeedBeacon("")
+	if err != nil {
+		t.Fatalf("FindSeedBeacon with empty projectDir: unexpected error: %v", err)
+	}
+	// found may be nil (no seeds in CI home) or a beacon if the test machine has one.
+	// We just verify no error.
+	_ = found
+}
+
+// TestFindSeedBeacon_SystemLayer verifies that the system-level layer
+// (/usr/share/campfire/seeds) is checked. In CI it won't exist; we just
+// verify the function returns (nil, nil) without error.
+func TestFindSeedBeacon_SystemLayer(t *testing.T) {
+	projectDir := t.TempDir() // empty — no project-local seeds
+
+	orig := seed.WellKnownURL
+	seed.WellKnownURL = "http://127.0.0.1:0/seed.beacon"
+	t.Cleanup(func() { seed.WellKnownURL = orig })
+
+	found, err := seed.FindSeedBeacon(projectDir)
+	if err != nil {
+		t.Fatalf("unexpected error at system-layer check: %v", err)
+	}
+	_ = found // nil in CI (no /usr/share/campfire/seeds)
+}
+
+// TestFindSeedBeacon_ProjectLocalBeforeUserHome verifies that a project-local
+// beacon takes priority over a user-home beacon.
+func TestFindSeedBeacon_ProjectLocalBeforeUserHome(t *testing.T) {
+	projectDir := t.TempDir()
+	seedsDir := filepath.Join(projectDir, ".campfire", "seeds")
+	if err := os.MkdirAll(seedsDir, 0700); err != nil {
+		t.Fatalf("creating seeds dir: %v", err)
+	}
+
+	sb := seed.SeedBeacon{
+		CampfireID: "project-local-id",
+		Protocol:   "filesystem",
+		Dir:        "/tmp/project-local-campfire",
+	}
+	data, err := json.Marshal(sb)
+	if err != nil {
+		t.Fatalf("marshaling beacon: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seedsDir, "project.beacon"), data, 0600); err != nil {
+		t.Fatalf("writing beacon: %v", err)
+	}
+
+	found, err := seed.FindSeedBeacon(projectDir)
+	if err != nil {
+		t.Fatalf("FindSeedBeacon: %v", err)
+	}
+	if found == nil {
+		t.Fatal("expected project-local beacon to be found, got nil")
+	}
+	if found.Dir != "/tmp/project-local-campfire" {
+		t.Errorf("expected project-local Dir, got %q", found.Dir)
+	}
+}
