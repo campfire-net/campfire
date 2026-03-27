@@ -16,7 +16,8 @@ import (
 
 // Transport manages the filesystem transport for campfires.
 type Transport struct {
-	BaseDir string // $CF_TRANSPORT_DIR, default /tmp/campfire
+	BaseDir    string // $CF_TRANSPORT_DIR, default /tmp/campfire
+	rootDir string // if set, CampfireDir returns this directly (path-rooted mode)
 }
 
 // DefaultBaseDir returns the default transport base directory.
@@ -28,12 +29,32 @@ func DefaultBaseDir() string {
 }
 
 // New creates a Transport with the given base directory.
+// Campfire directories are derived as baseDir/campfireID.
 func New(baseDir string) *Transport {
 	return &Transport{BaseDir: baseDir}
 }
 
+// NewPathRooted creates a Transport where the campfire directory is the given
+// path directly, not derived from a base directory + campfire ID. Use this
+// when a campfire's state lives at a known filesystem path (e.g. a project's
+// .campfire/ directory, or any folder that owns its campfire).
+func NewPathRooted(dir string) *Transport {
+	return &Transport{rootDir: dir}
+}
+
+// IsPathRooted reports whether this transport uses a fixed directory rather
+// than deriving campfire directories from a base directory + ID.
+func (t *Transport) IsPathRooted() bool {
+	return t.rootDir != ""
+}
+
 // CampfireDir returns the transport directory for a campfire.
+// In path-rooted mode, this returns the root directory directly,
+// ignoring campfireID.
 func (t *Transport) CampfireDir(campfireID string) string {
+	if t.rootDir != "" {
+		return t.rootDir
+	}
 	return filepath.Join(t.BaseDir, campfireID)
 }
 

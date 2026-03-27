@@ -341,6 +341,353 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+// TestNewPathRooted_CampfireDirIgnoresID verifies path-rooted mode returns the
+// fixed directory regardless of the campfire ID argument.
+func TestNewPathRooted_CampfireDirIgnoresID(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewPathRooted(dir)
+
+	if !tr.IsPathRooted() {
+		t.Fatal("expected IsPathRooted() = true")
+	}
+	if got := tr.CampfireDir("any-id"); got != dir {
+		t.Errorf("CampfireDir() = %q, want %q", got, dir)
+	}
+	if got := tr.CampfireDir("different-id"); got != dir {
+		t.Errorf("CampfireDir() = %q, want %q", got, dir)
+	}
+}
+
+// TestNewPathRooted_FullLifecycle verifies Init, WriteMember, WriteMessage, ReadState,
+// ListMembers, ListMessages, and Remove all work in project-rooted mode.
+func TestNewPathRooted_FullLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewPathRooted(dir)
+	cf := newTestCampfire(t)
+
+	// Init creates directory structure in the project dir.
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	for _, sub := range []string{"members", "messages"} {
+		if info, err := os.Stat(filepath.Join(dir, sub)); err != nil || !info.IsDir() {
+			t.Errorf("expected %s subdirectory in project dir", sub)
+		}
+	}
+
+	// ReadState works.
+	state, err := tr.ReadState(cf.PublicKeyHex())
+	if err != nil {
+		t.Fatalf("ReadState() error: %v", err)
+	}
+	if state.JoinProtocol != cf.JoinProtocol {
+		t.Errorf("JoinProtocol = %q, want %q", state.JoinProtocol, cf.JoinProtocol)
+	}
+
+	// WriteMember + ListMembers round-trip.
+	id := newTestIdentity(t)
+	rec := campfire.MemberRecord{PublicKey: pubKey(id), JoinedAt: 1, Role: "full"}
+	if err := tr.WriteMember(cf.PublicKeyHex(), rec); err != nil {
+		t.Fatalf("WriteMember() error: %v", err)
+	}
+	members, err := tr.ListMembers(cf.PublicKeyHex())
+	if err != nil {
+		t.Fatalf("ListMembers() error: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("got %d members, want 1", len(members))
+	}
+
+	// WriteMessage + ListMessages round-trip.
+	msg := newTestMessage(t)
+	if err := tr.WriteMessage(cf.PublicKeyHex(), msg); err != nil {
+		t.Fatalf("WriteMessage() error: %v", err)
+	}
+	msgs, err := tr.ListMessages(cf.PublicKeyHex())
+	if err != nil {
+		t.Fatalf("ListMessages() error: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].ID != msg.ID {
+		t.Errorf("message round-trip failed: got %d msgs", len(msgs))
+	}
+
+	// Remove deletes the project directory contents.
+	if err := tr.Remove(cf.PublicKeyHex()); err != nil {
+		t.Fatalf("Remove() error: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("project dir should not exist after Remove")
+	}
+}
+
+// TestMultiLevel_SiblingPathRooted verifies two path-rooted campfires in sibling
+// directories are fully independent — messages and members don't leak.
+func TestMultiLevel_SiblingPathRooted(t *testing.T) {
+	root := t.TempDir()
+	dirA := filepath.Join(root, "project-a", ".campfire")
+	dirB := filepath.Join(root, "project-b", ".campfire")
+	os.MkdirAll(dirA, 0755)
+	os.MkdirAll(dirB, 0755)
+
+	trA := NewPathRooted(dirA)
+	trB := NewPathRooted(dirB)
+	cfA := newTestCampfire(t)
+	cfB := newTestCampfire(t)
+
+	if err := trA.Init(cfA); err != nil {
+		t.Fatalf("Init A: %v", err)
+	}
+	if err := trB.Init(cfB); err != nil {
+		t.Fatalf("Init B: %v", err)
+	}
+
+	// Write a message to A only.
+	msgA := newTestMessage(t)
+	if err := trA.WriteMessage(cfA.PublicKeyHex(), msgA); err != nil {
+		t.Fatalf("WriteMessage A: %v", err)
+	}
+
+	// Write a member to B only.
+	idB := newTestIdentity(t)
+	recB := campfire.MemberRecord{PublicKey: pubKey(idB), JoinedAt: 1, Role: "full"}
+	if err := trB.WriteMember(cfB.PublicKeyHex(), recB); err != nil {
+		t.Fatalf("WriteMember B: %v", err)
+	}
+
+	// A has 1 message, 0 members (besides what Init wrote).
+	msgsA, _ := trA.ListMessages(cfA.PublicKeyHex())
+	if len(msgsA) != 1 {
+		t.Errorf("A messages: got %d, want 1", len(msgsA))
+	}
+	membersA, _ := trA.ListMembers(cfA.PublicKeyHex())
+	if len(membersA) != 0 {
+		t.Errorf("A members: got %d, want 0", len(membersA))
+	}
+
+	// B has 0 messages, 1 member.
+	msgsB, _ := trB.ListMessages(cfB.PublicKeyHex())
+	if len(msgsB) != 0 {
+		t.Errorf("B messages: got %d, want 0", len(msgsB))
+	}
+	membersB, _ := trB.ListMembers(cfB.PublicKeyHex())
+	if len(membersB) != 1 {
+		t.Errorf("B members: got %d, want 1", len(membersB))
+	}
+
+	// Removing A doesn't affect B.
+	if err := trA.Remove(cfA.PublicKeyHex()); err != nil {
+		t.Fatalf("Remove A: %v", err)
+	}
+	stateB, err := trB.ReadState(cfB.PublicKeyHex())
+	if err != nil {
+		t.Fatalf("ReadState B after removing A: %v", err)
+	}
+	if stateB.JoinProtocol != cfB.JoinProtocol {
+		t.Errorf("B state corrupted after removing A")
+	}
+}
+
+// TestMultiLevel_BaseDirMultipleCampfires verifies a standard base-dir transport
+// hosts multiple campfires independently alongside a path-rooted one.
+func TestMultiLevel_BaseDirMultipleCampfires(t *testing.T) {
+	baseDir := t.TempDir()
+	trBase := New(baseDir)
+
+	// Two campfires in the same base-dir transport.
+	cf1 := newTestCampfire(t)
+	cf2 := newTestCampfire(t)
+	if err := trBase.Init(cf1); err != nil {
+		t.Fatalf("Init cf1: %v", err)
+	}
+	if err := trBase.Init(cf2); err != nil {
+		t.Fatalf("Init cf2: %v", err)
+	}
+
+	// A third campfire is path-rooted elsewhere.
+	pathDir := filepath.Join(t.TempDir(), ".campfire")
+	os.MkdirAll(pathDir, 0755)
+	trPath := NewPathRooted(pathDir)
+	cf3 := newTestCampfire(t)
+	if err := trPath.Init(cf3); err != nil {
+		t.Fatalf("Init cf3: %v", err)
+	}
+
+	// Write messages to each.
+	msg1 := newTestMessage(t)
+	msg2 := newTestMessage(t)
+	msg3 := newTestMessage(t)
+	if err := trBase.WriteMessage(cf1.PublicKeyHex(), msg1); err != nil {
+		t.Fatalf("WriteMessage cf1: %v", err)
+	}
+	if err := trBase.WriteMessage(cf2.PublicKeyHex(), msg2); err != nil {
+		t.Fatalf("WriteMessage cf2: %v", err)
+	}
+	if err := trPath.WriteMessage(cf3.PublicKeyHex(), msg3); err != nil {
+		t.Fatalf("WriteMessage cf3: %v", err)
+	}
+
+	// Each campfire sees only its own message.
+	for _, tc := range []struct {
+		name string
+		tr   *Transport
+		cfID string
+		want string
+	}{
+		{"cf1", trBase, cf1.PublicKeyHex(), msg1.ID},
+		{"cf2", trBase, cf2.PublicKeyHex(), msg2.ID},
+		{"cf3", trPath, cf3.PublicKeyHex(), msg3.ID},
+	} {
+		msgs, err := tc.tr.ListMessages(tc.cfID)
+		if err != nil {
+			t.Fatalf("ListMessages %s: %v", tc.name, err)
+		}
+		if len(msgs) != 1 {
+			t.Errorf("%s: got %d messages, want 1", tc.name, len(msgs))
+			continue
+		}
+		if msgs[0].ID != tc.want {
+			t.Errorf("%s: got message ID %q, want %q", tc.name, msgs[0].ID, tc.want)
+		}
+	}
+
+	// Removing cf1 from base-dir doesn't affect cf2 or cf3.
+	if err := trBase.Remove(cf1.PublicKeyHex()); err != nil {
+		t.Fatalf("Remove cf1: %v", err)
+	}
+	if _, err := trBase.ReadState(cf2.PublicKeyHex()); err != nil {
+		t.Errorf("cf2 state missing after removing cf1: %v", err)
+	}
+	if _, err := trPath.ReadState(cf3.PublicKeyHex()); err != nil {
+		t.Errorf("cf3 state missing after removing cf1: %v", err)
+	}
+}
+
+// TestMultiLevel_NestedPathRooted verifies a parent directory and a child directory
+// can each have their own path-rooted campfire without interference.
+func TestMultiLevel_NestedPathRooted(t *testing.T) {
+	root := t.TempDir()
+	parentCF := filepath.Join(root, ".campfire")
+	childCF := filepath.Join(root, "subdir", ".campfire")
+	os.MkdirAll(parentCF, 0755)
+	os.MkdirAll(childCF, 0755)
+
+	trParent := NewPathRooted(parentCF)
+	trChild := NewPathRooted(childCF)
+	cfParent := newTestCampfire(t)
+	cfChild := newTestCampfire(t)
+
+	if err := trParent.Init(cfParent); err != nil {
+		t.Fatalf("Init parent: %v", err)
+	}
+	if err := trChild.Init(cfChild); err != nil {
+		t.Fatalf("Init child: %v", err)
+	}
+
+	// Write messages to each.
+	msgP := newTestMessage(t)
+	msgC := newTestMessage(t)
+	if err := trParent.WriteMessage(cfParent.PublicKeyHex(), msgP); err != nil {
+		t.Fatalf("WriteMessage parent: %v", err)
+	}
+	if err := trChild.WriteMessage(cfChild.PublicKeyHex(), msgC); err != nil {
+		t.Fatalf("WriteMessage child: %v", err)
+	}
+
+	// Parent sees only its message.
+	msgsP, _ := trParent.ListMessages(cfParent.PublicKeyHex())
+	if len(msgsP) != 1 || msgsP[0].ID != msgP.ID {
+		t.Errorf("parent: expected 1 message with ID %q, got %d", msgP.ID, len(msgsP))
+	}
+
+	// Child sees only its message.
+	msgsC, _ := trChild.ListMessages(cfChild.PublicKeyHex())
+	if len(msgsC) != 1 || msgsC[0].ID != msgC.ID {
+		t.Errorf("child: expected 1 message with ID %q, got %d", msgC.ID, len(msgsC))
+	}
+
+	// Write a member to parent, verify child doesn't see it.
+	idP := newTestIdentity(t)
+	recP := campfire.MemberRecord{PublicKey: pubKey(idP), JoinedAt: 1, Role: "full"}
+	if err := trParent.WriteMember(cfParent.PublicKeyHex(), recP); err != nil {
+		t.Fatalf("WriteMember parent: %v", err)
+	}
+	membersC, _ := trChild.ListMembers(cfChild.PublicKeyHex())
+	if len(membersC) != 0 {
+		t.Errorf("child has %d members, want 0 (leaked from parent)", len(membersC))
+	}
+
+	// State reads are independent.
+	stateP, _ := trParent.ReadState(cfParent.PublicKeyHex())
+	stateC, _ := trChild.ReadState(cfChild.PublicKeyHex())
+	if string(stateP.PublicKey) == string(stateC.PublicKey) {
+		t.Error("parent and child have identical public keys — test is broken")
+	}
+
+	// Removing child doesn't affect parent.
+	if err := trChild.Remove(cfChild.PublicKeyHex()); err != nil {
+		t.Fatalf("Remove child: %v", err)
+	}
+	if _, err := trParent.ReadState(cfParent.PublicKeyHex()); err != nil {
+		t.Errorf("parent state missing after removing child: %v", err)
+	}
+	msgsP2, _ := trParent.ListMessages(cfParent.PublicKeyHex())
+	if len(msgsP2) != 1 {
+		t.Errorf("parent lost messages after removing child: got %d", len(msgsP2))
+	}
+}
+
+// TestMultiLevel_PathRootedAndBaseDirSameParent verifies a path-rooted campfire and
+// a base-dir campfire sharing the same parent directory don't collide.
+func TestMultiLevel_PathRootedAndBaseDirSameParent(t *testing.T) {
+	root := t.TempDir()
+
+	// Path-rooted campfire at root/.campfire
+	pathDir := filepath.Join(root, ".campfire")
+	os.MkdirAll(pathDir, 0755)
+	trPath := NewPathRooted(pathDir)
+	cfPath := newTestCampfire(t)
+	if err := trPath.Init(cfPath); err != nil {
+		t.Fatalf("Init path-rooted: %v", err)
+	}
+
+	// Base-dir transport also rooted at root/ — campfire dirs are root/<id>
+	trBase := New(root)
+	cfBase := newTestCampfire(t)
+	if err := trBase.Init(cfBase); err != nil {
+		t.Fatalf("Init base-dir: %v", err)
+	}
+
+	// They resolve to different directories.
+	dirPath := trPath.CampfireDir(cfPath.PublicKeyHex())
+	dirBase := trBase.CampfireDir(cfBase.PublicKeyHex())
+	if dirPath == dirBase {
+		t.Fatal("path-rooted and base-dir resolved to same directory")
+	}
+
+	// Write to each, verify isolation.
+	msgPath := newTestMessage(t)
+	msgBase := newTestMessage(t)
+	trPath.WriteMessage(cfPath.PublicKeyHex(), msgPath)
+	trBase.WriteMessage(cfBase.PublicKeyHex(), msgBase)
+
+	msgsPath, _ := trPath.ListMessages(cfPath.PublicKeyHex())
+	msgsBase, _ := trBase.ListMessages(cfBase.PublicKeyHex())
+	if len(msgsPath) != 1 || msgsPath[0].ID != msgPath.ID {
+		t.Errorf("path-rooted: wrong messages")
+	}
+	if len(msgsBase) != 1 || msgsBase[0].ID != msgBase.ID {
+		t.Errorf("base-dir: wrong messages")
+	}
+}
+
+// TestNew_IsNotPathRooted verifies the standard constructor is not path-rooted.
+func TestNew_IsNotPathRooted(t *testing.T) {
+	tr := New(t.TempDir())
+	if tr.IsPathRooted() {
+		t.Error("expected IsPathRooted() = false for New()")
+	}
+}
+
 // TestDefaultBaseDir verifies the fallback path and CF_TRANSPORT_DIR env override.
 func TestDefaultBaseDir(t *testing.T) {
 	// Default.
