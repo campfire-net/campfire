@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -661,6 +662,174 @@ func TestReadConventionMessages_LegitimateAbsPath(t *testing.T) {
 	}
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+}
+
+// TestReadConventionMessages_FileCountLimit verifies that a seed directory
+// containing more than MaxSeedFileCount .cbor files is rejected.
+func TestReadConventionMessages_FileCountLimit(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write MaxSeedFileCount+1 .cbor files (small, valid convention messages).
+	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
+	for i := 0; i <= seed.MaxSeedFileCount; i++ {
+		msg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+		if err != nil {
+			t.Fatalf("creating message %d: %v", i, err)
+		}
+		msgData, err := cfencoding.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshaling message %d: %v", i, err)
+		}
+		if err := os.WriteFile(filepath.Join(messagesDir, fmt.Sprintf("%010d-msg.cbor", i)), msgData, 0600); err != nil {
+			t.Fatalf("writing message %d: %v", i, err)
+		}
+	}
+
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(pub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	_, err = seed.ReadConventionMessages(sb)
+	if err == nil {
+		t.Fatal("expected error when file count exceeds MaxSeedFileCount, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeding the limit") {
+		t.Errorf("expected 'exceeding the limit' in error, got: %v", err)
+	}
+}
+
+// TestReadConventionMessages_PerFileSizeLimit verifies that individual files
+// exceeding MaxSeedFileSizeBytes are skipped (not returned in results).
+func TestReadConventionMessages_PerFileSizeLimit(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write a valid small convention message (should appear in results).
+	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
+	smallMsg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	if err != nil {
+		t.Fatalf("creating small message: %v", err)
+	}
+	writeMsgToDir(t, messagesDir, "0000000001-small.cbor", smallMsg)
+
+	// Write an oversized file (exceeds per-file limit) by writing raw bytes.
+	// The file has a .cbor extension but is padded far beyond MaxSeedFileSizeBytes.
+	oversized := make([]byte, seed.MaxSeedFileSizeBytes+1)
+	if err := os.WriteFile(filepath.Join(messagesDir, "0000000002-big.cbor"), oversized, 0600); err != nil {
+		t.Fatalf("writing oversized file: %v", err)
+	}
+
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(pub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	msgs, err := seed.ReadConventionMessages(sb)
+	if err != nil {
+		t.Fatalf("ReadConventionMessages: unexpected error: %v", err)
+	}
+	// Only the small valid message should be returned; the oversized file is skipped.
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message (oversized skipped), got %d", len(msgs))
+	}
+}
+
+// TestReadConventionMessages_AggregateSizeLimit verifies that when cumulative
+// bytes read exceed MaxSeedAggregateSizeBytes, the seed directory is rejected.
+func TestReadConventionMessages_AggregateSizeLimit(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write enough files (each just under per-file limit) to exceed the aggregate cap.
+	// MaxSeedAggregateSizeBytes / MaxSeedFileSizeBytes = 10, so 11 nearly-max files
+	// will push over the aggregate.
+	chunkSize := seed.MaxSeedFileSizeBytes // exactly at per-file limit → skipped
+	// Use per-file size just under the per-file cap so files aren't individually skipped.
+	chunkSize = seed.MaxSeedFileSizeBytes - 1
+	filesNeeded := int(seed.MaxSeedAggregateSizeBytes/int64(chunkSize)) + 1
+	chunk := make([]byte, chunkSize)
+	for i := 0; i < filesNeeded; i++ {
+		if err := os.WriteFile(filepath.Join(messagesDir, fmt.Sprintf("%010d-chunk.cbor", i)), chunk, 0600); err != nil {
+			t.Fatalf("writing chunk file %d: %v", i, err)
+		}
+	}
+
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(pub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	_, err = seed.ReadConventionMessages(sb)
+	if err == nil {
+		t.Fatal("expected error when aggregate size exceeds MaxSeedAggregateSizeBytes, got nil")
+	}
+	if !strings.Contains(err.Error(), "aggregate size limit") {
+		t.Errorf("expected 'aggregate size limit' in error, got: %v", err)
+	}
+}
+
+// TestReadConventionMessages_NormalDirectoryUnchanged verifies that a normal
+// seed directory (well within all limits) continues to work correctly.
+func TestReadConventionMessages_NormalDirectoryUnchanged(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating keypair: %v", err)
+	}
+
+	campfireDir := t.TempDir()
+	messagesDir := filepath.Join(campfireDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("creating messages dir: %v", err)
+	}
+
+	// Write a few normal convention messages.
+	for i := 0; i < 5; i++ {
+		declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": fmt.Sprintf("op-%d", i)})
+		msg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+		if err != nil {
+			t.Fatalf("creating message %d: %v", i, err)
+		}
+		writeMsgToDir(t, messagesDir, fmt.Sprintf("%010d-msg.cbor", i+1), msg)
+	}
+
+	sb := &seed.SeedBeacon{
+		CampfireID: hex.EncodeToString(pub),
+		Protocol:   "filesystem",
+		Dir:        campfireDir,
+	}
+	msgs, err := seed.ReadConventionMessages(sb)
+	if err != nil {
+		t.Fatalf("ReadConventionMessages on normal directory: %v", err)
+	}
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(msgs))
 	}
 }
 

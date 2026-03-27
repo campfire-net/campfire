@@ -35,6 +35,22 @@ import (
 // controlled httptest server or a guaranteed-unreachable URL.
 var WellKnownURL = "https://getcampfire.dev/.well-known/seed.beacon"
 
+// Resource limits for readFilesystemConventionMessages.
+// These caps prevent resource exhaustion from malicious or corrupt seed directories.
+const (
+	// MaxSeedFileCount is the maximum number of files allowed in a seed messages directory.
+	// Directories with more files than this are rejected.
+	MaxSeedFileCount = 1000
+
+	// MaxSeedFileSizeBytes is the maximum size of a single seed message file.
+	// Individual files exceeding this limit are skipped.
+	MaxSeedFileSizeBytes = 1 * 1024 * 1024 // 1 MiB
+
+	// MaxSeedAggregateSizeBytes is the maximum total bytes read across all seed message files.
+	// Processing stops and the seed directory is rejected when this limit is reached.
+	MaxSeedAggregateSizeBytes = 10 * 1024 * 1024 // 10 MiB
+)
+
 // SeedBeacon describes a seed campfire source.
 // It is stored as a CBOR or JSON file in a seeds directory.
 type SeedBeacon struct {
@@ -351,6 +367,11 @@ func verifySeedBeaconSignatures(campfireID string, campfireDir string) error {
 
 // readFilesystemConventionMessages reads convention:operation messages from
 // the messages directory of a filesystem campfire at campfireDir.
+//
+// Resource limits (constants above) guard against malicious seed directories:
+//   - Rejects directories with more than MaxSeedFileCount files.
+//   - Skips individual files larger than MaxSeedFileSizeBytes.
+//   - Rejects the directory when aggregate bytes read exceed MaxSeedAggregateSizeBytes.
 func readFilesystemConventionMessages(campfireDir string) ([]ConventionMessage, error) {
 	messagesDir := filepath.Join(campfireDir, "messages")
 	entries, err := os.ReadDir(messagesDir)
@@ -361,20 +382,51 @@ func readFilesystemConventionMessages(campfireDir string) ([]ConventionMessage, 
 		return nil, fmt.Errorf("reading seed campfire messages at %s: %w", messagesDir, err)
 	}
 
+	// Count only .cbor files toward the file-count limit.
+	cborCount := 0
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".cbor" {
+			cborCount++
+		}
+	}
+	if cborCount > MaxSeedFileCount {
+		return nil, fmt.Errorf("seed directory %s contains %d files, exceeding the limit of %d", messagesDir, cborCount, MaxSeedFileCount)
+	}
+
 	type rawMessage struct {
 		Payload []byte   `cbor:"3,keyasint"`
 		Tags    []string `cbor:"4,keyasint"`
 	}
 
-	var result []ConventionMessage
+	var (
+		result        []ConventionMessage
+		aggregateSize int64
+	)
 	for _, e := range entries {
 		if filepath.Ext(e.Name()) != ".cbor" {
 			continue
 		}
+
+		// Per-file size check using DirEntry.Info() to avoid a stat syscall.
+		info, err := e.Info()
+		if err != nil {
+			continue // skip files we can't stat
+		}
+		if info.Size() > MaxSeedFileSizeBytes {
+			continue // skip oversized individual files
+		}
+
+		// Aggregate size cap — reject the whole directory if we'd exceed the limit.
+		if aggregateSize+info.Size() > MaxSeedAggregateSizeBytes {
+			return nil, fmt.Errorf("seed directory %s exceeds aggregate size limit of %d bytes", messagesDir, MaxSeedAggregateSizeBytes)
+		}
+
 		data, err := os.ReadFile(filepath.Join(messagesDir, e.Name()))
 		if err != nil {
 			continue // skip unreadable files
 		}
+		aggregateSize += int64(len(data))
+
 		var raw rawMessage
 		if err := cfencoding.Unmarshal(data, &raw); err != nil {
 			continue // skip unparseable files
