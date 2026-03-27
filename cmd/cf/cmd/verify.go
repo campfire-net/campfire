@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -271,9 +273,25 @@ func parseVerifyResponse(payload []byte, ch *provenance.Challenge) (*provenance.
 	}, true
 }
 
-// loadProvenanceStore returns a new in-memory attestation store.
-func loadProvenanceStore() *provenance.Store {
-	return provenance.NewStore(provenance.DefaultConfig())
+// loadProvenanceStore returns a file-backed attestation store persisted to
+// ~/.campfire/attestations.json (or CF_HOME/attestations.json).
+// Attestations survive process restarts — verified operator identities are
+// recalled by subsequent cf verify and cf provenance show invocations.
+// Falls back to an in-memory store if the file cannot be opened.
+func loadProvenanceStore() provenance.AttestationStore {
+	path := attestationStorePath()
+	fs, err := provenance.NewFileStore(path, provenance.DefaultConfig())
+	if err != nil {
+		// Degrade gracefully: return in-memory store so the command still works.
+		fmt.Fprintf(os.Stderr, "warning: could not open attestation store at %s: %v (attestations will not persist)\n", path, err)
+		return provenance.NewStore(provenance.DefaultConfig())
+	}
+	return fs
+}
+
+// attestationStorePath returns the path to the persistent attestation store.
+func attestationStorePath() string {
+	return filepath.Join(CFHome(), "attestations.json")
 }
 
 func init() {
