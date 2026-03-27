@@ -20,6 +20,10 @@ type RuntimeComputedFields struct {
 	RegisteredInDirectory bool        `json:"registered_in_directory"`
 	TrustChain            TrustStatus `json:"trust_chain"`
 	SanitizationApplied   []string    `json:"sanitization_applied"`
+	// OperatorProvenance is the sender's operator provenance level (0–3).
+	// See Operator Provenance Convention v0.1 §8.2 and Trust Convention v0.2 §6.3.
+	// Null/absent means provenance has not been computed (e.g. during bootstrap).
+	OperatorProvenance *int `json:"operator_provenance,omitempty"`
 }
 
 // CampfireAssertedFields holds campfire-reported data that is not independently verifiable.
@@ -41,6 +45,7 @@ type envelopeConfig struct {
 	memberCount           int
 	createdAge            string
 	maxStringLen          int
+	operatorProvenance    *int
 }
 
 // EnvelopeOption configures envelope building.
@@ -81,6 +86,15 @@ func WithMaxStringLen(maxLen int) EnvelopeOption {
 	}
 }
 
+// WithOperatorProvenance sets the operator_provenance level in runtime_computed.
+// The level is 0–3 per Operator Provenance Convention v0.1 §4.
+// Omit to leave the field absent (e.g. during bootstrap before provenance is computed).
+func WithOperatorProvenance(level int) EnvelopeOption {
+	return func(c *envelopeConfig) {
+		c.operatorProvenance = &level
+	}
+}
+
 // BuildEnvelope creates a safety envelope for campfire content per Trust Convention §6.
 func BuildEnvelope(campfireID string, chainStatus TrustStatus, content any, opts ...EnvelopeOption) *Envelope {
 	cfg := &envelopeConfig{
@@ -109,6 +123,7 @@ func BuildEnvelope(campfireID string, chainStatus TrustStatus, content any, opts
 			RegisteredInDirectory: cfg.registeredInDirectory,
 			TrustChain:            chainStatus,
 			SanitizationApplied:   steps,
+			OperatorProvenance:    cfg.operatorProvenance,
 		},
 		CampfireAsserted: CampfireAssertedFields{
 			MemberCount: cfg.memberCount,
