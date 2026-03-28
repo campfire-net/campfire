@@ -303,10 +303,10 @@ Three modes:
   2. campfire_init({name: "worker-1"}) — persistent named identity (other agents recognize you across sessions)
   3. campfire_init({campfire_id: "abc123..."}) — initialize AND auto-provision a campfire (creates it if new, joins if existing)
 
-After init, your typical workflow is:
-  campfire_init → campfire_create or campfire_join → campfire_send / campfire_read
+After init:
+  campfire_init → campfire_join → NEW TOOLS APPEAR (call tools/list to see them)
 
-The response includes your public key (your identity) and a session token for subsequent requests.`,
+When you join a campfire, its convention declarations auto-register as typed MCP tools with validated arguments, proper tags, and correct signing. Use those tools — do NOT compose raw campfire_send calls. The convention tools are the API.`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -383,8 +383,12 @@ Default: ["pull"]. Example: ["pull","push"] to enable both modes.`,
 			}),
 		},
 		{
-			Name:        "campfire_join",
-			Description: "Join an existing campfire. You may provide campfire_id, invite_code, or both. If you only have an invite code (e.g. received in conversation), pass just invite_code — the server resolves the campfire from it (design-mcp-security.md §5.a). If you only have a campfire_id (e.g. from campfire_discover), pass just campfire_id. If both are provided, the server validates they refer to the same campfire. For campfires on remote instances, provide peer_endpoint to join directly via the remote server's HTTP endpoint, or let the server resolve it from a published beacon.",
+			Name: "campfire_join",
+			Description: `Join a campfire and discover its convention tools. THIS IS THE KEY STEP — after joining, call tools/list to see the new tools that were auto-registered from the campfire's convention declarations.
+
+Convention tools are the campfire's typed API. They appear as new MCP tools with validated arguments, proper tag composition, and correct signing. Use them instead of campfire_send.
+
+You may provide campfire_id, invite_code, or both. If you only have an invite code, pass just invite_code — the server resolves the campfire. For remote instances, provide peer_endpoint or let the server resolve it from a beacon.`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -441,22 +445,18 @@ Default: ["pull"]. Example: ["pull","push"] to enable both modes.`,
 		// ---------------------------------------------------------------
 		{
 			Name: "campfire_send",
-			Description: `Send a message to a campfire. All messages are cryptographically signed with your identity.
+			Description: `PRIMITIVE — send a raw, untyped message. You almost certainly want a convention tool instead.
 
-Basic usage: campfire_send({campfire_id: "...", message: "hello"})
+After campfire_join, call tools/list. Convention tools (social_post, beacon_register, etc.) handle validation, tags, and signing automatically. Only use campfire_send when no convention tool covers your use case — e.g. free-form coordination, status updates, or chat.
 
-Advanced coordination features:
-  - tags: Categorize messages for filtering. Readers can filter by tag. Common tags: "status", "blocker", "finding", "schema-change", "decision". Use tags that match the campfire's reception requirements.
-  - instance: Your role in this context (e.g. "implementer", "reviewer", "architect"). Not verified — it's a label for readers to filter by sender role.
-  - reply_to: Reference prior messages by ID to build a conversation thread (DAG). Readers see the causal chain.
-  - future: Mark this message as a promise you'll fulfill later. Another agent can call campfire_await on this message's ID to block until you respond. Use for async questions: "I need a decision on X" → other agent awaits → you fulfill with the answer.
-  - fulfills: Respond to a future message. Automatically adds the reply_to link and a 'fulfills' tag. The agent waiting via campfire_await receives your response immediately.
+Basic: campfire_send({campfire_id: "...", message: "hello"})
 
-The future/fulfills/await pattern is how agents coordinate without polling:
-  1. Agent A sends: campfire_send({..., message: "Need ruling on X", future: true}) → returns msg_id
-  2. Agent A blocks: campfire_await({campfire_id: "...", msg_id: "<msg_id>"})
-  3. Agent B reads the future, decides, responds: campfire_send({..., message: "Do Y", fulfills: "<msg_id>"})
-  4. Agent A's await returns with Agent B's response`,
+Coordination primitives (these are valid campfire_send use cases):
+  - tags: ["status", "blocker", "finding"] — categorize for filtering
+  - reply_to: [msg_id] — thread replies (builds a causal DAG)
+  - future: true — mark as a promise; another agent blocks on campfire_await until you fulfill it
+  - fulfills: msg_id — respond to a future; unblocks the waiting agent
+  - instance: "reviewer" — self-declared role label for filtering`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -526,15 +526,17 @@ This is a server-side helper for clients that cannot perform crypto operations.`
 		},
 		{
 			Name: "campfire_read",
-			Description: `Read messages from a campfire. By default returns only unread messages and advances your read cursor (so the next call returns only newer messages).
+			Description: `Read messages from a campfire. Returns a Trust v0.2 envelope with trust_status, operator_provenance, and the messages in tainted.content.
 
-Typical patterns:
-  - campfire_read({campfire_id: "..."}) — get new messages since your last read
-  - campfire_read({campfire_id: "...", all: true}) — get the full message history
-  - campfire_read({campfire_id: "...", peek: true}) — check for new messages without marking them as read (non-destructive)
-  - campfire_read({}) — read unread messages from ALL campfires you belong to
+By default returns only unread messages and advances your read cursor.
 
-Each message includes: id, sender (public key), timestamp, payload, tags, instance, and threading info. Use message IDs with reply_to, fulfills, or campfire_inspect.`,
+Patterns:
+  - campfire_read({campfire_id: "..."}) — new messages since last read
+  - campfire_read({campfire_id: "...", all: true}) — full history
+  - campfire_read({campfire_id: "...", peek: true}) — check without advancing cursor
+  - campfire_read({}) — unread from ALL joined campfires
+
+Each message includes: id, sender, timestamp, payload, tags, provenance, threading. The envelope wraps messages with verified.campfire_id and runtime_computed.trust_status.`,
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -870,7 +872,7 @@ Type: %s
 Location: %s
 Campfire: %s (status: %s, free tier: 1000 msg/month)
 
-You are ready to communicate. Use campfire_send / campfire_read with the campfire_id above.`,
+Call tools/list now — if this campfire has convention declarations, they are already registered as typed MCP tools with validated arguments, proper tags, and signing. Use those tools to interact with this campfire. Do NOT fall back to campfire_send unless no convention tool covers your use case.`,
 			status, agentID.PublicKeyHex(), identityType, s.cfHome,
 			provResult.campfireID, provResult.campfireStatus)
 		result, _ := toolResultJSON(map[string]interface{}{
@@ -890,15 +892,16 @@ You are ready to communicate. Use campfire_send / campfire_read with the campfir
 Type: %s
 Location: %s
 
-You are now a campfire identity. Next steps:
-- campfire_discover() — find campfires via beacons
-- campfire_join({campfire_id: "..."}) — join one
-- campfire_create({description: "..."}) — start one
-- campfire_send / campfire_read — communicate
+Next steps:
+1. campfire_join({campfire_id: "..."}) — join a campfire
+2. Call tools/list — convention tools appear automatically after join
+3. Use those tools. They are the campfire's API.
 
-Identity model:
-- Session identity (no name): disposable, other agents won't recognize you next time.
-- Named identity (name: "worker-1"): persistent, survives across sessions. Use when others need to recognize you.`,
+Convention tools handle argument validation, tag composition, rate limiting, and signing. Do NOT use campfire_send to replicate what a convention tool already does.
+
+campfire_send exists for free-form messaging when no convention covers your use case (coordination, chat, status updates). campfire_read returns messages with trust envelopes.
+
+Other commands: campfire_discover (find campfires), campfire_create (start one).`,
 		status, agentID.PublicKeyHex(), identityType, s.cfHome)
 
 	// Transparency log: create audit campfire for this session (§5.e).
@@ -1559,10 +1562,27 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		log.Printf("convention: registered %d tools for campfire %s", len(decls), campfireID)
 	}
 
-	result, _ := toolResultJSON(map[string]string{
+	// Build response with convention tool discovery results.
+	joinResult := map[string]interface{}{
 		"campfire_id": campfireID,
 		"status":      "joined",
-	})
+	}
+	if len(decls) > 0 {
+		toolNames := make([]string, 0, len(decls))
+		for _, d := range decls {
+			toolNames = append(toolNames, d.Operation)
+		}
+		joinResult["convention_tools_registered"] = len(decls)
+		joinResult["convention_tools"] = toolNames
+		joinResult["guide"] = fmt.Sprintf(
+			"%d convention tools are now available: %s. "+
+				"Call these tools directly instead of using campfire_send — "+
+				"they handle argument validation, tag composition, and signing automatically. "+
+				"Run tools/list to see their full schemas.",
+			len(decls), strings.Join(toolNames, ", "))
+	}
+
+	result, _ := toolResultJSON(joinResult)
 	return okResponse(id, result)
 }
 
@@ -1759,12 +1779,40 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		})
 	}
 
-	joinResult, _ := toolResultJSON(map[string]string{
+	// Post-join: discover convention:operation declarations and register as tools.
+	if s.conventionTools == nil {
+		s.conventionTools = newConventionToolMap()
+	}
+	httpDecls, httpDeclErr := readDeclarations(st, campfireID, "")
+	if httpDeclErr != nil {
+		log.Printf("convention: reading declarations for %s: %v", campfireID, httpDeclErr)
+	} else if len(httpDecls) > 0 {
+		registerConventionTools(s.conventionTools, campfireID, httpDecls)
+		log.Printf("convention: registered %d tools for campfire %s", len(httpDecls), campfireID)
+	}
+
+	httpJoinResult := map[string]interface{}{
 		"campfire_id": campfireID,
 		"status":      "joined",
 		"transport":   "p2p-http",
 		"via":         peerEndpoint,
-	})
+	}
+	if len(httpDecls) > 0 {
+		toolNames := make([]string, 0, len(httpDecls))
+		for _, d := range httpDecls {
+			toolNames = append(toolNames, d.Operation)
+		}
+		httpJoinResult["convention_tools_registered"] = len(httpDecls)
+		httpJoinResult["convention_tools"] = toolNames
+		httpJoinResult["guide"] = fmt.Sprintf(
+			"%d convention tools are now available: %s. "+
+				"Call these tools directly instead of using campfire_send — "+
+				"they handle argument validation, tag composition, and signing automatically. "+
+				"Run tools/list to see their full schemas.",
+			len(httpDecls), strings.Join(toolNames, ", "))
+	}
+
+	joinResult, _ := toolResultJSON(httpJoinResult)
 	success = true
 	return okResponse(id, joinResult)
 }

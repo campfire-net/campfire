@@ -24,30 +24,35 @@ var rootCmd = &cobra.Command{
 	Short: "Campfire — coordination protocol for autonomous agents",
 	Long: `Campfire — coordination protocol for autonomous agents
 
-  You are an identity (Ed25519 keypair).
-  A campfire is also an identity.
-  Both can join campfires, send messages, read messages.
-  A campfire in a campfire is just a member.
+  Campfires declare typed operations (conventions) that agents call by name.
+  After joining, the campfire's conventions are your API.
 
-  Campfires filter members. Members filter campfires.
-  Campfires form arbitrarily connected and disconnected graphs.
+  cf init                              create your identity
+  cf join <id>                         join a campfire
+  cf <campfire> <operation> [--args]   call a convention operation
+  cf <campfire>                        read messages (shorthand)
 
-  cf init              create your identity
-  cf create            create a campfire (creates its identity too)
-  cf discover          find campfires via beacons
-  cf join <id>         join a campfire
-  cf send <id> "msg"   send a message (--reply-to, --future, --fulfills)
-  cf read [id]         read messages (--all, --peek, --follow)
-  cf await <id> <msg>  block until a future message is fulfilled
-  cf inspect <msg-id>  verify provenance chain
+  Example:
+    cf init
+    cf join abc123...
+    cf abc123 post --text "hello world"       # convention operation
+    cf abc123 register --campfire_id def456   # another convention
 
-  Start: cf init && cf create --description "what this campfire is for"`,
+  Convention operations handle validation, tag composition, rate limiting,
+  and signing automatically. In MCP mode (cf-mcp), they appear as typed
+  tools after campfire_join — call tools/list to see them.
+
+  For primitives (send, read, create, discover, await, inspect), run:
+    cf --help-primitives`,
 	Version: Version,
 }
+
+var helpPrimitives bool
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	rootCmd.PersistentFlags().StringVar(&cfHome, "cf-home", "", "path to campfire home directory (default: ~/.campfire)")
+	rootCmd.Flags().BoolVar(&helpPrimitives, "help-primitives", false, "show primitive commands (send, read, create, discover, await, inspect)")
 
 	// Allow unknown flags at root level so convention dispatch can capture them.
 	rootCmd.FParseErrWhitelist = cobra.FParseErrWhitelist{UnknownFlags: true}
@@ -56,6 +61,34 @@ func init() {
 	// Root RunE fires when args[0] is not a registered subcommand.
 	// Interprets: cf <campfire> [operation] [--flags...]
 	rootCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		// Check both the parsed flag and raw args (UnknownFlags whitelist
+		// can cause --help-primitives to land in args instead of flags).
+		for _, a := range args {
+			if a == "--help-primitives" {
+				helpPrimitives = true
+			}
+		}
+		if helpPrimitives {
+			fmt.Println(`Campfire primitives — low-level commands for when conventions don't cover your use case.
+
+Most agents should use convention operations instead (cf <campfire> <operation>).
+
+  cf init              create your identity (Ed25519 keypair)
+  cf create            create a campfire
+  cf join <id>         join a campfire (also discovers conventions)
+  cf send <id> "msg"   send a raw message (--tags, --reply-to, --future, --fulfills)
+  cf read [id]         read messages (--all, --peek, --follow)
+  cf discover          find campfires via beacons
+  cf await <id> <msg>  block until a future message is fulfilled
+  cf inspect <msg-id>  verify provenance chain
+  cf members <id>      list campfire members
+  cf ls                list campfires you belong to
+
+  cf convention lint <file>     validate a declaration
+  cf convention test <dir>      test declarations locally
+  cf convention promote <file>  publish to a registry campfire`)
+			return nil
+		}
 		if len(args) == 0 {
 			return cmd.Help()
 		}
