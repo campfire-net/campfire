@@ -45,10 +45,10 @@ type UsageEmitter struct {
 	mu     sync.Mutex
 	counts map[string]int64 // operatorAccountID → running message count
 
-	stopCh  chan struct{}
+	stopCh   chan struct{}
 	stopOnce sync.Once
-	doneCh  chan struct{}
-	started bool
+	doneCh   chan struct{}
+	started  bool
 
 	// OnError is called when Ingest fails for an operator. Optional.
 	OnError func(operatorAccountID string, err error)
@@ -131,12 +131,6 @@ func (e *UsageEmitter) nextTick() time.Duration {
 		return next.Sub(now)
 	}
 	return e.interval
-}
-
-// hourBucket returns the Unix timestamp of the top of the most recently
-// completed hour (i.e. the start of the current hour window).
-func (e *UsageEmitter) hourBucket() time.Time {
-	return e.now().Truncate(time.Hour)
 }
 
 // snapshot atomically drains and returns the current per-operator counts

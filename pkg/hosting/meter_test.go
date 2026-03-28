@@ -188,34 +188,9 @@ func TestEmit_TimestampIsTopOfHour(t *testing.T) {
 	}
 }
 
-func TestEmit_EmptySnapshotProducesNoEvents(t *testing.T) {
-	mock := &mockIngester{}
-	e := newTestEmitter(mock, 10*time.Millisecond, fixedNow(time.Now().UTC()))
-	e.emit(context.Background())
-	if len(mock.get()) != 0 {
-		t.Errorf("expected no events for empty snapshot")
-	}
-}
-
-func TestEmit_SnapshotResetsCounters(t *testing.T) {
-	mock := &mockIngester{}
-	e := newTestEmitter(mock, 10*time.Millisecond, fixedNow(time.Now().UTC()))
-	e.RecordMessage("cf1", "op1") //nolint:errcheck
-	e.emit(context.Background())
-	// Second emit should produce nothing.
-	e.emit(context.Background())
-	if len(mock.get()) != 1 {
-		t.Errorf("expected only 1 event total, got %d", len(mock.get()))
-	}
-}
-
-// TestEmit_HourBoundaryBucketConsistency verifies that the hour bucket is
-// captured atomically with the snapshot drain. Simulates a clock that
-// advances across an hour boundary between two calls.
 func TestEmit_HourBoundaryBucketConsistency(t *testing.T) {
-	// We record messages at 15:59 but the clock ticks to 16:00 mid-emit.
-	// Both the snapshot AND the bucket should be captured together so the
-	// idempotency key reflects the hour in which messages were counted.
+	// Verify that the hour bucket is captured atomically with the snapshot
+	// drain. Simulates a clock that advances across an hour boundary.
 	beforeBoundary := time.Date(2026, 3, 28, 15, 59, 59, 0, time.UTC)
 	afterBoundary := time.Date(2026, 3, 28, 16, 0, 0, 0, time.UTC)
 
@@ -238,13 +213,33 @@ func TestEmit_HourBoundaryBucketConsistency(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	// The bucket should match whichever single call snapshot() made to now().
 	// With the fix, now() is called exactly once inside snapshot(), so the
 	// bucket and the drain are always consistent.
 	gotBucket := events[0].Timestamp
 	wantKey := fmt.Sprintf("op1/%d", gotBucket.Unix())
 	if events[0].IdempotencyKey != wantKey {
 		t.Errorf("IdempotencyKey inconsistent with Timestamp: key=%q bucket=%v", events[0].IdempotencyKey, gotBucket)
+	}
+}
+
+func TestEmit_EmptySnapshotProducesNoEvents(t *testing.T) {
+	mock := &mockIngester{}
+	e := newTestEmitter(mock, 10*time.Millisecond, fixedNow(time.Now().UTC()))
+	e.emit(context.Background())
+	if len(mock.get()) != 0 {
+		t.Errorf("expected no events for empty snapshot")
+	}
+}
+
+func TestEmit_SnapshotResetsCounters(t *testing.T) {
+	mock := &mockIngester{}
+	e := newTestEmitter(mock, 10*time.Millisecond, fixedNow(time.Now().UTC()))
+	e.RecordMessage("cf1", "op1") //nolint:errcheck
+	e.emit(context.Background())
+	// Second emit should produce nothing.
+	e.emit(context.Background())
+	if len(mock.get()) != 1 {
+		t.Errorf("expected only 1 event total, got %d", len(mock.get()))
 	}
 }
 
@@ -256,21 +251,21 @@ func TestStop_EmitsFinalBatch(t *testing.T) {
 	e.RecordMessage("cf1", "op1") //nolint:errcheck
 
 	ctx := context.Background()
-	started := make(chan struct{})
+	startedCh := make(chan struct{})
 	go func() {
-		close(started)
+		close(startedCh)
 		e.Start(ctx)
 	}()
-	<-started
-	// Wait until Start() is blocked in the select by reading doneCh readiness.
-	// We use a short retry loop with runtime.Gosched() instead of time.Sleep.
-	// The goroutine enters the select almost immediately; yield a few times.
-	for i := 0; i < 100; i++ {
-		// A tiny sleep here is unavoidable: we need Start's goroutine to reach
-		// the select statement. We use the minimum viable pause.
-		time.Sleep(time.Microsecond)
+	<-startedCh
+	// Spin until Start() has set the started flag.
+	for i := 0; i < 1000; i++ {
+		e.mu.Lock()
+		s := e.started
+		e.mu.Unlock()
+		if s {
+			break
+		}
 	}
-
 	e.Stop()
 
 	events := mock.get()
@@ -290,7 +285,6 @@ func TestStop_DoubleCallDoesNotPanic(t *testing.T) {
 
 	ctx := context.Background()
 	go e.Start(ctx)
-	// Brief yield so Start reaches the select.
 	time.Sleep(time.Millisecond)
 
 	e.Stop()
