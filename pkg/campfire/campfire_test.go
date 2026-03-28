@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
+
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 )
 
 func TestNew(t *testing.T) {
@@ -175,6 +177,169 @@ func TestToCampfire(t *testing.T) {
 	cfReadOnly := readOnlyState.ToCampfire(nil)
 	if cfReadOnly.PrivateKey != nil {
 		t.Error("read-only state: PrivateKey should be nil")
+	}
+}
+
+// TestDeliveryModesCBORRoundTrip verifies that CampfireState.DeliveryModes
+// (CBOR field 9) survives a marshal/unmarshal round-trip intact.
+func TestDeliveryModesCBORRoundTrip(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	state := CampfireState{
+		PublicKey:  pub,
+		PrivateKey: priv,
+		JoinProtocol: "open",
+		ReceptionRequirements: []string{},
+		CreatedAt:  1234567890,
+		Threshold:  1,
+		DeliveryModes: []string{"pull", "push"},
+	}
+
+	data, err := cfencoding.Marshal(state)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got CampfireState
+	if err := cfencoding.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if len(got.DeliveryModes) != 2 {
+		t.Fatalf("DeliveryModes len = %d, want 2", len(got.DeliveryModes))
+	}
+	if got.DeliveryModes[0] != "pull" || got.DeliveryModes[1] != "push" {
+		t.Errorf("DeliveryModes = %v, want [pull push]", got.DeliveryModes)
+	}
+}
+
+// TestDeliveryModesCBORBackwardCompat verifies that an old CampfireState CBOR
+// blob (without field 9) unmarshals with a nil/empty DeliveryModes, and that
+// EffectiveDeliveryModes returns ["pull"] for backward compatibility.
+func TestDeliveryModesCBORBackwardCompat(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	// Old state without DeliveryModes.
+	type oldCampfireState struct {
+		PublicKey             []byte   `cbor:"1,keyasint"`
+		PrivateKey            []byte   `cbor:"2,keyasint"`
+		JoinProtocol          string   `cbor:"3,keyasint"`
+		ReceptionRequirements []string `cbor:"4,keyasint"`
+		CreatedAt             int64    `cbor:"5,keyasint"`
+		Threshold             uint     `cbor:"6,keyasint"`
+		Encrypted             bool     `cbor:"7,keyasint,omitempty"`
+		KeyEpoch              uint64   `cbor:"8,keyasint,omitempty"`
+		// No field 9 (DeliveryModes)
+	}
+
+	old := oldCampfireState{
+		PublicKey:             pub,
+		PrivateKey:            priv,
+		JoinProtocol:          "open",
+		ReceptionRequirements: []string{},
+		CreatedAt:             1234567890,
+		Threshold:             1,
+	}
+
+	data, err := cfencoding.Marshal(old)
+	if err != nil {
+		t.Fatalf("Marshal old state: %v", err)
+	}
+
+	var got CampfireState
+	if err := cfencoding.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal into new CampfireState: %v", err)
+	}
+
+	// DeliveryModes should be nil or empty — backward compat.
+	if len(got.DeliveryModes) != 0 {
+		t.Errorf("DeliveryModes = %v, want nil/empty for old CBOR", got.DeliveryModes)
+	}
+
+	// EffectiveDeliveryModes should return ["pull"] as default.
+	effective := EffectiveDeliveryModes(got.DeliveryModes)
+	if len(effective) != 1 || effective[0] != DeliveryModePull {
+		t.Errorf("EffectiveDeliveryModes = %v, want [pull]", effective)
+	}
+}
+
+// TestEffectiveDeliveryModes verifies all cases of the EffectiveDeliveryModes helper.
+func TestEffectiveDeliveryModes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []string
+		want  []string
+	}{
+		{"nil input", nil, []string{"pull"}},
+		{"empty input", []string{}, []string{"pull"}},
+		{"pull only", []string{"pull"}, []string{"pull"}},
+		{"push only", []string{"push"}, []string{"push"}},
+		{"both modes", []string{"pull", "push"}, []string{"pull", "push"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EffectiveDeliveryModes(tc.input)
+			if len(got) != len(tc.want) {
+				t.Fatalf("EffectiveDeliveryModes(%v) = %v, want %v", tc.input, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("EffectiveDeliveryModes[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestValidDeliveryMode verifies ValidDeliveryMode accepts only pull/push.
+func TestValidDeliveryMode(t *testing.T) {
+	tests := []struct {
+		mode  string
+		valid bool
+	}{
+		{"pull", true},
+		{"push", true},
+		{"", false},
+		{"webhook", false},
+		{"Poll", false}, // case-sensitive
+	}
+
+	for _, tc := range tests {
+		got := ValidDeliveryMode(tc.mode)
+		if got != tc.valid {
+			t.Errorf("ValidDeliveryMode(%q) = %v, want %v", tc.mode, got, tc.valid)
+		}
+	}
+}
+
+// TestStateIncludesDeliveryModes verifies Campfire.State() propagates DeliveryModes.
+func TestStateIncludesDeliveryModes(t *testing.T) {
+	cf, _ := New("open", nil, 1)
+	cf.DeliveryModes = []string{"pull", "push"}
+
+	state := cf.State()
+	if len(state.DeliveryModes) != 2 {
+		t.Fatalf("State().DeliveryModes len = %d, want 2", len(state.DeliveryModes))
+	}
+	if state.DeliveryModes[0] != "pull" || state.DeliveryModes[1] != "push" {
+		t.Errorf("State().DeliveryModes = %v, want [pull push]", state.DeliveryModes)
+	}
+}
+
+// TestToCampfireDeliveryModes verifies CampfireState.ToCampfire propagates DeliveryModes.
+func TestToCampfireDeliveryModes(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	state := &CampfireState{
+		PublicKey:     pub,
+		PrivateKey:    priv,
+		JoinProtocol:  "open",
+		CreatedAt:     1234567890,
+		Threshold:     1,
+		DeliveryModes: []string{"push"},
+	}
+
+	cf := state.ToCampfire(nil)
+	if len(cf.DeliveryModes) != 1 || cf.DeliveryModes[0] != "push" {
+		t.Errorf("ToCampfire().DeliveryModes = %v, want [push]", cf.DeliveryModes)
 	}
 }
 

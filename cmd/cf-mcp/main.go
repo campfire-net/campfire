@@ -371,6 +371,13 @@ Use 'encrypted: true' to create an E2E encrypted campfire. When encrypted, the h
 						"type":        "boolean",
 						"description": "Enable E2E payload encryption (spec-encryption.md v0.2). When true, the hosted service joins as a blind relay and cannot decrypt message payloads. Requires self-hosted members for full confidentiality (design-mcp-security.md §5.c). Default: false.",
 					},
+					"delivery_modes": map[string]interface{}{
+						"type":  "array",
+						"items": map[string]interface{}{"type": "string", "enum": []string{"pull", "push"}},
+						"description": `Delivery modes for this campfire. Controls how the server delivers messages to members.
+Valid values: "pull" (members poll for messages, default), "push" (server pushes to members).
+Default: ["pull"]. Example: ["pull","push"] to enable both modes.`,
+					},
 				},
 				"required": []string{},
 			}),
@@ -1079,6 +1086,18 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	require := getStringSlice(params, "require")
 	description := getStr(params, "description")
 	encrypted := getBool(params, "encrypted")
+	deliveryModes := getStringSlice(params, "delivery_modes")
+
+	// Validate delivery_modes: only "pull" and "push" are valid.
+	for _, mode := range deliveryModes {
+		if !campfire.ValidDeliveryMode(mode) {
+			return errResponse(id, -32602, fmt.Sprintf("invalid delivery_mode %q: must be \"pull\" or \"push\"", mode))
+		}
+	}
+	// Default to ["pull"] when not specified.
+	if len(deliveryModes) == 0 {
+		deliveryModes = []string{campfire.DeliveryModePull}
+	}
 
 	agentID, err := identity.Load(s.identityPath())
 	if err != nil {
@@ -1091,6 +1110,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	}
 
 	cf.Encrypted = encrypted
+	cf.DeliveryModes = deliveryModes
 
 	// When the campfire is encrypted, the hosted service joins as a blind relay
 	// (spec-encryption.md v0.2 §2.5, design-mcp-security.md §5.c). The service
@@ -1188,6 +1208,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		"campfire_id":            cf.PublicKeyHex(),
 		"join_protocol":          cf.JoinProtocol,
 		"reception_requirements": cf.ReceptionRequirements,
+		"delivery_modes":         campfire.EffectiveDeliveryModes(cf.DeliveryModes),
 		"transport_dir":          transport.CampfireDir(cf.PublicKeyHex()),
 		"invite_code":            inviteCode,
 	})
@@ -1307,6 +1328,7 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		"campfire_id":            cf.PublicKeyHex(),
 		"join_protocol":          cf.JoinProtocol,
 		"reception_requirements": cf.ReceptionRequirements,
+		"delivery_modes":         campfire.EffectiveDeliveryModes(cf.DeliveryModes),
 		"transport":              "p2p-http",
 		"endpoint":               s.externalAddr,
 		"invite_code":            inviteCode,
