@@ -888,7 +888,7 @@ a:hover { color: var(--color-accent-secondary-hover); }
 /* ── Protocol comparison section ── */
 .compare-section {
   padding: var(--space-section) 0;
-  background: var(--color-bg);
+  background: var(--color-surface);
   border-top: 1px solid var(--color-border);
 }
 
@@ -1290,7 +1290,7 @@ a:hover { color: var(--color-accent-secondary-hover); }
 /* ── Get Started dual-path section ── */
 .getstarted-section {
   padding: var(--space-section) 0;
-  background: var(--color-surface);
+  background: var(--color-bg);
   border-top: 1px solid var(--color-border);
 }
 
@@ -2383,5 +2383,44 @@ a:hover { color: var(--color-accent-secondary-hover); }
 
 @media (max-width: 768px) {
   .convention-heading { font-size: var(--ds-text-base); }
+}
+
+/* ── App Showcase Tabs ── */
+.app-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--ds-space-lg);
+  max-width: var(--ds-doc-width);
+}
+
+.app-tab {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: none;
+  border: none;
+  padding: var(--ds-space-sm) var(--ds-space-md);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.app-tab:hover { color: var(--color-text); }
+.app-tab.active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
+.app-panel { display: none; }
+.app-panel.active { display: block; }
+
+.app-meta {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--ds-space-md);
+  line-height: 1.6;
+  max-width: var(--ds-doc-width);
 }
 
