@@ -559,6 +559,72 @@ func TestExecute_SelfPriorAntecedent(t *testing.T) {
 	}
 }
 
+// zeroOrOneSelfPriorDecl returns a declaration with antecedents=zero_or_one(self_prior).
+// Models the rate-publish operation: genesis has no antecedent, subsequent ones do.
+func zeroOrOneSelfPriorDecl() *Declaration {
+	payload := mustJSON(map[string]any{
+		"convention":  "dontguess-exchange",
+		"version":     "0.1",
+		"operation":   "scrip:rate-publish",
+		"description": "Publish x402-to-scrip rate",
+		"antecedents": "zero_or_one(self_prior)",
+		"produces_tags": []any{
+			map[string]any{"tag": "dontguess:scrip-rate", "cardinality": "exactly_one"},
+		},
+		"signing": "campfire_key",
+	})
+	key := "campfire-key-xyz"
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, key, key)
+	if err != nil {
+		panic("zeroOrOneSelfPriorDecl: " + err.Error())
+	}
+	return decl
+}
+
+// TestExecute_ZeroOrOneSelfPrior_Genesis verifies that the first rate-publish
+// (no prior message on campfire) sends with no antecedents — the genesis case.
+func TestExecute_ZeroOrOneSelfPrior_Genesis(t *testing.T) {
+	// No prior messages on campfire.
+	tr := &mockTransport{readResults: nil}
+	ex := NewExecutor(tr, testSenderKey)
+	decl := zeroOrOneSelfPriorDecl()
+
+	if err := ex.Execute(context.Background(), decl, "cf-rate", map[string]any{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tr.sentMessages) != 1 {
+		t.Fatalf("expected 1 sent message, got %d", len(tr.sentMessages))
+	}
+	msg := tr.sentMessages[0]
+	if len(msg.antecedents) != 0 {
+		t.Errorf("genesis rate-publish: expected no antecedents; got %v", msg.antecedents)
+	}
+}
+
+// TestExecute_ZeroOrOneSelfPrior_Subsequent verifies that a subsequent rate-publish
+// (prior message exists) sends with the prior message ID as antecedent.
+func TestExecute_ZeroOrOneSelfPrior_Subsequent(t *testing.T) {
+	// One prior rate-publish from self already on campfire.
+	tr := &mockTransport{
+		readResults: []MessageRecord{
+			{ID: "rate-msg-001", Sender: testSenderKey, Tags: []string{"dontguess-exchange:scrip:rate-publish"}},
+		},
+	}
+	ex := NewExecutor(tr, testSenderKey)
+	decl := zeroOrOneSelfPriorDecl()
+
+	if err := ex.Execute(context.Background(), decl, "cf-rate", map[string]any{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tr.sentMessages) != 1 {
+		t.Fatalf("expected 1 sent message, got %d", len(tr.sentMessages))
+	}
+	msg := tr.sentMessages[0]
+	if len(msg.antecedents) == 0 || msg.antecedents[0] != "rate-msg-001" {
+		t.Errorf("subsequent rate-publish: expected antecedent 'rate-msg-001'; got %v", msg.antecedents)
+	}
+}
+
 // intRangeDecl builds a Declaration with a single integer arg with the given Min/Max.
 func intRangeDecl(min, max int) *Declaration {
 	return &Declaration{

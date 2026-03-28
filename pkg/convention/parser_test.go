@@ -230,6 +230,33 @@ func TestParse_InvalidAntecedentRule(t *testing.T) {
 	}
 }
 
+func TestParse_ZeroOrOneSelfPrior(t *testing.T) {
+	// zero_or_one(self_prior) is a valid antecedent rule — genesis message has no
+	// prior, subsequent messages reference the prior via self_prior chain.
+	payload := mustJSON(map[string]any{
+		"convention": "dontguess-exchange",
+		"version":    "0.1",
+		"operation":  "scrip:rate-publish",
+		"signing":    "campfire_key",
+		"produces_tags": []any{
+			map[string]any{"tag": "dontguess:scrip-rate", "cardinality": "exactly_one"},
+		},
+		"antecedents": "zero_or_one(self_prior)",
+	})
+	// sender == campfire key (campfire_key signing requires this)
+	key := "campfire-key-abc"
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, key, key)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid, got warnings: %v", result.Warnings)
+	}
+	if decl.Antecedents != "zero_or_one(self_prior)" {
+		t.Errorf("antecedents = %q, want %q", decl.Antecedents, "zero_or_one(self_prior)")
+	}
+}
+
 func TestParse_UnsafePattern_TooLong(t *testing.T) {
 	longPattern := "[a-z]" + string(make([]byte, 65)) // >64 chars
 	payload := mustJSON(map[string]any{

@@ -144,6 +144,7 @@ var validCardinalities = map[string]bool{
 
 var validAntecedents = map[string]bool{
 	"none": true, "exactly_one(target)": true, "exactly_one(self_prior)": true,
+	"zero_or_one(self_prior)": true,
 }
 
 var validPerValues = map[string]bool{

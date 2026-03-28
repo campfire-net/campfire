@@ -291,6 +291,21 @@ func (e *Executor) resolveAntecedents(ctx context.Context, decl *Declaration, ca
 			}
 		}
 		return nil, nil
+	case "zero_or_one(self_prior)":
+		// Like exactly_one(self_prior) but genesis is allowed: if no prior exists,
+		// send with no antecedent (nil). Subsequent messages must reference the prior.
+		opTag := decl.Convention + ":" + decl.Operation
+		msgs, err := e.transport.ReadMessages(ctx, campfireID, []string{opTag})
+		if err != nil {
+			return nil, fmt.Errorf("read messages for self_prior: %w", err)
+		}
+		// Find most recent message from self; nil antecedents for genesis.
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Sender == e.selfKey {
+				return []string{msgs[i].ID}, nil
+			}
+		}
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unrecognized antecedent rule: %q", decl.Antecedents)
 	}
