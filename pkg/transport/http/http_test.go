@@ -107,6 +107,7 @@ func newTestMessage(t *testing.T, id *identity.Identity) *message.Message {
 //	500 - 519: beacon_readvert_test.go    (used: 500-506)
 //	520 - 539: pathvector_e2e_test.go     (used: 520-531)
 //	540 - 559: join_delivery_test.go      (used: 540-543)
+//	560 - 579: delivery_preference_test.go (used: 560-563)
 func portBase() int {
 	return 19000 + (os.Getpid() % 500)
 }
