@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
@@ -56,6 +60,10 @@ type JoinResponse struct {
 	ThresholdShareData []byte `json:"threshold_share_data,omitempty"`
 	// JoinerParticipantID is the FROST participant ID assigned to the joiner (threshold>1).
 	JoinerParticipantID uint32 `json:"joiner_participant_id,omitempty"`
+	// DeliveryModes declares the campfire's supported delivery modes.
+	// Populated from the campfire's on-disk state; defaults to ["pull"] when absent.
+	// Clients use this to determine whether push delivery (endpoint registration) is supported.
+	DeliveryModes []string `json:"delivery_modes,omitempty"`
 }
 
 // handleJoin processes a join request from a new member.
@@ -150,12 +158,64 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 		}
 	}
 
+	// Read the CampfireState to determine DeliveryModes for the join response.
+	// Two sources, tried in order:
+	//   1. On-disk state file (filesystem-mode campfires): read from membership.TransportDir.
+	//   2. DeliveryModesProvider (HTTP-mode campfires): transport callback set by the host.
+	// Nil/empty DeliveryModes defaults to ["pull"] via EffectiveDeliveryModes (backward
+	// compat: pre-field-9 campfires and campfires without a state file are pull-only).
+	var responseModes []string
+	if safeDir, dirErr := sanitizeTransportDir(membership.TransportDir); dirErr == nil {
+		stateFile := filepath.Join(safeDir, campfireID+".cbor")
+		if stateData, readErr := os.ReadFile(stateFile); readErr == nil {
+			var cfState campfire.CampfireState
+			if decErr := cfencoding.Unmarshal(stateData, &cfState); decErr == nil {
+				responseModes = campfire.EffectiveDeliveryModes(cfState.DeliveryModes)
+			}
+		}
+	}
+	if len(responseModes) == 0 && h.transport != nil {
+		// State file not available (HTTP-mode or missing file): try the transport's
+		// delivery modes provider if one was registered.
+		h.transport.mu.RLock()
+		dmp := h.transport.deliveryModesProvider
+		h.transport.mu.RUnlock()
+		if dmp != nil {
+			if modes := dmp(campfireID); len(modes) > 0 {
+				responseModes = modes
+			}
+		}
+	}
+	if len(responseModes) == 0 {
+		// Final fallback: no state file, no provider — default to pull-only.
+		responseModes = campfire.EffectiveDeliveryModes(nil)
+	}
+
+	// Validate delivery mode: if the joiner provides an endpoint, the campfire
+	// must support push delivery.
+	if req.JoinerEndpoint != "" {
+		supportsPush := false
+		for _, m := range responseModes {
+			if m == campfire.DeliveryModePush {
+				supportsPush = true
+				break
+			}
+		}
+		if !supportsPush {
+			log.Printf("handleJoin: campfire %s: joiner %s provided endpoint but campfire does not support push delivery (modes=%v)",
+				campfireID, senderHex[:min(8, len(senderHex))], responseModes)
+			http.Error(w, "campfire does not support push delivery", http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Build response.
 	resp := JoinResponse{
 		CampfirePubKey:        fmt.Sprintf("%x", pubKey),
 		JoinProtocol:          membership.JoinProtocol,
 		ReceptionRequirements: []string{},
 		Threshold:             membership.Threshold,
+		DeliveryModes:         responseModes,
 	}
 
 	// Derive shared secret for key material encryption.

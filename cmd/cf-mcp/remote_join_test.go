@@ -85,7 +85,8 @@ func TestRemoteJoin_PeerEndpoint(t *testing.T) {
 	tokenA := extractTokenFromInit(t, initRespA)
 
 	createResp := mcpCall(t, tsURL, tokenA, "campfire_create", map[string]interface{}{
-		"description": "remote join test",
+		"description":    "remote join test",
+		"delivery_modes": []string{"pull", "push"},
 	})
 	createText := extractResultText(t, createResp)
 	var createResult struct {
@@ -286,7 +287,8 @@ func TestRemoteJoin_SendAndReadAfterRemoteJoin(t *testing.T) {
 	tokenA := extractTokenFromInit(t, initRespA)
 
 	createResp := mcpCall(t, tsURL, tokenA, "campfire_create", map[string]interface{}{
-		"description": "send-read integration test",
+		"description":    "send-read integration test",
+		"delivery_modes": []string{"pull", "push"},
 	})
 	createText := extractResultText(t, createResp)
 	var createResult struct {

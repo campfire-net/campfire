@@ -1619,6 +1619,22 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		return errResponse(id, -32000, fmt.Sprintf("joining remote campfire via %s: %v", peerEndpoint, err))
 	}
 
+	// If we advertised an endpoint but the campfire doesn't support push delivery,
+	// warn and clear the endpoint so we don't register for push. The server-side
+	// join handler should have rejected the request already; this is defense-in-depth.
+	supportsPush := false
+	for _, m := range result.DeliveryModes {
+		if m == campfire.DeliveryModePush {
+			supportsPush = true
+			break
+		}
+	}
+	if myEndpoint != "" && !supportsPush {
+		log.Printf("handleRemoteJoin: campfire %s does not support push delivery (modes=%v); endpoint not registered",
+			campfireID[:min(8, len(campfireID))], result.DeliveryModes)
+		myEndpoint = ""
+	}
+
 	// Serialize concurrent joins for the same campfireID to prevent a TOCTOU
 	// cleanup race: without this lock, two concurrent calls can both observe
 	// dirExistedBefore=false, then the failing call's defer runs RemoveAll on
@@ -1656,6 +1672,7 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		JoinProtocol:          result.JoinProtocol,
 		ReceptionRequirements: result.ReceptionRequirements,
 		Threshold:             result.Threshold,
+		DeliveryModes:         result.DeliveryModes,
 	}
 	stateData, marshalErr := cfencoding.Marshal(cfState)
 	if marshalErr != nil {

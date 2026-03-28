@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
@@ -173,6 +174,9 @@ type JoinResult struct {
 	ThresholdShareData []byte
 	// MyParticipantID is the FROST participant ID assigned to this joiner (threshold>1).
 	MyParticipantID uint32
+	// DeliveryModes is the campfire's supported delivery modes from the join response.
+	// Defaults to ["pull"] when not set (backward compat: pre-DeliveryModes servers).
+	DeliveryModes []string
 }
 
 // Join sends a join request to the given peer endpoint and returns the
@@ -225,6 +229,7 @@ func Join(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint str
 		Threshold:             joinResp.Threshold,
 		Peers:                 joinResp.Peers,
 		MyParticipantID:       joinResp.JoinerParticipantID,
+		DeliveryModes:         campfire.EffectiveDeliveryModes(joinResp.DeliveryModes),
 	}
 
 	// Decode campfire public key.

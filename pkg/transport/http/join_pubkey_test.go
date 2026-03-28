@@ -13,9 +13,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
@@ -23,6 +27,9 @@ import (
 
 // setupJoinServer starts a transport with a key provider and returns the
 // campfire ID, server endpoint, store, and cleanup func.
+// The campfire state is written with DeliveryModes=["pull","push"] so that
+// joiners providing an endpoint are accepted (the delivery mode validation
+// added in campfire-agent-9er requires push support for endpoint joins).
 func setupJoinServer(t *testing.T, portOffset int) (campfireID, ep string, sHost store.Store) {
 	t.Helper()
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
@@ -37,9 +44,26 @@ func setupJoinServer(t *testing.T, portOffset int) (campfireID, ep string, sHost
 	}
 	sHost = tempStore(t)
 
+	// Write CampfireState with push+pull so endpoint joins are accepted.
+	stateDir := t.TempDir()
+	state := campfire.CampfireState{
+		PublicKey:    cfPub,
+		PrivateKey:   cfPriv,
+		JoinProtocol: "open",
+		Threshold:    1,
+		DeliveryModes: []string{campfire.DeliveryModePull, campfire.DeliveryModePush},
+	}
+	stateData, encErr := cfencoding.Marshal(state)
+	if encErr != nil {
+		t.Fatalf("encoding campfire state: %v", encErr)
+	}
+	if writeErr := os.WriteFile(filepath.Join(stateDir, campfireID+".cbor"), stateData, 0600); writeErr != nil {
+		t.Fatalf("writing campfire state: %v", writeErr)
+	}
+
 	if err := sHost.AddMembership(store.Membership{
 		CampfireID:   campfireID,
-		TransportDir: t.TempDir(),
+		TransportDir: stateDir,
 		JoinProtocol: "open",
 		Role:         "creator",
 		JoinedAt:     time.Now().UnixNano(),

@@ -71,6 +71,12 @@ type Transport struct {
 	// keyProvider is called by the join handler to retrieve campfire key material.
 	keyProvider CampfireKeyProvider
 
+	// deliveryModesProvider is called by the join handler to get effective delivery
+	// modes for a campfire when the membership's TransportDir is not a filesystem
+	// path (e.g., HTTP-mode campfires). Optional: if nil, the join handler falls
+	// back to reading the state file or defaulting to ["pull"].
+	deliveryModesProvider CampfireDeliveryModesProvider
+
 	// thresholdShareProvider returns the local FROST DKG share for a campfire.
 	// Called by the sign handler to initialize a signing session.
 	thresholdShareProvider ThresholdShareProvider
@@ -174,6 +180,15 @@ func (t *Transport) SetKeyProvider(kp CampfireKeyProvider) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.keyProvider = kp
+}
+
+// SetDeliveryModesProvider sets the delivery modes provider for the join handler.
+// Used in HTTP-mode deployments where membership.TransportDir is a URL rather than
+// a filesystem path, so the join handler cannot read the campfire state file directly.
+func (t *Transport) SetDeliveryModesProvider(p CampfireDeliveryModesProvider) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.deliveryModesProvider = p
 }
 
 // SelfInfo returns this node's agent public key hex and HTTP endpoint.
