@@ -11,6 +11,11 @@ package fs
 //   - atomicWriteCBOR: temp-file-then-rename produces consistent on-disk state
 //   - ListMessages: returns nil (not error) when the messages dir is absent
 //   - ListMessages: skips non-.cbor files without erroring
+//   - AddPushSubscriber / RemovePushSubscriber / ListPushSubscribers: push subscriber management
+//   - WriteMessage: delivers message to all push subscribers' inbox dirs
+//   - WriteMessage: remove subscriber stops delivery
+//   - WriteMessage: missing inbox dir is non-fatal, other subscribers still receive
+//   - copyFile: deduplicates by filename (O_EXCL — second write is a no-op)
 
 import (
 	"crypto/ed25519"
@@ -767,5 +772,284 @@ func TestAtomicWriteCBOR_NoPartialFile(t *testing.T) {
 		if e.Name() != "test.cbor" {
 			t.Errorf("unexpected leftover file: %s", e.Name())
 		}
+	}
+}
+
+// --- Push subscriber tests ---
+
+// TestPushSubscriber_BasicDelivery verifies that a message written to a campfire
+// is copied to a registered subscriber's inbox directory.
+func TestPushSubscriber_BasicDelivery(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	inboxDir := t.TempDir()
+	id := newTestIdentity(t)
+
+	if err := tr.AddPushSubscriber(cf.PublicKeyHex(), pubKey(id), inboxDir); err != nil {
+		t.Fatalf("AddPushSubscriber() error: %v", err)
+	}
+
+	msg := newTestMessage(t)
+	if err := tr.WriteMessage(cf.PublicKeyHex(), msg); err != nil {
+		t.Fatalf("WriteMessage() error: %v", err)
+	}
+
+	// Inbox must contain exactly one .cbor file.
+	entries, err := os.ReadDir(inboxDir)
+	if err != nil {
+		t.Fatalf("ReadDir(inboxDir) error: %v", err)
+	}
+	var cborFiles []string
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".cbor" {
+			cborFiles = append(cborFiles, e.Name())
+		}
+	}
+	if len(cborFiles) != 1 {
+		t.Fatalf("inbox has %d .cbor files, want 1", len(cborFiles))
+	}
+
+	// The delivered file must be non-empty (CBOR bytes, verbatim copy).
+	info, err := os.Stat(filepath.Join(inboxDir, cborFiles[0]))
+	if err != nil {
+		t.Fatalf("Stat delivered file: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Error("delivered file is empty")
+	}
+}
+
+// TestPushSubscriber_RemoveStopsDelivery verifies that removing a subscriber
+// prevents further deliveries.
+func TestPushSubscriber_RemoveStopsDelivery(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	inboxDir := t.TempDir()
+	id := newTestIdentity(t)
+
+	if err := tr.AddPushSubscriber(cf.PublicKeyHex(), pubKey(id), inboxDir); err != nil {
+		t.Fatalf("AddPushSubscriber() error: %v", err)
+	}
+
+	// First message is delivered.
+	msg1 := newTestMessage(t)
+	if err := tr.WriteMessage(cf.PublicKeyHex(), msg1); err != nil {
+		t.Fatalf("WriteMessage() msg1 error: %v", err)
+	}
+
+	// Remove subscriber.
+	if err := tr.RemovePushSubscriber(cf.PublicKeyHex(), pubKey(id)); err != nil {
+		t.Fatalf("RemovePushSubscriber() error: %v", err)
+	}
+
+	// Second message must NOT be delivered.
+	msg2 := newTestMessage(t)
+	if err := tr.WriteMessage(cf.PublicKeyHex(), msg2); err != nil {
+		t.Fatalf("WriteMessage() msg2 error: %v", err)
+	}
+
+	entries, _ := os.ReadDir(inboxDir)
+	var cborFiles []string
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".cbor" {
+			cborFiles = append(cborFiles, e.Name())
+		}
+	}
+	if len(cborFiles) != 1 {
+		t.Errorf("inbox has %d .cbor files after remove, want 1 (only pre-remove message)", len(cborFiles))
+	}
+}
+
+// TestPushSubscriber_MultipleSubscribers verifies that all registered subscribers
+// receive the message.
+func TestPushSubscriber_MultipleSubscribers(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	inboxA := t.TempDir()
+	inboxB := t.TempDir()
+	inboxC := t.TempDir()
+
+	idA := newTestIdentity(t)
+	idB := newTestIdentity(t)
+	idC := newTestIdentity(t)
+
+	for _, tc := range []struct {
+		id    *identity.Identity
+		inbox string
+	}{
+		{idA, inboxA},
+		{idB, inboxB},
+		{idC, inboxC},
+	} {
+		if err := tr.AddPushSubscriber(cf.PublicKeyHex(), pubKey(tc.id), tc.inbox); err != nil {
+			t.Fatalf("AddPushSubscriber() error: %v", err)
+		}
+	}
+
+	msg := newTestMessage(t)
+	if err := tr.WriteMessage(cf.PublicKeyHex(), msg); err != nil {
+		t.Fatalf("WriteMessage() error: %v", err)
+	}
+
+	for _, inbox := range []string{inboxA, inboxB, inboxC} {
+		entries, err := os.ReadDir(inbox)
+		if err != nil {
+			t.Fatalf("ReadDir(%s) error: %v", inbox, err)
+		}
+		var cborFiles int
+		for _, e := range entries {
+			if filepath.Ext(e.Name()) == ".cbor" {
+				cborFiles++
+			}
+		}
+		if cborFiles != 1 {
+			t.Errorf("inbox %s has %d .cbor files, want 1", inbox, cborFiles)
+		}
+	}
+}
+
+// TestPushSubscriber_MissingInboxDir verifies that if a subscriber's inbox dir
+// does not exist, delivery fails gracefully — no crash, other subscribers still
+// receive the message.
+func TestPushSubscriber_MissingInboxDir(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	// Subscriber with a nonexistent inbox dir.
+	idBad := newTestIdentity(t)
+	missingDir := filepath.Join(t.TempDir(), "does-not-exist", "inbox")
+	// Do NOT create missingDir — that's the point of this test.
+
+	// Subscriber with a valid inbox dir.
+	idGood := newTestIdentity(t)
+	goodInbox := t.TempDir()
+
+	if err := tr.AddPushSubscriber(cf.PublicKeyHex(), pubKey(idBad), missingDir); err != nil {
+		t.Fatalf("AddPushSubscriber(bad) error: %v", err)
+	}
+	if err := tr.AddPushSubscriber(cf.PublicKeyHex(), pubKey(idGood), goodInbox); err != nil {
+		t.Fatalf("AddPushSubscriber(good) error: %v", err)
+	}
+
+	msg := newTestMessage(t)
+	// Must not crash or return an error — missing inbox is non-fatal.
+	if err := tr.WriteMessage(cf.PublicKeyHex(), msg); err != nil {
+		t.Fatalf("WriteMessage() returned error on missing inbox: %v", err)
+	}
+
+	// The good subscriber still received the message.
+	entries, err := os.ReadDir(goodInbox)
+	if err != nil {
+		t.Fatalf("ReadDir(goodInbox) error: %v", err)
+	}
+	var cborFiles int
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".cbor" {
+			cborFiles++
+		}
+	}
+	if cborFiles != 1 {
+		t.Errorf("good inbox has %d .cbor files, want 1", cborFiles)
+	}
+}
+
+// TestPushSubscriber_ListPushSubscribers verifies round-trip list of subscribers.
+func TestPushSubscriber_ListPushSubscribers(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	// No subscribers yet.
+	subs, err := tr.ListPushSubscribers(cf.PublicKeyHex())
+	if err != nil {
+		t.Fatalf("ListPushSubscribers() error: %v", err)
+	}
+	if len(subs) != 0 {
+		t.Errorf("expected 0 subscribers, got %d", len(subs))
+	}
+
+	idA := newTestIdentity(t)
+	idB := newTestIdentity(t)
+	inboxA := t.TempDir()
+	inboxB := t.TempDir()
+
+	if err := tr.AddPushSubscriber(cf.PublicKeyHex(), pubKey(idA), inboxA); err != nil {
+		t.Fatalf("AddPushSubscriber(A) error: %v", err)
+	}
+	if err := tr.AddPushSubscriber(cf.PublicKeyHex(), pubKey(idB), inboxB); err != nil {
+		t.Fatalf("AddPushSubscriber(B) error: %v", err)
+	}
+
+	subs, err = tr.ListPushSubscribers(cf.PublicKeyHex())
+	if err != nil {
+		t.Fatalf("ListPushSubscribers() error: %v", err)
+	}
+	if len(subs) != 2 {
+		t.Fatalf("expected 2 subscribers, got %d", len(subs))
+	}
+
+	// Verify inbox paths are present.
+	inboxPaths := map[string]bool{}
+	for _, s := range subs {
+		inboxPaths[s.InboxDir] = true
+	}
+	if !inboxPaths[inboxA] {
+		t.Errorf("inboxA not found in subscriber list")
+	}
+	if !inboxPaths[inboxB] {
+		t.Errorf("inboxB not found in subscriber list")
+	}
+}
+
+// TestPushSubscriber_RemovePushSubscriber_Idempotent verifies removing a
+// non-existent subscriber does not error.
+func TestPushSubscriber_RemovePushSubscriber_Idempotent(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	id := newTestIdentity(t)
+	if err := tr.RemovePushSubscriber(cf.PublicKeyHex(), pubKey(id)); err != nil {
+		t.Errorf("RemovePushSubscriber() on nonexistent subscriber should not error: %v", err)
+	}
+}
+
+// TestPushSubscriber_DeduplicateByFilename verifies that writing the same message
+// filename twice to an inbox does not result in an error (dedup by UUID filename).
+func TestPushSubscriber_DeduplicateByFilename(t *testing.T) {
+	inboxDir := t.TempDir()
+	src := filepath.Join(t.TempDir(), "msg.cbor")
+	if err := os.WriteFile(src, []byte("data"), 0600); err != nil {
+		t.Fatalf("writing src: %v", err)
+	}
+
+	dst := filepath.Join(inboxDir, "msg.cbor")
+
+	// First copy.
+	if err := copyFile(src, dst); err != nil {
+		t.Fatalf("first copyFile() error: %v", err)
+	}
+	// Second copy — same filename — must not error (dedup).
+	if err := copyFile(src, dst); err != nil {
+		t.Fatalf("second copyFile() (dedup) error: %v", err)
 	}
 }

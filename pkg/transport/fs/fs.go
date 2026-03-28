@@ -3,6 +3,8 @@ package fs
 import (
 	"crypto/rand"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -148,11 +150,163 @@ func (t *Transport) RemoveMember(campfireID string, memberPubKey []byte) error {
 }
 
 // WriteMessage writes a message to the campfire's messages directory.
+// After writing, the message file is copied synchronously to all push subscribers' inbox dirs.
 func (t *Transport) WriteMessage(campfireID string, msg *message.Message) error {
 	dir := filepath.Join(t.CampfireDir(campfireID), "messages")
 	filename := fmt.Sprintf("%019d-%s.cbor", time.Now().UnixNano(), msg.ID)
 	path := filepath.Join(dir, filename)
-	return atomicWriteCBOR(path, msg)
+	if err := atomicWriteCBOR(path, msg); err != nil {
+		return err
+	}
+
+	// Push delivery: copy the message file to each subscriber's inbox dir.
+	subs, err := t.ListPushSubscribers(campfireID)
+	if err != nil {
+		// Non-fatal: log and continue.
+		log.Printf("fs transport: listing push subscribers for %s: %v", campfireID, err)
+		return nil
+	}
+	for _, sub := range subs {
+		if err := copyFile(path, filepath.Join(sub.InboxDir, filename)); err != nil {
+			// Non-fatal: log and continue so other subscribers still receive the message.
+			log.Printf("fs transport: push delivery to %s failed: %v", sub.InboxDir, err)
+		}
+	}
+	return nil
+}
+
+// AddPushSubscriber registers a push subscriber for a campfire.
+// inboxDir is the directory to which message files are copied on each WriteMessage call.
+// Calling AddPushSubscriber with the same memberPubkey overwrites the previous entry.
+func (t *Transport) AddPushSubscriber(campfireID string, memberPubkey []byte, inboxDir string) error {
+	dir := filepath.Join(t.CampfireDir(campfireID), "push-subscribers")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating push-subscribers directory: %w", err)
+	}
+	memberID := fmt.Sprintf("%x", memberPubkey)
+	path := filepath.Join(dir, memberID+".txt")
+	if err := os.WriteFile(path, []byte(inboxDir), 0600); err != nil {
+		return fmt.Errorf("writing push subscriber: %w", err)
+	}
+	return nil
+}
+
+// RemovePushSubscriber removes a push subscriber for a campfire.
+// It is idempotent: removing a non-existent subscriber is not an error.
+func (t *Transport) RemovePushSubscriber(campfireID string, memberPubkey []byte) error {
+	memberID := fmt.Sprintf("%x", memberPubkey)
+	path := filepath.Join(t.CampfireDir(campfireID), "push-subscribers", memberID+".txt")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing push subscriber: %w", err)
+	}
+	return nil
+}
+
+// PushSubscriber holds the pubkey and inbox directory for a push subscriber.
+type PushSubscriber struct {
+	MemberPubkey []byte
+	InboxDir     string
+}
+
+// ListPushSubscribers returns all push subscribers for a campfire.
+// Returns an empty slice (not an error) if no subscribers exist.
+func (t *Transport) ListPushSubscribers(campfireID string) ([]PushSubscriber, error) {
+	dir := filepath.Join(t.CampfireDir(campfireID), "push-subscribers")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing push subscribers: %w", err)
+	}
+
+	var subs []PushSubscriber
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".txt" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("reading push subscriber %s: %w", e.Name(), err)
+		}
+		// Derive pubkey bytes from the hex filename (strip .txt suffix).
+		hexID := strings.TrimSuffix(e.Name(), ".txt")
+		pubkeyBytes, err := hexDecode(hexID)
+		if err != nil {
+			log.Printf("fs transport: ignoring subscriber file with invalid name %s: %v", e.Name(), err)
+			continue
+		}
+		subs = append(subs, PushSubscriber{
+			MemberPubkey: pubkeyBytes,
+			InboxDir:     string(data),
+		})
+	}
+	return subs, nil
+}
+
+// copyFile copies src to dst byte-for-byte. dst's parent directory must already exist.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("opening source: %w", err)
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
+	}
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			// Dedup: file already delivered (same UUID filename).
+			return nil
+		}
+		return fmt.Errorf("creating destination: %w", err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		os.Remove(dst) // clean up partial write
+		return fmt.Errorf("copying: %w", err)
+	}
+	return nil
+}
+
+// hexDecode decodes a hex string into bytes.
+func hexDecode(s string) ([]byte, error) {
+	if len(s)%2 != 0 {
+		return nil, fmt.Errorf("odd-length hex string")
+	}
+	b := make([]byte, len(s)/2)
+	for i := range b {
+		var v byte
+		hi, lo := s[2*i], s[2*i+1]
+		hv, err := hexNibble(hi)
+		if err != nil {
+			return nil, err
+		}
+		lv, err := hexNibble(lo)
+		if err != nil {
+			return nil, err
+		}
+		v = hv<<4 | lv
+		b[i] = v
+	}
+	return b, nil
+}
+
+// hexNibble converts a single hex character to its numeric value.
+func hexNibble(c byte) (byte, error) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', nil
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, nil
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, nil
+	}
+	return 0, fmt.Errorf("invalid hex character %q", c)
 }
 
 // ListMessages reads all messages from the campfire's messages directory, sorted by filename.
