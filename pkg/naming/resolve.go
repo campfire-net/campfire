@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/campfire-net/campfire/pkg/durability"
 )
 
 // DefaultResolutionTimeout is the total timeout for resolving an entire name.
@@ -116,18 +118,20 @@ type Resolver struct {
 	transport Transport
 	rootID    string // root registry campfire ID
 
-	mu    sync.RWMutex
-	cache map[string]*cacheEntry // key: "parentID/name"
-	pins  map[string]string      // key: full dotted name, value: pinned campfire ID (TOFU)
+	mu              sync.RWMutex
+	cache           map[string]*cacheEntry  // key: "parentID/name"
+	pins            map[string]string       // key: full dotted name, value: pinned campfire ID (TOFU)
+	durabilityHints map[string]string       // campfire ID → max-ttl value (from durability convention)
 }
 
 // NewResolver creates a new resolver with the given transport and root registry ID.
 func NewResolver(transport Transport, rootRegistryID string) *Resolver {
 	return &Resolver{
-		transport: transport,
-		rootID:    rootRegistryID,
-		cache:     make(map[string]*cacheEntry),
-		pins:      make(map[string]string),
+		transport:       transport,
+		rootID:          rootRegistryID,
+		cache:           make(map[string]*cacheEntry),
+		pins:            make(map[string]string),
+		durabilityHints: make(map[string]string),
 	}
 }
 
@@ -240,13 +244,26 @@ func (r *Resolver) resolveSegment(ctx context.Context, parentID, name string) (s
 		return "", err
 	}
 
-	// Enforce max TTL
-	ttl := resp.TTL
-	if ttl <= 0 {
-		ttl = DefaultTTL
+	// Enforce max TTL, adjusted by durability hints if present.
+	defaultTTL := time.Duration(DefaultTTL) * time.Second
+	ttlSeconds := resp.TTL
+	if ttlSeconds <= 0 {
+		ttlSeconds = DefaultTTL
 	}
-	if ttl > MaxTTL {
-		ttl = MaxTTL
+	if ttlSeconds > MaxTTL {
+		ttlSeconds = MaxTTL
+	}
+
+	// If the resolved campfire has durability metadata, adjust cache TTL
+	// per Campfire Durability Convention v0.1 §10.4.
+	cacheDur := time.Duration(ttlSeconds) * time.Second
+	if maxTTL, ok := r.durabilityHints[resp.CampfireID]; ok {
+		cacheDur = durability.URICacheTTL(maxTTL, defaultTTL)
+		// Still respect the per-response TTL as an upper bound.
+		respDur := time.Duration(ttlSeconds) * time.Second
+		if respDur < cacheDur {
+			cacheDur = respDur
+		}
 	}
 
 	// Cache the result (unless TTL is 0 meaning do-not-cache)
@@ -255,7 +272,7 @@ func (r *Resolver) resolveSegment(ctx context.Context, parentID, name string) (s
 		r.cache[cacheKey] = &cacheEntry{
 			CampfireID:        resp.CampfireID,
 			RegistrationMsgID: resp.RegistrationMsgID,
-			ExpiresAt:         time.Now().Add(time.Duration(ttl) * time.Second),
+			ExpiresAt:         time.Now().Add(cacheDur),
 		}
 		r.mu.Unlock()
 	}
@@ -295,6 +312,20 @@ type TOFUViolation struct {
 
 func (e *TOFUViolation) Error() string {
 	return fmt.Sprintf("TOFU violation for %q: pinned %s, resolved %s", e.Name, e.PinnedID[:12], e.ResolvedID[:12])
+}
+
+// SetDurabilityHint records the max-ttl durability value for a campfire ID.
+// When this campfire is resolved, the cache TTL is adjusted using
+// durability.URICacheTTL per Campfire Durability Convention v0.1 §10.4.
+// Pass an empty maxTTL to remove the hint.
+func (r *Resolver) SetDurabilityHint(campfireID, maxTTL string) {
+	r.mu.Lock()
+	if maxTTL == "" {
+		delete(r.durabilityHints, campfireID)
+	} else {
+		r.durabilityHints[campfireID] = maxTTL
+	}
+	r.mu.Unlock()
 }
 
 // InvalidateCache removes a specific name mapping from the cache.

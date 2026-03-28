@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // mockTransport is a test transport that returns pre-configured responses.
@@ -405,4 +406,100 @@ func TestListChildren_SanitizesDescriptions(t *testing.T) {
 	if entries[1].Description != "injectprompthere" {
 		t.Errorf("description not sanitized: %q", entries[1].Description)
 	}
+}
+
+// Test: Durability hint adjusts cache TTL
+func TestResolveDurabilityHintAdjustsCacheTTL(t *testing.T) {
+	mt := newMockTransport()
+	campID := "d1d2d3d4d5d6000000000000000000000000000000000000000000000000abcd"
+	mt.resolveMap[rootID+"/durable"] = &ResolveResponse{
+		Name: "durable", CampfireID: campID, TTL: 3600, // 1 hour default
+	}
+
+	r := NewResolver(mt, rootID)
+	ctx := context.Background()
+
+	// Set durability hint: max-ttl of 5 minutes.
+	// URICacheTTL(5m, 1h) = max(60s, min(5m, 1h)) = 5m
+	r.SetDurabilityHint(campID, "5m")
+
+	_, err := r.ResolveName(ctx, []string{"durable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check that cache entry has a TTL closer to 5m, not 1h.
+	r.mu.RLock()
+	entry := r.cache[rootID+"/durable"]
+	r.mu.RUnlock()
+	if entry == nil {
+		t.Fatal("expected cache entry")
+	}
+	// ExpiresAt should be ~5 minutes from now, not ~1 hour.
+	// Allow 10 seconds of slack for test execution.
+	ttl := entry.ExpiresAt.Sub(timeNowForTest())
+	if ttl > 6*60*1e9 { // 6 minutes in nanoseconds
+		t.Errorf("cache TTL too long: %v (expected ~5m with durability hint)", ttl)
+	}
+	if ttl < 4*60*1e9 { // 4 minutes
+		t.Errorf("cache TTL too short: %v (expected ~5m with durability hint)", ttl)
+	}
+}
+
+// Test: Durability hint with floor enforcement
+func TestResolveDurabilityHintFloor(t *testing.T) {
+	mt := newMockTransport()
+	campID := "e1e2e3e4e5e6000000000000000000000000000000000000000000000000dcba"
+	mt.resolveMap[rootID+"/shortlived"] = &ResolveResponse{
+		Name: "shortlived", CampfireID: campID, TTL: 3600,
+	}
+
+	r := NewResolver(mt, rootID)
+	ctx := context.Background()
+
+	// Set durability hint: max-ttl of 10 seconds.
+	// URICacheTTL(10s, 1h) = max(60s, min(10s, 1h)) = 60s (floor enforced)
+	r.SetDurabilityHint(campID, "10s")
+
+	_, err := r.ResolveName(ctx, []string{"shortlived"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.mu.RLock()
+	entry := r.cache[rootID+"/shortlived"]
+	r.mu.RUnlock()
+	if entry == nil {
+		t.Fatal("expected cache entry")
+	}
+	ttl := entry.ExpiresAt.Sub(timeNowForTest())
+	// Should be ~60s (the floor), not 10s.
+	if ttl < 50*1e9 || ttl > 70*1e9 { // 50-70 seconds
+		t.Errorf("cache TTL %v not near 60s floor (with 10s durability hint)", ttl)
+	}
+}
+
+// Test: Removing durability hint
+func TestResolveDurabilityHintRemove(t *testing.T) {
+	mt := newMockTransport()
+	campID := "f1f2f3f4f5f6000000000000000000000000000000000000000000000000dcba"
+	mt.resolveMap[rootID+"/removable"] = &ResolveResponse{
+		Name: "removable", CampfireID: campID, TTL: 3600,
+	}
+
+	r := NewResolver(mt, rootID)
+
+	r.SetDurabilityHint(campID, "5m")
+	r.SetDurabilityHint(campID, "") // remove
+
+	r.mu.RLock()
+	_, exists := r.durabilityHints[campID]
+	r.mu.RUnlock()
+	if exists {
+		t.Error("expected durability hint to be removed")
+	}
+}
+
+func timeNowForTest() time.Time {
+	return time.Now()
 }
