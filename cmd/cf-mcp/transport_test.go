@@ -107,6 +107,20 @@ func extractResultText(t *testing.T, resp jsonRPCResponse) string {
 	return result.Content[0].Text
 }
 
+// unwrapEnvelopeContent extracts the tainted.content JSON string from a Trust
+// v0.2 envelope. If the text is not an envelope (legacy), returns it unchanged.
+func unwrapEnvelopeContent(text string) string {
+	var env struct {
+		Tainted struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"tainted"`
+	}
+	if err := json.Unmarshal([]byte(text), &env); err == nil && len(env.Tainted.Content) > 0 {
+		return string(env.Tainted.Content)
+	}
+	return text
+}
+
 // ---------------------------------------------------------------------------
 // Test: campfire created via MCP is reachable by HTTP transport peers
 // ---------------------------------------------------------------------------
@@ -234,7 +248,7 @@ func TestTransport_CLISendHTTPHostedRead(t *testing.T) {
 		"campfire_id": campfireID,
 		"all":         true,
 	})
-	readText := extractResultText(t, readResp)
+	readText := unwrapEnvelopeContent(extractResultText(t, readResp))
 
 	var messages []struct {
 		ID      string `json:"id"`
@@ -516,7 +530,7 @@ func TestTransport_CampfireRoutePreservedAfterTokenRotation(t *testing.T) {
 		"campfire_id": campfireID,
 		"all":         true,
 	})
-	readText2 := extractResultText(t, readResp2)
+	readText2 := unwrapEnvelopeContent(extractResultText(t, readResp2))
 	var messages []struct {
 		Payload string `json:"payload"`
 	}

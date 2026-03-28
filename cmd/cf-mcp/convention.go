@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/provenance"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/campfire-net/campfire/pkg/trust"
 )
 
@@ -248,7 +250,48 @@ func (a *conventionTransportAdapter) SendMessage(ctx context.Context, campfireID
 }
 
 func (a *conventionTransportAdapter) SendCampfireKeySigned(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
-	return "", fmt.Errorf("campfire-key signing not yet implemented in MCP transport adapter")
+	// Resolve the campfire's Ed25519 keypair from the filesystem state.
+	fsT := fs.New(a.server.cfHome)
+	state, err := fsT.ReadState(campfireID)
+	if err != nil {
+		return "", fmt.Errorf("loading campfire key for %s: %w", campfireID, err)
+	}
+	if len(state.PrivateKey) == 0 || len(state.PublicKey) == 0 {
+		return "", fmt.Errorf("campfire %s has no keypair in local state", campfireID)
+	}
+
+	campfirePriv := ed25519.PrivateKey(state.PrivateKey)
+	campfirePub := ed25519.PublicKey(state.PublicKey)
+
+	st := a.server.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(a.server.storePath())
+		if openErr != nil {
+			return "", fmt.Errorf("opening store: %w", openErr)
+		}
+		defer st.Close()
+	}
+
+	msg, err := message.NewMessage(campfirePriv, campfirePub, payload, tags, antecedents)
+	if err != nil {
+		return "", fmt.Errorf("creating campfire-key-signed message: %w", err)
+	}
+
+	rec := store.MessageRecord{
+		ID:          msg.ID,
+		CampfireID:  campfireID,
+		Sender:      msg.SenderHex(),
+		Payload:     msg.Payload,
+		Tags:        msg.Tags,
+		Antecedents: msg.Antecedents,
+		Timestamp:   msg.Timestamp,
+		Signature:   msg.Signature,
+	}
+	if _, err := st.AddMessage(rec); err != nil {
+		return "", fmt.Errorf("writing message: %w", err)
+	}
+	return msg.ID, nil
 }
 
 func (a *conventionTransportAdapter) ReadMessages(ctx context.Context, campfireID string, tags []string) ([]convention.MessageRecord, error) {

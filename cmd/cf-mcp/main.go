@@ -2085,8 +2085,13 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 		}
 	}
 
-	result, _ := toolResultJSON(out)
-	return okResponse(id, result)
+	// Wrap in trust envelope (Trust v0.2 §6). Use the requested campfire_id
+	// or, for multi-campfire reads, the first campfire in the result set.
+	envelopeCfID := campfireID
+	if envelopeCfID == "" && len(out) > 0 {
+		envelopeCfID = out[0].CampfireID
+	}
+	return s.envelopedResponse(id, envelopeCfID, out)
 }
 
 func (s *server) handleAwait(id interface{}, params map[string]interface{}) jsonRPCResponse {

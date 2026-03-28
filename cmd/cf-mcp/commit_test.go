@@ -66,11 +66,18 @@ func extractReadMessages(t *testing.T, resp jsonRPCResponse) []map[string]interf
 	if err := json.Unmarshal(b, &outer); err != nil || len(outer.Content) == 0 {
 		t.Fatalf("unexpected read result shape: %s", string(b))
 	}
-	var msgs []map[string]interface{}
-	if err := json.Unmarshal([]byte(outer.Content[0].Text), &msgs); err != nil {
-		t.Fatalf("parsing read result JSON: %v", err)
+
+	// campfire_read now returns a Trust v0.2 envelope. Messages are in
+	// tainted.content. Unwrap the envelope to reach them.
+	var envelope struct {
+		Tainted struct {
+			Content []map[string]interface{} `json:"content"`
+		} `json:"tainted"`
 	}
-	return msgs
+	if err := json.Unmarshal([]byte(outer.Content[0].Text), &envelope); err != nil {
+		t.Fatalf("parsing envelope JSON: %v", err)
+	}
+	return envelope.Tainted.Content
 }
 
 // computeCommitment returns SHA256(payload + nonce) as a hex string.
