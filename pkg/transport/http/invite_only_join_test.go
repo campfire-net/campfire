@@ -15,10 +15,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
@@ -26,6 +30,9 @@ import (
 
 // setupInviteOnlyServer starts a transport with an invite-only campfire and
 // returns the campfire ID, server endpoint, and store.
+// The campfire state is written with DeliveryModes=["pull","push"] so that
+// admitted joiners providing an endpoint are accepted (delivery mode validation
+// added in campfire-agent-9er requires push support for endpoint joins).
 func setupInviteOnlyServer(t *testing.T, portOffset int) (campfireID, ep string, sHost store.Store) {
 	t.Helper()
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
@@ -40,9 +47,26 @@ func setupInviteOnlyServer(t *testing.T, portOffset int) (campfireID, ep string,
 	}
 	sHost = tempStore(t)
 
+	// Write campfire state with push+pull so invited members can join with endpoints.
+	stateDir := t.TempDir()
+	state := campfire.CampfireState{
+		PublicKey:     cfPub,
+		PrivateKey:    cfPriv,
+		JoinProtocol:  "invite-only",
+		Threshold:     1,
+		DeliveryModes: []string{campfire.DeliveryModePull, campfire.DeliveryModePush},
+	}
+	stateData, encErr := cfencoding.Marshal(state)
+	if encErr != nil {
+		t.Fatalf("encoding campfire state: %v", encErr)
+	}
+	if writeErr := os.WriteFile(filepath.Join(stateDir, campfireID+".cbor"), stateData, 0600); writeErr != nil {
+		t.Fatalf("writing campfire state: %v", writeErr)
+	}
+
 	if err := sHost.AddMembership(store.Membership{
 		CampfireID:   campfireID,
-		TransportDir: t.TempDir(),
+		TransportDir: stateDir,
 		JoinProtocol: "invite-only",
 		Role:         "creator",
 		JoinedAt:     time.Now().UnixNano(),

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
@@ -671,6 +672,16 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 				return nil, nil, err
 			}
 			return state.PrivateKey, state.PublicKey, nil
+		})
+		// Set delivery modes provider so the join handler can validate push
+		// endpoint requests for HTTP-mode campfires (where membership.TransportDir
+		// is the server URL, not a filesystem path).
+		t.SetDeliveryModesProvider(func(campfireID string) []string {
+			state, err := fsT.ReadState(campfireID)
+			if err != nil {
+				return nil
+			}
+			return campfire.EffectiveDeliveryModes(state.DeliveryModes)
 		})
 		// Load persisted peer endpoints from the store so that relay
 		// relationships survive process restarts and session expiry.

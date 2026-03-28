@@ -27,9 +27,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
@@ -71,10 +74,27 @@ func TestRelayAuth_ThreeInstanceRelay(t *testing.T) {
 	sWest := tempStore(t)
 	sCentral := tempStore(t)
 
+	// Write campfire state with push+pull support so West/Central can join with endpoints.
+	eastStateDir := t.TempDir()
+	eastState := campfire.CampfireState{
+		PublicKey:     cfPub,
+		PrivateKey:    cfPriv,
+		JoinProtocol:  "open",
+		Threshold:     1,
+		DeliveryModes: []string{campfire.DeliveryModePull, campfire.DeliveryModePush},
+	}
+	eastStateData, encErr := cfencoding.Marshal(eastState)
+	if encErr != nil {
+		t.Fatalf("encoding East campfire state: %v", encErr)
+	}
+	if writeErr := os.WriteFile(filepath.Join(eastStateDir, campfireID+".cbor"), eastStateData, 0600); writeErr != nil {
+		t.Fatalf("writing East campfire state: %v", writeErr)
+	}
+
 	// East owns (hosts) the campfire.
 	if err := sEast.AddMembership(store.Membership{
 		CampfireID:   campfireID,
-		TransportDir: os.TempDir(),
+		TransportDir: eastStateDir,
 		JoinProtocol: "open",
 		Role:         "creator",
 		JoinedAt:     time.Now().UnixNano(),
