@@ -98,7 +98,7 @@ type Campfire struct {
 	// DeliveryModes declares how this campfire delivers messages to members.
 	// Valid values: "pull" (members poll) and "push" (server pushes).
 	// Empty/nil defaults to ["pull"] via EffectiveDeliveryModes().
-	DeliveryModes []string `json:"delivery_modes,omitempty"`
+	DeliveryModes []string `cbor:"9,keyasint,omitempty" json:"delivery_modes,omitempty"`
 }
 
 // Member represents a campfire member.
