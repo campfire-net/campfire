@@ -56,6 +56,28 @@ func IsBlindRelay(role string) bool {
 	return role == RoleBlindRelay
 }
 
+// DeliveryMode constants for campfire message delivery.
+const (
+	// DeliveryModePull means members poll the server for messages (default).
+	DeliveryModePull = "pull"
+	// DeliveryModePush means the server pushes messages to members.
+	DeliveryModePush = "push"
+)
+
+// ValidDeliveryMode reports whether mode is a known delivery mode.
+func ValidDeliveryMode(mode string) bool {
+	return mode == DeliveryModePull || mode == DeliveryModePush
+}
+
+// EffectiveDeliveryModes returns the delivery modes for a campfire, defaulting
+// to ["pull"] when modes is nil or empty (backward compat: pre-field-9 campfires).
+func EffectiveDeliveryModes(modes []string) []string {
+	if len(modes) == 0 {
+		return []string{DeliveryModePull}
+	}
+	return modes
+}
+
 // Campfire represents a campfire's state.
 // PublicKey and PrivateKey hold the campfire's Ed25519 keypair directly —
 // pkg/campfire no longer depends on pkg/identity (infrastructure package).
@@ -73,6 +95,10 @@ type Campfire struct {
 	// KeyEpoch is the current symmetric key epoch (spec-encryption.md v0.2 §3.4).
 	// CBOR field 8, omitempty — zero value = epoch 0.
 	KeyEpoch uint64 `cbor:"8,keyasint,omitempty" json:"key_epoch,omitempty"`
+	// DeliveryModes declares how this campfire delivers messages to members.
+	// Valid values: "pull" (members poll) and "push" (server pushes).
+	// Empty/nil defaults to ["pull"] via EffectiveDeliveryModes().
+	DeliveryModes []string `json:"delivery_modes,omitempty"`
 }
 
 // Member represents a campfire member.
@@ -102,6 +128,11 @@ type CampfireState struct {
 	// KeyEpoch is the current symmetric key epoch.
 	// CBOR field 8, omitempty — zero value = epoch 0.
 	KeyEpoch uint64 `cbor:"8,keyasint,omitempty" json:"key_epoch,omitempty"`
+	// DeliveryModes declares how this campfire delivers messages to members.
+	// CBOR field 9, omitempty — backward compatible: absent = ["pull"].
+	// Valid values: "pull" (members poll for messages), "push" (server pushes to members).
+	// Empty/nil on read defaults to ["pull"] via EffectiveDeliveryModes().
+	DeliveryModes []string `cbor:"9,keyasint,omitempty" json:"delivery_modes,omitempty"`
 }
 
 // ToCampfire reconstructs a live Campfire from this on-disk state and the
@@ -117,6 +148,7 @@ func (s *CampfireState) ToCampfire(members []MemberRecord) *Campfire {
 		Threshold:             s.Threshold,
 		Encrypted:             s.Encrypted,
 		KeyEpoch:              s.KeyEpoch,
+		DeliveryModes:         s.DeliveryModes,
 	}
 	cf.Members = append(cf.Members, members...)
 	return cf
@@ -226,5 +258,6 @@ func (c *Campfire) State() CampfireState {
 		Threshold:             c.Threshold,
 		Encrypted:             c.Encrypted,
 		KeyEpoch:              c.KeyEpoch,
+		DeliveryModes:         c.DeliveryModes,
 	}
 }
