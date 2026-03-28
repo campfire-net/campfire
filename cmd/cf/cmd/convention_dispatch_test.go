@@ -11,6 +11,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/spf13/pflag"
 )
 
 // setupDispatchEnv creates a temporary CF_HOME with an identity, a store with a
@@ -264,6 +265,33 @@ func TestCLIDispatchFlagMapping(t *testing.T) {
 	}
 	_ = decl
 	// Just verify the types compile — actual flag parsing tested in TestCLIDispatchConventionOp.
+}
+
+// TestCLIDispatchFlagMapping_TagSet verifies that tag_set args are wired as
+// StringSlice even when Repeated is false.
+func TestCLIDispatchFlagMapping_TagSet(t *testing.T) {
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	arg := convention.ArgDescriptor{Name: "domain", Type: "tag_set"}
+
+	// This mirrors the switch in convention_dispatch.go.
+	switch {
+	case arg.Repeated || arg.Type == "tag_set":
+		flags.StringSlice(arg.Name, nil, "")
+	default:
+		flags.String(arg.Name, "", "")
+	}
+
+	if err := flags.Parse([]string{"--domain", "go,concurrency"}); err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	vals, err := flags.GetStringSlice("domain")
+	if err != nil {
+		t.Fatalf("GetStringSlice failed: %v", err)
+	}
+	if len(vals) != 2 || vals[0] != "go" || vals[1] != "concurrency" {
+		t.Errorf("expected [go, concurrency], got %v", vals)
+	}
 }
 
 // TestListConventionOperations_InlineFallback verifies that when a campfire has

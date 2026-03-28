@@ -81,7 +81,7 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 	flags := pflag.NewFlagSet("op", pflag.ContinueOnError)
 	for _, arg := range matched.Args {
 		switch {
-		case arg.Repeated:
+		case arg.Repeated || arg.Type == "tag_set":
 			flags.StringSlice(arg.Name, nil, arg.Description)
 		case arg.Type == "boolean":
 			flags.Bool(arg.Name, false, arg.Description)
