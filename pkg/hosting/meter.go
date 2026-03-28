@@ -2,6 +2,7 @@ package hosting
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -28,6 +29,14 @@ type Ingester interface {
 //	e.Stop()
 //
 // UsageEmitter is safe for concurrent use.
+//
+// Crash-recovery idempotency: every emitted UsageEvent carries an
+// IdempotencyKey of the form "<operatorID>/<hourBucketUnix>". If the
+// process crashes after draining the snapshot but before Forge confirms
+// the ingest, the next process will have an empty snapshot and will not
+// re-emit. This is intentional: we prefer under-billing over double-
+// billing. Forge's ingest endpoint is idempotent on the same key, so a
+// retry of the same batch is safe.
 type UsageEmitter struct {
 	ingester Ingester
 	interval time.Duration
@@ -36,8 +45,10 @@ type UsageEmitter struct {
 	mu     sync.Mutex
 	counts map[string]int64 // operatorAccountID → running message count
 
-	stopCh chan struct{}
-	doneCh chan struct{}
+	stopCh  chan struct{}
+	stopOnce sync.Once
+	doneCh  chan struct{}
+	started bool
 
 	// OnError is called when Ingest fails for an operator. Optional.
 	OnError func(operatorAccountID string, err error)
@@ -59,15 +70,24 @@ func NewUsageEmitter(ingester Ingester, interval time.Duration) *UsageEmitter {
 // RecordMessage increments the message count for operatorAccountID by 1.
 // campfireID is accepted for API symmetry but the rollup is per-operator;
 // all campfires belonging to the same operator are aggregated together.
-func (e *UsageEmitter) RecordMessage(campfireID, operatorAccountID string) {
+// Returns an error if operatorAccountID is empty.
+func (e *UsageEmitter) RecordMessage(campfireID, operatorAccountID string) error {
+	if operatorAccountID == "" {
+		return errors.New("operatorAccountID must not be empty")
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.counts[operatorAccountID]++
+	return nil
 }
 
 // Start runs the emission loop, firing once per interval. It blocks until
 // ctx is cancelled or Stop is called.
 func (e *UsageEmitter) Start(ctx context.Context) {
+	e.mu.Lock()
+	e.started = true
+	e.mu.Unlock()
+
 	defer close(e.doneCh)
 	for {
 		wait := e.nextTick()
@@ -86,9 +106,19 @@ func (e *UsageEmitter) Start(ctx context.Context) {
 
 // Stop signals the emission loop to flush any pending counts and exit.
 // It blocks until the final batch has been sent.
+// Stop is safe to call multiple times and before Start.
 func (e *UsageEmitter) Stop() {
-	close(e.stopCh)
-	<-e.doneCh
+	e.stopOnce.Do(func() {
+		close(e.stopCh)
+	})
+
+	e.mu.Lock()
+	started := e.started
+	e.mu.Unlock()
+
+	if started {
+		<-e.doneCh
+	}
 }
 
 // nextTick returns how long to wait before the next emission.
@@ -109,10 +139,14 @@ func (e *UsageEmitter) hourBucket() time.Time {
 	return e.now().Truncate(time.Hour)
 }
 
-// snapshot atomically drains and returns the current per-operator counts.
-func (e *UsageEmitter) snapshot() map[string]int64 {
+// snapshot atomically drains and returns the current per-operator counts
+// along with the hour bucket at the moment of the drain. Capturing the
+// bucket inside the lock ensures that messages and their billing bucket
+// cannot be split across an hour boundary.
+func (e *UsageEmitter) snapshot() (map[string]int64, time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	bucket := e.now().Truncate(time.Hour)
 	snap := make(map[string]int64, len(e.counts))
 	for op, n := range e.counts {
 		if n > 0 {
@@ -120,16 +154,15 @@ func (e *UsageEmitter) snapshot() map[string]int64 {
 		}
 	}
 	e.counts = make(map[string]int64)
-	return snap
+	return snap, bucket
 }
 
 // emit sends one UsageEvent per operator for the current hour bucket.
 func (e *UsageEmitter) emit(ctx context.Context) {
-	snap := e.snapshot()
+	snap, bucket := e.snapshot()
 	if len(snap) == 0 {
 		return
 	}
-	bucket := e.hourBucket()
 	for operatorID, count := range snap {
 		event := forge.UsageEvent{
 			ServiceID:      "campfire-hosting",
