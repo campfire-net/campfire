@@ -52,8 +52,12 @@ or join the existing campfire instead.`,
 		}
 		cf.AddMember(agentID.PublicKey)
 
-		// Set up filesystem transport.
-		transport := fs.New(fs.DefaultBaseDir())
+		// Set up filesystem transport rooted in the project's .campfire/ directory.
+		campfireDir := filepath.Join(projectDir, ".campfire")
+		if err := os.MkdirAll(campfireDir, 0755); err != nil {
+			return fmt.Errorf("creating .campfire directory: %w", err)
+		}
+		transport := fs.NewPathRooted(campfireDir)
 		if err := transport.Init(cf); err != nil {
 			return fmt.Errorf("initializing transport: %w", err)
 		}
@@ -74,7 +78,7 @@ or join the existing campfire instead.`,
 			cf.ReceptionRequirements,
 			beacon.TransportConfig{
 				Protocol: "filesystem",
-				Config:   map[string]string{"dir": transport.CampfireDir(cf.PublicKeyHex())},
+				Config:   map[string]string{"dir": campfireDir},
 			},
 			swarmStartDescription,
 		)
@@ -86,9 +90,10 @@ or join the existing campfire instead.`,
 		}
 
 		// Record membership in local store.
+		campfireID := cf.PublicKeyHex()
 		if err := s.AddMembership(store.Membership{
-			CampfireID:   cf.PublicKeyHex(),
-			TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
+			CampfireID:   campfireID,
+			TransportDir: campfireDir,
 			JoinProtocol: cf.JoinProtocol,
 			Role:         store.PeerRoleCreator,
 			JoinedAt:     store.NowNano(),
@@ -97,13 +102,7 @@ or join the existing campfire instead.`,
 			return fmt.Errorf("recording membership: %w", err)
 		}
 
-		campfireID := cf.PublicKeyHex()
-
 		// Write .campfire/root.
-		campfireDir := filepath.Join(projectDir, ".campfire")
-		if err := os.MkdirAll(campfireDir, 0755); err != nil {
-			return fmt.Errorf("creating .campfire directory: %w", err)
-		}
 		if err := os.WriteFile(rootFile, []byte(campfireID+"\n"), 0644); err != nil {
 			return fmt.Errorf("writing .campfire/root: %w", err)
 		}

@@ -93,7 +93,9 @@ func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s store
 //   - publishes a beacon to .campfire/beacons/ in the project dir
 //   - sends a campfire:sub-created announcement to the root campfire
 func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, baseDir string, description string) error {
-	// Set up filesystem transport
+	// Set up filesystem transport.
+	// Sub-campfires created in a project context still use the base-dir model
+	// (they are not rooted in the project directory — only the swarm root is).
 	transport := fs.New(baseDir)
 	if err := transport.Init(cf); err != nil {
 		return fmt.Errorf("initializing transport: %w", err)

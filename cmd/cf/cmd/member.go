@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
@@ -83,12 +82,7 @@ var memberSetRoleCmd = &cobra.Command{
 			return fmt.Errorf("role change not yet supported for %s transport", transportType)
 		}
 
-		// Derive fs transport base dir from membership TransportDir.
-		baseDir := fs.DefaultBaseDir()
-		if m.TransportDir != "" {
-			baseDir = filepath.Dir(m.TransportDir)
-		}
-		fsTransport := fs.New(baseDir)
+		fsTransport := fs.ForDir(m.TransportDir)
 
 		// Find target member in transport.
 		members, err := fsTransport.ListMembers(campfireID)

@@ -90,11 +90,7 @@ func init() {
 // It blocks until done is closed.
 // tagFilters, when non-empty, restricts relay to messages matching any of the given tags.
 func runBridge(done <-chan struct{}, campfireID, transportDir string, agentID *identity.Identity, s store.Store, httpEndpoint string, tagFilters []string) error {
-	baseDir := fs.DefaultBaseDir()
-	if transportDir != "" {
-		baseDir = filepath.Dir(transportDir)
-	}
-	fsTransport := fs.New(baseDir)
+	fsTransport := fs.ForDir(transportDir)
 
 	// Build initial forwarded-ID set by scanning existing fs messages.
 	forwarded := buildForwardedSet(campfireID, fsTransport, s)

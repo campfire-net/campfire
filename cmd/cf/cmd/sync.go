@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -87,11 +86,7 @@ func syncFromGitHub(cfID, transportDir string, s store.Store) {
 // skipped to prevent injection of unsigned content via shared filesystem directories.
 // Provenance hops are also verified; any hop with an invalid signature is rejected.
 func syncFromFilesystem(cfID string, transportDir string, s store.Store) {
-	baseDir := fs.DefaultBaseDir()
-	if transportDir != "" {
-		baseDir = filepath.Dir(transportDir)
-	}
-	fsTransport := fs.New(baseDir)
+	fsTransport := fs.ForDir(transportDir)
 	fsMessages, err := fsTransport.ListMessages(cfID)
 	if err != nil {
 		return

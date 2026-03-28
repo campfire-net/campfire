@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
@@ -55,14 +54,7 @@ var admitCmd = &cobra.Command{
 			return fmt.Errorf("admission not yet supported for %s transport — use the transport's native member management", transportType)
 		}
 
-		// Derive the fs transport base dir from the membership's TransportDir.
-		// TransportDir is the campfire-specific subdirectory (e.g. /tmp/campfire/<id>),
-		// so the base dir is its parent. Fall back to the default when empty.
-		baseDir := fs.DefaultBaseDir()
-		if m.TransportDir != "" {
-			baseDir = filepath.Dir(m.TransportDir)
-		}
-		fsTransport := fs.New(baseDir)
+		fsTransport := fs.ForDir(m.TransportDir)
 
 		// Check if already a member
 		members, err := fsTransport.ListMembers(campfireID)

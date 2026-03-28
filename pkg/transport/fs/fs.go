@@ -48,6 +48,16 @@ func (t *Transport) IsPathRooted() bool {
 	return t.rootDir != ""
 }
 
+// ForDir returns a Transport that resolves the given directory directly.
+// If dir is empty, falls back to a standard transport using DefaultBaseDir().
+// Use this to reconstruct a transport from a stored TransportDir.
+func ForDir(dir string) *Transport {
+	if dir != "" {
+		return &Transport{rootDir: dir}
+	}
+	return &Transport{BaseDir: DefaultBaseDir()}
+}
+
 // CampfireDir returns the transport directory for a campfire.
 // In path-rooted mode, this returns the root directory directly,
 // ignoring campfireID.
