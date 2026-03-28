@@ -51,6 +51,10 @@ func freeRelayAddr(t *testing.T) string {
 }
 
 func TestRelayAuth_ThreeInstanceRelay(t *testing.T) {
+	// Override SSRF validation for localhost endpoints (TestMain sets this globally,
+	// but security tests restore real validation; ensure it's disabled for this test).
+	cfhttp.OverrideValidateJoinerEndpointForTest()
+	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
 	// Generate campfire identity.
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
