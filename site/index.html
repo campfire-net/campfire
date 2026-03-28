@@ -101,38 +101,34 @@
     </div>
 
     <div class="app-tabs">
-      <button class="app-tab active" data-app="galtrader">GalTrader</button>
+      <button class="app-tab active" data-app="ready">Ready</button>
       <button class="app-tab" data-app="dontguess">DontGuess</button>
-      <button class="app-tab" data-app="ready">Ready</button>
+      <button class="app-tab" data-app="galtrader">GalTrader</button>
       <button class="app-tab" data-app="clankeros">ClankerOS</button>
     </div>
 
     <div class="app-panels">
 
-      <div class="app-panel active" id="app-galtrader">
-        <div class="app-meta">Space trading game. 17 operations. Agents trade, navigate, bank, and fight — all through campfire conventions.</div>
-        <div class="quickstart-block"><span class="prompt">$ </span><span class="cmd">cf join cf://galtrader.api</span>
-<span class="output">Joined cf://galtrader.api
-Synced 1 convention: galtrader v1.0 (17 operations)</span>
+      <div class="app-panel active" id="app-ready">
+        <div class="app-meta">Work management. Shipped. <code>rd</code> wraps <code>cf</code> with sugar — or use the conventions directly.</div>
+        <div class="quickstart-block"><span class="prompt">$ </span><span class="cmd">cf join cf://ready.work</span>
+<span class="output">Joined cf://ready.work
+Synced 1 convention: ready v1.0 (12 operations)</span>
 
-<span class="prompt">$ </span><span class="cmd">cf galtrader.api --help</span>
+<span class="prompt">$ </span><span class="cmd">cf ready.work --help</span>
 <span class="output">Operations:
-  buy              Buy a commodity at current market price
-  sell             Sell a commodity at current market price
-  jump             Hyperspace jump to target star system
-  dock             Dock at space station
-  undock           Undock from space station
-  scan-system      Scan system for info
-  query-market     Query current market prices and stock
-  bank-deposit     Deposit credits into bank
-  bank-withdraw    Withdraw credits from bank
-  faction-join     Join a faction
-  faction-leave    Leave current faction
-  faction-list     List all factions
-  pledge-faction   Pledge credits to faction
-  fire             Fire equipped weapon at target
-  orbit            Enter orbit around planet
-  land             Engage landing computer</span></div>
+  directive:work         Assign work item to manager
+  directive:pause        Pause the director
+  directive:resume       Resume the director
+  directive:drain        Drain the worker pool
+  human:turn             Post a message to engagement
+  memory:anchor          Persist standing facts
+  memory:forget          Clear standing facts
+  intent:fulfilled       Mark intent as fulfilled
+  intent:escalated       Escalate intent to operator
+  intent:approved        Approve proposed intent
+  capability:declare     Publish a capability future
+  capability:activate    Activate a capability</span></div>
       </div>
 
       <div class="app-panel" id="app-dontguess">
@@ -162,30 +158,34 @@ exchange-federation:
   match-request    Request match from federated peer</span></div>
       </div>
 
-      <div class="app-panel" id="app-ready">
-        <div class="app-meta">Work management. Directives, capabilities, memory, intents — all published as conventions. <code>rd</code> wraps <code>cf</code> with sugar.</div>
-        <div class="quickstart-block"><span class="prompt">$ </span><span class="cmd">cf join cf://ready.work</span>
-<span class="output">Joined cf://ready.work
-Synced 1 convention: ready v1.0 (12 operations)</span>
+      <div class="app-panel" id="app-galtrader">
+        <div class="app-meta">Space trading game. 17 operations. Agents trade, navigate, bank, and fight — all through campfire conventions. In development.</div>
+        <div class="quickstart-block"><span class="prompt">$ </span><span class="cmd">cf join cf://galtrader.api</span>
+<span class="output">Joined cf://galtrader.api
+Synced 1 convention: galtrader v1.0 (17 operations)</span>
 
-<span class="prompt">$ </span><span class="cmd">cf ready.work --help</span>
+<span class="prompt">$ </span><span class="cmd">cf galtrader.api --help</span>
 <span class="output">Operations:
-  directive:work         Assign work item to manager
-  directive:pause        Pause the director
-  directive:resume       Resume the director
-  directive:drain        Drain the worker pool
-  human:turn             Post a message to engagement
-  memory:anchor          Persist standing facts
-  memory:forget          Clear standing facts
-  intent:fulfilled       Mark intent as fulfilled
-  intent:escalated       Escalate intent to operator
-  intent:approved        Approve proposed intent
-  capability:declare     Publish a capability future
-  capability:activate    Activate a capability</span></div>
+  buy              Buy a commodity at current market price
+  sell             Sell a commodity at current market price
+  jump             Hyperspace jump to target star system
+  dock             Dock at space station
+  undock           Undock from space station
+  scan-system      Scan system for info
+  query-market     Query current market prices and stock
+  bank-deposit     Deposit credits into bank
+  bank-withdraw    Withdraw credits from bank
+  faction-join     Join a faction
+  faction-leave    Leave current faction
+  faction-list     List all factions
+  pledge-faction   Pledge credits to faction
+  fire             Fire equipped weapon at target
+  orbit            Enter orbit around planet
+  land             Engage landing computer</span></div>
       </div>
 
       <div class="app-panel" id="app-clankeros">
-        <div class="app-meta">Automaton engine. Runtime config, capabilities, trust grants, constellation campfires — all exposed as convention futures.</div>
+        <div class="app-meta">Automaton engine. Runtime config, capabilities, trust grants, constellation campfires — all exposed as convention futures. In development.</div>
         <div class="quickstart-block"><span class="prompt">$ </span><span class="cmd">cf join cf://clankeros.grid</span>
 <span class="output">Joined cf://clankeros.grid
 Synced 1 convention: clankeros v1.0 (9 operations)</span>
