@@ -126,10 +126,10 @@ func TestBillingGate_SingleForgeErrorDoesNotOpenCircuit(t *testing.T) {
 	stub := &stubBalanceChecker{err: errors.New("forge down")}
 	g := newTestGate(stub)
 
-	// One error — circuit should stay closed, gate should still fail-open.
+	// One error — circuit should stay closed, gate should fail-CLOSED.
 	err := g.AllowDurableWrite(context.Background(), "acc1")
-	if err != nil {
-		t.Fatalf("expected fail-open nil, got %v", err)
+	if !errors.Is(err, ErrBillingUnavailable) {
+		t.Fatalf("expected ErrBillingUnavailable (fail-closed), got %v", err)
 	}
 
 	g.mu.Lock()
@@ -217,5 +217,198 @@ func TestBillingGate_IsInsufficientBalance(t *testing.T) {
 	err := g.AllowDurableWrite(context.Background(), "acc1")
 	if !IsInsufficientBalance(err) {
 		t.Fatalf("IsInsufficientBalance should return true for ErrInsufficientBalance, got %v", err)
+	}
+}
+
+// ── Fail-closed security fix ──────────────────────────────────────────────────
+
+func TestBillingGate_SingleForgeErrorFailsClosed(t *testing.T) {
+	stub := &stubBalanceChecker{err: errors.New("network timeout")}
+	g := newTestGate(stub)
+
+	// A single Forge error must NOT grant free durable writes.
+	err := g.AllowDurableWrite(context.Background(), "acc1")
+	if err == nil {
+		t.Fatal("expected fail-closed error, got nil (security: free write granted on single error)")
+	}
+	if !errors.Is(err, ErrBillingUnavailable) {
+		t.Fatalf("expected ErrBillingUnavailable, got %v", err)
+	}
+}
+
+func TestBillingGate_TwoForgeErrorsFailClosed(t *testing.T) {
+	stub := &stubBalanceChecker{err: errors.New("forge down")}
+	g := newTestGate(stub)
+
+	// Two errors — below threshold, still fail-closed.
+	for i := 0; i < 2; i++ {
+		err := g.AllowDurableWrite(context.Background(), "acc1")
+		if !errors.Is(err, ErrBillingUnavailable) {
+			t.Fatalf("call %d: expected ErrBillingUnavailable (fail-closed), got %v", i+1, err)
+		}
+	}
+}
+
+func TestBillingGate_ThresholdErrorsFailOpen(t *testing.T) {
+	stub := &stubBalanceChecker{err: errors.New("forge down")}
+	g := newTestGate(stub)
+
+	// First threshold-1 calls fail-closed.
+	for i := 0; i < g.ErrorThreshold-1; i++ {
+		err := g.AllowDurableWrite(context.Background(), "acc1")
+		if !errors.Is(err, ErrBillingUnavailable) {
+			t.Fatalf("call %d: expected ErrBillingUnavailable, got %v", i+1, err)
+		}
+	}
+
+	// The threshold-th error opens the circuit — should fail-open.
+	err := g.AllowDurableWrite(context.Background(), "acc1")
+	if err != nil {
+		t.Fatalf("circuit-opening error: expected nil (fail-open), got %v", err)
+	}
+}
+
+// ── 4xx error classification ───────────────────────────────────────────────────
+
+// forgeClientError simulates a 4xx HTTP error from Forge (e.g., invalid API key).
+type forgeClientError struct{ code int }
+
+func (e *forgeClientError) Error() string   { return "forge client error" }
+func (e *forgeClientError) StatusCode() int { return e.code }
+
+func TestBillingGate_4xxErrorDoesNotCountTowardCircuit(t *testing.T) {
+	stub := &stubBalanceChecker{err: &forgeClientError{code: http.StatusUnauthorized}}
+	g := newTestGate(stub)
+
+	// Make 10 calls with a 401 error — should never open the circuit.
+	for i := 0; i < 10; i++ {
+		_ = g.AllowDurableWrite(context.Background(), "acc1")
+	}
+
+	g.mu.Lock()
+	count := g.circuit.errorCount
+	open := !g.circuit.openUntil.IsZero()
+	g.mu.Unlock()
+
+	if open {
+		t.Fatal("circuit opened after 4xx errors; only 5xx/network errors should trip circuit")
+	}
+	if count != 0 {
+		t.Fatalf("circuit error count = %d after 4xx errors; expected 0", count)
+	}
+}
+
+func TestBillingGate_4xxErrorFailsClosedWithoutCircuitEffect(t *testing.T) {
+	stub := &stubBalanceChecker{err: &forgeClientError{code: http.StatusForbidden}}
+	g := newTestGate(stub)
+
+	err := g.AllowDurableWrite(context.Background(), "acc1")
+	if !errors.Is(err, ErrBillingUnavailable) {
+		t.Fatalf("expected ErrBillingUnavailable for 4xx error, got %v", err)
+	}
+
+	// Circuit should not have been incremented.
+	g.mu.Lock()
+	count := g.circuit.errorCount
+	g.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("4xx error incremented circuit count to %d; expected 0", count)
+	}
+}
+
+func TestBillingGate_5xxErrorCountsTowardCircuit(t *testing.T) {
+	stub := &stubBalanceChecker{err: &forgeClientError{code: http.StatusInternalServerError}}
+	g := newTestGate(stub)
+
+	_ = g.AllowDurableWrite(context.Background(), "acc1")
+
+	g.mu.Lock()
+	count := g.circuit.errorCount
+	g.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("5xx error should increment circuit count; got %d", count)
+	}
+}
+
+func TestIsForgeServerError(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantSrv bool
+	}{
+		{"nil", nil, false},
+		{"network error (no status)", errors.New("connection refused"), true},
+		{"401 unauthorized", &forgeClientError{code: 401}, false},
+		{"403 forbidden", &forgeClientError{code: 403}, false},
+		{"404 not found", &forgeClientError{code: 404}, false},
+		{"429 too many requests", &forgeClientError{code: 429}, false},
+		{"500 internal server error", &forgeClientError{code: 500}, true},
+		{"502 bad gateway", &forgeClientError{code: 502}, true},
+		{"503 service unavailable", &forgeClientError{code: 503}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isForgeServerError(tt.err)
+			if got != tt.wantSrv {
+				t.Errorf("isForgeServerError(%v) = %v, want %v", tt.err, got, tt.wantSrv)
+			}
+		})
+	}
+}
+
+// ── Cache size limit ──────────────────────────────────────────────────────────
+
+func TestBillingGate_CacheEvictsWhenFull(t *testing.T) {
+	// Use a gate with a very small cache limit.
+	stub := &stubBalanceChecker{balance: 1000}
+	g := newTestGate(stub)
+	g.CacheMaxEntries = 3
+
+	// Fill the cache to the limit.
+	for i := 0; i < 3; i++ {
+		acct := string(rune('a' + i))
+		_ = g.AllowDurableWrite(context.Background(), acct)
+	}
+
+	g.mu.Lock()
+	sizeBefore := len(g.cache)
+	g.mu.Unlock()
+	if sizeBefore != 3 {
+		t.Fatalf("expected 3 cache entries, got %d", sizeBefore)
+	}
+
+	// One more account — triggers eviction.
+	_ = g.AllowDurableWrite(context.Background(), "new-account")
+
+	g.mu.Lock()
+	sizeAfter := len(g.cache)
+	g.mu.Unlock()
+	// After eviction, the cache is cleared and only the new entry is present.
+	if sizeAfter != 1 {
+		t.Fatalf("expected 1 cache entry after eviction, got %d", sizeAfter)
+	}
+}
+
+func TestBillingGate_CacheBelowLimitNotEvicted(t *testing.T) {
+	stub := &stubBalanceChecker{balance: 500}
+	g := newTestGate(stub)
+	g.CacheMaxEntries = 10
+
+	for i := 0; i < 5; i++ {
+		acct := string(rune('a' + i))
+		_ = g.AllowDurableWrite(context.Background(), acct)
+	}
+
+	// Forge should have been called exactly 5 times.
+	if stub.callCount() != 5 {
+		t.Fatalf("expected 5 Forge calls, got %d", stub.callCount())
+	}
+
+	// Cache should have 5 entries (no eviction).
+	g.mu.Lock()
+	size := len(g.cache)
+	g.mu.Unlock()
+	if size != 5 {
+		t.Fatalf("expected 5 cache entries, got %d", size)
 	}
 }
