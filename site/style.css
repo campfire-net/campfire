@@ -26,13 +26,13 @@
   --font-body:    var(--ds-font-body);
   --font-mono:    var(--ds-font-mono);
 
-  --text-base: var(--ds-text-base);
-  --text-sm:   var(--ds-text-sm);
-  --text-xs:   var(--ds-text-xs);
-  --text-lg:   22px;
-  --text-xl:   var(--ds-text-xl);
-  --text-2xl:  var(--ds-text-2xl);
-  --text-hero: var(--ds-text-hero);
+  --text-base: 18px;
+  --text-sm:   16px;
+  --text-xs:   14px;
+  --text-lg:   24px;
+  --text-xl:   32px;
+  --text-2xl:  48px;
+  --text-hero: 64px;
 
   --leading-tight:  var(--ds-line-height-tight);
   --leading-normal: var(--ds-line-height);
@@ -2300,7 +2300,7 @@ a:hover { color: var(--color-accent-secondary-hover); }
 .convention-name {
   display: block;
   font-family: var(--ds-font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -2354,10 +2354,10 @@ a:hover { color: var(--color-accent-secondary-hover); }
   background: var(--ds-code-bg);
   border: 1px solid var(--ds-border);
   border-radius: var(--ds-radius);
-  padding: 24px;
+  padding: 28px 32px;
   font-family: var(--ds-font-mono);
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 15px;
+  line-height: 1.8;
   overflow-x: auto;
   max-width: var(--ds-doc-width);
   white-space: pre;
