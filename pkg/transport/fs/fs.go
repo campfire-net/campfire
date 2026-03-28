@@ -227,6 +227,9 @@ func (t *Transport) ListPushSubscribers(campfireID string) ([]PushSubscriber, er
 		}
 		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue // removed between ReadDir and ReadFile
+			}
 			return nil, fmt.Errorf("reading push subscriber %s: %w", e.Name(), err)
 		}
 		// Derive pubkey bytes from the hex filename (strip .txt suffix).
@@ -264,11 +267,14 @@ func copyFile(src, dst string) error {
 		}
 		return fmt.Errorf("creating destination: %w", err)
 	}
-	defer out.Close()
-
 	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
 		os.Remove(dst) // clean up partial write
 		return fmt.Errorf("copying: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(dst) // flush failed — partial write
+		return fmt.Errorf("closing destination: %w", err)
 	}
 	return nil
 }
