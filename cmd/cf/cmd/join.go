@@ -183,7 +183,7 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	}
 
 	// Send join request to the via endpoint.
-	result, err := cfhttp.Join(via, campfireID, agentID, myEndpoint, false)
+	result, err := cfhttp.Join(via, campfireID, agentID, myEndpoint)
 	if err != nil {
 		return fmt.Errorf("joining campfire via %s: %w", via, err)
 	}

@@ -672,6 +672,19 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 			}
 			return state.PrivateKey, state.PublicKey, nil
 		})
+		// Load persisted peer endpoints from the store so that relay
+		// relationships survive process restarts and session expiry.
+		if memberships, err := st.ListMemberships(); err == nil {
+			for _, mem := range memberships {
+				if peers, perr := st.ListPeerEndpoints(mem.CampfireID); perr == nil {
+					for _, pe := range peers {
+						if pe.Endpoint != "" {
+							t.AddPeer(mem.CampfireID, pe.MemberPubkey, pe.Endpoint)
+						}
+					}
+				}
+			}
+		}
 		sess.httpTransport = t
 		sess.router = m.router
 		m.router.RegisterSession(token, t)
