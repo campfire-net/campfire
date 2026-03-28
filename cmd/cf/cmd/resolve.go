@@ -44,6 +44,13 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 		return resolveNamingURI("cf://"+prefix, s)
 	}
 
+	// Local alias: check bare names before prefix search.
+	// This lets `cf dontguess post` work without requiring `cf ~dontguess post`.
+	aliases := naming.NewAliasStore(CFHome())
+	if id, err := aliases.Get(prefix); err == nil {
+		return id, nil
+	}
+
 	// Exact match: 64 hex chars
 	if len(prefix) == 64 {
 		return prefix, nil

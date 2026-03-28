@@ -58,6 +58,26 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 		return readCmd.RunE(readCmd, []string{campfireID})
 	}
 
+	// Built-in: help lists available convention operations with descriptions.
+	if operationName == "help" {
+		if len(decls) == 0 {
+			fmt.Printf("Campfire %s — no convention operations declared.\n", campfireID[:shortIDLen])
+			fmt.Println("\nUse cf send / cf read for raw messaging.")
+			return nil
+		}
+		fmt.Printf("Campfire %s — %d convention operations:\n\n", campfireID[:shortIDLen], len(decls))
+		for _, d := range decls {
+			desc := d.Description
+			if len(desc) > 72 {
+				desc = desc[:72] + "…"
+			}
+			fmt.Printf("  %-24s %s\n", d.Operation, desc)
+		}
+		fmt.Printf("\nUsage: cf %s <operation> [--args]\n", campfireName)
+		fmt.Printf("  e.g. cf %s %s --help\n", campfireName, decls[0].Operation)
+		return nil
+	}
+
 	// Find matching declaration
 	var matched *convention.Declaration
 	for _, d := range decls {
@@ -72,9 +92,9 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 			ops = append(ops, d.Operation)
 		}
 		if len(ops) == 0 {
-			return fmt.Errorf("unknown operation %q — no convention operations declared in campfire %s", operationName, campfireID[:shortIDLen])
+			return fmt.Errorf("unknown operation %q — no convention operations declared in campfire %s\nUse cf send / cf read for raw messaging.", operationName, campfireID[:shortIDLen])
 		}
-		return fmt.Errorf("unknown operation %q — available: %s", operationName, strings.Join(ops, ", "))
+		return fmt.Errorf("unknown operation %q — available: %s\nRun: cf %s help", operationName, strings.Join(ops, ", "), campfireName)
 	}
 
 	// Build flag set from declaration args
@@ -93,6 +113,18 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 	}
 
 	if err := flags.Parse(rawArgs); err != nil {
+		if err == pflag.ErrHelp {
+			// Per-operation help: show description and args.
+			desc := matched.Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			fmt.Printf("%s/%s — %s\n", matched.Convention, matched.Operation, desc)
+			fmt.Printf("\nUsage: cf %s %s [--args]\n\n", campfireName, operationName)
+			fmt.Println("Arguments:")
+			flags.PrintDefaults()
+			return nil
+		}
 		return fmt.Errorf("parsing flags: %w", err)
 	}
 
