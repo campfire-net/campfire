@@ -10,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -801,6 +803,73 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 			return
 		}
 		h.transport.RemovePeer(campfireID, senderHex)
+	case "delivery":
+		// A member updates their own delivery preference (push endpoint or pull).
+		// Only the member themselves may change their own delivery preference.
+		if event.Member != senderHex {
+			http.Error(w, "delivery member must match sender", http.StatusBadRequest)
+			return
+		}
+		if event.Endpoint != "" {
+			// Member wants push delivery. Validate endpoint and check campfire supports push.
+			if err := validateJoinerEndpoint(event.Endpoint); err != nil {
+				http.Error(w, "invalid endpoint: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			// Read delivery modes from disk state or provider — same logic as handleJoin.
+			var deliveryModes []string
+			membership, err := h.store.GetMembership(campfireID)
+			if err != nil || membership == nil {
+				http.Error(w, "campfire membership not found", http.StatusNotFound)
+				return
+			}
+			if safeDir, dirErr := sanitizeTransportDir(membership.TransportDir); dirErr == nil {
+				stateFile := filepath.Join(safeDir, campfireID+".cbor")
+				if stateData, readErr := os.ReadFile(stateFile); readErr == nil {
+					var cfState campfire.CampfireState
+					if decErr := cfencoding.Unmarshal(stateData, &cfState); decErr == nil {
+						deliveryModes = campfire.EffectiveDeliveryModes(cfState.DeliveryModes)
+					}
+				}
+			}
+			if len(deliveryModes) == 0 && h.transport != nil {
+				h.transport.mu.RLock()
+				dmp := h.transport.deliveryModesProvider
+				h.transport.mu.RUnlock()
+				if dmp != nil {
+					if modes := dmp(campfireID); len(modes) > 0 {
+						deliveryModes = modes
+					}
+				}
+			}
+			if len(deliveryModes) == 0 {
+				deliveryModes = campfire.EffectiveDeliveryModes(nil)
+			}
+			supportsPush := false
+			for _, m := range deliveryModes {
+				if m == campfire.DeliveryModePush {
+					supportsPush = true
+					break
+				}
+			}
+			if !supportsPush {
+				log.Printf("handleMembership: delivery event: campfire %s does not support push (modes=%v), rejected from %s",
+					campfireID, deliveryModes, senderHex[:min(8, len(senderHex))])
+				http.Error(w, "campfire does not support push delivery", http.StatusBadRequest)
+				return
+			}
+			// Store/update the endpoint and register the peer in the transport.
+			h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+				CampfireID:   campfireID,
+				MemberPubkey: senderHex,
+				Endpoint:     event.Endpoint,
+			})
+			h.transport.AddPeer(campfireID, senderHex, event.Endpoint)
+		} else {
+			// Empty endpoint: member is switching to pull — remove stored endpoint.
+			h.store.DeletePeerEndpoint(campfireID, senderHex) //nolint:errcheck
+			h.transport.RemovePeer(campfireID, senderHex)
+		}
 	case "evict":
 		// Eviction is issued by the creator on behalf of another member.
 		// Fail-closed: if we can't verify the creator, reject the eviction.
