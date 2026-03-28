@@ -38,11 +38,21 @@ type handler struct {
 }
 
 // checkMembership verifies that senderHex is a member of campfireID on this node.
-// Returns true if the sender is the local self key or appears in the stored peer list.
+// Returns true if:
+//   - the sender is the local self key, OR
+//   - senderHex == campfireID (the campfire key itself, used when relaying), OR
+//   - the sender appears in the stored peer list.
+//
 // Returns false with a ready-to-send 403 if not a member.
+//
+// The campfire key check (senderHex == campfireID) is required because
+// forwardMessage signs relay requests with the campfire identity. The receiving
+// node must accept the campfire key as a valid deliver sender without registering
+// it as a manual peer endpoint.
 func (h *handler) checkMembership(w http.ResponseWriter, campfireID, senderHex string) (ok bool) {
 	selfPubKeyHex, _ := h.transport.SelfInfo()
-	isMember := senderHex == selfPubKeyHex
+	// Accept: local self key, or the campfire key (relay signer), or a stored peer.
+	isMember := senderHex == selfPubKeyHex || senderHex == campfireID
 	if !isMember {
 		peers, err := h.store.ListPeerEndpoints(campfireID)
 		if err == nil {
