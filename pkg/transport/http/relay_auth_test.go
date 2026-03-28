@@ -87,7 +87,7 @@ func TestRelayAuth_ThreeInstanceRelay(t *testing.T) {
 	if encErr != nil {
 		t.Fatalf("encoding East campfire state: %v", encErr)
 	}
-	if writeErr := os.WriteFile(filepath.Join(eastStateDir, campfireID+".cbor"), eastStateData, 0600); writeErr != nil {
+	if writeErr := os.WriteFile(filepath.Join(eastStateDir, "campfire.cbor"), eastStateData, 0600); writeErr != nil {
 		t.Fatalf("writing East campfire state: %v", writeErr)
 	}
 

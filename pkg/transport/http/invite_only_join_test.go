@@ -60,7 +60,7 @@ func setupInviteOnlyServer(t *testing.T, portOffset int) (campfireID, ep string,
 	if encErr != nil {
 		t.Fatalf("encoding campfire state: %v", encErr)
 	}
-	if writeErr := os.WriteFile(filepath.Join(stateDir, campfireID+".cbor"), stateData, 0600); writeErr != nil {
+	if writeErr := os.WriteFile(filepath.Join(stateDir, "campfire.cbor"), stateData, 0600); writeErr != nil {
 		t.Fatalf("writing campfire state: %v", writeErr)
 	}
 

@@ -824,7 +824,7 @@ func (h *handler) handleMembership(w http.ResponseWriter, r *http.Request, campf
 				return
 			}
 			if safeDir, dirErr := sanitizeTransportDir(membership.TransportDir); dirErr == nil {
-				stateFile := filepath.Join(safeDir, campfireID+".cbor")
+				stateFile := filepath.Join(safeDir, "campfire.cbor")
 				if stateData, readErr := os.ReadFile(stateFile); readErr == nil {
 					var cfState campfire.CampfireState
 					if decErr := cfencoding.Unmarshal(stateData, &cfState); decErr == nil {

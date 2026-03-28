@@ -76,7 +76,7 @@ func newDeliveryE2ECampfire(t *testing.T, s store.Store, modes []string) (campfi
 	if encErr != nil {
 		t.Fatalf("encoding campfire state: %v", encErr)
 	}
-	if writeErr := os.WriteFile(filepath.Join(stateDir, campfireID+".cbor"), data, 0600); writeErr != nil {
+	if writeErr := os.WriteFile(filepath.Join(stateDir, "campfire.cbor"), data, 0600); writeErr != nil {
 		t.Fatalf("writing campfire state: %v", writeErr)
 	}
 

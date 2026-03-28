@@ -166,7 +166,7 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 	// compat: pre-field-9 campfires and campfires without a state file are pull-only).
 	var responseModes []string
 	if safeDir, dirErr := sanitizeTransportDir(membership.TransportDir); dirErr == nil {
-		stateFile := filepath.Join(safeDir, campfireID+".cbor")
+		stateFile := filepath.Join(safeDir, "campfire.cbor")
 		if stateData, readErr := os.ReadFile(stateFile); readErr == nil {
 			var cfState campfire.CampfireState
 			if decErr := cfencoding.Unmarshal(stateData, &cfState); decErr == nil {
