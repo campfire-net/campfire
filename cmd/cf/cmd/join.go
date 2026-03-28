@@ -65,8 +65,32 @@ var joinCmd = &cobra.Command{
 	},
 }
 
+// resolveFSTransportDir returns the filesystem transport directory for campfireID.
+// It checks the beacon (global and project) for a "dir" key in the transport config.
+// If no beacon is found or it carries no dir, falls back to the default base dir.
+func resolveFSTransportDir(campfireID string) string {
+	for _, dir := range []string{BeaconDir(), projectBeaconDir()} {
+		if dir == "" {
+			continue
+		}
+		beacons, err := beacon.Scan(dir)
+		if err != nil {
+			continue
+		}
+		for _, b := range beacons {
+			if b.CampfireIDHex() == campfireID {
+				if d, ok := b.Transport.Config["dir"]; ok && d != "" {
+					return d
+				}
+			}
+		}
+	}
+	return filepath.Join(fs.DefaultBaseDir(), campfireID)
+}
+
 func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store) error {
-	tr := fs.New(fs.DefaultBaseDir())
+	transportDir := resolveFSTransportDir(campfireID)
+	tr := fs.ForDir(transportDir)
 
 	// Read campfire state to check join protocol.
 	state, err := tr.ReadState(campfireID)
@@ -159,7 +183,7 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	}
 
 	// Send join request to the via endpoint.
-	result, err := cfhttp.Join(via, campfireID, agentID, myEndpoint)
+	result, err := cfhttp.Join(via, campfireID, agentID, myEndpoint, false)
 	if err != nil {
 		return fmt.Errorf("joining campfire via %s: %w", via, err)
 	}

@@ -192,9 +192,9 @@ func TestSwarmLifecycle_EndToEnd(t *testing.T) {
 	t.Log("Step 4: message exchange")
 
 	// Agent B must join the root campfire first (it's open protocol).
-	_, _, err = runCF(t, projectDir, envB, "join", rootCampfireID)
+	_, joinStderr, err := runCF(t, projectDir, envB, "join", rootCampfireID)
 	if err != nil {
-		t.Fatalf("cf join (agent B): %v", err)
+		t.Fatalf("cf join (agent B): %v\nstderr: %s", err, joinStderr)
 	}
 
 	// Agent A sends a tagged status message.
