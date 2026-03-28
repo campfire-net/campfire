@@ -455,7 +455,7 @@ a:hover { color: var(--color-accent-secondary-hover); }
 /* ── Demo section (animated) ── */
 .demo-section {
   padding: var(--space-section) 0;
-  background: var(--color-bg);
+  background: var(--color-surface);
   border-top: 1px solid var(--color-border);
 }
 
@@ -888,7 +888,7 @@ a:hover { color: var(--color-accent-secondary-hover); }
 /* ── Protocol comparison section ── */
 .compare-section {
   padding: var(--space-section) 0;
-  background: var(--color-surface);
+  background: var(--color-bg);
   border-top: 1px solid var(--color-border);
 }
 
@@ -1290,7 +1290,7 @@ a:hover { color: var(--color-accent-secondary-hover); }
 /* ── Get Started dual-path section ── */
 .getstarted-section {
   padding: var(--space-section) 0;
-  background: var(--color-bg);
+  background: var(--color-surface);
   border-top: 1px solid var(--color-border);
 }
 
