@@ -274,8 +274,9 @@ func (t *Transport) AddPeer(campfireID, pubKeyHex, endpoint string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	peers := t.peers[campfireID]
-	for _, p := range peers {
+	for i, p := range peers {
 		if p.PubKeyHex == pubKeyHex {
+			peers[i].Endpoint = endpoint // upsert: update endpoint
 			return
 		}
 	}
