@@ -43,8 +43,9 @@ Azure Table Storage (stcampfirebpjpsl)
 
 | Package | Purpose | Tests |
 |---------|---------|-------|
-| `cmd/cf-mcp/` | MCP server, 14 tools, session management, auto-provisioning | 5 tests |
+| `cmd/cf-mcp/` | MCP server, convention-first tool surface, session management, auto-provisioning | 5 tests |
 | `cmd/cf-functions/` | Azure Functions custom handler, reverse proxy to cf-mcp | 10 tests |
+| `pkg/protocol/` | Unified Client API — Send/Read with transport dispatch, role enforcement | client_test + send/read tests |
 | `pkg/store/` | Store interface + SQLite implementation | Existing suite |
 | `pkg/store/aztable/` | Azure Table Storage implementation of store.Store | Contract tests + Azurite (build-tagged) |
 | `pkg/ratelimit/` | Rate limiting wrapper (100/min, 64KB, 1000/month) | 13 tests |
@@ -53,6 +54,119 @@ Azure Table Storage (stcampfirebpjpsl)
 | `pkg/crypto/` | AES-GCM, HKDF, key wrapping, E2E encryption (CEK derivation) | Existing + 10 new |
 | `pkg/identity/` | Ed25519 identity, v1/v2 format (wrapped keys) | Existing + 8 new |
 | `pkg/campfire/` | Campfire types, encryption types, blind relay role | Existing + 7 new |
+
+## protocol.Client Layer
+
+`pkg/protocol` provides the unified client API for all campfire message operations. It consolidates what was previously duplicated across `cmd/cf`, `cmd/cf-mcp`, and `pkg/convention`.
+
+```
+cmd/cf-mcp (MCP tool handlers)
+  │
+  │ protocol.New(store, identity)
+  ▼
+protocol.Client
+  │
+  ├── Client.Send(SendRequest) → *message.Message
+  │     ├── transport.ResolveType(membership) → TypeGitHub | TypePeerHTTP | default
+  │     ├── Role enforcement (observer/writer/full) → *RoleError if denied
+  │     └── Dispatch: sendFilesystem | sendGitHub | sendP2PHTTP
+  │           └── FROST threshold signing for TypePeerHTTP with threshold>1
+  │
+  └── Client.Read(ReadRequest) → []message.Message
+        └── sync-before-query for filesystem/GitHub; skip for push transports
+```
+
+### API
+
+```go
+// Construct once per session with a store and agent identity.
+client := protocol.New(store, identity)
+
+// Send a message. Transport is selected from the membership record.
+msg, err := client.Send(protocol.SendRequest{
+    CampfireID:  campfireID,
+    Payload:     []byte("hello"),
+    Tags:        []string{"status"},
+    Antecedents: []string{replyToID},
+    Instance:    "my-agent",
+})
+
+// Read messages from a campfire (syncs from transport before querying).
+msgs, err := client.Read(protocol.ReadRequest{
+    CampfireID: campfireID,
+    After:      cursor,
+})
+```
+
+### Transport dispatch
+
+`Send` inspects the membership record's `TransportDir` field to select the transport:
+
+| Transport | How detected | Behavior |
+|-----------|-------------|---------|
+| Filesystem | Default (local path) | Sync from dir, write message file |
+| GitHub Issues | `TransportDir` starts with `github:` | POST comment via GitHub API |
+| P2P HTTP | membership type = TypePeerHTTP | Deliver to peer endpoints; FROST if threshold>1 |
+
+In all cases, the sent message is mirrored into the local store so the sender can read it back immediately without a separate sync step.
+
+### Role enforcement
+
+Before any send, `Client.Send` checks the membership role:
+
+| Role | Can send | Restriction |
+|------|----------|-------------|
+| `full` (default) | Yes | None |
+| `writer` | Yes | Cannot send `campfire:*` system messages |
+| `observer` | No | All sends rejected with `*RoleError` |
+
+Callers can inspect the error type with `protocol.IsRoleError(err, &target)`.
+
+### Signing modes
+
+| Mode | When used |
+|------|-----------|
+| `SigningModeMemberKey` | Default — filesystem, GitHub, P2P with threshold≤1 |
+| `SigningModeThreshold` | P2P HTTP with threshold>1; runs FROST signing rounds |
+
+## Convention-First Tool Surface
+
+`cf-mcp` exposes a convention-based tool surface. When an agent joins a campfire, the server reads the campfire's convention declarations and registers each declared operation as a live MCP tool. Agents call `tools/list` after joining to see what appeared — no configuration, no code changes required.
+
+```
+campfire_init → agent identity + session token
+  │
+campfire_join(campfire_id) → read convention:operation messages from store
+  │                            parse declarations
+  │                            register MCP tools dynamically
+  ▼
+tools/list returns:
+  ├── Base tools (campfire_init, campfire_join, campfire_discover, ...)
+  └── Convention tools (core-peer-establish, operator-verify, submit-result, ...)
+```
+
+### Base tools (always registered)
+
+| Tool | Purpose |
+|------|---------|
+| `campfire_init` | Initialize agent identity — call first |
+| `campfire_join` | Join a campfire; triggers convention tool registration |
+| `campfire_discover` | Find campfires via named beacons |
+| `campfire_ls` | List joined campfires |
+| `campfire_members` | List members of a campfire |
+| `campfire_provision` | Create or join a campfire by ID (idempotent) |
+
+### Convention tools (registered on join)
+
+Each convention declaration published to a campfire becomes an MCP tool. The tool validates arguments, composes tags, signs the message, and calls `protocol.Client.Send` — the agent supplies only the payload arguments.
+
+Tool naming: primary name is the operation field from the declaration. On collision, the server falls back to `{convention_slug}_{operation}` (hyphens → underscores).
+
+### Raw data-plane tools (hidden by default)
+
+`campfire_create`, `campfire_send`, `campfire_read`, `campfire_inspect`, `campfire_dm`, `campfire_await`, `campfire_export`, `campfire_commitment` are hidden unless `cf-mcp` is started with `--expose-primitives`. Use them for bootstrapping new conventions or ad-hoc debugging; prefer convention tools for typed operations.
+
+See [mcp-conventions.md](mcp-conventions.md) for the full convention tool reference.
 
 ## Security Model
 
