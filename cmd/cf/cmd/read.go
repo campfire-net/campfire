@@ -67,7 +67,7 @@ func resolveCampfireEntries(args []string, agentID *identity.Identity, s store.S
 
 // runFollowMode runs the --follow polling loop: sync → query → print → sleep,
 // until a SIGINT/SIGTERM is received. Cursor advancement respects peek and all flags.
-func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.Store, fieldSet map[string]bool, all, peek bool, tagFilters []string, senderFilter string) error {
+func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.Store, fieldSet map[string]bool, all, peek bool, mf store.MessageFilter) error {
 	// Determine poll interval — use the shortest interval across all campfires.
 	interval := 2 * time.Second
 	for _, e := range entries {
@@ -128,7 +128,7 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.
 		// Cursor advances based on ALL new messages (pre-filter) so filtered-out
 		// messages don't re-appear on the next poll.
 		if len(newMessages) > 0 {
-			printMessagesWithFields(filterMessages(newMessages, tagFilters, senderFilter), s, fieldSet)
+			printMessagesWithFields(filterMessages(newMessages, mf), s, fieldSet)
 
 			if !peek {
 				for _, m := range newMessages {
@@ -154,7 +154,7 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.
 // runOneShotMode performs a single sync → query → print → cursor-advance cycle.
 // Compaction is respected unless all is set. Cursor advancement is skipped for
 // all and peek modes.
-func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *identity.Identity, s store.Store, fieldSet map[string]bool, all, peek bool, tagFilters []string, senderFilter string) error {
+func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *identity.Identity, s store.Store, fieldSet map[string]bool, all, peek bool, mf store.MessageFilter) error {
 	// Sync all campfires.
 	for _, e := range entries {
 		syncCampfire(e.id, e.membership, agentID, s)
@@ -167,11 +167,8 @@ func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *iden
 	// filtered per campfire) with a single payload-bearing query + one scalar query,
 	// halving the number of full-scan SQL round-trips. (Fix for workspace-pm9m.5.15.)
 	preCursors := map[string]int64{}
-	sqlFilter := store.MessageFilter{
-		Tags:              tagFilters,
-		Sender:            senderFilter,
-		RespectCompaction: !all,
-	}
+	sqlFilter := mf
+	sqlFilter.RespectCompaction = !all
 	var allMessages []store.MessageRecord
 	for _, cfID := range campfireIDs {
 		var afterTS int64
@@ -235,8 +232,10 @@ var readCmd = &cobra.Command{
 		readPeek, _ := cmd.Flags().GetBool("peek")
 		readFollow, _ := cmd.Flags().GetBool("follow")
 		readPull, _ := cmd.Flags().GetString("pull")
-		readTagFilters, _ := cmd.Flags().GetStringArray("tag")
+		readTagFiltersRaw, _ := cmd.Flags().GetStringArray("tag")
+		readExcludeTagsRaw, _ := cmd.Flags().GetStringArray("exclude-tag")
 		readSenderFilter, _ := cmd.Flags().GetString("sender")
+		readConvention, _ := cmd.Flags().GetString("convention")
 		readFields, _ := cmd.Flags().GetString("fields")
 
 		// --pull is mutually exclusive with --all, --peek, --follow.
@@ -253,6 +252,40 @@ var readCmd = &cobra.Command{
 			return runPull(readPull, fieldSet)
 		}
 
+		// Build message filter from flags.
+		// --convention is sugar: --convention galtrader is equivalent to
+		// --tag 'galtrader:*' --exclude-tag convention:operation
+		if readConvention != "" {
+			readTagFiltersRaw = append(readTagFiltersRaw, readConvention+":*")
+			readExcludeTagsRaw = append(readExcludeTagsRaw, "convention:operation")
+		}
+
+		// Split glob patterns: "galtrader:*" → TagPrefixes, exact → Tags.
+		var readTagFilters, readTagPrefixes []string
+		for _, t := range readTagFiltersRaw {
+			if strings.HasSuffix(t, "*") {
+				readTagPrefixes = append(readTagPrefixes, strings.TrimSuffix(t, "*"))
+			} else {
+				readTagFilters = append(readTagFilters, t)
+			}
+		}
+		var readExcludeTags, readExcludeTagPrefixes []string
+		for _, t := range readExcludeTagsRaw {
+			if strings.HasSuffix(t, "*") {
+				readExcludeTagPrefixes = append(readExcludeTagPrefixes, strings.TrimSuffix(t, "*"))
+			} else {
+				readExcludeTags = append(readExcludeTags, t)
+			}
+		}
+
+		mf := store.MessageFilter{
+			Tags:               readTagFilters,
+			TagPrefixes:        readTagPrefixes,
+			ExcludeTags:        readExcludeTags,
+			ExcludeTagPrefixes: readExcludeTagPrefixes,
+			Sender:             readSenderFilter,
+		}
+
 		agentID, s, err := requireAgentAndStore()
 		if err != nil {
 			return err
@@ -265,9 +298,9 @@ var readCmd = &cobra.Command{
 		}
 
 		if readFollow {
-			return runFollowMode(entries, agentID, s, fieldSet, readAll, readPeek, readTagFilters, readSenderFilter)
+			return runFollowMode(entries, agentID, s, fieldSet, readAll, readPeek, mf)
 		}
-		return runOneShotMode(campfireIDs, entries, agentID, s, fieldSet, readAll, readPeek, readTagFilters, readSenderFilter)
+		return runOneShotMode(campfireIDs, entries, agentID, s, fieldSet, readAll, readPeek, mf)
 	},
 }
 
@@ -312,7 +345,9 @@ func init() {
 	readCmd.Flags().Bool("follow", false, "stream messages in real time (NAT mode: keep polling)")
 	readCmd.Flags().String("pull", "", "fetch specific messages by ID (comma-separated)")
 	readCmd.Flags().String("endpoint", "", "this agent's own HTTP endpoint (empty = NAT mode, poll peers)")
-	readCmd.Flags().StringArray("tag", nil, "filter messages by tag (OR semantics, repeatable)")
+	readCmd.Flags().StringArray("tag", nil, "filter by tag (OR semantics, repeatable; suffix with * for prefix match)")
+	readCmd.Flags().StringArray("exclude-tag", nil, "exclude messages with tag (repeatable; suffix with * for prefix match)")
+	readCmd.Flags().String("convention", "", "filter to a convention's commands (sugar for --tag '<slug>:*' --exclude-tag convention:operation)")
 	readCmd.Flags().String("sender", "", "filter messages by sender hex prefix")
 	readCmd.Flags().String("fields", "", "comma-separated list of fields to include (e.g. id,sender,payload); omit for all fields")
 	rootCmd.AddCommand(readCmd)

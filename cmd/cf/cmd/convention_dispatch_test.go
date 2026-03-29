@@ -8,10 +8,12 @@ import (
 	"strings"
 	"testing"
 
+	campfire "github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
+	fstransport "github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/pflag"
 )
 
@@ -43,17 +45,31 @@ func setupDispatchEnv(t *testing.T, declPayload []byte) (campfireID string, clea
 	}
 	defer s.Close()
 
-	// Generate a campfire ID
-	cfID, err := identity.Generate()
+	// Create a campfire so its state (campfire.cbor) and directories exist on disk.
+	cf, err := campfire.New("open", nil, 1)
 	if err != nil {
-		t.Fatalf("generating campfire identity: %v", err)
+		t.Fatalf("creating campfire: %v", err)
 	}
-	campfireID = cfID.PublicKeyHex()
+	cf.AddMember(id.PublicKey)
+	campfireID = cf.PublicKeyHex()
+
+	// Set up filesystem transport so sendFilesystem can verify membership and add provenance.
+	campfireTransportDir := filepath.Join(dir, "campfire-transport")
+	tr := fstransport.ForDir(campfireTransportDir)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("initializing campfire transport: %v", err)
+	}
+	if err := tr.WriteMember(campfireID, campfire.MemberRecord{
+		PublicKey: id.PublicKey,
+		JoinedAt:  1,
+	}); err != nil {
+		t.Fatalf("writing member record: %v", err)
+	}
 
 	// Add membership so resolveCampfireID finds it
 	if err := s.AddMembership(store.Membership{
 		CampfireID:   campfireID,
-		TransportDir: dir,
+		TransportDir: campfireTransportDir,
 		JoinProtocol: "open",
 		Role:         "member",
 		JoinedAt:     1,
@@ -221,17 +237,42 @@ func TestCLITransportAdapter_SendAndRead(t *testing.T) {
 	}
 	defer s.Close()
 
-	adapter := &cliTransportAdapter{agentID: id, store: s}
-
-	cfID, err := identity.Generate()
+	// Create a campfire with filesystem transport.
+	cf, err := campfire.New("open", nil, 1)
 	if err != nil {
-		t.Fatalf("generating campfire id: %v", err)
+		t.Fatalf("creating campfire: %v", err)
 	}
+	cf.AddMember(id.PublicKey)
+	campfireID := cf.PublicKeyHex()
+
+	campfireTransportDir := filepath.Join(dir, "campfire-transport")
+	tr := fstransport.ForDir(campfireTransportDir)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("initializing campfire transport: %v", err)
+	}
+	if err := tr.WriteMember(campfireID, campfire.MemberRecord{
+		PublicKey: id.PublicKey,
+		JoinedAt:  1,
+	}); err != nil {
+		t.Fatalf("writing member record: %v", err)
+	}
+
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: campfireTransportDir,
+		JoinProtocol: "open",
+		Role:         "member",
+		JoinedAt:     1,
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	adapter := &cliTransportAdapter{agentID: id, store: s}
 
 	payload := []byte(`{"text":"hello"}`)
 	tags := []string{"test:post"}
 	ctx := context.Background()
-	msgID, err := adapter.SendMessage(ctx, cfID.PublicKeyHex(), payload, tags, nil)
+	msgID, err := adapter.SendMessage(ctx, campfireID, payload, tags, nil)
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -239,8 +280,10 @@ func TestCLITransportAdapter_SendAndRead(t *testing.T) {
 		t.Fatal("expected non-empty message ID")
 	}
 
-	// Read back
-	msgs, err := adapter.ReadMessages(ctx, cfID.PublicKeyHex(), tags)
+	// Read back — message is in the transport, but ReadMessages reads from the local store.
+	// sendFilesystem writes to transport, not local store, so we read from store.ListMessages
+	// after syncing. For this test, read directly from the transport to verify it was written.
+	msgs, err := adapter.ReadMessages(ctx, campfireID, tags)
 	if err != nil {
 		t.Fatalf("ReadMessages: %v", err)
 	}

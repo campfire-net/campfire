@@ -108,15 +108,7 @@ var sendCmd = &cobra.Command{
 		}
 
 		// Route based on transport type.
-		var msg *message.Message
-		switch transport.ResolveType(*m) {
-		case transport.TypeGitHub:
-			msg, err = sendGitHub(campfireID, payload, tags, antecedents, sendInstance, agentID, s, m)
-		case transport.TypePeerHTTP:
-			msg, err = sendP2PHTTP(campfireID, payload, tags, antecedents, sendInstance, agentID, s, m)
-		default:
-			msg, err = sendFilesystem(campfireID, payload, tags, antecedents, sendInstance, agentID, m.TransportDir)
-		}
+		msg, err := routeMessage(campfireID, payload, tags, antecedents, sendInstance, agentID, s, m)
 		if err != nil {
 			return err
 		}
@@ -141,6 +133,19 @@ var sendCmd = &cobra.Command{
 		fmt.Println(msg.ID)
 		return nil
 	},
+}
+
+// routeMessage resolves the transport for a campfire and sends a message through it.
+// This is the shared core used by both `cf send` and convention dispatch.
+func routeMessage(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s store.Store, m *store.Membership) (*message.Message, error) {
+	switch transport.ResolveType(*m) {
+	case transport.TypeGitHub:
+		return sendGitHub(campfireID, payload, tags, antecedents, instance, agentID, s, m)
+	case transport.TypePeerHTTP:
+		return sendP2PHTTP(campfireID, payload, tags, antecedents, instance, agentID, s, m)
+	default:
+		return sendFilesystem(campfireID, payload, tags, antecedents, instance, agentID, m.TransportDir)
+	}
 }
 
 // sendFilesystem sends a message via the filesystem transport.

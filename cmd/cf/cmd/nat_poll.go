@@ -57,7 +57,7 @@ func filterNATMessages(msgs []message.Message, tagFilters []string, senderFilter
 		if !matchesSender(senderHex, senderPrefix) {
 			continue
 		}
-		if len(tagSet) > 0 && !matchesTags(m.Tags, tagSet) {
+		if len(tagSet) > 0 && !matchesTagsOrPrefixes(m.Tags, tagSet, nil) {
 			continue
 		}
 		result = append(result, m)
