@@ -40,19 +40,32 @@ var rootCmd = &cobra.Command{
 
   Convention operations handle validation, tag composition, rate limiting,
   and signing automatically. In MCP mode (cf-mcp), they appear as typed
-  tools after campfire_join — call tools/list to see them.
-
-  For primitives (send, read, create, discover, await, inspect), run:
-    cf --help-primitives`,
+  tools after campfire_join — call tools/list to see them.`,
 	Version: Version,
 }
 
 var helpPrimitives bool
 
+// Command group IDs for help output organization.
+const (
+	groupConventions = "conventions"
+	groupCampfire    = "campfire"
+	groupMessages    = "messages"
+	groupAdvanced    = "advanced"
+)
+
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	rootCmd.PersistentFlags().StringVar(&cfHome, "cf-home", "", "path to campfire home directory (default: ~/.campfire)")
 	rootCmd.Flags().BoolVar(&helpPrimitives, "help-primitives", false, "show primitive commands (send, read, create, discover, await, inspect)")
+
+	// Register command groups for organized help output.
+	rootCmd.AddGroup(
+		&cobra.Group{ID: groupConventions, Title: "Convention Operations:"},
+		&cobra.Group{ID: groupCampfire, Title: "Campfire Management:"},
+		&cobra.Group{ID: groupMessages, Title: "Messages:"},
+		&cobra.Group{ID: groupAdvanced, Title: "Advanced:"},
+	)
 
 	// Allow unknown flags at root level so convention dispatch can capture them.
 	rootCmd.FParseErrWhitelist = cobra.FParseErrWhitelist{UnknownFlags: true}
@@ -165,5 +178,10 @@ func ProjectDir() (string, bool) {
 }
 
 func Execute() error {
+	// Assign command groups before cobra runs — all init() functions have
+	// registered their commands by the time Execute() is called.
+	assignCommandGroups()
+	rootCmd.SetHelpCommandGroupID(groupAdvanced)
+	rootCmd.SetCompletionCommandGroupID(groupAdvanced)
 	return rootCmd.Execute()
 }
