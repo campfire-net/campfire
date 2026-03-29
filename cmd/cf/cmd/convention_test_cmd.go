@@ -355,7 +355,7 @@ func buildSyntheticArgs(decl *convention.Declaration) map[string]any {
 	return args
 }
 
-// syntheticTransport is a no-op ExecutorTransport for testing.
+// syntheticTransport is a no-op ExecutorBackend for testing.
 type syntheticTransport struct {
 	sent []syntheticSent
 }
