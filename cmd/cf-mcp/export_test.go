@@ -315,9 +315,10 @@ func TestExport_IdentityMatchesSession(t *testing.T) {
 // Test: campfire_export appears in tools/list.
 // ---------------------------------------------------------------------------
 
-// TestExport_InToolsList verifies that campfire_export is listed in tools/list.
+// TestExport_InToolsList verifies that campfire_export is listed in tools/list when
+// --expose-primitives is set (campfire_export is a primitive tool).
 func TestExport_InToolsList(t *testing.T) {
-	srv := newTestServer(t)
+	srv := newTestServerWithPrimitives(t)
 	resp := srv.dispatch(makeReq("tools/list", "{}"))
 	if resp.Error != nil {
 		t.Fatalf("tools/list error: %+v", resp.Error)

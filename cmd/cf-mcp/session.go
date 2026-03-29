@@ -317,10 +317,13 @@ func (s *Session) server(manager *SessionManager) *server {
 		auditWriter:     s.auditWriter,
 		conventionTools: s.conventionTools,
 	}
-	if manager != nil && manager.router != nil {
-		srv.httpTransport = s.httpTransport
-		srv.transportRouter = manager.router
-		srv.externalAddr = manager.externalAddr
+	if manager != nil {
+		srv.exposePrimitives = manager.exposePrimitives
+		if manager.router != nil {
+			srv.httpTransport = s.httpTransport
+			srv.transportRouter = manager.router
+			srv.externalAddr = manager.externalAddr
+		}
 	}
 	return srv
 }
@@ -437,6 +440,9 @@ type SessionManager struct {
 	// initLimiter enforces per-IP rate limiting on campfire_init (new session
 	// creation). Never nil after NewSessionManager.
 	initLimiter *initRateLimiter
+	// exposePrimitives mirrors the --expose-primitives flag. When true, sessions
+	// created by this manager will include primitive tools in their tools/list.
+	exposePrimitives bool
 }
 
 // NewSessionManager creates a SessionManager rooted at sessionsDir and

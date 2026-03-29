@@ -257,7 +257,10 @@ func (s *server) publishDeclarations(st store.Store, campfireID string, entries 
 // Returns the list of tool names actually registered (collision-aware).
 func registerConventionTools(m *conventionToolMap, campfireID string, decls []*convention.Declaration) []string {
 	existing := make(map[string]bool)
-	for _, t := range tools {
+	for _, t := range baseTools {
+		existing[t.Name] = true
+	}
+	for _, t := range primitiveTools {
 		existing[t.Name] = true
 	}
 
