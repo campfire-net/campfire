@@ -345,6 +345,96 @@ func TestRemoteJoin_SendAndReadAfterRemoteJoin(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario 6: Convention declarations replicated to joiner
+// ---------------------------------------------------------------------------
+
+// TestRemoteJoin_ConventionDeclarationsReplicated verifies that when East creates
+// a campfire with convention declarations (e.g. "social-post"), West joins via
+// peer_endpoint, and West's tools/list shows the convention tools.
+// Regression test for campfire-agent-jb6: declarations were filtered out because
+// readDeclarations was called with an empty campfireKey, causing Parse to mark
+// campfire-key-signed declarations as untrusted.
+func TestRemoteJoin_ConventionDeclarationsReplicated(t *testing.T) {
+	// Bypass SSRF validation so loopback endpoints work in tests.
+	cfhttp.OverrideValidateJoinerEndpointForTest()
+	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
+
+	// Server A (East): hosted HTTP mode — owns the campfire with declarations.
+	_, _, tsURL := newTestServerWithHTTPTransport(t)
+
+	// Session A: init and create campfire with a convention declaration.
+	initRespA := mcpCall(t, tsURL, "", "campfire_init", map[string]interface{}{})
+	tokenA := extractTokenFromInit(t, initRespA)
+
+	createResp := mcpCall(t, tsURL, tokenA, "campfire_create", map[string]interface{}{
+		"description":    "declaration replication test",
+		"delivery_modes": []string{"pull", "push"},
+		"declarations": []interface{}{
+			map[string]interface{}{
+				"convention":  "social-post-format",
+				"version":     "0.3",
+				"operation":   "post",
+				"description": "Publish a social post",
+				"signing":     "campfire_key",
+				"args": []interface{}{
+					map[string]interface{}{"name": "content", "type": "string", "required": true},
+				},
+			},
+		},
+	})
+	createText := extractResultText(t, createResp)
+	var createResult struct {
+		CampfireID              string   `json:"campfire_id"`
+		ConventionToolsRegistered int    `json:"convention_tools_registered"`
+		ConventionTools         []string `json:"convention_tools"`
+	}
+	if err := json.Unmarshal([]byte(createText), &createResult); err != nil {
+		t.Fatalf("parsing create result: %v (text: %s)", err, createText)
+	}
+	campfireID := createResult.CampfireID
+	if campfireID == "" {
+		t.Fatal("campfire_id is empty in create result")
+	}
+	if createResult.ConventionToolsRegistered == 0 {
+		t.Fatal("East: expected convention tools registered at create time, got 0")
+	}
+
+	// Server B (West): separate hosted instance.
+	_, _, tsURLB := newTestServerWithHTTPTransport(t)
+
+	// Session B: init and join remotely via peer_endpoint.
+	initRespB := mcpCall(t, tsURLB, "", "campfire_init", map[string]interface{}{})
+	tokenB := extractTokenFromInit(t, initRespB)
+
+	joinResp := mcpCall(t, tsURLB, tokenB, "campfire_join", map[string]interface{}{
+		"campfire_id":   campfireID,
+		"peer_endpoint": tsURL,
+	})
+	if joinResp.Error != nil {
+		t.Fatalf("remote join failed: code=%d msg=%s", joinResp.Error.Code, joinResp.Error.Message)
+	}
+
+	// Verify join response reports convention tools registered.
+	joinText := extractResultText(t, joinResp)
+	var joinResult struct {
+		ConventionToolsRegistered int      `json:"convention_tools_registered"`
+		ConventionTools           []string `json:"convention_tools"`
+	}
+	if err := json.Unmarshal([]byte(joinText), &joinResult); err != nil {
+		t.Fatalf("parsing join result: %v (text: %s)", err, joinText)
+	}
+	if joinResult.ConventionToolsRegistered == 0 {
+		t.Fatalf("West: expected convention_tools_registered > 0 in join response, got 0 (text: %s)", joinText)
+	}
+
+	// Verify the convention tool name is "post".
+	if len(joinResult.ConventionTools) == 0 || joinResult.ConventionTools[0] != "post" {
+		t.Errorf("West: expected convention tool 'post', got %v", joinResult.ConventionTools)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
 

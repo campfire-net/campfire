@@ -1649,7 +1649,7 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		s.conventionTools = newConventionToolMap()
 	}
 	var fsToolNames []string
-	decls, declErr := readDeclarations(st, campfireID, "" /* campfire key resolved later */)
+	decls, declErr := readDeclarations(st, campfireID, campfireID)
 	if declErr != nil {
 		log.Printf("convention: reading declarations for %s: %v", campfireID, declErr)
 	} else if len(decls) > 0 {
@@ -1905,7 +1905,7 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		s.conventionTools = newConventionToolMap()
 	}
 	var httpToolNames []string
-	httpDecls, httpDeclErr := readDeclarations(st, campfireID, "")
+	httpDecls, httpDeclErr := readDeclarations(st, campfireID, campfireID)
 	if httpDeclErr != nil {
 		log.Printf("convention: reading declarations for %s: %v", campfireID, httpDeclErr)
 	} else if len(httpDecls) > 0 {
