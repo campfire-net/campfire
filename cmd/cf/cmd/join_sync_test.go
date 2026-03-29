@@ -70,12 +70,16 @@ func setupCampfireWithMessages(t *testing.T, msgCount int) (campfireID string, t
 		t.Fatalf("writing creator member record: %v", err)
 	}
 
-	// Write messages to the transport.
+	// Write messages to the transport. Each message needs at least one provenance
+	// hop (signed by the campfire) so syncFromFilesystem accepts it.
 	for i := 0; i < msgCount; i++ {
 		payload := []byte(fmt.Sprintf(`{"text":"message %d"}`, i))
 		msg, err := message.NewMessage(creator.PrivateKey, creator.PublicKey, payload, []string{"test:msg"}, nil)
 		if err != nil {
 			t.Fatalf("creating message %d: %v", i, err)
+		}
+		if err := msg.AddHop(cfID.PrivateKey, cfID.PublicKey, nil, 1, "open", []string{}, ""); err != nil {
+			t.Fatalf("adding provenance hop to message %d: %v", i, err)
 		}
 		if err := tr.WriteMessage(campfireID, msg); err != nil {
 			t.Fatalf("writing message %d to transport: %v", i, err)
@@ -153,6 +157,12 @@ func TestJoinFilesystem_SyncsConventionDeclarations(t *testing.T) {
 	declMsg, err := message.NewMessage(creator.PrivateKey, creator.PublicKey, declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating declaration message: %v", err)
+	}
+	// Add a provenance hop so syncFromFilesystem accepts the message.
+	// setupCampfireWithMessages returns campfireID (pubkey hex) but not the private key;
+	// use the creator identity as a stand-in relay to satisfy the non-zero hop check.
+	if err := declMsg.AddHop(creator.PrivateKey, creator.PublicKey, nil, 1, "open", []string{}, ""); err != nil {
+		t.Fatalf("adding provenance hop to declaration message: %v", err)
 	}
 	if err := tr.WriteMessage(campfireID, declMsg); err != nil {
 		t.Fatalf("writing declaration to transport: %v", err)

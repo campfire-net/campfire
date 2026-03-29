@@ -16,9 +16,9 @@ import (
 )
 
 // setupTestCampfire creates a temporary campfire with a filesystem transport and
-// a store. Returns the campfire ID, the transport, and the store.
+// a store. Returns the campfire ID, the campfire identity, the transport, and the store.
 // The caller is responsible for calling s.Close().
-func setupTestCampfire(t *testing.T) (campfireID string, tr *fs.Transport, s store.Store) {
+func setupTestCampfire(t *testing.T) (campfireID string, cfID *identity.Identity, tr *fs.Transport, s store.Store) {
 	t.Helper()
 
 	transportBaseDir := t.TempDir()
@@ -75,13 +75,14 @@ func setupTestCampfire(t *testing.T) (campfireID string, tr *fs.Transport, s sto
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	return campfireID, tr, s
+	return campfireID, cfID, tr, s
 }
 
 // writeTransportMessage writes a signed message directly to the filesystem transport.
 // This simulates another agent writing to the campfire without going through the
 // local store — exactly the scenario that sync-before-query must handle.
-func writeTransportMessage(t *testing.T, tr *fs.Transport, campfireID string, payload string, tags []string) *message.Message {
+// A provenance hop is added so the message passes zero-provenance rejection.
+func writeTransportMessage(t *testing.T, cfID *identity.Identity, tr *fs.Transport, campfireID string, payload string, tags []string) *message.Message {
 	t.Helper()
 
 	agentID, err := identity.Generate()
@@ -94,6 +95,10 @@ func writeTransportMessage(t *testing.T, tr *fs.Transport, campfireID string, pa
 		t.Fatalf("creating message: %v", err)
 	}
 
+	if err := msg.AddHop(cfID.PrivateKey, cfID.PublicKey, []byte("testhash"), 1, "open", []string{}, "full"); err != nil {
+		t.Fatalf("adding provenance hop: %v", err)
+	}
+
 	if err := tr.WriteMessage(campfireID, msg); err != nil {
 		t.Fatalf("writing message to transport: %v", err)
 	}
@@ -103,7 +108,8 @@ func writeTransportMessage(t *testing.T, tr *fs.Transport, campfireID string, pa
 // writeTransportMessageWithAntecedents writes a signed message with the given
 // antecedents directly to the filesystem transport. It mirrors writeTransportMessage
 // but allows specifying antecedent message IDs (used for testing Await fulfillment).
-func writeTransportMessageWithAntecedents(t *testing.T, tr *fs.Transport, campfireID string, payload string, tags []string, antecedents []string) *message.Message {
+// A provenance hop is added so the message passes zero-provenance rejection.
+func writeTransportMessageWithAntecedents(t *testing.T, cfID *identity.Identity, tr *fs.Transport, campfireID string, payload string, tags []string, antecedents []string) *message.Message {
 	t.Helper()
 
 	agentID, err := identity.Generate()
@@ -116,6 +122,10 @@ func writeTransportMessageWithAntecedents(t *testing.T, tr *fs.Transport, campfi
 		t.Fatalf("creating message: %v", err)
 	}
 
+	if err := msg.AddHop(cfID.PrivateKey, cfID.PublicKey, []byte("testhash"), 1, "open", []string{}, "full"); err != nil {
+		t.Fatalf("adding provenance hop: %v", err)
+	}
+
 	if err := tr.WriteMessage(campfireID, msg); err != nil {
 		t.Fatalf("writing message to transport: %v", err)
 	}
@@ -126,13 +136,13 @@ func writeTransportMessageWithAntecedents(t *testing.T, tr *fs.Transport, campfi
 // transport before querying, so messages written via transport but not yet in
 // the local store are visible.
 func TestClientRead_SyncBeforeQuery(t *testing.T) {
-	campfireID, tr, s := setupTestCampfire(t)
+	campfireID, cfID, tr, s := setupTestCampfire(t)
 	defer s.Close()
 
 	client := protocol.New(s, nil)
 
 	// Write a message to the filesystem transport (not to the store).
-	msg := writeTransportMessage(t, tr, campfireID, "hello from transport", []string{"status"})
+	msg := writeTransportMessage(t, cfID, tr, campfireID, "hello from transport", []string{"status"})
 
 	// Read via Client — should sync from transport and return the message.
 	result, err := client.Read(protocol.ReadRequest{
@@ -164,15 +174,15 @@ func TestClientRead_SyncBeforeQuery(t *testing.T) {
 // TestClientRead_TagFilter verifies that Read() returns only messages with the
 // requested tags when tag filtering is specified.
 func TestClientRead_TagFilter(t *testing.T) {
-	campfireID, tr, s := setupTestCampfire(t)
+	campfireID, cfID, tr, s := setupTestCampfire(t)
 	defer s.Close()
 
 	client := protocol.New(s, nil)
 
 	// Write messages with different tags to the filesystem transport.
-	msgStatus := writeTransportMessage(t, tr, campfireID, "status update", []string{"status"})
-	msgBlocker := writeTransportMessage(t, tr, campfireID, "blocked on X", []string{"blocker"})
-	_ = writeTransportMessage(t, tr, campfireID, "found something", []string{"finding"})
+	msgStatus := writeTransportMessage(t, cfID, tr, campfireID, "status update", []string{"status"})
+	msgBlocker := writeTransportMessage(t, cfID, tr, campfireID, "blocked on X", []string{"blocker"})
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "found something", []string{"finding"})
 
 	// Read with tag filter for "status".
 	result, err := client.Read(protocol.ReadRequest{
@@ -212,14 +222,14 @@ func TestClientRead_TagFilter(t *testing.T) {
 // TestClientRead_TagPrefixFilter verifies that Read() returns messages matching
 // a tag prefix (e.g. "galtrader:" matches "galtrader:move").
 func TestClientRead_TagPrefixFilter(t *testing.T) {
-	campfireID, tr, s := setupTestCampfire(t)
+	campfireID, cfID, tr, s := setupTestCampfire(t)
 	defer s.Close()
 
 	client := protocol.New(s, nil)
 
 	// Write messages with and without the target prefix.
-	msgGame := writeTransportMessage(t, tr, campfireID, "game move", []string{"galtrader:move"})
-	_ = writeTransportMessage(t, tr, campfireID, "other tag", []string{"status"})
+	msgGame := writeTransportMessage(t, cfID, tr, campfireID, "game move", []string{"galtrader:move"})
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "other tag", []string{"status"})
 
 	result, err := client.Read(protocol.ReadRequest{
 		CampfireID:       campfireID,
@@ -241,14 +251,14 @@ func TestClientRead_TagPrefixFilter(t *testing.T) {
 // TestClientRead_ExcludeTag verifies that Read() excludes messages matching
 // the ExcludeTags filter.
 func TestClientRead_ExcludeTag(t *testing.T) {
-	campfireID, tr, s := setupTestCampfire(t)
+	campfireID, cfID, tr, s := setupTestCampfire(t)
 	defer s.Close()
 
 	client := protocol.New(s, nil)
 
 	// Write messages.
-	_ = writeTransportMessage(t, tr, campfireID, "should appear", []string{"status"})
-	_ = writeTransportMessage(t, tr, campfireID, "should be excluded", []string{"convention:operation"})
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "should appear", []string{"status"})
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "should be excluded", []string{"convention:operation"})
 
 	result, err := client.Read(protocol.ReadRequest{
 		CampfireID:       campfireID,
@@ -271,7 +281,7 @@ func TestClientRead_ExcludeTag(t *testing.T) {
 // TestClientRead_CursorPagination verifies that AfterTimestamp is respected and
 // that MaxTimestamp in the result can be used as a cursor for the next call.
 func TestClientRead_CursorPagination(t *testing.T) {
-	campfireID, _, s := setupTestCampfire(t)
+	campfireID, _, _, s := setupTestCampfire(t)
 	defer s.Close()
 
 	client := protocol.New(s, nil)
@@ -350,7 +360,7 @@ func TestClientRead_CursorPagination(t *testing.T) {
 
 // TestClientRead_Limit verifies that the Limit field caps returned messages.
 func TestClientRead_Limit(t *testing.T) {
-	campfireID, _, s := setupTestCampfire(t)
+	campfireID, _, _, s := setupTestCampfire(t)
 	defer s.Close()
 
 	client := protocol.New(s, nil)
@@ -390,13 +400,13 @@ func TestClientRead_Limit(t *testing.T) {
 // When SkipSync is true, messages written to the filesystem transport but not
 // yet in the store should NOT appear in results.
 func TestClientRead_SkipSync(t *testing.T) {
-	campfireID, tr, s := setupTestCampfire(t)
+	campfireID, cfID, tr, s := setupTestCampfire(t)
 	defer s.Close()
 
 	client := protocol.New(s, nil)
 
 	// Write a message to the filesystem transport only.
-	writeTransportMessage(t, tr, campfireID, "transport only", []string{"status"})
+	writeTransportMessage(t, cfID, tr, campfireID, "transport only", []string{"status"})
 
 	// Read with SkipSync=true — should NOT see the transport-only message.
 	result, err := client.Read(protocol.ReadRequest{
@@ -430,7 +440,7 @@ func TestClientRead_SkipSync(t *testing.T) {
 // TestClientRead_RequiresCampfireID verifies that Read returns an error when
 // CampfireID is empty.
 func TestClientRead_RequiresCampfireID(t *testing.T) {
-	_, _, s := setupTestCampfire(t)
+	_, _, _, s := setupTestCampfire(t)
 	defer s.Close()
 
 	client := protocol.New(s, nil)
@@ -444,14 +454,14 @@ func TestClientRead_RequiresCampfireID(t *testing.T) {
 // TestClientRead_MultipleTagsOR verifies that multiple tags in Tags are OR-combined:
 // a message is included if it matches any of the listed tags.
 func TestClientRead_MultipleTagsOR(t *testing.T) {
-	campfireID, tr, s := setupTestCampfire(t)
+	campfireID, cfID, tr, s := setupTestCampfire(t)
 	defer s.Close()
 
 	client := protocol.New(s, nil)
 
-	msgStatus := writeTransportMessage(t, tr, campfireID, "status update", []string{"status"})
-	msgBlocker := writeTransportMessage(t, tr, campfireID, "blocker", []string{"blocker"})
-	_ = writeTransportMessage(t, tr, campfireID, "finding", []string{"finding"})
+	msgStatus := writeTransportMessage(t, cfID, tr, campfireID, "status update", []string{"status"})
+	msgBlocker := writeTransportMessage(t, cfID, tr, campfireID, "blocker", []string{"blocker"})
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "finding", []string{"finding"})
 
 	result, err := client.Read(protocol.ReadRequest{
 		CampfireID:       campfireID,
