@@ -109,6 +109,7 @@ func newTestMessage(t *testing.T, id *identity.Identity) *message.Message {
 //	540 - 559: join_delivery_test.go      (used: 540-543)
 //	560 - 579: delivery_preference_test.go (used: 560-563)
 //	580 - 619: delivery_e2e_test.go        (dynamic ports via freeDeliveryE2EAddr — no static offsets)
+//	620 - 639: join_admit_test.go          (used: 620-624)
 func portBase() int {
 	return 19000 + (os.Getpid() % 500)
 }

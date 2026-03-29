@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/admission"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 )
@@ -110,6 +111,11 @@ type Transport struct {
 	// relayMode enables forwarding for all campfires in the routing table,
 	// not just locally-hosted ones. Opt-in per spec §11.2.
 	relayMode bool
+
+	// admitter holds the admission dependencies used by the join handler to
+	// record new members. Optional — if nil, the join handler falls back to
+	// the legacy inline UpsertPeerEndpoint + AddPeer behavior.
+	admitter *admission.AdmitterDeps
 
 	// stopNoncePruner is closed by Stop() to signal the background nonce
 	// pruner goroutine to exit cleanly.
@@ -487,6 +493,22 @@ func (t *Transport) SetRelayMode(enabled bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.relayMode = enabled
+}
+
+// SetAdmitter registers the admission dependencies used by the join handler to record
+// new members via admission.AdmitMember. When set, handleJoin calls AdmitMember
+// instead of the inline UpsertPeerEndpoint + AddPeer. Must be called before Start().
+func (t *Transport) SetAdmitter(deps *admission.AdmitterDeps) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.admitter = deps
+}
+
+// Admitter returns the current admission dependencies, or nil if not set.
+func (t *Transport) Admitter() *admission.AdmitterDeps {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.admitter
 }
 
 // RoutingTable returns the transport's routing table for external inspection (e.g. tests).
