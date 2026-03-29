@@ -63,6 +63,7 @@ const (
 	NodeLiteral                     // Literal value: (literal 0.5) or "hello"
 	NodeTimestamp                   // Message timestamp: (timestamp)
 	NodePayloadSize                 // Raw payload byte length: (payload-size)
+	NodeHasFulfillment              // Has been fulfilled: (has-fulfillment)
 )
 
 // Node is a single node in the predicate AST.
@@ -79,6 +80,12 @@ type MessageContext struct {
 	Timestamp  int64          // unix nanos
 	Payload    map[string]any // decoded JSON payload (nil if not JSON)
 	RawPayload []byte         // raw payload bytes for size-based filtering (Go-only, not serialized)
+	MessageID  string         // message ID (needed for has-fulfillment)
+	// FulfillmentIndex maps message IDs to true if they have been fulfilled
+	// (i.e., another message exists with a "fulfills" tag and this ID as antecedent).
+	// Populated by the caller before evaluation — the predicate engine doesn't
+	// have access to the full message set, so callers build this index once.
+	FulfillmentIndex map[string]bool
 }
 
 // EvalResult holds the result of evaluating a predicate node.
@@ -178,6 +185,8 @@ func (n *Node) String() string {
 		return "(timestamp)"
 	case NodePayloadSize:
 		return "(payload-size)"
+	case NodeHasFulfillment:
+		return "(has-fulfillment)"
 	}
 	return "(unknown)"
 }
@@ -276,6 +285,12 @@ func parseSExpr(input string) (*Node, string, error) {
 			return nil, "", fmt.Errorf("expected ')' after payload-size")
 		}
 		return &Node{Type: NodePayloadSize}, rest[1:], nil
+	case "has-fulfillment":
+		rest = strings.TrimSpace(rest)
+		if rest == "" || rest[0] != ')' {
+			return nil, "", fmt.Errorf("expected ')' after has-fulfillment")
+		}
+		return &Node{Type: NodeHasFulfillment}, rest[1:], nil
 	default:
 		return nil, "", fmt.Errorf("unknown operator: %q", op)
 	}
@@ -488,6 +503,12 @@ func evalDepth(node *Node, ctx *MessageContext, depth int) EvalResult {
 
 	case NodePayloadSize:
 		return EvalResult{Num: float64(len(ctx.RawPayload)), IsNum: true}
+
+	case NodeHasFulfillment:
+		if ctx.FulfillmentIndex != nil && ctx.MessageID != "" {
+			return EvalResult{Bool: ctx.FulfillmentIndex[ctx.MessageID]}
+		}
+		return EvalResult{Bool: false}
 
 	case NodeField:
 		return evalField(node.Value, ctx)
