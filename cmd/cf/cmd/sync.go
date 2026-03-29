@@ -96,6 +96,13 @@ func syncFromFilesystem(cfID string, transportDir string, s store.Store) {
 		if !fsMsg.VerifySignature() {
 			continue
 		}
+		// Reject messages with zero provenance hops. A legitimate message must
+		// have at least one hop recording the sender's identity and signature.
+		// An empty Provenance slice would pass the hop-verification loop below
+		// trivially (no iterations), allowing injection of unsigned content.
+		if len(fsMsg.Provenance) == 0 {
+			continue
+		}
 		// workspace-h0t: verify all provenance hops.
 		hopOK := true
 		for _, hop := range fsMsg.Provenance {
