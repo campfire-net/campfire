@@ -54,7 +54,12 @@ func GenerateToolName(decl *Declaration, existing map[string]bool) string {
 	if !existing[name] {
 		return name
 	}
-	// Collision: prefix with convention slug (hyphens → underscores).
+	return NamespacedToolName(decl)
+}
+
+// NamespacedToolName returns the convention-namespaced tool name:
+// conventionslug_operation (hyphens in convention name become underscores).
+func NamespacedToolName(decl *Declaration) string {
 	slug := strings.ReplaceAll(decl.Convention, "-", "_")
 	return slug + "_" + decl.Operation
 }

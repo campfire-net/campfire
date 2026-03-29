@@ -1648,11 +1648,12 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 	if s.conventionTools == nil {
 		s.conventionTools = newConventionToolMap()
 	}
+	var fsToolNames []string
 	decls, declErr := readDeclarations(st, campfireID, "" /* campfire key resolved later */)
 	if declErr != nil {
 		log.Printf("convention: reading declarations for %s: %v", campfireID, declErr)
 	} else if len(decls) > 0 {
-		registerConventionTools(s.conventionTools, campfireID, decls)
+		fsToolNames = registerConventionTools(s.conventionTools, campfireID, decls)
 		log.Printf("convention: registered %d tools for campfire %s", len(decls), campfireID)
 	}
 	if s.sess != nil {
@@ -1667,30 +1668,24 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		"campfire_id": campfireID,
 		"status":      "joined",
 	}
-	if len(decls) > 0 {
-		toolNames := make([]string, 0, len(decls))
-		for _, d := range decls {
-			toolNames = append(toolNames, d.Operation)
-		}
-		joinResult["convention_tools_registered"] = len(decls)
-		joinResult["convention_tools"] = toolNames
+	if len(fsToolNames) > 0 {
+		joinResult["convention_tools_registered"] = len(fsToolNames)
+		joinResult["convention_tools"] = fsToolNames
 	}
 	if viewCount > 0 {
 		joinResult["convention_views_registered"] = viewCount
 		joinResult["convention_views"] = viewNames
 	}
-	total := len(decls) + viewCount
+	total := len(fsToolNames) + viewCount
 	if total > 0 {
 		allNames := make([]string, 0, total)
-		for _, d := range decls {
-			allNames = append(allNames, d.Operation)
-		}
+		allNames = append(allNames, fsToolNames...)
 		allNames = append(allNames, viewNames...)
 		joinResult["guide"] = fmt.Sprintf(
 			"%d tools + %d views are now available: %s. "+
 				"Call these directly — tools handle writes, views handle reads. "+
 				"Run tools/list to see their full schemas.",
-			len(decls), viewCount, strings.Join(allNames, ", "))
+			len(fsToolNames), viewCount, strings.Join(allNames, ", "))
 	}
 
 	result, _ := toolResultJSON(joinResult)
@@ -1909,11 +1904,12 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 	if s.conventionTools == nil {
 		s.conventionTools = newConventionToolMap()
 	}
+	var httpToolNames []string
 	httpDecls, httpDeclErr := readDeclarations(st, campfireID, "")
 	if httpDeclErr != nil {
 		log.Printf("convention: reading declarations for %s: %v", campfireID, httpDeclErr)
 	} else if len(httpDecls) > 0 {
-		registerConventionTools(s.conventionTools, campfireID, httpDecls)
+		httpToolNames = registerConventionTools(s.conventionTools, campfireID, httpDecls)
 		log.Printf("convention: registered %d tools for campfire %s", len(httpDecls), campfireID)
 	}
 	if s.sess != nil {
@@ -1929,30 +1925,24 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		"transport":   "p2p-http",
 		"via":         peerEndpoint,
 	}
-	if len(httpDecls) > 0 {
-		toolNames := make([]string, 0, len(httpDecls))
-		for _, d := range httpDecls {
-			toolNames = append(toolNames, d.Operation)
-		}
-		httpJoinResult["convention_tools_registered"] = len(httpDecls)
-		httpJoinResult["convention_tools"] = toolNames
+	if len(httpToolNames) > 0 {
+		httpJoinResult["convention_tools_registered"] = len(httpToolNames)
+		httpJoinResult["convention_tools"] = httpToolNames
 	}
 	if httpViewCount > 0 {
 		httpJoinResult["convention_views_registered"] = httpViewCount
 		httpJoinResult["convention_views"] = httpViewNames
 	}
-	httpTotal := len(httpDecls) + httpViewCount
+	httpTotal := len(httpToolNames) + httpViewCount
 	if httpTotal > 0 {
 		allNames := make([]string, 0, httpTotal)
-		for _, d := range httpDecls {
-			allNames = append(allNames, d.Operation)
-		}
+		allNames = append(allNames, httpToolNames...)
 		allNames = append(allNames, httpViewNames...)
 		httpJoinResult["guide"] = fmt.Sprintf(
 			"%d tools + %d views are now available: %s. "+
 				"Call these directly — tools handle writes, views handle reads. "+
 				"Run tools/list to see their full schemas.",
-			len(httpDecls), httpViewCount, strings.Join(allNames, ", "))
+			len(httpToolNames), httpViewCount, strings.Join(allNames, ", "))
 	}
 
 	joinResult, _ := toolResultJSON(httpJoinResult)

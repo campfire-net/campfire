@@ -166,29 +166,90 @@ func TestConventionToolNameCollision(t *testing.T) {
 	}
 
 	m := newConventionToolMap()
-	// Register one at a time to debug
-	registerConventionTools(m, "cf1", []*convention.Declaration{decl1})
+	// Register first declaration — gets bare name initially.
+	names1 := registerConventionTools(m, "cf1", []*convention.Declaration{decl1})
 	if len(m.list()) != 1 {
 		t.Fatalf("after first: expected 1 tool, got %d", len(m.list()))
 	}
-	registerConventionTools(m, "cf2", []*convention.Declaration{decl2})
+	if len(names1) != 1 || names1[0] != "post" {
+		t.Fatalf("first registration should return [post], got %v", names1)
+	}
+
+	// Register second declaration with same operation — both get namespaced.
+	names2 := registerConventionTools(m, "cf2", []*convention.Declaration{decl2})
 
 	toolList := m.list()
 	if len(toolList) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(toolList))
 	}
 
-	// One should be "post", the other should be prefixed
+	// Both should be convention-namespaced (no bare "post").
 	names := make(map[string]bool)
 	for _, tool := range toolList {
 		names[tool.Name] = true
 	}
-	if !names["post"] {
-		t.Error("expected tool named 'post'")
+	if names["post"] {
+		t.Errorf("bare 'post' should not exist after collision — both should be namespaced, got: %v", names)
 	}
-	// The second should be "other_format_post" (hyphens → underscores)
+	if !names["social_post_format_post"] {
+		t.Errorf("expected 'social_post_format_post', got names: %v", names)
+	}
 	if !names["other_format_post"] {
-		t.Errorf("expected tool named 'other_format_post', got names: %v", names)
+		t.Errorf("expected 'other_format_post', got names: %v", names)
+	}
+	if len(names2) != 1 || names2[0] != "other_format_post" {
+		t.Errorf("second registration should return [other_format_post], got %v", names2)
+	}
+}
+
+// TestConventionToolNameCollision_SameBatch verifies collision handling when two
+// declarations with the same operation are registered in a single batch.
+func TestConventionToolNameCollision_SameBatch(t *testing.T) {
+	tags := []string{convention.ConventionOperationTag}
+	senderKey := "aaaa"
+	campfireKey := "bbbb"
+
+	decl1, _, err := convention.Parse(tags, socialPostPayload, senderKey, campfireKey)
+	if err != nil {
+		t.Fatalf("Parse decl1: %v", err)
+	}
+	otherPayload := []byte(`{
+		"convention": "other-format",
+		"version": "0.1",
+		"operation": "post",
+		"description": "Another post operation",
+		"args": [{"name": "text", "type": "string", "required": true}],
+		"antecedents": "none",
+		"signing": "member_key"
+	}`)
+	decl2, _, err := convention.Parse(tags, otherPayload, senderKey, campfireKey)
+	if err != nil {
+		t.Fatalf("Parse decl2: %v", err)
+	}
+
+	m := newConventionToolMap()
+	names := registerConventionTools(m, "cf1", []*convention.Declaration{decl1, decl2})
+
+	toolList := m.list()
+	if len(toolList) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(toolList))
+	}
+
+	nameSet := make(map[string]bool)
+	for _, tool := range toolList {
+		nameSet[tool.Name] = true
+	}
+	if nameSet["post"] {
+		t.Errorf("bare 'post' should not exist — both should be namespaced, got: %v", nameSet)
+	}
+	if !nameSet["social_post_format_post"] {
+		t.Errorf("expected 'social_post_format_post', got: %v", nameSet)
+	}
+	if !nameSet["other_format_post"] {
+		t.Errorf("expected 'other_format_post', got: %v", nameSet)
+	}
+	if len(names) != 2 {
+		t.Errorf("expected 2 registered names, got %v", names)
 	}
 }
 

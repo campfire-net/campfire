@@ -218,11 +218,6 @@ func (s *server) publishDeclarations(st store.Store, campfireID string, entries 
 		// Force campfire key signer type since we published it with the campfire key.
 		decl.SignerType = convention.SignerCampfireKey
 		decls = append(decls, decl)
-
-		// Extract operation name for the response.
-		if op, ok := check["operation"].(string); ok {
-			toolNames = append(toolNames, op)
-		}
 	}
 
 	// Register parsed declarations as convention tools.
@@ -230,7 +225,8 @@ func (s *server) publishDeclarations(st store.Store, campfireID string, entries 
 		if s.conventionTools == nil {
 			s.conventionTools = newConventionToolMap()
 		}
-		registerConventionTools(s.conventionTools, campfireID, decls)
+		registeredNames := registerConventionTools(s.conventionTools, campfireID, decls)
+		toolNames = registeredNames // use collision-aware names, not raw operations
 		if s.sess != nil {
 			s.sess.conventionTools = s.conventionTools
 		}
@@ -260,32 +256,77 @@ func (s *server) publishDeclarations(st store.Store, campfireID string, entries 
 }
 
 // registerConventionTools registers parsed declarations as convention tools.
-func registerConventionTools(m *conventionToolMap, campfireID string, decls []*convention.Declaration) {
+// Returns the list of tool names actually registered (collision-aware).
+func registerConventionTools(m *conventionToolMap, campfireID string, decls []*convention.Declaration) []string {
 	existing := make(map[string]bool)
 	for _, t := range tools {
 		existing[t.Name] = true
 	}
+
+	// Snapshot existing convention tools for collision detection.
 	m.mu.RLock()
-	for name := range m.tools {
+	existingByName := make(map[string]*conventionToolEntry)
+	for name, entry := range m.tools {
 		existing[name] = true
+		existingByName[name] = entry
 	}
 	m.mu.RUnlock()
 
+	// Pre-scan: count operation names across new decls + existing bare-name tools.
+	// A "bare name" is one where the tool name equals the raw operation (not yet namespaced).
+	opCount := make(map[string]int)
 	for _, decl := range decls {
-		name := convention.GenerateToolName(decl, existing)
+		opCount[decl.Operation]++
+	}
+	for name, entry := range existingByName {
+		if name == entry.decl.Operation { // bare name
+			opCount[name]++
+		}
+	}
+	collisions := make(map[string]bool)
+	for op, count := range opCount {
+		if count > 1 {
+			collisions[op] = true
+		}
+	}
+
+	// Rename existing bare-name tools that now collide.
+	for name, entry := range existingByName {
+		if collisions[name] && name == entry.decl.Operation {
+			newName := convention.NamespacedToolName(entry.decl)
+			entry.toolInfo.Name = newName
+			m.mu.Lock()
+			m.tools[newName] = entry
+			delete(m.tools, name)
+			m.mu.Unlock()
+			existing[newName] = true
+			delete(existing, name)
+		}
+	}
+
+	var registeredNames []string
+	for _, decl := range decls {
+		var name string
+		if collisions[decl.Operation] {
+			name = convention.NamespacedToolName(decl)
+		} else {
+			name = convention.GenerateToolName(decl, existing)
+		}
 		info, err := convention.GenerateTool(decl, campfireID)
 		if err != nil {
 			log.Printf("convention: generating tool for %s/%s: %v", decl.Convention, decl.Operation, err)
 			continue
 		}
-		info.Name = name // override with collision-aware name
+		info.Name = name
 		m.register(name, &conventionToolEntry{
 			decl:       decl,
 			campfireID: campfireID,
 			toolInfo:   *info,
 		})
 		existing[name] = true
+		registeredNames = append(registeredNames, name)
 	}
+	return registeredNames
 }
 
 // publishViews resolves and publishes view definitions as campfire-key-signed

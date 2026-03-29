@@ -276,6 +276,14 @@ func TestGenerateToolName_Collision(t *testing.T) {
 	}
 }
 
+func TestNamespacedToolName(t *testing.T) {
+	decl := parseDeclForTest(t, beaconRegisterPayload)
+	name := NamespacedToolName(decl)
+	if name != "beacon_protocol_register" {
+		t.Errorf("NamespacedToolName = %q, want %q", name, "beacon_protocol_register")
+	}
+}
+
 func TestListOperations(t *testing.T) {
 	mock := &mockStore{
 		records: []store.MessageRecord{
