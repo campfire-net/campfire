@@ -16,6 +16,7 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/predicate"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/provenance"
 	"github.com/campfire-net/campfire/pkg/store"
@@ -28,6 +29,7 @@ const conventionToolTimeout = 2 * time.Minute
 type conventionToolMap struct {
 	mu    sync.RWMutex
 	tools map[string]*conventionToolEntry
+	views map[string]*viewToolEntry
 }
 
 type conventionToolEntry struct {
@@ -36,9 +38,19 @@ type conventionToolEntry struct {
 	toolInfo   convention.MCPToolInfo
 }
 
+// viewToolEntry holds a registered convention view tool.
+type viewToolEntry struct {
+	name        string
+	description string
+	predicate   string // S-expression predicate
+	campfireID  string
+	toolInfo    convention.MCPToolInfo
+}
+
 func newConventionToolMap() *conventionToolMap {
 	return &conventionToolMap{
 		tools: make(map[string]*conventionToolEntry),
+		views: make(map[string]*viewToolEntry),
 	}
 }
 
@@ -49,18 +61,34 @@ func (m *conventionToolMap) get(name string) (*conventionToolEntry, bool) {
 	return e, ok
 }
 
+func (m *conventionToolMap) getView(name string) (*viewToolEntry, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	e, ok := m.views[name]
+	return e, ok
+}
+
 func (m *conventionToolMap) register(name string, entry *conventionToolEntry) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.tools[name] = entry
 }
 
+func (m *conventionToolMap) registerView(name string, entry *viewToolEntry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.views[name] = entry
+}
+
 func (m *conventionToolMap) list() []convention.MCPToolInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	result := make([]convention.MCPToolInfo, 0, len(m.tools))
+	result := make([]convention.MCPToolInfo, 0, len(m.tools)+len(m.views))
 	for _, e := range m.tools {
 		result = append(result, e.toolInfo)
+	}
+	for _, v := range m.views {
+		result = append(result, v.toolInfo)
 	}
 	return result
 }
@@ -235,6 +263,230 @@ func registerConventionTools(m *conventionToolMap, campfireID string, decls []*c
 		})
 		existing[name] = true
 	}
+}
+
+// publishViews resolves and publishes view definitions as campfire-key-signed
+// campfire:view messages. Returns the count of views published and their names.
+func (s *server) publishViews(st store.Store, campfireID string, entries []interface{}) (int, []string) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+
+	adapter := &conventionTransportAdapter{server: s}
+	var viewNames []string
+	published := 0
+
+	for _, entry := range entries {
+		vd, ok := entry.(map[string]interface{})
+		if !ok {
+			log.Printf("convention: view entry is not an object, skipping")
+			continue
+		}
+
+		name, _ := vd["name"].(string)
+		pred, _ := vd["predicate"].(string)
+		desc, _ := vd["description"].(string)
+
+		if name == "" || pred == "" {
+			log.Printf("convention: view entry missing name or predicate, skipping")
+			continue
+		}
+
+		// Validate the predicate parses.
+		if _, err := predicate.Parse(pred); err != nil {
+			log.Printf("convention: view %q predicate invalid: %v", name, err)
+			continue
+		}
+
+		viewDef := map[string]interface{}{
+			"name":      name,
+			"predicate": pred,
+			"refresh":   "on-read",
+		}
+		payload, err := json.Marshal(viewDef)
+		if err != nil {
+			log.Printf("convention: marshaling view %q: %v", name, err)
+			continue
+		}
+
+		tags := []string{"campfire:view"}
+		if _, err := adapter.SendCampfireKeySigned(context.Background(), campfireID, payload, tags, nil); err != nil {
+			log.Printf("convention: publishing view %q to %s: %v", name, campfireID, err)
+			continue
+		}
+		published++
+		viewNames = append(viewNames, name)
+
+		// Register as an MCP tool immediately.
+		if s.conventionTools == nil {
+			s.conventionTools = newConventionToolMap()
+		}
+		registerViewTool(s.conventionTools, campfireID, name, desc, pred)
+	}
+
+	return published, viewNames
+}
+
+// readAndRegisterViews reads campfire:view messages from a campfire and registers
+// them as MCP tools. Called on join to discover views that were seeded at create time.
+func (s *server) readAndRegisterViews(st store.Store, campfireID string) (int, []string) {
+	msgs, err := st.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{"campfire:view"}})
+	if err != nil {
+		log.Printf("convention: reading views for %s: %v", campfireID, err)
+		return 0, nil
+	}
+
+	// Collect latest definition per name (later message overrides earlier).
+	latest := make(map[string]struct {
+		name, desc, pred string
+	})
+	for _, m := range msgs {
+		var vd struct {
+			Name      string `json:"name"`
+			Predicate string `json:"predicate"`
+		}
+		if err := json.Unmarshal(m.Payload, &vd); err != nil || vd.Name == "" || vd.Predicate == "" {
+			continue
+		}
+		latest[vd.Name] = struct{ name, desc, pred string }{vd.Name, "", vd.Predicate}
+	}
+
+	if len(latest) == 0 {
+		return 0, nil
+	}
+
+	if s.conventionTools == nil {
+		s.conventionTools = newConventionToolMap()
+	}
+
+	var names []string
+	for _, v := range latest {
+		registerViewTool(s.conventionTools, campfireID, v.name, v.desc, v.pred)
+		names = append(names, v.name)
+	}
+	return len(names), names
+}
+
+// registerViewTool registers a single view as an MCP tool.
+func registerViewTool(m *conventionToolMap, campfireID, name, description, pred string) {
+	if description == "" {
+		description = fmt.Sprintf("Read %q view — returns messages matching the convention-defined filter.", name)
+	}
+
+	schema, _ := json.Marshal(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"campfire_id": map[string]interface{}{
+				"type":        "string",
+				"description": "Campfire ID to read from.",
+				"default":     campfireID,
+			},
+		},
+		"required": []string{},
+	})
+
+	m.registerView(name, &viewToolEntry{
+		name:        name,
+		description: description,
+		predicate:   pred,
+		campfireID:  campfireID,
+		toolInfo: convention.MCPToolInfo{
+			Name:        name,
+			Description: description,
+			InputSchema: schema,
+		},
+	})
+}
+
+// handleViewTool executes a view read — filters campfire messages through the
+// view's predicate and returns matching messages in a trust envelope.
+func (s *server) handleViewTool(id interface{}, entry *viewToolEntry, args map[string]interface{}) jsonRPCResponse {
+	campfireID := entry.campfireID
+	if cid, ok := args["campfire_id"].(string); ok && cid != "" {
+		campfireID = cid
+	}
+
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		defer st.Close()
+	}
+
+	// Sync from filesystem transport (same as handleRead — in fs mode,
+	// messages live on disk and must be synced to SQLite before querying).
+	if s.httpTransport == nil {
+		fsT := s.fsTransport()
+		if fsMessages, err := fsT.ListMessages(campfireID); err == nil {
+			for _, fsMsg := range fsMessages {
+				st.AddMessage(store.MessageRecordFromMessage(campfireID, &fsMsg, store.NowNano())) //nolint:errcheck
+			}
+		}
+	}
+
+	pred, err := predicate.Parse(entry.predicate)
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("parsing view predicate: %v", err))
+	}
+
+	msgs, err := st.ListMessages(campfireID, 0, store.MessageFilter{RespectCompaction: true})
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("reading messages: %v", err))
+	}
+
+	var matched []map[string]interface{}
+	for _, m := range msgs {
+		// Skip system messages (campfire:* tags).
+		isSystem := false
+		for _, t := range m.Tags {
+			if len(t) > 9 && t[:9] == "campfire:" {
+				isSystem = true
+				break
+			}
+		}
+		if isSystem {
+			continue
+		}
+
+		ctx := &predicate.MessageContext{
+			Tags:      m.Tags,
+			Sender:    m.Sender,
+			Timestamp: m.Timestamp,
+		}
+		if len(m.Payload) > 0 {
+			var payload map[string]interface{}
+			if err := json.Unmarshal(m.Payload, &payload); err == nil {
+				ctx.Payload = payload
+			}
+			ctx.RawPayload = m.Payload
+		}
+
+		if predicate.Eval(pred, ctx) {
+			// Payload may be plain text or JSON — try JSON first, fall back to string.
+			var payloadVal interface{}
+			if json.Valid(m.Payload) {
+				payloadVal = json.RawMessage(m.Payload)
+			} else {
+				payloadVal = string(m.Payload)
+			}
+			matched = append(matched, map[string]interface{}{
+				"id":        m.ID,
+				"sender":    m.Sender,
+				"tags":      m.Tags,
+				"payload":   payloadVal,
+				"timestamp": m.Timestamp,
+			})
+		}
+	}
+
+	return s.envelopedResponse(id, campfireID, map[string]interface{}{
+		"view":     entry.name,
+		"count":    len(matched),
+		"messages": matched,
+	})
 }
 
 // handleConventionTool dispatches a convention tool invocation through the executor.
