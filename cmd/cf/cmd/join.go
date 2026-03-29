@@ -684,21 +684,26 @@ func autoJoinRootCampfire(campfireID string, agentID *identity.Identity, s store
 	if err != nil {
 		return fmt.Errorf("listing members: %w", err)
 	}
+	alreadyOnDisk := false
 	for _, m := range members {
 		if fmt.Sprintf("%x", m.PublicKey) == agentID.PublicKeyHex() {
 			// Already on disk — still record in store if not there.
 			if existing, _ := s.GetMembership(campfireID); existing != nil {
 				return nil
 			}
+			alreadyOnDisk = true
 			break
 		}
 	}
 
 	// Admit member via shared admission package.
-	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
-		FSTransport: tr,
-		Store:       s,
-	}, admission.AdmissionRequest{
+	// When already on disk, skip FSTransport to avoid clobbering JoinedAt in the
+	// existing member file — only record membership in the store.
+	admitDeps := admission.AdmitterDeps{Store: s}
+	if !alreadyOnDisk {
+		admitDeps.FSTransport = tr
+	}
+	if _, err := admission.AdmitMember(context.Background(), admitDeps, admission.AdmissionRequest{
 		CampfireID:      campfireID,
 		MemberPubKeyHex: agentID.PublicKeyHex(),
 		Role:            campfire.RoleFull,

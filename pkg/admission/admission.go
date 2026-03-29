@@ -103,7 +103,7 @@ func AdmitMember(_ context.Context, deps AdmitterDeps, req AdmissionRequest) (Ad
 		}
 		memberRecord := campfire.MemberRecord{
 			PublicKey: pubKeyBytes,
-			JoinedAt:  time.Now().Unix(),
+			JoinedAt:  time.Now().UnixNano(),
 			Role:      result.EffectiveRole,
 		}
 		if err := deps.FSTransport.WriteMember(req.CampfireID, memberRecord); err != nil {
