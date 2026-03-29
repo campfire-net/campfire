@@ -528,20 +528,7 @@ func validateSingleValue(desc ArgDescriptor, val any) error {
 			return fmt.Errorf("expected string (enum), got %T", val)
 		}
 		if len(desc.Values) > 0 && !contains(desc.Values, s) {
-			// Accept short suffix match: if enum values are tag-prefixed
-			// (e.g. "exchange:content-type:analysis"), accept the short form
-			// ("analysis"). The payload carries the short form; produces_tags
-			// handles the full tag composition.
-			suffix := ":" + s
-			var matches int
-			for _, v := range desc.Values {
-				if strings.HasSuffix(v, suffix) {
-					matches++
-				}
-			}
-			if matches != 1 {
-				return fmt.Errorf("value %q not in enum %v", s, desc.Values)
-			}
+			return fmt.Errorf("value %q not in enum %v", s, desc.Values)
 		}
 
 	case "boolean":

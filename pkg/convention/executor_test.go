@@ -298,58 +298,53 @@ func TestExecute_EnumInvalid(t *testing.T) {
 	}
 }
 
-// TestExecute_EnumShortSuffix verifies that enum args accept the short suffix
-// form when values are tag-prefixed (e.g. "upvote" matches "social:upvote").
-func TestExecute_EnumShortSuffix(t *testing.T) {
+// TestExecute_EnumRejectsShortForm verifies that the executor requires the full
+// tag-prefixed enum value. Short-form expansion is a CLI-layer concern, not an
+// executor concern — the executor must see canonical values so tag composition works.
+func TestExecute_EnumRejectsShortForm(t *testing.T) {
 	tr := &mockTransport{}
 	ex := NewExecutor(tr, testSenderKey)
 	decl := voteDecl() // direction enum: social:upvote, social:downvote
 
-	// Short form should be accepted.
 	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
 		"target_msg_id": "msg-123",
-		"direction":     "upvote",
+		"direction":     "upvote", // short form — should be rejected
 	})
-	if err != nil {
-		t.Fatalf("short suffix 'upvote' should match 'social:upvote': %v", err)
+	if err == nil {
+		t.Fatal("executor should reject short enum form 'upvote'")
 	}
-
-	// The payload should carry the short form, not the full tag.
-	if len(tr.sentMessages) == 0 {
-		t.Fatal("expected a sent message")
-	}
-	payload := string(tr.sentMessages[len(tr.sentMessages)-1].payload)
-	if strings.Contains(payload, "social:upvote") {
-		t.Errorf("payload should carry short form, but contains full tag: %s", payload)
-	}
-	if !strings.Contains(payload, `"upvote"`) {
-		t.Errorf("payload should contain short form 'upvote': %s", payload)
+	if !strings.Contains(err.Error(), "not in enum") {
+		t.Errorf("expected 'not in enum' error, got: %v", err)
 	}
 }
 
-// TestExecute_EnumShortSuffixAmbiguous verifies that ambiguous short suffixes
-// are rejected (e.g. if two values end with ":foo").
-func TestExecute_EnumShortSuffixAmbiguous(t *testing.T) {
-	decl := &Declaration{
-		Convention:  "test",
-		Version:     "0.1",
-		Operation:   "ambig",
-		Signing:     "member_key",
-		Antecedents: "none",
-		Args: []ArgDescriptor{
-			{Name: "kind", Type: "enum", Values: []string{"a:foo", "b:foo"}},
-		},
-		ProducesTags: []TagRule{
-			{Tag: "test:ambig", Cardinality: "exactly_one"},
-		},
-	}
+// TestExecute_EnumFullFormAccepted verifies that the full tag-prefixed enum value
+// passes validation and produces the correct tag.
+func TestExecute_EnumFullFormAccepted(t *testing.T) {
 	tr := &mockTransport{}
 	ex := NewExecutor(tr, testSenderKey)
+	decl := voteDecl() // direction enum: social:upvote, social:downvote
+
 	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
-		"kind": "foo",
+		"target_msg_id": "msg-123",
+		"direction":     "social:upvote", // full form
 	})
-	if err == nil {
-		t.Fatal("expected error for ambiguous short suffix")
+	if err != nil {
+		t.Fatalf("full enum form should be accepted: %v", err)
+	}
+	if len(tr.sentMessages) == 0 {
+		t.Fatal("expected a sent message")
+	}
+	// Verify the tag was composed correctly.
+	msg := tr.sentMessages[len(tr.sentMessages)-1]
+	foundTag := false
+	for _, tag := range msg.tags {
+		if tag == "social:upvote" {
+			foundTag = true
+		}
+	}
+	if !foundTag {
+		t.Errorf("expected social:upvote tag, got tags: %v", msg.tags)
 	}
 }
 

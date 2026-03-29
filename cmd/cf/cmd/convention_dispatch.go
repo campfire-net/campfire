@@ -97,9 +97,11 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 		return fmt.Errorf("unknown operation %q — available: %s\nRun: cf %s help", operationName, strings.Join(ops, ", "), campfireName)
 	}
 
-	// Build flag set from declaration args
+	// Build flag set and arg lookup from declaration args.
 	flags := pflag.NewFlagSet("op", pflag.ContinueOnError)
+	argByName := make(map[string]convention.ArgDescriptor, len(matched.Args))
 	for _, arg := range matched.Args {
+		argByName[arg.Name] = arg
 		switch {
 		case arg.Repeated || arg.Type == "tag_set":
 			flags.StringSlice(arg.Name, nil, arg.Description)
@@ -128,7 +130,7 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 		return fmt.Errorf("parsing flags: %w", err)
 	}
 
-	// Build args map from changed flags only
+	// Build args map from changed flags only, expanding enum short forms.
 	args := make(map[string]any)
 	flags.VisitAll(func(f *pflag.Flag) {
 		if !f.Changed {
@@ -145,7 +147,37 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 			v, _ := flags.GetStringSlice(f.Name)
 			args[f.Name] = v
 		default:
-			args[f.Name] = f.Value.String()
+			val := f.Value.String()
+			// Enum short-form expansion: if the arg is an enum and the value
+			// doesn't directly match, check if exactly one declared value ends
+			// with ":<val>". Expand to the full form so the executor and tag
+			// compositor see the canonical tag-prefixed value.
+			if desc, ok := argByName[f.Name]; ok && desc.Type == "enum" && len(desc.Values) > 0 {
+				directMatch := false
+				for _, v := range desc.Values {
+					if v == val {
+						directMatch = true
+						break
+					}
+				}
+				if !directMatch {
+					suffix := ":" + val
+					var match string
+					for _, v := range desc.Values {
+						if strings.HasSuffix(v, suffix) {
+							if match != "" {
+								match = "" // ambiguous — don't expand
+								break
+							}
+							match = v
+						}
+					}
+					if match != "" {
+						val = match
+					}
+				}
+			}
+			args[f.Name] = val
 		}
 	})
 

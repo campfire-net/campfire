@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/convention"
@@ -291,6 +292,61 @@ func TestCLIDispatchFlagMapping_TagSet(t *testing.T) {
 	}
 	if len(vals) != 2 || vals[0] != "go" || vals[1] != "concurrency" {
 		t.Errorf("expected [go, concurrency], got %v", vals)
+	}
+}
+
+// TestCLIDispatchEnumShortFormExpansion verifies that the CLI dispatch layer
+// expands short enum values to their full tag-prefixed form before passing to
+// the executor. This is CLI sugar — the executor requires canonical values.
+func TestCLIDispatchEnumShortFormExpansion(t *testing.T) {
+	desc := convention.ArgDescriptor{
+		Name:   "content_type",
+		Type:   "enum",
+		Values: []string{"exchange:content-type:code", "exchange:content-type:analysis", "exchange:content-type:summary"},
+	}
+	argByName := map[string]convention.ArgDescriptor{"content_type": desc}
+
+	// Simulate the expansion logic from convention_dispatch.go.
+	expand := func(val string) string {
+		if desc, ok := argByName["content_type"]; ok && desc.Type == "enum" && len(desc.Values) > 0 {
+			directMatch := false
+			for _, v := range desc.Values {
+				if v == val {
+					directMatch = true
+					break
+				}
+			}
+			if !directMatch {
+				suffix := ":" + val
+				var match string
+				for _, v := range desc.Values {
+					if strings.HasSuffix(v, suffix) {
+						if match != "" {
+							match = ""
+							break
+						}
+						match = v
+					}
+				}
+				if match != "" {
+					val = match
+				}
+			}
+		}
+		return val
+	}
+
+	// Short form expands to full.
+	if got := expand("analysis"); got != "exchange:content-type:analysis" {
+		t.Errorf("expected expansion to full form, got %q", got)
+	}
+	// Full form passes through unchanged.
+	if got := expand("exchange:content-type:code"); got != "exchange:content-type:code" {
+		t.Errorf("expected pass-through for full form, got %q", got)
+	}
+	// Unknown short form passes through unchanged (executor will reject).
+	if got := expand("nonexistent"); got != "nonexistent" {
+		t.Errorf("expected pass-through for unknown value, got %q", got)
 	}
 }
 
