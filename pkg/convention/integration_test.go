@@ -181,7 +181,7 @@ func TestIntegration_SocialPostRoundtrip(t *testing.T) {
 
 	// 4. Execute — verify message sent with social:post tag.
 	tr := &integrationTransport{}
-	exec := convention.NewExecutor(tr, senderKey)
+	exec := convention.NewExecutorForTest(tr, senderKey)
 	err = exec.Execute(context.Background(), decl, campfireID, map[string]any{
 		"text": "Hello campfire world",
 	})
@@ -381,7 +381,7 @@ func TestIntegration_WorkflowExecution(t *testing.T) {
 	tr := &integrationTransport{
 		futureResult: []byte(`{"msg_id":"prior-msg-abc"}`),
 	}
-	exec := convention.NewExecutor(tr, key)
+	exec := convention.NewExecutorForTest(tr, key)
 	err = exec.Execute(context.Background(), decl, "cf-workflow-test", map[string]any{
 		"display_name": "Test Agent",
 	})

@@ -29,7 +29,7 @@ func (s *staticProvenanceChecker) Level(key string) int {
 	return 0
 }
 
-// noopTransport implements ExecutorTransport but records nothing; used for gate tests.
+// noopTransport implements convention.ExecutorBackend but records nothing; used for gate tests.
 type noopTransport struct {
 	sent []struct{ tags []string }
 }
@@ -88,7 +88,7 @@ func TestMinOperatorLevel_RejectedWhenLevelInsufficient(t *testing.T) {
 	decl := parseGatedDecl(t, 2)
 
 	transport := &noopTransport{}
-	exec := convention.NewExecutor(transport, provSenderKey)
+	exec := convention.NewExecutorForTest(transport, provSenderKey)
 	exec = exec.WithProvenance(&staticProvenanceChecker{
 		levels: map[string]int{provSenderKey: 1},
 	})
@@ -118,7 +118,7 @@ func TestMinOperatorLevel_AcceptedWhenLevelSufficient(t *testing.T) {
 	decl := parseGatedDecl(t, 2)
 
 	transport := &noopTransport{}
-	exec := convention.NewExecutor(transport, provSenderKey)
+	exec := convention.NewExecutorForTest(transport, provSenderKey)
 	exec = exec.WithProvenance(&staticProvenanceChecker{
 		levels: map[string]int{provSenderKey: 2},
 	})
@@ -141,7 +141,7 @@ func TestMinOperatorLevel_AcceptedWhenLevelExceedsMinimum(t *testing.T) {
 	decl := parseGatedDecl(t, 2)
 
 	transport := &noopTransport{}
-	exec := convention.NewExecutor(transport, provSenderKey)
+	exec := convention.NewExecutorForTest(transport, provSenderKey)
 	exec = exec.WithProvenance(&staticProvenanceChecker{
 		levels: map[string]int{provSenderKey: 3},
 	})
@@ -162,7 +162,7 @@ func TestMinOperatorLevel_ZeroGateAllowsAny(t *testing.T) {
 
 	transport := &noopTransport{}
 	// No provenance checker needed — zero gate skips the check entirely.
-	exec := convention.NewExecutor(transport, provSenderKey)
+	exec := convention.NewExecutorForTest(transport, provSenderKey)
 
 	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key": strings.Repeat("a", 64),
@@ -180,7 +180,7 @@ func TestMinOperatorLevel_NoCheckerDefaultsToZero(t *testing.T) {
 	decl := parseGatedDecl(t, 2)
 
 	transport := &noopTransport{}
-	exec := convention.NewExecutor(transport, provSenderKey)
+	exec := convention.NewExecutorForTest(transport, provSenderKey)
 	// No WithProvenance call — sender defaults to level 0.
 
 	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
@@ -209,7 +209,7 @@ func TestMinOperatorLevel_ParseRoundTrip(t *testing.T) {
 func TestMinOperatorLevel_ErrorContainsOperationName(t *testing.T) {
 	decl := parseGatedDecl(t, 2)
 
-	exec := convention.NewExecutor(&noopTransport{}, provSenderKey).
+	exec := convention.NewExecutorForTest(&noopTransport{}, provSenderKey).
 		WithProvenance(&staticProvenanceChecker{levels: map[string]int{provSenderKey: 0}})
 
 	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
@@ -259,7 +259,7 @@ func TestMinOperatorLevel_WorkflowRejected(t *testing.T) {
 	}
 
 	transport := &noopTransport{}
-	exec := convention.NewExecutor(transport, provSenderKey).
+	exec := convention.NewExecutorForTest(transport, provSenderKey).
 		WithProvenance(&staticProvenanceChecker{levels: map[string]int{provSenderKey: 1}})
 
 	execErr := exec.Execute(context.Background(), decl, "campfire-abc", nil)

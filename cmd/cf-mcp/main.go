@@ -40,6 +40,7 @@ import (
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
@@ -185,6 +186,12 @@ func (s *server) releaseJoinMutex(campfireID string, e *joinEntry) {
 
 func (s *server) storePath() string {
 	return store.StorePath(s.cfHome)
+}
+
+// newProtocolClient creates a protocol.Client wrapping the given store and identity.
+// The identity may be nil for read-only operations.
+func newProtocolClient(st store.Store, agentID *identity.Identity) *protocol.Client {
+	return protocol.New(st, agentID)
 }
 
 // fsTransport returns a filesystem transport rooted at the correct base dir.
@@ -2011,32 +2018,6 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		defer st.Close()
 	}
 
-	m, err := st.GetMembership(campfireID)
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("querying membership: %v", err))
-	}
-	if m == nil {
-		return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", shortID(campfireID, 12)))
-	}
-
-	fsT := s.fsTransport()
-
-	members, err := fsT.ListMembers(campfireID)
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("listing members: %v", err))
-	}
-
-	isMember := false
-	for _, mem := range members {
-		if fmt.Sprintf("%x", mem.PublicKey) == agentID.PublicKeyHex() {
-			isMember = true
-			break
-		}
-	}
-	if !isMember {
-		return errResponse(id, -32000, "not recognized as a member in the transport directory")
-	}
-
 	if future {
 		tags = append(tags, "future")
 	}
@@ -2051,31 +2032,61 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		tags = append(tags, "commitment-nonce:"+commitmentNonce)
 	}
 
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, antecedents)
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("creating message: %v", err))
-	}
-	msg.Instance = instance // tainted metadata, not covered by signature
-
-	state, err := fsT.ReadState(campfireID)
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("reading campfire state: %v", err))
-	}
-
-	cf := campfireFromState(state, members)
-	if err := msg.AddHop(
-		state.PrivateKey, state.PublicKey,
-		cf.MembershipHash(), len(members),
-		state.JoinProtocol, state.ReceptionRequirements,
-		m.Role,
-	); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("adding provenance hop: %v", err))
-	}
+	var msg *message.Message
 
 	if s.httpTransport != nil {
-		// HTTP mode: store in SQLite and deliver to HTTP peers.
-		if _, err := st.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); err != nil {
-			return errResponse(id, -32000, fmt.Sprintf("storing message: %v", err))
+		// HTTP mode: build message inline so we can call PollBrokerNotify after
+		// storing. The campfire state lives in cfHome (not in the membership's
+		// TransportDir, which is the external HTTP address), so protocol.Client
+		// cannot resolve the campfire key via its sendP2PHTTP path.
+		m, memberErr := st.GetMembership(campfireID)
+		if memberErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("querying membership: %v", memberErr))
+		}
+		if m == nil {
+			return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", shortID(campfireID, 12)))
+		}
+
+		fsT := s.fsTransport()
+		members, listErr := fsT.ListMembers(campfireID)
+		if listErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("listing members: %v", listErr))
+		}
+
+		isMember := false
+		for _, mem := range members {
+			if fmt.Sprintf("%x", mem.PublicKey) == agentID.PublicKeyHex() {
+				isMember = true
+				break
+			}
+		}
+		if !isMember {
+			return errResponse(id, -32000, "not recognized as a member in the transport directory")
+		}
+
+		msg, err = message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, antecedents)
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("creating message: %v", err))
+		}
+		msg.Instance = instance
+
+		state, stateErr := fsT.ReadState(campfireID)
+		if stateErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("reading campfire state: %v", stateErr))
+		}
+
+		cf := campfireFromState(state, members)
+		if hopErr := msg.AddHop(
+			state.PrivateKey, state.PublicKey,
+			cf.MembershipHash(), len(members),
+			state.JoinProtocol, state.ReceptionRequirements,
+			m.Role,
+		); hopErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("adding provenance hop: %v", hopErr))
+		}
+
+		if _, storeErr := st.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); storeErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("storing message: %v", storeErr))
 		}
 		// Wake any long-polling goroutines (hosted and external peers).
 		s.httpTransport.PollBrokerNotify(campfireID)
@@ -2089,8 +2100,24 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 			cfhttp.DeliverToAll(endpoints, campfireID, msg, agentID)
 		}
 	} else {
-		if err := fsT.WriteMessage(campfireID, msg); err != nil {
-			return errResponse(id, -32000, fmt.Sprintf("writing message: %v", err))
+		// Filesystem (and GitHub) mode: delegate to protocol.Client which handles
+		// member verification, message creation, hop signing, and transport write.
+		// Signature verification during sync is also handled by the client (fixes
+		// reviewer finding campfire-agent-bxh: missing sig verification on sync).
+		client := newProtocolClient(st, agentID)
+		msg, err = client.Send(protocol.SendRequest{
+			CampfireID:  campfireID,
+			Payload:     []byte(payload),
+			Tags:        tags,
+			Antecedents: antecedents,
+			Instance:    instance,
+		})
+		if err != nil {
+			var roleErr *protocol.RoleError
+			if protocol.IsRoleError(err, &roleErr) {
+				return errResponse(id, -32000, roleErr.Error())
+			}
+			return errResponse(id, -32000, err.Error())
 		}
 	}
 
@@ -2178,33 +2205,27 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 		}
 	}
 
-	// Sync from filesystem (skip in HTTP mode — messages are already in SQLite
-	// via the HTTP transport's handleDeliver or via handleSend).
-	if s.httpTransport == nil {
-		fsTransport := fs.New(fs.DefaultBaseDir())
-		for _, cfID := range campfireIDs {
-			fsMessages, err := fsTransport.ListMessages(cfID)
-			if err != nil {
-				continue
-			}
-			for _, fsMsg := range fsMessages {
-				st.AddMessage(store.MessageRecordFromMessage(cfID, &fsMsg, store.NowNano())) //nolint:errcheck
-			}
-		}
-	}
+	// Use protocol.Client for sync-before-query. For filesystem campfires, the
+	// client verifies message signatures during sync (fixes campfire-agent-bxh:
+	// missing sig verification). For HTTP campfires, sync is skipped automatically
+	// (messages arrive via push and are already in SQLite).
+	client := newProtocolClient(st, nil) // nil identity: read-only
 
-	// Collect messages
+	// Collect messages per campfire.
 	var allMessages []store.MessageRecord
 	for _, cfID := range campfireIDs {
 		var afterTS int64
 		if !readAll {
 			afterTS, _ = st.GetReadCursor(cfID)
 		}
-		msgs, err := st.ListMessages(cfID, afterTS)
-		if err != nil {
-			return errResponse(id, -32000, fmt.Sprintf("listing messages: %v", err))
+		result, readErr := client.Read(protocol.ReadRequest{
+			CampfireID:     cfID,
+			AfterTimestamp: afterTS,
+		})
+		if readErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("listing messages: %v", readErr))
 		}
-		allMessages = append(allMessages, msgs...)
+		allMessages = append(allMessages, result.Messages...)
 	}
 
 	type jsonMsg struct {
@@ -2333,6 +2354,10 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 		return s.handleAwaitHTTP(id, st, campfireID, targetMsgID, timeout)
 	}
 
+	// Filesystem mode: poll the FS transport directory directly. We use the
+	// global default transport dir (CF_TRANSPORT_DIR or /tmp/campfire) so that
+	// campfires without a membership record in the store (e.g. project campfires
+	// or test setups) are still polled correctly.
 	fsTransport := fs.New(fs.DefaultBaseDir())
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(2 * time.Second)

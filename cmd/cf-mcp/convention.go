@@ -9,17 +9,16 @@ import (
 	"log"
 	httpPkg "net/http"
 	"path/filepath"
-
-	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"sync"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/predicate"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/predicate"
 	"github.com/campfire-net/campfire/pkg/provenance"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/campfire-net/campfire/pkg/trust"
 )
 
@@ -177,7 +176,6 @@ func (s *server) publishDeclarations(st store.Store, campfireID string, entries 
 		return 0, nil
 	}
 
-	adapter := &conventionTransportAdapter{server: s}
 	var toolNames []string
 	var decls []*convention.Declaration
 	published := 0
@@ -197,7 +195,7 @@ func (s *server) publishDeclarations(st store.Store, campfireID string, entries 
 		}
 
 		tags := []string{"convention:operation"}
-		if _, err := adapter.SendCampfireKeySigned(context.Background(), campfireID, payload, tags, nil); err != nil {
+		if _, err := s.sendCampfireKeySignedMessage(context.Background(), campfireID, payload, tags, nil); err != nil {
 			log.Printf("convention: publishing declaration to %s: %v", campfireID, err)
 			continue
 		}
@@ -336,7 +334,6 @@ func (s *server) publishViews(st store.Store, campfireID string, entries []inter
 		return 0, nil
 	}
 
-	adapter := &conventionTransportAdapter{server: s}
 	var viewNames []string
 	published := 0
 
@@ -374,7 +371,7 @@ func (s *server) publishViews(st store.Store, campfireID string, entries []inter
 		}
 
 		tags := []string{"campfire:view"}
-		if _, err := adapter.SendCampfireKeySigned(context.Background(), campfireID, payload, tags, nil); err != nil {
+		if _, err := s.sendCampfireKeySignedMessage(context.Background(), campfireID, payload, tags, nil); err != nil {
 			log.Printf("convention: publishing view %q to %s: %v", name, campfireID, err)
 			continue
 		}
@@ -579,13 +576,26 @@ func (s *server) handleViewTool(id interface{}, entry *viewToolEntry, args map[s
 }
 
 // handleConventionTool dispatches a convention tool invocation through the executor.
-func (s *server) handleConventionTool(id interface{}, entry *conventionToolEntry, args map[string]interface{}) jsonRPCResponse {
-	transport := &conventionTransportAdapter{server: s}
+func (s *server) handleConventionTool(rpcID interface{}, entry *conventionToolEntry, args map[string]interface{}) jsonRPCResponse {
 	agentKey := ""
-	if agentID, err := identity.Load(s.identityPath()); err == nil {
-		agentKey = agentID.PublicKeyHex()
+	var agentID *identity.Identity
+	if loaded, err := identity.Load(s.identityPath()); err == nil {
+		agentKey = loaded.PublicKeyHex()
+		agentID = loaded
 	}
-	executor := convention.NewExecutor(transport, agentKey)
+
+	st := s.st
+	if st == nil {
+		var openErr error
+		st, openErr = store.Open(s.storePath())
+		if openErr != nil {
+			return errResponse(rpcID, -32000, fmt.Sprintf("opening store: %v", openErr))
+		}
+		defer st.Close()
+	}
+
+	client := newProtocolClient(st, agentID)
+	executor := convention.NewExecutor(client, agentKey)
 
 	// Wire in the provenance store so min_operator_level gates are enforced.
 	// Without this, senderLevel defaults to 0 inside Execute and all gated
@@ -605,7 +615,7 @@ func (s *server) handleConventionTool(id interface{}, entry *conventionToolEntry
 	defer cancel()
 
 	if err := executor.Execute(ctx, entry.decl, entry.campfireID, args); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("convention operation failed: %v", err))
+		return errResponse(rpcID, -32000, fmt.Sprintf("convention operation failed: %v", err))
 	}
 
 	result := map[string]string{
@@ -614,7 +624,7 @@ func (s *server) handleConventionTool(id interface{}, entry *conventionToolEntry
 		"operation":   entry.decl.Operation,
 		"convention":  entry.decl.Convention,
 	}
-	return s.envelopedResponse(id, entry.campfireID, result)
+	return s.envelopedResponse(rpcID, entry.campfireID, result)
 }
 
 // envelopedResponse wraps a campfire content response in the safety envelope.
@@ -674,54 +684,20 @@ func (a storeReaderAdapter) ListMessages(campfireID string, afterTimestamp int64
 	return a.st.ListMessages(campfireID, afterTimestamp, filter...)
 }
 
-// conventionTransportAdapter adapts the MCP server to convention.ExecutorTransport.
-type conventionTransportAdapter struct {
-	server *server
-}
-
-func (a *conventionTransportAdapter) SendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
-	agentID, err := identity.Load(a.server.identityPath())
-	if err != nil {
-		return "", fmt.Errorf("loading identity: %w", err)
-	}
-
-	st := a.server.st
-	if st == nil {
-		var openErr error
-		st, openErr = store.Open(a.server.storePath())
-		if openErr != nil {
-			return "", fmt.Errorf("opening store: %w", openErr)
-		}
-		defer st.Close()
-	}
-
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, payload, tags, antecedents)
-	if err != nil {
-		return "", fmt.Errorf("creating message: %w", err)
-	}
-
-	rec := store.MessageRecord{
-		ID:          msg.ID,
-		CampfireID:  campfireID,
-		Sender:      msg.SenderHex(),
-		Payload:     msg.Payload,
-		Tags:        msg.Tags,
-		Antecedents: msg.Antecedents,
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
-	}
-	if _, err := st.AddMessage(rec); err != nil {
-		return "", fmt.Errorf("writing message: %w", err)
-	}
-	return msg.ID, nil
-}
-
-func (a *conventionTransportAdapter) SendCampfireKeySigned(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
+// sendCampfireKeySignedMessage creates a message signed with the campfire's own
+// Ed25519 keypair and writes it directly to the store. Used when publishing
+// convention declarations and view definitions at campfire creation time.
+//
+// The campfire keypair is resolved from the filesystem state, trying the transport
+// base dir first (production) and falling back to cfHome (HTTP session mode).
+// Messages are written directly to the store so they are immediately visible to
+// local readers without a filesystem sync round-trip.
+func (s *server) sendCampfireKeySignedMessage(_ context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
 	// Resolve the campfire's Ed25519 keypair from the filesystem state.
 	// Try the transport base dir first (production), then cfHome (tests, hosted).
-	fsT := a.server.fsTransport()
-	if _, err := fsT.ReadState(campfireID); err != nil && a.server.cfHome != "" {
-		fsT = fs.New(a.server.cfHome)
+	fsT := s.fsTransport()
+	if _, err := fsT.ReadState(campfireID); err != nil && s.cfHome != "" {
+		fsT = fs.New(s.cfHome)
 	}
 	state, err := fsT.ReadState(campfireID)
 	if err != nil {
@@ -734,10 +710,10 @@ func (a *conventionTransportAdapter) SendCampfireKeySigned(ctx context.Context, 
 	campfirePriv := ed25519.PrivateKey(state.PrivateKey)
 	campfirePub := ed25519.PublicKey(state.PublicKey)
 
-	st := a.server.st
+	st := s.st
 	if st == nil {
 		var openErr error
-		st, openErr = store.Open(a.server.storePath())
+		st, openErr = store.Open(s.storePath())
 		if openErr != nil {
 			return "", fmt.Errorf("opening store: %w", openErr)
 		}
@@ -763,35 +739,4 @@ func (a *conventionTransportAdapter) SendCampfireKeySigned(ctx context.Context, 
 		return "", fmt.Errorf("writing message: %w", err)
 	}
 	return msg.ID, nil
-}
-
-func (a *conventionTransportAdapter) ReadMessages(ctx context.Context, campfireID string, tags []string) ([]convention.MessageRecord, error) {
-	st := a.server.st
-	if st == nil {
-		var openErr error
-		st, openErr = store.Open(a.server.storePath())
-		if openErr != nil {
-			return nil, fmt.Errorf("opening store: %w", openErr)
-		}
-		defer st.Close()
-	}
-
-	msgs, err := st.ListMessages(campfireID, 0, store.MessageFilter{Tags: tags})
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]convention.MessageRecord, len(msgs))
-	for i, m := range msgs {
-		result[i] = convention.MessageRecord{
-			ID:     m.ID,
-			Sender: m.Sender,
-			Tags:   m.Tags,
-		}
-	}
-	return result, nil
-}
-
-func (a *conventionTransportAdapter) SendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, _ time.Duration) ([]byte, error) {
-	return nil, fmt.Errorf("future/await not yet implemented in MCP transport adapter")
 }
