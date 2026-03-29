@@ -402,15 +402,17 @@ func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s store.Sto
 		return fmt.Errorf("encoding transport dir: %w", err)
 	}
 
-	// Record membership in local store.
-	if err := s.AddMembership(store.Membership{
-		CampfireID:   campfireID,
-		TransportDir: transportDir,
-		JoinProtocol: cf.JoinProtocol,
-		Role:         store.PeerRoleCreator,
-		JoinedAt:     store.NowNano(),
-		Threshold:    cf.Threshold,
-		Description:  description,
+	// Record membership in local store via shared admission package.
+	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		Store: s,
+	}, admission.AdmissionRequest{
+		CampfireID:      campfireID,
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Role:            store.PeerRoleCreator,
+		JoinProtocol:    cf.JoinProtocol,
+		TransportDir:    transportDir,
+		Description:     description,
+		CreatorPubkey:   agentID.PublicKeyHex(),
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}

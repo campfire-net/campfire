@@ -413,8 +413,16 @@ func (ts *TableStore) ListMessages(campfireID string, afterTimestamp int64, filt
 				continue
 			}
 
-			// Apply tag filter (OR semantics).
-			if len(f.Tags) > 0 && !hasAnyTag(rec.Tags, f.Tags) {
+			// Apply tag include filter (OR semantics across exact + prefix).
+			if (len(f.Tags) > 0 || len(f.TagPrefixes) > 0) && !hasAnyTagOrPrefix(rec.Tags, f.Tags, f.TagPrefixes) {
+				continue
+			}
+
+			// Apply tag exclude filter.
+			if len(f.ExcludeTags) > 0 && hasAnyTag(rec.Tags, f.ExcludeTags) {
+				continue
+			}
+			if len(f.ExcludeTagPrefixes) > 0 && hasAnyTagPrefix(rec.Tags, f.ExcludeTagPrefixes) {
 				continue
 			}
 
@@ -1376,6 +1384,24 @@ func hasAnyTag(recTags []string, filterTags []string) bool {
 		}
 	}
 	return false
+}
+
+// hasAnyTagPrefix returns true if any rec tag starts with any prefix (case-insensitive).
+func hasAnyTagPrefix(recTags []string, prefixes []string) bool {
+	for _, rt := range recTags {
+		rtl := strings.ToLower(rt)
+		for _, p := range prefixes {
+			if strings.HasPrefix(rtl, strings.ToLower(p)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasAnyTagOrPrefix returns true if any rec tag matches an exact tag OR starts with a prefix.
+func hasAnyTagOrPrefix(recTags []string, exactTags []string, prefixes []string) bool {
+	return hasAnyTag(recTags, exactTags) || hasAnyTagPrefix(recTags, prefixes)
 }
 
 // unmarshalEncryptedPayload delegates to pkg/crypto for downgrade prevention.

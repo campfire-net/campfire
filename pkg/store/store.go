@@ -738,6 +738,9 @@ func (s *SQLiteStore) GetMessageByPrefix(prefix string) (*MessageRecord, error) 
 // (Fix for workspace-d68.)
 type MessageFilter struct {
 	Tags              []string
+	TagPrefixes       []string // match messages with any tag starting with a prefix
+	ExcludeTags       []string // exclude messages with any of these exact tags
+	ExcludeTagPrefixes []string // exclude messages with any tag starting with a prefix
 	Sender            string
 	RespectCompaction bool
 	AfterReceivedAt   int64 // if > 0, overrides afterTimestamp; filters by received_at
@@ -775,15 +778,40 @@ func (s *SQLiteStore) ListMessages(campfireID string, afterTimestamp int64, filt
 		args = append(args, campfireID)
 	}
 
-	if len(f.Tags) > 0 {
-		// Match messages that have ANY of the given tags using json_each.
-		placeholders := make([]string, len(f.Tags))
-		for i, t := range f.Tags {
+	if len(f.Tags) > 0 || len(f.TagPrefixes) > 0 {
+		// Build an OR clause: message matches if any tag is in the exact set
+		// OR any tag starts with one of the prefixes.
+		var tagOrs []string
+		if len(f.Tags) > 0 {
+			placeholders := make([]string, len(f.Tags))
+			for i, t := range f.Tags {
+				placeholders[i] = "?"
+				args = append(args, strings.ToLower(t))
+			}
+			tagOrs = append(tagOrs, "LOWER(value) IN ("+strings.Join(placeholders, ",")+")")
+		}
+		for _, p := range f.TagPrefixes {
+			escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(strings.ToLower(p))
+			tagOrs = append(tagOrs, "LOWER(value) LIKE ? ESCAPE '\\'")
+			args = append(args, escaped+"%")
+		}
+		tagClause := "EXISTS (SELECT 1 FROM json_each(tags) WHERE " + strings.Join(tagOrs, " OR ") + ")"
+		conditions = append(conditions, tagClause)
+	}
+
+	if len(f.ExcludeTags) > 0 {
+		placeholders := make([]string, len(f.ExcludeTags))
+		for i, t := range f.ExcludeTags {
 			placeholders[i] = "?"
 			args = append(args, strings.ToLower(t))
 		}
-		tagClause := "EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) IN (" + strings.Join(placeholders, ",") + "))"
-		conditions = append(conditions, tagClause)
+		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) IN ("+strings.Join(placeholders, ",")+"))")
+	}
+
+	for _, p := range f.ExcludeTagPrefixes {
+		escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(strings.ToLower(p))
+		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) LIKE ? ESCAPE '\\\\')")
+		args = append(args, escaped+"%")
 	}
 
 	if f.Sender != "" {

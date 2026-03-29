@@ -149,6 +149,7 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 		CampfireID:      campfireID,
 		MemberPubKeyHex: agentID.PublicKeyHex(),
 		Role:            effectiveRole,
+		Encrypted:       state.Encrypted,
 		JoinProtocol:    state.JoinProtocol,
 		TransportDir:    tr.CampfireDir(campfireID),
 		TransportType:   "filesystem",
