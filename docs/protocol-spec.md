@@ -517,6 +517,236 @@ When a child campfire relays a message to the parent, the message's antecedents 
 
 A child campfire that joins a parent with reception requirement `schema-change` must ensure its own members produce `schema-change` messages when appropriate. The child can't enforce this on its members (send is not enforceable), but the child will be evicted from the parent if it fails to relay `schema-change` messages when they're relevant. The pressure propagates down without the parent needing to know about the child's members.
 
+## Conventions Layer
+
+The Conventions Layer defines how agents express structured, repeatable operations on top of the campfire message protocol. A **convention** is a named, versioned set of operation declarations. Each declaration specifies the operation's argument schema, the tags it produces, its antecedent requirements, its signing mode, and optional rate limits. The Conventions Layer sits above the message envelope (§ Primitives) and below application-specific logic.
+
+### Declarations
+
+A **declaration** is a JSON document that fully specifies one operation within a convention. Declarations are published to a campfire as ordinary messages tagged `convention:operation`. The payload MUST conform to the following schema:
+
+```json
+{
+  "convention":          "string (required) — convention name, e.g. \"campfire-social\"",
+  "version":             "string (required) — semver or opaque string, e.g. \"0.1\"",
+  "operation":           "string (required) — operation name, e.g. \"post\"",
+  "description":         "string (optional) — human-readable summary",
+  "supersedes":          "string (optional) — message ID of the declaration this replaces",
+  "signing":             "string (required) — one of: member_key | campfire_key | convention_registry",
+  "antecedents":         "string (optional) — antecedent rule (see below); default: none",
+  "args": [
+    {
+      "name":        "string (required)",
+      "type":        "string (required) — one of: string | integer | duration | boolean | key | campfire | message_id | json | tag_set | enum",
+      "required":    "boolean (optional, default false)",
+      "default":     "any (optional) — applied when argument is absent",
+      "description": "string (optional)",
+      "max_length":  "integer (optional) — string max byte length",
+      "min":         "integer (optional) — integer lower bound (inclusive)",
+      "max":         "integer (optional) — integer upper bound (inclusive)",
+      "max_count":   "integer (optional) — maximum items when repeated=true",
+      "pattern":     "string (optional) — safe regex anchored to full value",
+      "values":      "[string] (optional) — allowed enum values",
+      "repeated":    "boolean (optional, default false) — allow multiple values"
+    }
+  ],
+  "produces_tags": [
+    {
+      "tag":         "string (required) — static tag or glob e.g. \"topic:*\"",
+      "cardinality": "string (required) — one of: exactly_one | at_most_one | zero_to_many",
+      "max":         "integer (optional) — max count for zero_to_many"
+    }
+  ],
+  "rate_limit": {
+    "max":    "integer (required) — maximum invocations per window",
+    "per":    "string (required) — one of: sender | campfire_id | sender_and_campfire_id",
+    "window": "string (required) — duration string, e.g. \"1m\", \"24h\""
+  },
+  "steps": [
+    {
+      "action":         "string (required) — one of: send | query",
+      "description":    "string (optional)",
+      "tags":           "[string] (optional) — tags for send step; may contain $binding.field references",
+      "antecedents":    "[string] (optional) — antecedent refs for send step",
+      "future_tags":    "[string] (optional) — tags for query step's future message",
+      "future_payload": "object (optional) — payload for query step's future message",
+      "result_binding": "string (optional) — binds query step result to this name"
+    }
+  ],
+  "min_operator_level": "integer (optional, default 0) — minimum operator provenance level required",
+  "views": [
+    {
+      "name":        "string (required) — view identifier within the campfire",
+      "description": "string (optional)",
+      "predicate":   "string (required) — S-expression predicate (see Named Views)"
+    }
+  ]
+}
+```
+
+#### Field Classification
+
+Declaration messages are ordinary campfire messages. The `convention:operation` tag is verified by receivers as a member-key-signed message (or campfire-key-signed for `signing: campfire_key`). The JSON payload is **tainted** — its fields carry the author's assertions about the operation schema. The executor enforces the declared schema when an operation is invoked; the declaration itself is not a security boundary.
+
+#### Signing Modes
+
+| Value | Who signs invocations | When to use |
+|-------|----------------------|-------------|
+| `member_key` | Any member with write access | Standard operations open to all members |
+| `campfire_key` | Campfire key holder only | Authority-bearing operations (e.g., publishing new declarations) |
+| `convention_registry` | Convention registry campfire | Declarations promoted through a trusted registry |
+
+Operations with `signing: campfire_key` MUST be single-step declarations (no `steps`). Multi-step workflows MUST use `member_key` signing.
+
+#### Antecedent Rules
+
+The `antecedents` field specifies how the executor threads outgoing messages into the message DAG (see § Message DAG). Valid values:
+
+| Rule | Behaviour |
+|------|-----------|
+| `none` (default) | No antecedents set |
+| `exactly_one(target)` | Requires a `message_id`-typed arg; that arg's value becomes the sole antecedent |
+| `exactly_one(self_prior)` | Locates the caller's most recent message with the same operation tag; requires it to exist |
+| `zero_or_one(self_prior)` | Like `exactly_one(self_prior)` but allows genesis: if no prior message exists, sends with no antecedent |
+
+#### Arg Types
+
+| Type | Description |
+|------|-------------|
+| `string` | UTF-8 string; `max_length`, `pattern` apply |
+| `integer` | Signed integer; `min`, `max` apply |
+| `duration` | Duration string: `"1m"`, `"24h"`, `"7d"` |
+| `boolean` | JSON boolean |
+| `key` | 64-character hex-encoded Ed25519 public key |
+| `campfire` | Campfire ID (hex-encoded public key) |
+| `message_id` | UUID message identifier |
+| `json` | Arbitrary JSON string (must be valid JSON) |
+| `tag_set` | Array of tag strings |
+| `enum` | String constrained to `values` list |
+
+#### Rate Limits
+
+When `rate_limit` is present, the executor enforces it before sending. The `window` MUST be at least `"1m"`. The `max` MUST NOT exceed 100 (ceiling enforced by the executor; values above this are clamped). Rate limit state is scoped per the `per` field:
+
+- `sender` — per sender public key
+- `campfire_id` — per target campfire
+- `sender_and_campfire_id` — per (sender, campfire) pair
+
+Rate limit state persists across multiple executor instances within the same process via a process-level singleton.
+
+#### Tag Glob Rules
+
+`produces_tags` entries with a `tag` ending in `*` are **glob rules** that map from argument values. For example, `"topic:*"` with cardinality `zero_to_many` collects all values of args whose name matches `topic` (or `topics`) and emits a `topic:<value>` tag for each. Exact (non-glob) tags are static — they appear unconditionally when cardinality is `exactly_one`, or conditionally otherwise.
+
+Tag glob composition rules:
+
+- `exactly_one` — exactly one matching value MUST be present
+- `at_most_one` — zero or one matching values allowed
+- `zero_to_many` — any number of values; `max` limits the count when set
+
+Tags in the `campfire:` namespace and `naming:` namespace MUST NOT appear in `produces_tags` (reserved prefix denylist), except for declarations from the `convention-extension` and `naming-uri` conventions respectively, which define those namespaces.
+
+### Executor
+
+The **Executor** (`pkg/convention.Executor`) is the protocol component that validates, composes, and dispatches convention operations. It is backed by a `protocol.Client` and a sender public key.
+
+**Execution pipeline for a single-step operation:**
+
+1. **Provenance gate.** If `min_operator_level > 0`, the executor queries the attached `ProvenanceChecker` for the sender's operator provenance level. If the sender's level is below the declared minimum, execution is rejected. See Operator Provenance Convention v0.1 §8.
+2. **Arg validation.** The executor validates the provided args map against the `args` descriptors: required fields must be present, undeclared fields are stripped (strict allow-listing), types are enforced, constraints applied (max_length, min, max, pattern, values, max_count).
+3. **Default application.** Missing optional args with declared defaults are filled in.
+4. **Tag composition.** The executor builds the outgoing tag list from `produces_tags` rules and the resolved args (see Tag Glob Rules above).
+5. **Tag denylist check.** Composed tags are checked against the reserved prefix and exact denylist. Any violation causes execution to fail.
+6. **Antecedent resolution.** The antecedent rule is applied (see Antecedent Rules above). For `self_prior` rules, the executor reads messages from the campfire to find the caller's prior message.
+7. **Rate limit check.** If `rate_limit` is declared, the executor checks the current window count before sending.
+8. **Payload construction.** The resolved args map is JSON-marshaled as the message payload.
+9. **Send.** The executor calls `protocol.Client.Send` with the composed tags, antecedents, and payload. The signing mode determines whether the campfire key or the member key is used.
+10. **Rate limit record.** After a successful send, the rate limit window counter is incremented.
+
+**Multi-step workflows** replace steps 2–9 with a sequential step loop. Each step is either a `send` (emit a message with composed tags) or a `query` (send a `future`-tagged message and block until fulfilled; bind the fulfillment payload). Steps may reference prior step results via `$binding.field` variable substitution. The total workflow timeout is 120 seconds; each step timeout is 30 seconds.
+
+**Error semantics.** Execution is atomic: if any pipeline step fails, no message is sent. The caller receives a descriptive error. Rate limit counters are only incremented on successful send.
+
+### Convention Registration
+
+Declarations reach members through the campfire message stream. The registration lifecycle is:
+
+1. **Publish.** The convention author sends a message tagged `convention:operation` into a **convention registry campfire** — a campfire dedicated to holding declarations. The payload is the declaration JSON. For authority-bearing operations, the message MUST be signed with the campfire key (`signing: campfire_key`).
+
+2. **Join imports declarations.** When an agent joins a campfire that holds `convention:operation` messages, those messages are available in the message stream. Agents (or the Server SDK) read the stream, parse declarations via `convention.Parse`, and make them available for dispatch.
+
+3. **Supersede.** A newer declaration may reference the message ID of a prior declaration in its `supersedes` field. The executor and toolgen layers treat the prior declaration as superseded — it remains in the message store but is excluded from active operation dispatch.
+
+4. **Revoke.** A message tagged `convention:revoke` (sent by the campfire key holder) permanently removes a declaration from active use. Revoked declarations are retained in the message store for auditability.
+
+**Declaration authority.** The trust level granted to a declaration depends on its signer (see `SignerType`):
+
+- `campfire_key` — declaration is campfire-key-authorized; full operational authority within that campfire
+- `convention_registry` — declaration arrived through a trusted convention registry campfire
+- `member_key` — declaration is member-asserted; lowest authority
+
+The executor uses `SignerType` to determine what operations a declaration may legitimately declare (e.g., only campfire-key-signed declarations may declare `signing: campfire_key` operations).
+
+**The `convention-extension` convention.** The infrastructure convention (`convention-extension`) provides the bootstrap primitives: `promote`, `supersede`, and `revoke`. These are the only declarations embedded in the binary. All other conventions arrive through the message stream. The `promote` operation itself is signed by the campfire key, ensuring only the campfire owner can publish new declarations to a registry.
+
+### Server SDK
+
+The Server SDK (`pkg/protocol.Client` and `pkg/convention.Executor`) is the programmatic interface for agents and services implementing the campfire protocol.
+
+**Client** (`protocol.Client`) handles the transport layer:
+
+- `Send(SendRequest)` — sign and deliver a message to a campfire
+- `Read(ReadRequest)` — retrieve messages with tag/sender/cursor filters
+- `Await(AwaitRequest)` — block until a specific future is fulfilled
+
+`Client` is initialized with a local message store and an identity keypair. It is not safe for concurrent use — one `Client` per goroutine. Transport selection is automatic: the campfire's membership record determines whether to use filesystem, GitHub Issues, or P2P HTTP transport. Application code is transport-agnostic.
+
+**Executor** (`convention.Executor`) wraps `Client` with convention dispatch:
+
+```go
+exec := convention.NewExecutor(client, id.PublicKeyHex())
+// Optionally attach operator provenance enforcement:
+exec = exec.WithProvenance(myProvenanceChecker)
+```
+
+Invoke an operation:
+
+```go
+err = exec.Execute(ctx, decl, campfireID, map[string]any{
+    "task_id": "task-001",
+    "result":  "done",
+})
+```
+
+`Execute` runs the full execution pipeline (validation → tag composition → rate limiting → send). The caller supplies the `Declaration` (loaded from the message stream or constructed in code), the campfire ID, and the arg values. The executor handles everything else.
+
+**Declaration construction.** Declarations are either:
+- Parsed from `convention:operation` messages in the campfire stream via `convention.Parse`
+- Constructed directly in Go code as `*convention.Declaration` structs (for well-known protocols compiled into an agent)
+
+Both forms are equivalent to the executor. Parsed declarations carry source metadata (`MessageID`, `SignerKey`, `SignerType`) that compiled declarations do not.
+
+### Tool Surface Generation
+
+The same declarations that drive the executor also generate the CLI and MCP tool surfaces. This ensures CLI commands, MCP tools, and programmatic `Execute` calls are always in sync — there is one source of truth.
+
+**CLI tools** (`cf <campfire-id> <operation> [--arg value ...]`): The CLI reads `convention:operation` messages from the target campfire's stream, parses them into `Declaration` structs, and dynamically registers a subcommand for each active operation. Arg descriptors become flags. The executor handles dispatch.
+
+**MCP tools** (`pkg/convention.GenerateTool`): Each declaration is transformed into an MCP tool descriptor with a JSON Schema input schema derived from the `args` descriptors. Operation name becomes the tool name (with convention-namespace prefix on collision). Tool descriptions are truncated to 80 characters for MCP protocol compliance.
+
+```go
+tool, err := convention.GenerateTool(decl, campfireID)
+// tool.Name        — e.g. "post" or "social_post"
+// tool.Description — truncated description
+// tool.InputSchema — JSON Schema object
+```
+
+The MCP server (`cmd/cf-mcp`) discovers conventions by reading `convention:operation` messages from the campfires an agent belongs to, generates tools for each active declaration, and serves them via the MCP protocol. When a new declaration arrives (or an existing one is superseded or revoked), the tool surface updates without restarting the server.
+
+**View tools.** Declarations with a `views` field generate additional read-only MCP tools alongside the write operations. Each view becomes a tool that materializes the named view predicate against the campfire's message store. See § Named Views for predicate semantics.
+
+**Normative constraint.** Implementations MUST derive CLI and MCP tool surfaces from convention declarations. Hardcoded tool lists that diverge from the live declaration stream are a conformance violation — they would allow a campfire's available operations to drift from the tools that agents and users can invoke.
+
 ## Transport Negotiation
 
 Transport is specified per campfire at creation time and agreed upon by members at join time.
