@@ -1056,52 +1056,40 @@ func (s *server) autoProvisionCampfire(id interface{}, campfireID string, agentI
 		return nil, &resp
 	}
 
-	now := time.Now().UnixNano()
-	if err := fsTransport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
-		PublicKey: agentID.PublicKey,
-		JoinedAt:  now,
-	}); err != nil {
-		resp := errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
-		return nil, &resp
-	}
-
-	// Record membership in the store under the real (system-generated) campfire ID.
-	// In hosted HTTP mode, use the HTTP transport type; otherwise filesystem.
+	// In hosted HTTP mode, register transport and set self info.
 	transportDir := fsTransport.CampfireDir(cf.PublicKeyHex())
 	transportType := "filesystem"
+	var endpoint string
 	if s.httpTransport != nil {
+		s.httpTransport.SetSelfInfo(agentID.PublicKeyHex(), s.externalAddr)
 		transportDir = s.externalAddr
 		transportType = "p2p-http"
+		endpoint = s.externalAddr
 	}
 
-	if err := st.AddMembership(store.Membership{
-		CampfireID:    cf.PublicKeyHex(),
-		TransportDir:  transportDir,
-		TransportType: transportType,
-		JoinProtocol:  "open",
-		Role:          campfire.RoleFull,
-		JoinedAt:      now,
-		Threshold:     1,
-		Description:   fmt.Sprintf("auto-provisioned from campfire_init (requested: %s)", campfireID),
-		CreatorPubkey: agentID.PublicKeyHex(),
-	}); err != nil {
-		resp := errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
+	admitDeps := admission.AdmitterDeps{
+		FSTransport: fsTransport,
+		Store:       st,
+	}
+	if s.httpTransport != nil {
+		admitDeps.HTTPTransport = s.httpTransport
+	}
+	if _, admitErr := admission.AdmitMember(context.Background(), admitDeps, admission.AdmissionRequest{
+		CampfireID:      cf.PublicKeyHex(),
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Role:            campfire.RoleFull,
+		JoinProtocol:    "open",
+		TransportDir:    transportDir,
+		TransportType:   transportType,
+		Endpoint:        endpoint,
+		Description:     fmt.Sprintf("auto-provisioned from campfire_init (requested: %s)", campfireID),
+		CreatorPubkey:   agentID.PublicKeyHex(),
+	}); admitErr != nil {
+		resp := errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
 		return nil, &resp
 	}
 
-	// In hosted HTTP mode, register with the transport router so external
-	// peers can reach this campfire, and set self info on the HTTP transport.
 	if s.httpTransport != nil {
-		s.httpTransport.SetSelfInfo(agentID.PublicKeyHex(), s.externalAddr)
-		if err := st.UpsertPeerEndpoint(store.PeerEndpoint{
-			CampfireID:   cf.PublicKeyHex(),
-			MemberPubkey: agentID.PublicKeyHex(),
-			Endpoint:     s.externalAddr,
-			Role:         store.PeerRoleCreator,
-		}); err != nil {
-			resp := errResponse(id, -32000, fmt.Sprintf("registering self as peer: %v", err))
-			return nil, &resp
-		}
 		if s.transportRouter != nil {
 			s.transportRouter.RegisterForSession(cf.PublicKeyHex(), s.sessionToken, s.httpTransport)
 		}
@@ -2846,17 +2834,37 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 			return errResponse(id, -32000, fmt.Sprintf("initializing transport: %v", err))
 		}
 
-		now := time.Now().UnixNano()
-
-		if err := transport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
-			PublicKey: agentID.PublicKey,
-			JoinedAt:  now,
-		}); err != nil {
-			return errResponse(id, -32000, fmt.Sprintf("writing sender member record: %v", err))
+		transportDir := transport.CampfireDir(cf.PublicKeyHex())
+		transportType := "filesystem"
+		if s.httpTransport != nil {
+			transportDir = s.externalAddr
+			transportType = "p2p-http"
 		}
+
+		dmAdmitDeps := admission.AdmitterDeps{
+			FSTransport: transport,
+			Store:       st,
+		}
+		if s.httpTransport != nil {
+			dmAdmitDeps.HTTPTransport = s.httpTransport
+		}
+
+		// Admit self member (writes member file + records store membership).
+		if _, admitErr := admission.AdmitMember(context.Background(), dmAdmitDeps, admission.AdmissionRequest{
+			CampfireID:      cf.PublicKeyHex(),
+			MemberPubKeyHex: agentID.PublicKeyHex(),
+			Role:            store.PeerRoleCreator,
+			JoinProtocol:    cf.JoinProtocol,
+			TransportDir:    transportDir,
+			TransportType:   transportType,
+		}); admitErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("admitting sender member: %v", admitErr))
+		}
+
+		// Write target member file to filesystem transport (remote peer — no store membership record).
 		if err := transport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
 			PublicKey: targetKey,
-			JoinedAt:  now,
+			JoinedAt:  time.Now().UnixNano(),
 		}); err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("writing target member record: %v", err))
 		}
@@ -2886,25 +2894,11 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 			return errResponse(id, -32000, fmt.Sprintf("publishing beacon: %v", err))
 		}
 
-		transportDir := transport.CampfireDir(cf.PublicKeyHex())
-		transportType := ""
 		if s.httpTransport != nil {
-			transportDir = s.externalAddr
-			transportType = "p2p-http"
 			// Register DM campfire with transport router.
 			if s.transportRouter != nil {
 				s.transportRouter.RegisterForSession(cf.PublicKeyHex(), s.sessionToken, s.httpTransport)
 			}
-		}
-		if err := st.AddMembership(store.Membership{
-			CampfireID:    cf.PublicKeyHex(),
-			TransportDir:  transportDir,
-			TransportType: transportType,
-			JoinProtocol:  cf.JoinProtocol,
-			Role:          store.PeerRoleCreator,
-			JoinedAt:      now,
-		}); err != nil {
-			return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
 		}
 
 		campfireID = cf.PublicKeyHex()
