@@ -1795,6 +1795,7 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		ReceptionRequirements: result.ReceptionRequirements,
 		Threshold:             result.Threshold,
 		DeliveryModes:         result.DeliveryModes,
+		Encrypted:             result.Encrypted,
 	}
 	stateData, marshalErr := cfencoding.Marshal(cfState)
 	if marshalErr != nil {
