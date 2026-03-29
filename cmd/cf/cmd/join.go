@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/admission"
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
@@ -99,22 +101,26 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 	}
 
 	// Enforce invite-only before admission attempt.
-	// admitFSMemberIfNew handles open protocol; pre-admitted members bypass this check.
+	// Pre-admitted members bypass this check.
 	existingMembers, err := tr.ListMembers(campfireID)
 	if err != nil {
 		return fmt.Errorf("listing members: %w", err)
 	}
 	alreadyOnDisk := false
+	existingRole := campfire.RoleFull
 	for _, m := range existingMembers {
 		if fmt.Sprintf("%x", m.PublicKey) == agentID.PublicKeyHex() {
 			alreadyOnDisk = true
+			if m.Role != "" {
+				existingRole = m.Role
+			}
 			break
 		}
 	}
 	if !alreadyOnDisk {
 		switch state.JoinProtocol {
 		case "open":
-			// Immediately admitted via admitFSMemberIfNew below.
+			// Immediately admitted via AdmitMember below.
 		case "invite-only":
 			return fmt.Errorf("campfire %s is invite-only; ask a member to run 'cf admit %s %s'",
 				campfireID[:shortIDLen], campfireID[:shortIDLen], agentID.PublicKeyHex())
@@ -123,31 +129,65 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 		}
 	}
 
-	now, role, _, err := admitFSMemberIfNew(tr, campfireID, agentID, state)
+	// Look up description from beacon (best-effort).
+	description := lookupBeaconDescription(campfireID)
+
+	// Determine effective role: preserve pre-admitted role if already on disk.
+	effectiveRole := existingRole // campfire.RoleFull for new joins, or pre-admitted role
+
+	// Admit member via shared admission package (writes member file + records in store).
+	// Skip writing to FSTransport if already on disk (member file already exists).
+	now := time.Now().UnixNano()
+	var fstr admission.FSTransport
+	if !alreadyOnDisk {
+		fstr = tr
+	}
+	_, err = admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		FSTransport: fstr,
+		Store:       s,
+	}, admission.AdmissionRequest{
+		CampfireID:      campfireID,
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Role:            effectiveRole,
+		JoinProtocol:    state.JoinProtocol,
+		TransportDir:    tr.CampfireDir(campfireID),
+		TransportType:   "filesystem",
+		Description:     description,
+	})
 	if err != nil {
 		return err
 	}
 
-	// Look up description from beacon (best-effort).
-	description := lookupBeaconDescription(campfireID)
-
-	// Record membership in local store.
-	// Role is preserved from the admission record (workspace-4s4).
-	m := store.Membership{
-		CampfireID:   campfireID,
-		TransportDir: tr.CampfireDir(campfireID),
-		JoinProtocol: state.JoinProtocol,
-		Role:         role,
-		JoinedAt:     now,
-		Description:  description,
+	// Write campfire:member-joined system message to transport (idempotent with sync).
+	if !alreadyOnDisk {
+		sysMsg, msgErr := message.NewMessage(
+			state.PrivateKey, state.PublicKey,
+			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, agentID.PublicKeyHex(), now)),
+			[]string{"campfire:member-joined"},
+			nil,
+		)
+		if msgErr == nil {
+			updatedMembers, _ := tr.ListMembers(campfireID)
+			cf := campfireFromState(state, updatedMembers)
+			if hopErr := sysMsg.AddHop(
+				state.PrivateKey, state.PublicKey,
+				cf.MembershipHash(), len(updatedMembers),
+				state.JoinProtocol, state.ReceptionRequirements,
+				campfire.RoleFull,
+			); hopErr == nil {
+				tr.WriteMessage(campfireID, sysMsg) //nolint:errcheck
+			}
+		}
 	}
-	if err := s.AddMembership(m); err != nil {
-		return fmt.Errorf("recording membership: %w", err)
+
+	m, err := s.GetMembership(campfireID)
+	if err != nil || m == nil {
+		return fmt.Errorf("membership not found after admission")
 	}
 
 	// Sync messages immediately so convention declarations are available
 	// without requiring a separate cf read.
-	syncCampfire(campfireID, &m, agentID, s)
+	syncCampfire(campfireID, m, agentID, s)
 
 	// Compare fingerprints against local policy (Trust v0.2 §5.3).
 	report := compareJoinedCampfire(s, campfireID)
@@ -213,17 +253,18 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	// Look up description from beacon (best-effort).
 	p2pDescription := lookupBeaconDescription(campfireID)
 
-	// Record membership in local store.
-	p2pMembership := store.Membership{
-		CampfireID:   campfireID,
-		TransportDir: stateDir,
-		JoinProtocol: result.JoinProtocol,
-		Role:         campfire.RoleFull,
-		JoinedAt:     store.NowNano(),
-		Threshold:    result.Threshold,
-		Description:  p2pDescription,
-	}
-	if err := s.AddMembership(p2pMembership); err != nil {
+	// Record membership in local store via shared admission package.
+	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		Store: s,
+	}, admission.AdmissionRequest{
+		CampfireID:    campfireID,
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Role:          campfire.RoleFull,
+		JoinProtocol:  result.JoinProtocol,
+		TransportDir:  stateDir,
+		TransportType: "p2p-http",
+		Description:   p2pDescription,
+	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
 
@@ -292,7 +333,8 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 
 	// Sync messages immediately so convention declarations are available
 	// without requiring a separate cf read.
-	syncCampfire(campfireID, &p2pMembership, agentID, s)
+	p2pMembership, _ := s.GetMembership(campfireID)
+	syncCampfire(campfireID, p2pMembership, agentID, s)
 
 	// Compare fingerprints against local policy (Trust v0.2 §5.3).
 	p2pReport := compareJoinedCampfire(s, campfireID)
@@ -459,23 +501,25 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 	// Look up description from beacon (best-effort).
 	ghDescription := lookupBeaconDescription(campfireID)
 
-	// Record membership in local store.
-	ghMembership := store.Membership{
-		CampfireID:   campfireID,
-		TransportDir: transportDir,
-		JoinProtocol: "open", // populated from beacon in production; simplified here
-		Role:         campfire.RoleFull,
-		JoinedAt:     store.NowNano(),
-		Threshold:    1,
-		Description:  ghDescription,
-	}
-	if err := s.AddMembership(ghMembership); err != nil {
+	// Record membership in local store via shared admission package.
+	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		Store: s,
+	}, admission.AdmissionRequest{
+		CampfireID:      campfireID,
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Role:            campfire.RoleFull,
+		JoinProtocol:    "open", // populated from beacon in production; simplified here
+		TransportDir:    transportDir,
+		TransportType:   "github",
+		Description:     ghDescription,
+	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
 
 	// Sync messages immediately so convention declarations are available
 	// without requiring a separate cf read.
-	syncCampfire(campfireID, &ghMembership, agentID, s)
+	ghMembership, _ := s.GetMembership(campfireID)
+	syncCampfire(campfireID, ghMembership, agentID, s)
 
 	// Compare fingerprints against local policy (Trust v0.2 §5.3).
 	ghReport := compareJoinedCampfire(s, campfireID)
@@ -612,4 +656,58 @@ func init() {
 // campfireFromState reconstructs a Campfire for membership hash computation.
 func campfireFromState(state *campfire.CampfireState, members []campfire.MemberRecord) *campfire.Campfire {
 	return state.ToCampfire(members)
+}
+
+// autoJoinRootCampfire joins an open-protocol filesystem campfire automatically.
+// It is only called when the campfire ID came from ProjectRoot() and the agent
+// is not yet a member. Returns nil if successfully joined or if the campfire is
+// invite-only (skips silently). Returns an error only on unexpected failures.
+func autoJoinRootCampfire(campfireID string, agentID *identity.Identity, s store.Store) error {
+	transportDir := resolveFSTransportDir(campfireID)
+	tr := fs.ForDir(transportDir)
+
+	// Read campfire state to check join protocol.
+	state, err := tr.ReadState(campfireID)
+	if err != nil {
+		// Transport state not found — can't auto-join, skip silently.
+		return nil
+	}
+
+	// Only auto-join open campfires.
+	if state.JoinProtocol != "open" {
+		return nil
+	}
+
+	// Check if already a member in the transport (idempotency).
+	members, err := tr.ListMembers(campfireID)
+	if err != nil {
+		return fmt.Errorf("listing members: %w", err)
+	}
+	for _, m := range members {
+		if fmt.Sprintf("%x", m.PublicKey) == agentID.PublicKeyHex() {
+			// Already on disk — still record in store if not there.
+			if existing, _ := s.GetMembership(campfireID); existing != nil {
+				return nil
+			}
+			break
+		}
+	}
+
+	// Admit member via shared admission package.
+	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		FSTransport: tr,
+		Store:       s,
+	}, admission.AdmissionRequest{
+		CampfireID:      campfireID,
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Role:            campfire.RoleFull,
+		JoinProtocol:    state.JoinProtocol,
+		TransportDir:    tr.CampfireDir(campfireID),
+		TransportType:   "filesystem",
+	}); err != nil {
+		return fmt.Errorf("admitting member: %w", err)
+	}
+
+	fmt.Printf("Auto-joined campfire %s\n", campfireID[:12])
+	return nil
 }
