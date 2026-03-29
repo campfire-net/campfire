@@ -116,6 +116,11 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 
 	if req.Limit > 0 && len(msgs) > req.Limit {
 		msgs = msgs[:req.Limit]
+		// When Limit truncates results, use the last returned message's
+		// timestamp as cursor — MaxTimestamp would skip unread messages.
+		if len(msgs) > 0 {
+			maxTS = msgs[len(msgs)-1].Timestamp
+		}
 	}
 
 	return &ReadResult{

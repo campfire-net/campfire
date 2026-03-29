@@ -115,6 +115,10 @@ func (c *Client) Store() store.Store {
 // Returns the created message on success. On failure returns a descriptive error;
 // role enforcement errors satisfy errors.As(*RoleError).
 func (c *Client) Send(req SendRequest) (*message.Message, error) {
+	if c.identity == nil {
+		return nil, fmt.Errorf("identity required to send messages")
+	}
+
 	m, err := c.store.GetMembership(req.CampfireID)
 	if err != nil {
 		return nil, fmt.Errorf("querying membership: %w", err)
@@ -166,7 +170,7 @@ func (c *Client) sendFilesystem(req SendRequest, m *store.Membership) (*message.
 		state.PrivateKey, state.PublicKey,
 		cf.MembershipHash(), len(members),
 		state.JoinProtocol, state.ReceptionRequirements,
-		campfire.RoleFull,
+		campfire.EffectiveRole(m.Role),
 	); err != nil {
 		return nil, fmt.Errorf("adding provenance hop: %w", err)
 	}
@@ -282,7 +286,7 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 		reqs = []string{}
 	}
 
-	useThreshold := req.SigningMode == SigningModeThreshold && m.Threshold > 1
+	useThreshold := m.Threshold > 1
 	if !useThreshold {
 		// threshold=1 or non-threshold mode: sign with campfire private key directly.
 		if err := msg.AddHop(
