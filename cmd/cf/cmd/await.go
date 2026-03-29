@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/spf13/cobra"
 )
@@ -50,7 +52,7 @@ Example:
 			}
 		}
 
-		// Look up the membership for polling.
+		// Verify membership before delegating to protocol.Client.
 		m, err := s.GetMembership(campfireID)
 		if err != nil {
 			return fmt.Errorf("querying membership: %w", err)
@@ -59,71 +61,47 @@ Example:
 			return fmt.Errorf("not a member of campfire %s", campfireID[:min(12, len(campfireID))])
 		}
 
-		entry := campfireEntry{id: campfireID, membership: m}
+		// Use transport-appropriate poll interval.
 		interval := followIntervalForTransport(*m)
 
-		// Set up signal handling and timeout.
+		// Set up signal handling so SIGINT/SIGTERM exit cleanly with code 1.
 		stopCh := make(chan os.Signal, 1)
 		signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(stopCh)
 
-		var deadline <-chan time.Time
-		if timeout > 0 {
-			timer := time.NewTimer(timeout)
-			defer timer.Stop()
-			deadline = timer.C
+		// Run Await in a goroutine so we can also watch the stop signal.
+		type awaitResult struct {
+			msg *store.MessageRecord
+			err error
 		}
+		resultCh := make(chan awaitResult, 1)
 
-		// Check existing messages first (the fulfillment may already exist).
-		syncCampfire(entry.id, entry.membership, agentID, s)
-		if msg, err := findFulfillment(s, campfireID, targetMsgID); err != nil {
-			return err
-		} else if msg != nil {
-			return outputFulfillment(*msg)
-		}
+		client := protocol.New(s, agentID)
+		go func() {
+			msg, err := client.Await(protocol.AwaitRequest{
+				CampfireID:   campfireID,
+				TargetMsgID:  targetMsgID,
+				Timeout:      timeout,
+				PollInterval: interval,
+			})
+			resultCh <- awaitResult{msg: msg, err: err}
+		}()
 
-		// Poll loop.
-		for {
-			select {
-			case <-stopCh:
+		select {
+		case <-stopCh:
+			os.Exit(1)
+			return nil
+		case res := <-resultCh:
+			if errors.Is(res.err, protocol.ErrAwaitTimeout) {
 				os.Exit(1)
 				return nil
-			case <-deadline:
-				os.Exit(1)
-				return nil
-			case <-time.After(interval):
 			}
-
-			syncCampfire(entry.id, entry.membership, agentID, s)
-
-			if msg, err := findFulfillment(s, campfireID, targetMsgID); err != nil {
-				return err
-			} else if msg != nil {
-				return outputFulfillment(*msg)
+			if res.err != nil {
+				return res.err
 			}
+			return outputFulfillment(*res.msg)
 		}
 	},
-}
-
-// findFulfillment searches for a message with the "fulfills" tag whose antecedents
-// contain the target message ID. Returns nil if no fulfillment found.
-func findFulfillment(s store.Store, campfireID, targetMsgID string) (*store.MessageRecord, error) {
-	// Query all messages with the "fulfills" tag.
-	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{
-		Tags: []string{"fulfills"},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("querying messages: %w", err)
-	}
-
-	for _, msg := range msgs {
-		for _, ant := range msg.Antecedents {
-			if ant == targetMsgID {
-				return &msg, nil
-			}
-		}
-	}
-	return nil, nil
 }
 
 // outputFulfillment prints the fulfilling message and returns nil.

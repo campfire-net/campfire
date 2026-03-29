@@ -12,6 +12,7 @@ import (
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 	"github.com/campfire-net/campfire/pkg/transport"
@@ -80,11 +81,6 @@ var sendCmd = &cobra.Command{
 			return fmt.Errorf("not a member of campfire %s", campfireID[:12])
 		}
 
-		// Enforce membership role before routing to transport.
-		if err := checkRoleCanSend(m.Role, sendTags); err != nil {
-			return err
-		}
-
 		// Build tags
 		tags := sendTags
 		if sendFuture {
@@ -94,21 +90,28 @@ var sendCmd = &cobra.Command{
 			tags = append(tags, "fulfills")
 		}
 
-		// Enforce membership role after the final tags slice is assembled.
-		// Must run after "future" and "fulfills" are appended so the check
-		// sees the complete tag set (workspace-w97).
-		if err := checkRoleCanSend(m.Role, tags); err != nil {
-			return err
-		}
-
 		// Build antecedents
 		antecedents := sendAntecedents
 		if sendFulfills != "" {
 			antecedents = append(antecedents, sendFulfills)
 		}
 
-		// Route based on transport type.
-		msg, err := routeMessage(campfireID, payload, tags, antecedents, sendInstance, agentID, s, m)
+		// Resolve GitHub token fully before delegating to protocol.Client.
+		// protocol.Client only checks GITHUB_TOKEN env as fallback; the CLI
+		// resolves all sources (flag, env, credential file, gh CLI).
+		ghToken, _ := resolveGitHubToken("", CFHome())
+
+		// Delegate to protocol.Client — handles transport dispatch, role enforcement,
+		// message signing, and provenance hop.
+		client := protocol.New(s, agentID)
+		msg, err := client.Send(protocol.SendRequest{
+			CampfireID:  campfireID,
+			Payload:     []byte(payload),
+			Tags:        tags,
+			Antecedents: antecedents,
+			Instance:    sendInstance,
+			GitHubToken: ghToken,
+		})
 		if err != nil {
 			return err
 		}

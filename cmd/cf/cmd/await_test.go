@@ -8,10 +8,31 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
-// TestFindFulfillment verifies that findFulfillment correctly identifies a
+// awaitFulfillment is a thin helper for tests: creates a protocol.Client and
+// calls Await with a 0-timeout to check for an existing fulfillment without blocking.
+func awaitFulfillment(s store.Store, campfireID, targetMsgID string) (*store.MessageRecord, error) {
+	id, err := identity.Generate()
+	if err != nil {
+		return nil, err
+	}
+	client := protocol.New(s, id)
+	msg, err := client.Await(protocol.AwaitRequest{
+		CampfireID:   campfireID,
+		TargetMsgID:  targetMsgID,
+		Timeout:      1 * time.Millisecond, // immediate timeout = check-only
+		PollInterval: 1 * time.Millisecond,
+	})
+	if err != nil && err != protocol.ErrAwaitTimeout {
+		return nil, err
+	}
+	return msg, nil
+}
+
+// TestFindFulfillment verifies that protocol.Client.Await correctly identifies a
 // message with the "fulfills" tag whose antecedents contain the target ID.
 func TestFindFulfillment(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
@@ -36,7 +57,7 @@ func TestFindFulfillment(t *testing.T) {
 	}
 
 	// No fulfillment yet.
-	found, err := findFulfillment(s, campfireID, futureMsg.ID)
+	found, err := awaitFulfillment(s, campfireID, futureMsg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +75,7 @@ func TestFindFulfillment(t *testing.T) {
 	}
 
 	// Still no fulfillment.
-	found, err = findFulfillment(s, campfireID, futureMsg.ID)
+	found, err = awaitFulfillment(s, campfireID, futureMsg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,8 +92,8 @@ func TestFindFulfillment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Now findFulfillment should return the fulfilling message.
-	found, err = findFulfillment(s, campfireID, futureMsg.ID)
+	// Now awaitFulfillment should return the fulfilling message.
+	found, err = awaitFulfillment(s, campfireID, futureMsg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +143,7 @@ func TestFindFulfillmentWrongTarget(t *testing.T) {
 	s.AddMessage(store.MessageRecordFromMessage(campfireID, fulfill, store.NowNano()))
 
 	// Searching for future1's fulfillment should return nil.
-	found, err := findFulfillment(s, campfireID, future1.ID)
+	found, err := awaitFulfillment(s, campfireID, future1.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +152,7 @@ func TestFindFulfillmentWrongTarget(t *testing.T) {
 	}
 
 	// Searching for future2's fulfillment should return the fulfill message.
-	found, err = findFulfillment(s, campfireID, future2.ID)
+	found, err = awaitFulfillment(s, campfireID, future2.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,8 +214,8 @@ func TestAwaitTimeout(t *testing.T) {
 	}
 	s.AddMessage(store.MessageRecordFromMessage(campfireID, futureMsg, store.NowNano()))
 
-	// findFulfillment should return nil (no fulfillment posted).
-	found, err := findFulfillment(s, campfireID, futureMsg.ID)
+	// awaitFulfillment should return nil (no fulfillment posted).
+	found, err := awaitFulfillment(s, campfireID, futureMsg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

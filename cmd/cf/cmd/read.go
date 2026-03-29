@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/spf13/cobra"
 )
@@ -65,7 +66,7 @@ func resolveCampfireEntries(args []string, agentID *identity.Identity, s store.S
 	return campfireIDs, entries, nil
 }
 
-// runFollowMode runs the --follow polling loop: sync → query → print → sleep,
+// runFollowMode runs the --follow polling loop: read → print → sleep,
 // until a SIGINT/SIGTERM is received. Cursor advancement respects peek and all flags.
 func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.Store, fieldSet map[string]bool, all, peek bool, mf store.MessageFilter) error {
 	// Determine poll interval — use the shortest interval across all campfires.
@@ -101,6 +102,8 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.
 		}
 	}
 
+	client := protocol.New(s, agentID)
+
 	for {
 		// Check for stop signal (non-blocking).
 		select {
@@ -109,37 +112,33 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.
 		default:
 		}
 
-		// Sync all campfires.
-		for _, e := range entries {
-			syncCampfire(e.id, e.membership, agentID, s)
-		}
-
-		// Query new messages since last cursor.
+		// Read new messages since last cursor via protocol.Client (includes sync).
 		var newMessages []store.MessageRecord
 		for _, e := range entries {
-			msgs, err := s.ListMessages(e.id, cursors[e.id])
+			result, err := client.Read(protocol.ReadRequest{
+				CampfireID:       e.id,
+				Tags:             mf.Tags,
+				TagPrefixes:      mf.TagPrefixes,
+				ExcludeTags:      mf.ExcludeTags,
+				ExcludeTagPrefixes: mf.ExcludeTagPrefixes,
+				Sender:           mf.Sender,
+				AfterTimestamp:   cursors[e.id],
+				IncludeCompacted: all,
+			})
 			if err != nil {
 				continue
 			}
-			newMessages = append(newMessages, msgs...)
+			// Advance cursor based on pre-filter MaxTimestamp so filtered-out
+			// messages don't re-appear on the next poll.
+			if !peek && result.MaxTimestamp > cursors[e.id] {
+				cursors[e.id] = result.MaxTimestamp
+				s.SetReadCursor(e.id, result.MaxTimestamp) //nolint:errcheck
+			}
+			newMessages = append(newMessages, result.Messages...)
 		}
 
-		// Apply post-query filters for display.
-		// Cursor advances based on ALL new messages (pre-filter) so filtered-out
-		// messages don't re-appear on the next poll.
 		if len(newMessages) > 0 {
-			printMessagesWithFields(filterMessages(newMessages, mf), s, fieldSet)
-
-			if !peek {
-				for _, m := range newMessages {
-					if m.Timestamp > cursors[m.CampfireID] {
-						cursors[m.CampfireID] = m.Timestamp
-					}
-				}
-				for cfID, ts := range cursors {
-					s.SetReadCursor(cfID, ts) //nolint:errcheck
-				}
-			}
+			printMessagesWithFields(newMessages, s, fieldSet)
 		}
 
 		// Sleep with signal check.
@@ -151,44 +150,35 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.
 	}
 }
 
-// runOneShotMode performs a single sync → query → print → cursor-advance cycle.
-// Compaction is respected unless all is set. Cursor advancement is skipped for
-// all and peek modes.
+// runOneShotMode performs a single read → print → cursor-advance cycle via
+// protocol.Client. Compaction is respected unless all is set. Cursor advancement
+// is skipped for all and peek modes.
 func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *identity.Identity, s store.Store, fieldSet map[string]bool, all, peek bool, mf store.MessageFilter) error {
-	// Sync all campfires.
-	for _, e := range entries {
-		syncCampfire(e.id, e.membership, agentID, s)
-	}
+	client := protocol.New(s, agentID)
 
-	// Query each campfire once with the active filters for display, then use a
-	// lightweight MaxMessageTimestamp query to compute the pre-filter cursor
-	// (the max timestamp across ALL messages, not just the filtered set).
-	// This replaces the previous double-ListMessages pattern (one unfiltered + one
-	// filtered per campfire) with a single payload-bearing query + one scalar query,
-	// halving the number of full-scan SQL round-trips. (Fix for workspace-pm9m.5.15.)
 	preCursors := map[string]int64{}
-	sqlFilter := mf
-	sqlFilter.RespectCompaction = !all
 	var allMessages []store.MessageRecord
 	for _, cfID := range campfireIDs {
 		var afterTS int64
 		if !all {
 			afterTS, _ = s.GetReadCursor(cfID)
 		}
-		filtered, err := s.ListMessages(cfID, afterTS, sqlFilter)
+		result, err := client.Read(protocol.ReadRequest{
+			CampfireID:       cfID,
+			Tags:             mf.Tags,
+			TagPrefixes:      mf.TagPrefixes,
+			ExcludeTags:      mf.ExcludeTags,
+			ExcludeTagPrefixes: mf.ExcludeTagPrefixes,
+			Sender:           mf.Sender,
+			AfterTimestamp:   afterTS,
+			IncludeCompacted: all,
+		})
 		if err != nil {
-			return fmt.Errorf("listing messages: %w", err)
+			return fmt.Errorf("reading campfire %s: %w", cfID[:min(12, len(cfID))], err)
 		}
-		allMessages = append(allMessages, filtered...)
-
-		// Compute the cursor advance using a scalar MAX query so we don't load
-		// all unfiltered payloads just to find the highest timestamp.
-		maxTS, err := s.MaxMessageTimestamp(cfID, afterTS)
-		if err != nil {
-			return fmt.Errorf("querying max message timestamp: %w", err)
-		}
-		if maxTS > preCursors[cfID] {
-			preCursors[cfID] = maxTS
+		allMessages = append(allMessages, result.Messages...)
+		if result.MaxTimestamp > preCursors[cfID] {
+			preCursors[cfID] = result.MaxTimestamp
 		}
 	}
 

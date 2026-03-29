@@ -179,6 +179,10 @@ func (c *Client) sendFilesystem(req SendRequest, m *store.Membership) (*message.
 		return nil, fmt.Errorf("writing message: %w", err)
 	}
 
+	// Mirror to local store so the sender can read back their own messages
+	// without a sync step. Consistent with sendP2PHTTP behavior.
+	c.store.AddMessage(store.MessageRecordFromMessage(req.CampfireID, msg, store.NowNano())) //nolint:errcheck
+
 	return msg, nil
 }
 
@@ -240,6 +244,10 @@ func (c *Client) sendGitHub(req SendRequest, m *store.Membership) (*message.Mess
 	if err := tr.Send(req.CampfireID, msg); err != nil {
 		return nil, fmt.Errorf("sending via GitHub transport: %w", err)
 	}
+
+	// Mirror to local store so the sender can read back their own messages
+	// without a sync step. Consistent with sendFilesystem and sendP2PHTTP behavior.
+	c.store.AddMessage(store.MessageRecordFromMessage(req.CampfireID, msg, store.NowNano())) //nolint:errcheck
 
 	return msg, nil
 }
