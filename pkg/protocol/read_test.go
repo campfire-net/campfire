@@ -100,6 +100,28 @@ func writeTransportMessage(t *testing.T, tr *fs.Transport, campfireID string, pa
 	return msg
 }
 
+// writeTransportMessageWithAntecedents writes a signed message with the given
+// antecedents directly to the filesystem transport. It mirrors writeTransportMessage
+// but allows specifying antecedent message IDs (used for testing Await fulfillment).
+func writeTransportMessageWithAntecedents(t *testing.T, tr *fs.Transport, campfireID string, payload string, tags []string, antecedents []string) *message.Message {
+	t.Helper()
+
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating sender identity: %v", err)
+	}
+
+	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, antecedents)
+	if err != nil {
+		t.Fatalf("creating message: %v", err)
+	}
+
+	if err := tr.WriteMessage(campfireID, msg); err != nil {
+		t.Fatalf("writing message to transport: %v", err)
+	}
+	return msg
+}
+
 // TestClientRead_SyncBeforeQuery verifies that Read() syncs from the filesystem
 // transport before querying, so messages written via transport but not yet in
 // the local store are visible.
