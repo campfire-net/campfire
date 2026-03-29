@@ -58,23 +58,34 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 		return readCmd.RunE(readCmd, []string{campfireID})
 	}
 
-	// Built-in: help lists available convention operations with descriptions.
+	// Built-in: help lists available convention operations and views.
 	if operationName == "help" {
-		if len(decls) == 0 {
-			fmt.Printf("Campfire %s — no convention operations declared.\n", campfireID[:shortIDLen])
+		viewNames := listViewNames(s, campfireID)
+		if len(decls) == 0 && len(viewNames) == 0 {
+			fmt.Printf("Campfire %s — no convention operations or views declared.\n", campfireID[:shortIDLen])
 			fmt.Println("\nUse cf send / cf read for raw messaging.")
 			return nil
 		}
-		fmt.Printf("Campfire %s — %d convention operations:\n\n", campfireID[:shortIDLen], len(decls))
-		for _, d := range decls {
-			desc := d.Description
-			if len(desc) > 72 {
-				desc = desc[:72] + "…"
+		if len(decls) > 0 {
+			fmt.Printf("Campfire %s — %d convention operations:\n\n", campfireID[:shortIDLen], len(decls))
+			for _, d := range decls {
+				desc := d.Description
+				if len(desc) > 72 {
+					desc = desc[:72] + "…"
+				}
+				fmt.Printf("  %-24s %s\n", d.Operation, desc)
 			}
-			fmt.Printf("  %-24s %s\n", d.Operation, desc)
+		}
+		if len(viewNames) > 0 {
+			fmt.Printf("\n%d named views (read operations):\n\n", len(viewNames))
+			for _, name := range viewNames {
+				fmt.Printf("  %-24s (view)\n", name)
+			}
 		}
 		fmt.Printf("\nUsage: cf %s <operation> [--args]\n", campfireName)
-		fmt.Printf("  e.g. cf %s %s --help\n", campfireName, decls[0].Operation)
+		if len(decls) > 0 {
+			fmt.Printf("  e.g. cf %s %s --help\n", campfireName, decls[0].Operation)
+		}
 		return nil
 	}
 
@@ -86,11 +97,24 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 			break
 		}
 	}
+
+	// If not a write operation, check if it's a named view.
 	if matched == nil {
+		viewDef, viewErr := findLatestView(s, campfireID, operationName)
+		if viewErr == nil && viewDef != nil {
+			return runViewRead(campfireID, operationName)
+		}
+	}
+
+	if matched == nil {
+		// Collect both operations and views for the error message.
 		var ops []string
 		for _, d := range decls {
 			ops = append(ops, d.Operation)
 		}
+		// List views too.
+		viewNames := listViewNames(s, campfireID)
+		ops = append(ops, viewNames...)
 		if len(ops) == 0 {
 			return fmt.Errorf("unknown operation %q — no convention operations declared in campfire %s\nUse cf send / cf read for raw messaging.", operationName, campfireID[:shortIDLen])
 		}

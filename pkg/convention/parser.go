@@ -42,10 +42,21 @@ type Declaration struct {
 	// checks the sender's level against this value before dispatching.
 	// See Operator Provenance Convention v0.1 §8.
 	MinOperatorLevel int `json:"min_operator_level,omitempty"`
+	// Views declares named views associated with this convention. When a
+	// declaration is loaded, views are auto-published as campfire:view messages
+	// and registered as callable MCP tools alongside the write operations.
+	Views []ViewDeclaration `json:"views,omitempty"`
 	// Source metadata (populated during Parse, not from JSON payload)
-	MessageID string    `json:"-"`
-	SignerKey string    `json:"-"`
+	MessageID  string     `json:"-"`
+	SignerKey  string     `json:"-"`
 	SignerType SignerType `json:"-"`
+}
+
+// ViewDeclaration defines a named view within a convention declaration.
+type ViewDeclaration struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Predicate   string `json:"predicate"` // S-expression filter
 }
 
 // ArgDescriptor describes an argument to a convention operation.

@@ -233,6 +233,26 @@ func (s *server) publishDeclarations(st store.Store, campfireID string, entries 
 		registerConventionTools(s.conventionTools, campfireID, decls)
 	}
 
+	// Auto-publish views declared inside conventions.
+	for _, decl := range decls {
+		for _, v := range decl.Views {
+			if v.Name == "" || v.Predicate == "" {
+				continue
+			}
+			viewEntries := []interface{}{
+				map[string]interface{}{
+					"name":        v.Name,
+					"predicate":   v.Predicate,
+					"description": v.Description,
+				},
+			}
+			vCount, vNames := s.publishViews(st, campfireID, viewEntries)
+			if vCount > 0 {
+				toolNames = append(toolNames, vNames...)
+			}
+		}
+	}
+
 	return published, toolNames
 }
 
@@ -437,6 +457,23 @@ func (s *server) handleViewTool(id interface{}, entry *viewToolEntry, args map[s
 		return errResponse(id, -32000, fmt.Sprintf("reading messages: %v", err))
 	}
 
+	// Build fulfillment index for has-fulfillment predicate.
+	fulfillmentIndex := make(map[string]bool)
+	for _, m := range msgs {
+		hasFulfills := false
+		for _, t := range m.Tags {
+			if t == "fulfills" {
+				hasFulfills = true
+				break
+			}
+		}
+		if hasFulfills {
+			for _, ant := range m.Antecedents {
+				fulfillmentIndex[ant] = true
+			}
+		}
+	}
+
 	var matched []map[string]interface{}
 	for _, m := range msgs {
 		// Skip system messages (campfire:* tags).
@@ -452,9 +489,11 @@ func (s *server) handleViewTool(id interface{}, entry *viewToolEntry, args map[s
 		}
 
 		ctx := &predicate.MessageContext{
-			Tags:      m.Tags,
-			Sender:    m.Sender,
-			Timestamp: m.Timestamp,
+			MessageID:        m.ID,
+			Tags:             m.Tags,
+			Sender:           m.Sender,
+			Timestamp:        m.Timestamp,
+			FulfillmentIndex: fulfillmentIndex,
 		}
 		if len(m.Payload) > 0 {
 			var payload map[string]interface{}

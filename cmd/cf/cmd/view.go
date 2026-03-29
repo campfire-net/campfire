@@ -227,6 +227,10 @@ func runViewRead(campfireIDArg, name string) error {
 		return fmt.Errorf("listing messages: %w", err)
 	}
 
+	// Build fulfillment index for has-fulfillment predicate: scan all messages
+	// for those tagged "fulfills" and index their antecedents as fulfilled.
+	fulfillmentIndex := buildFulfillmentIndex(allMsgs)
+
 	// Evaluate predicate against each message, skipping campfire:* system messages.
 	// System messages (e.g. campfire:view definitions) must not appear in view
 	// results. This is especially important for negation predicates like
@@ -235,6 +239,7 @@ func runViewRead(campfireIDArg, name string) error {
 	var matched []store.MessageRecord
 	for _, m := range allMsgs {
 		ctx := buildMessageContext(m)
+		ctx.FulfillmentIndex = fulfillmentIndex
 		isSystem := false
 		for _, tag := range ctx.Tags {
 			if strings.HasPrefix(tag, "campfire:") {
@@ -389,6 +394,41 @@ func findAllViews(s store.Store, campfireID string) ([]viewInfo, error) {
 	return result, nil
 }
 
+// buildFulfillmentIndex scans messages for those tagged "fulfills" and builds
+// a map of message IDs that have been fulfilled (appear as antecedents of a
+// fulfills-tagged message).
+func buildFulfillmentIndex(msgs []store.MessageRecord) map[string]bool {
+	idx := make(map[string]bool)
+	for _, m := range msgs {
+		hasFulfills := false
+		for _, tag := range m.Tags {
+			if tag == "fulfills" {
+				hasFulfills = true
+				break
+			}
+		}
+		if hasFulfills {
+			for _, ant := range m.Antecedents {
+				idx[ant] = true
+			}
+		}
+	}
+	return idx
+}
+
+// listViewNames returns the names of all views defined in a campfire.
+func listViewNames(s store.Store, campfireID string) []string {
+	views, err := findAllViews(s, campfireID)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, len(views))
+	for i, v := range views {
+		names[i] = v.def.Name
+	}
+	return names
+}
+
 // buildMessageContext creates a predicate.MessageContext from a store.MessageRecord.
 func buildMessageContext(m store.MessageRecord) *predicate.MessageContext {
 	// Tags are now a typed []string on MessageRecord (JSON deserialized at store boundary).
@@ -397,6 +437,7 @@ func buildMessageContext(m store.MessageRecord) *predicate.MessageContext {
 	json.Unmarshal(m.Payload, &payload) //nolint:errcheck
 
 	return &predicate.MessageContext{
+		MessageID: m.ID,
 		Tags:      m.Tags,
 		Sender:    m.Sender,
 		Timestamp: m.Timestamp,
