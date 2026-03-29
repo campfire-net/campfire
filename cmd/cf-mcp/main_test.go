@@ -106,6 +106,15 @@ func newTestServer(t *testing.T) *server {
 	}
 }
 
+// newTestServerWithPrimitives creates a test server with exposePrimitives enabled,
+// simulating --expose-primitives flag behavior.
+func newTestServerWithPrimitives(t *testing.T) *server {
+	t.Helper()
+	srv := newTestServer(t)
+	srv.exposePrimitives = true
+	return srv
+}
+
 // ---------------------------------------------------------------------------
 // JSON-RPC helper types for constructing requests.
 // ---------------------------------------------------------------------------
@@ -165,8 +174,9 @@ func TestDispatch_Initialize(t *testing.T) {
 // MCP protocol: tools/list
 // ---------------------------------------------------------------------------
 
-// TestDispatch_ToolsList verifies that tools/list returns all known campfire
-// tools with name and inputSchema fields.
+// TestDispatch_ToolsList verifies that the default tools/list only returns base
+// (convention-level) tools — not primitives — and that every listed tool has
+// the required name and inputSchema fields.
 func TestDispatch_ToolsList(t *testing.T) {
 	srv := newTestServer(t)
 	resp := srv.dispatch(makeReq("tools/list", "{}"))
@@ -204,19 +214,69 @@ func TestDispatch_ToolsList(t *testing.T) {
 		}
 	}
 
-	// Spot-check that core tools are present.
 	names := make(map[string]bool)
 	for _, raw := range toolsRaw {
 		tool := raw.(map[string]interface{})
 		names[tool["name"].(string)] = true
 	}
+
+	// Base (non-primitive) tools must always appear.
+	for _, expected := range []string{
+		"campfire_init", "campfire_id",
+		"campfire_join", "campfire_discover", "campfire_ls",
+	} {
+		if !names[expected] {
+			t.Errorf("expected base tool %q in default tools/list, not found", expected)
+		}
+	}
+
+	// Primitive tools must NOT appear in default mode.
+	for _, primitive := range []string{
+		"campfire_create", "campfire_send", "campfire_read",
+		"campfire_commitment", "campfire_inspect", "campfire_dm",
+		"campfire_await", "campfire_export",
+	} {
+		if names[primitive] {
+			t.Errorf("primitive tool %q should not appear in default tools/list (need --expose-primitives)", primitive)
+		}
+	}
+}
+
+// TestDispatch_ToolsList_ExposePrimitives verifies that when exposePrimitives is set,
+// both base and primitive tools appear in tools/list.
+func TestDispatch_ToolsList_ExposePrimitives(t *testing.T) {
+	srv := newTestServerWithPrimitives(t)
+	resp := srv.dispatch(makeReq("tools/list", "{}"))
+
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+
+	b, _ := json.Marshal(resp.Result)
+	var result map[string]interface{}
+	if err := json.Unmarshal(b, &result); err != nil {
+		t.Fatalf("unmarshaling result: %v", err)
+	}
+
+	toolsRaw, ok := result["tools"].([]interface{})
+	if !ok {
+		t.Fatalf("tools missing or wrong type: %T", result["tools"])
+	}
+
+	names := make(map[string]bool)
+	for _, raw := range toolsRaw {
+		tool := raw.(map[string]interface{})
+		names[tool["name"].(string)] = true
+	}
+
+	// All tools (base + primitive) must appear when --expose-primitives is set.
 	for _, expected := range []string{
 		"campfire_init", "campfire_id", "campfire_create",
 		"campfire_join", "campfire_send", "campfire_read",
 		"campfire_discover", "campfire_ls",
 	} {
 		if !names[expected] {
-			t.Errorf("expected tool %q in tools/list, not found", expected)
+			t.Errorf("expected tool %q in tools/list with --expose-primitives, not found", expected)
 		}
 	}
 }

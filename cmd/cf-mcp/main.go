@@ -119,10 +119,11 @@ type mcpCapabilities struct {
 // ---------------------------------------------------------------------------
 
 type server struct {
-	cfHome          string
-	beaconDir       string
-	cfHomeExplicit  bool
-	lockFile        *os.File
+	cfHome           string
+	beaconDir        string
+	cfHomeExplicit   bool
+	exposePrimitives bool             // when true, primitive tools are included in tools/list
+	lockFile         *os.File
 	sessManager     *SessionManager   // non-nil only in HTTP+session mode
 	httpTransport   *cfhttp.Transport // non-nil when this server has an embedded HTTP transport
 	transportRouter *TransportRouter  // non-nil in hosted HTTP mode (shared across sessions)
@@ -307,10 +308,31 @@ func campfireFromState(state *campfire.CampfireState, members []campfire.MemberR
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-var tools []mcpToolInfo
+// baseTools are always registered regardless of --expose-primitives.
+// They cover identity, lifecycle, discovery, and session management.
+var baseTools []mcpToolInfo
+
+// primitiveTools are only registered when --expose-primitives is set.
+// They expose raw data-plane operations: create, send, read, inspect, dm, await, export.
+// By default these are hidden so agents use convention tools (the campfire's typed API) instead.
+var primitiveTools []mcpToolInfo
+
+// primitiveToolNames lists the tool names that are considered low-level primitives.
+// These are hidden by default and only registered when --expose-primitives is set.
+var primitiveToolNames = map[string]bool{
+	"campfire_create":     true,
+	"campfire_send":       true,
+	"campfire_commitment": true,
+	"campfire_read":       true,
+	"campfire_inspect":    true,
+	"campfire_dm":         true,
+	"campfire_await":      true,
+	"campfire_export":     true,
+}
 
 func init() {
-	tools = []mcpToolInfo{
+	// Build the full tool list then partition into base and primitive slices.
+	allToolDefs := []mcpToolInfo{
 		// ---------------------------------------------------------------
 		// LIFECYCLE — call campfire_init first, then create or join
 		// ---------------------------------------------------------------
@@ -813,6 +835,15 @@ Returns: total actions, actions by type, latest Merkle root (if computed), and a
 				"required": []string{},
 			}),
 		},
+	}
+
+	// Partition the full list into base tools and primitive tools.
+	for _, t := range allToolDefs {
+		if primitiveToolNames[t.Name] {
+			primitiveTools = append(primitiveTools, t)
+		} else {
+			baseTools = append(baseTools, t)
+		}
 	}
 }
 
@@ -3474,8 +3505,11 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 		return jsonRPCResponse{} // marker: skip sending
 
 	case "tools/list":
-		allTools := make([]mcpToolInfo, len(tools))
-		copy(allTools, tools)
+		allTools := make([]mcpToolInfo, len(baseTools))
+		copy(allTools, baseTools)
+		if s.exposePrimitives {
+			allTools = append(allTools, primitiveTools...)
+		}
 		if s.conventionTools != nil {
 			for _, ct := range s.conventionTools.list() {
 				allTools = append(allTools, mcpToolInfo{
@@ -3953,8 +3987,11 @@ func main() {
 	tokenTTLFlag := ""
 	maxSessionsFlag := ""
 	rotationGracePeriodFlag := ""
+	exposePrimitives := false
 	for i, arg := range os.Args[1:] {
 		switch {
+		case arg == "--expose-primitives":
+			exposePrimitives = true
 		case arg == "--cf-home" && i+1 < len(os.Args[1:]):
 			cfHome = os.Args[i+2]
 			cfHomeExplicit = true
@@ -4057,9 +4094,10 @@ func main() {
 	}
 
 	srv := &server{
-		cfHome:         cfHome,
-		beaconDir:      beaconDir,
-		cfHomeExplicit: cfHomeExplicit,
+		cfHome:           cfHome,
+		beaconDir:        beaconDir,
+		cfHomeExplicit:   cfHomeExplicit,
+		exposePrimitives: exposePrimitives,
 	}
 
 	// HTTP+SSE mode when --http is set, otherwise stdio.
@@ -4084,6 +4122,7 @@ func main() {
 				sm.rotationGracePeriod = rotationGracePeriod
 			}
 			sm.router = router
+			sm.exposePrimitives = exposePrimitives
 			// If external address not provided via flag/env, derive from listen address.
 			// If the address starts with ":", prepend "http://localhost".
 			if externalAddr == "" {
