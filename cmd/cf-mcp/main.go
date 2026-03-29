@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -32,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/admission"
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
@@ -1139,9 +1141,14 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 			return errResponse(id, -32602, fmt.Sprintf("invalid delivery_mode %q: must be \"pull\" or \"push\"", mode))
 		}
 	}
-	// Default to ["pull"] when not specified.
+	// Default to ["pull","push"] when an external addr is available (HTTP transport
+	// can push); otherwise default to ["pull"] only.
 	if len(deliveryModes) == 0 {
-		deliveryModes = []string{campfire.DeliveryModePull}
+		if s.externalAddr != "" {
+			deliveryModes = []string{campfire.DeliveryModePull, campfire.DeliveryModePush}
+		} else {
+			deliveryModes = []string{campfire.DeliveryModePull}
+		}
 	}
 
 	agentID, err := identity.Load(s.identityPath())
@@ -1178,14 +1185,6 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		return errResponse(id, -32000, fmt.Sprintf("initializing transport: %v", err))
 	}
 
-	if err := transport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
-		PublicKey: agentID.PublicKey,
-		JoinedAt:  time.Now().UnixNano(),
-		Role:      serviceRole,
-	}); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
-	}
-
 	b, err := beacon.New(
 		cf.PublicKey, cf.PrivateKey,
 		cf.JoinProtocol, cf.ReceptionRequirements,
@@ -1214,15 +1213,23 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		defer st.Close()
 	}
 
-	if err := st.AddMembership(store.Membership{
-		CampfireID:   cf.PublicKeyHex(),
-		TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
-		JoinProtocol: cf.JoinProtocol,
-		Role:         serviceRole,
-		JoinedAt:     store.NowNano(),
-		Encrypted:    encrypted,
-	}); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
+	fsDeps := admission.AdmitterDeps{
+		FSTransport: transport,
+		Store:       st,
+	}
+	if _, admitErr := admission.AdmitMember(context.Background(), fsDeps, admission.AdmissionRequest{
+		CampfireID:      cf.PublicKeyHex(),
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Source:          "create",
+		Role:            serviceRole,
+		Encrypted:       encrypted,
+		JoinProtocol:    cf.JoinProtocol,
+		TransportDir:    transport.CampfireDir(cf.PublicKeyHex()),
+		TransportType:   "filesystem",
+		CreatorPubkey:   agentID.PublicKeyHex(),
+		Description:     description,
+	}); admitErr != nil {
+		return errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
 	}
 
 	// Generate a default invite code for this campfire (security model §5.a).
@@ -1301,15 +1308,6 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		return errResponse(id, -32000, fmt.Sprintf("initializing campfire state: %v", err))
 	}
 
-	now := time.Now().UnixNano()
-	if err := fsTransport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
-		PublicKey: agentID.PublicKey,
-		JoinedAt:  now,
-		Role:      serviceRole,
-	}); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
-	}
-
 	// Publish beacon with HTTP transport config pointing to the server URL.
 	b, err := beacon.New(
 		cf.PublicKey, cf.PrivateKey,
@@ -1339,32 +1337,30 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		defer st.Close()
 	}
 
-	if err := st.AddMembership(store.Membership{
-		CampfireID:    cf.PublicKeyHex(),
-		TransportDir:  s.externalAddr,
-		TransportType: "p2p-http",
-		JoinProtocol:  cf.JoinProtocol,
-		Role:          serviceRole,
-		JoinedAt:      now,
-		CreatorPubkey: agentID.PublicKeyHex(),
-		Encrypted:     cf.Encrypted,
-	}); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
-	}
-
 	// Configure the HTTP transport: set self info so join responses include
 	// this node's identity. SetKeyProvider is set once at session init
 	// (see session.go getOrCreate) so we do not overwrite it here.
 	s.httpTransport.SetSelfInfo(agentID.PublicKeyHex(), s.externalAddr)
 
-	// Register self as a peer so membership checks pass for self-authored messages.
-	if err := st.UpsertPeerEndpoint(store.PeerEndpoint{
-		CampfireID:   cf.PublicKeyHex(),
-		MemberPubkey: agentID.PublicKeyHex(),
-		Endpoint:     s.externalAddr,
-		Role:         store.PeerRoleCreator,
-	}); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("adding self as peer: %v", err))
+	httpDeps := admission.AdmitterDeps{
+		FSTransport:   fsTransport,
+		Store:         st,
+		HTTPTransport: s.httpTransport,
+	}
+	if _, admitErr := admission.AdmitMember(context.Background(), httpDeps, admission.AdmissionRequest{
+		CampfireID:      cf.PublicKeyHex(),
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Source:          "create",
+		Role:            serviceRole,
+		Encrypted:       cf.Encrypted,
+		Endpoint:        s.externalAddr,
+		JoinProtocol:    cf.JoinProtocol,
+		TransportDir:    s.externalAddr,
+		TransportType:   "p2p-http",
+		CreatorPubkey:   agentID.PublicKeyHex(),
+		Description:     description,
+	}); admitErr != nil {
+		return errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
 	}
 
 	// Register this campfire with the transport router so external peers
@@ -1530,6 +1526,20 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 
 	if alreadyOnDisk {
 		now = existingJoinedAt
+		// Already on disk: skip WriteMember, record membership in store only.
+		if _, admitErr := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+			Store: st,
+		}, admission.AdmissionRequest{
+			CampfireID:      campfireID,
+			MemberPubKeyHex: agentID.PublicKeyHex(),
+			Source:          "local-join",
+			Role:            serviceRole,
+			Encrypted:       state.Encrypted,
+			JoinProtocol:    state.JoinProtocol,
+			TransportDir:    transport.CampfireDir(campfireID),
+		}); admitErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
+		}
 	} else {
 		// Invite code enforcement (security model §5.a).
 		// Grace period: if the campfire has NO registered invite codes (e.g. old campfires),
@@ -1586,12 +1596,20 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 			return errResponse(id, -32000, fmt.Sprintf("unknown join protocol: %s", state.JoinProtocol))
 		}
 
-		if err := transport.WriteMember(campfireID, campfire.MemberRecord{
-			PublicKey: agentID.PublicKey,
-			JoinedAt:  now,
-			Role:      serviceRole,
-		}); err != nil {
-			return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", err))
+		// Fresh join: write member file + record membership via AdmitMember.
+		if _, admitErr := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+			FSTransport: transport,
+			Store:       st,
+		}, admission.AdmissionRequest{
+			CampfireID:      campfireID,
+			MemberPubKeyHex: agentID.PublicKeyHex(),
+			Source:          "local-join",
+			Role:            serviceRole,
+			Encrypted:       state.Encrypted,
+			JoinProtocol:    state.JoinProtocol,
+			TransportDir:    transport.CampfireDir(campfireID),
+		}); admitErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
 		}
 	}
 
@@ -1620,17 +1638,6 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		if err := transport.WriteMessage(campfireID, sysMsg); err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("writing system message: %v", err))
 		}
-	}
-
-	if err := st.AddMembership(store.Membership{
-		CampfireID:   campfireID,
-		TransportDir: transport.CampfireDir(campfireID),
-		JoinProtocol: state.JoinProtocol,
-		Role:         serviceRole,
-		JoinedAt:     now,
-		Encrypted:    state.Encrypted,
-	}); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", err))
 	}
 
 	// Audit: record join action (§5.e).
@@ -1810,25 +1817,21 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		return errResponse(id, -32000, fmt.Sprintf("writing campfire state: %v", writeErr))
 	}
 
-	// Write self as a member so handleSend's membership check passes.
-	if writeErr := transport.WriteMember(campfireID, campfire.MemberRecord{
-		PublicKey: agentID.PublicKey,
-		JoinedAt:  store.NowNano(),
-		Role:      campfire.RoleFull,
-	}); writeErr != nil {
-		return errResponse(id, -32000, fmt.Sprintf("writing member record: %v", writeErr))
-	}
-
-	// Record membership in local store.
-	if addErr := st.AddMembership(store.Membership{
-		CampfireID:   campfireID,
-		TransportDir: campfireDir,
-		JoinProtocol: result.JoinProtocol,
-		Role:         campfire.RoleFull,
-		JoinedAt:     store.NowNano(),
-		Threshold:    result.Threshold,
-	}); addErr != nil {
-		return errResponse(id, -32000, fmt.Sprintf("recording membership: %v", addErr))
+	// Write self as a member and record membership via AdmitMember.
+	// Role is derived from cfState.Encrypted: encrypted → RoleBlindRelay, plain → RoleFull.
+	if _, admitErr := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		FSTransport: transport,
+		Store:       st,
+	}, admission.AdmissionRequest{
+		CampfireID:      campfireID,
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Source:          "remote-join",
+		Encrypted:       cfState.Encrypted,
+		Endpoint:        myEndpoint,
+		JoinProtocol:    result.JoinProtocol,
+		TransportDir:    campfireDir,
+	}); admitErr != nil {
+		return errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
 	}
 
 	// Store peer endpoints from the join result (includes the admitting member).
