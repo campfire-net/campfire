@@ -1,12 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
+	"github.com/campfire-net/campfire/pkg/admission"
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
@@ -101,12 +102,20 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 		return fmt.Errorf("initializing transport: %w", err)
 	}
 
-	// Write creator's member record
-	if err := transport.WriteMember(cf.PublicKeyHex(), campfire.MemberRecord{
-		PublicKey: agentID.PublicKey,
-		JoinedAt:  time.Now().UnixNano(),
+	// Write creator's member record via shared admission package.
+	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		FSTransport: transport,
+		Store:       s,
+	}, admission.AdmissionRequest{
+		CampfireID:      cf.PublicKeyHex(),
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Role:            store.PeerRoleCreator,
+		JoinProtocol:    cf.JoinProtocol,
+		TransportDir:    transport.CampfireDir(cf.PublicKeyHex()),
+		TransportType:   "filesystem",
+		Description:     description,
 	}); err != nil {
-		return fmt.Errorf("writing member record: %w", err)
+		return fmt.Errorf("admitting creator: %w", err)
 	}
 
 	// Seed the campfire: post embedded promote declaration + any seed beacon declarations.
@@ -160,19 +169,6 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 				fmt.Fprintf(os.Stderr, "warning: could not announce sub-campfire to root campfire: %v\n", serr)
 			}
 		}
-	}
-
-	// Record membership in local store
-	if err := s.AddMembership(store.Membership{
-		CampfireID:   cf.PublicKeyHex(),
-		TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
-		JoinProtocol: cf.JoinProtocol,
-		Role:         store.PeerRoleCreator,
-		JoinedAt:     store.NowNano(),
-		Threshold:    cf.Threshold,
-		Description:  description,
-	}); err != nil {
-		return fmt.Errorf("recording membership: %w", err)
 	}
 
 	if jsonOutput {
@@ -266,31 +262,25 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s store.St
 	// Resolve endpoint URL from listen address.
 	endpoint := resolveEndpoint(listenAddr, useTLS)
 
-	// Record membership in local store.
-	if err := s.AddMembership(store.Membership{
-		CampfireID:   campfireID,
-		TransportDir: stateDir, // reuse field to store state directory
-		JoinProtocol: cf.JoinProtocol,
-		Role:         store.PeerRoleCreator,
-		JoinedAt:     store.NowNano(),
-		Threshold:    cf.Threshold,
-		Description:  description,
-	}); err != nil {
-		return fmt.Errorf("recording membership: %w", err)
-	}
-
-	// Record self as a peer endpoint (participant 1 for threshold>1).
+	// Record membership and self peer endpoint via shared admission package.
 	selfParticipantID := uint32(0)
 	if cf.Threshold > 1 {
 		selfParticipantID = 1
 	}
-	if err := s.UpsertPeerEndpoint(store.PeerEndpoint{
-		CampfireID:    campfireID,
-		MemberPubkey:  agentID.PublicKeyHex(),
-		Endpoint:      endpoint,
-		ParticipantID: selfParticipantID,
+	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		Store: s,
+	}, admission.AdmissionRequest{
+		CampfireID:      campfireID,
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		Endpoint:        endpoint,
+		Role:            store.PeerRoleCreator,
+		JoinProtocol:    cf.JoinProtocol,
+		TransportDir:    stateDir,
+		TransportType:   "p2p-http",
+		ParticipantID:   selfParticipantID,
+		Description:     description,
 	}); err != nil {
-		return fmt.Errorf("recording self endpoint: %w", err)
+		return fmt.Errorf("admitting creator: %w", err)
 	}
 
 	// Start HTTP listener.
