@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/campfire-net/campfire/pkg/admission"
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/store"
@@ -78,6 +80,10 @@ type JoinResponse struct {
 	// Declarations carries active convention:operation messages so the joiner can
 	// register convention tools immediately without a separate message sync.
 	Declarations []DeclarationMessage `json:"declarations,omitempty"`
+	// Encrypted indicates whether this campfire uses E2E payload encryption.
+	// Informational only — the joiner uses this to determine the appropriate role
+	// (blind-relay for encrypted campfires, full for unencrypted). Not a security boundary.
+	Encrypted bool `json:"encrypted,omitempty"`
 }
 
 // handleJoin processes a join request from a new member.
@@ -172,19 +178,21 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 		}
 	}
 
-	// Read the CampfireState to determine DeliveryModes for the join response.
+	// Read the CampfireState to determine DeliveryModes and Encrypted flag for the join response.
 	// Two sources, tried in order:
 	//   1. On-disk state file (filesystem-mode campfires): read from membership.TransportDir.
 	//   2. DeliveryModesProvider (HTTP-mode campfires): transport callback set by the host.
 	// Nil/empty DeliveryModes defaults to ["pull"] via EffectiveDeliveryModes (backward
 	// compat: pre-field-9 campfires and campfires without a state file are pull-only).
 	var responseModes []string
+	var campfireEncrypted bool
 	if safeDir, dirErr := sanitizeTransportDir(membership.TransportDir); dirErr == nil {
 		stateFile := filepath.Join(safeDir, "campfire.cbor")
 		if stateData, readErr := os.ReadFile(stateFile); readErr == nil {
 			var cfState campfire.CampfireState
 			if decErr := cfencoding.Unmarshal(stateData, &cfState); decErr == nil {
 				responseModes = campfire.EffectiveDeliveryModes(cfState.DeliveryModes)
+				campfireEncrypted = cfState.Encrypted
 			}
 		}
 	}
@@ -230,6 +238,7 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 		ReceptionRequirements: []string{},
 		Threshold:             membership.Threshold,
 		DeliveryModes:         responseModes,
+		Encrypted:             campfireEncrypted,
 	}
 
 	// Derive shared secret for key material encryption.
@@ -323,15 +332,50 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 		})
 	}
 
-	// Persist the joiner's endpoint, including participant ID for threshold>1.
-	if req.JoinerEndpoint != "" {
+	// Admit the joiner: record membership and peer endpoint.
+	// When an admitter is configured, delegate to admission.AdmitMember so the joiner
+	// appears in campfire_members on this node with the correct role. Otherwise fall
+	// back to the legacy inline behavior (UpsertPeerEndpoint + AddPeer only).
+	if h.transport != nil {
+		h.transport.mu.RLock()
+		admitter := h.transport.admitter
+		h.transport.mu.RUnlock()
+		if admitter != nil {
+			admReq := admission.AdmissionRequest{
+				CampfireID:      campfireID,
+				MemberPubKeyHex: senderHex,
+				Endpoint:        req.JoinerEndpoint,
+				Encrypted:       campfireEncrypted,
+				ParticipantID:   joinerParticipantID,
+				JoinProtocol:    membership.JoinProtocol,
+				TransportDir:    membership.TransportDir,
+				TransportType:   membership.TransportType,
+				Description:     membership.Description,
+				CreatorPubkey:   membership.CreatorPubkey,
+			}
+			if _, err := admission.AdmitMember(context.Background(), *admitter, admReq); err != nil {
+				log.Printf("handleJoin: AdmitMember failed for campfire %s joiner %s: %v", campfireID, senderHex[:min(8, len(senderHex))], err)
+				http.Error(w, "admission failed", http.StatusInternalServerError)
+				return
+			}
+		} else if req.JoinerEndpoint != "" {
+			// Legacy fallback: no admitter configured — inline persist.
+			h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+				CampfireID:    campfireID,
+				MemberPubkey:  senderHex,
+				Endpoint:      req.JoinerEndpoint,
+				ParticipantID: joinerParticipantID,
+			})
+			h.transport.AddPeer(campfireID, senderHex, req.JoinerEndpoint)
+		}
+	} else if req.JoinerEndpoint != "" {
+		// No transport (handler used standalone): legacy inline persist.
 		h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 			CampfireID:    campfireID,
 			MemberPubkey:  senderHex,
 			Endpoint:      req.JoinerEndpoint,
 			ParticipantID: joinerParticipantID,
 		})
-		h.transport.AddPeer(campfireID, senderHex, req.JoinerEndpoint)
 	}
 
 	// Include active convention:operation messages so the joiner can register
