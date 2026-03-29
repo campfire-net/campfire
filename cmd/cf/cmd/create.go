@@ -406,11 +406,12 @@ func createGitHub(cf *campfire.Campfire, agentID *identity.Identity, s store.Sto
 	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
 		Store: s,
 	}, admission.AdmissionRequest{
-		CampfireID:   campfireID,
-		TransportDir: transportDir,
-		JoinProtocol: cf.JoinProtocol,
-		Role:         store.PeerRoleCreator,
-		Description:  description,
+		CampfireID:      campfireID,
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		TransportDir:    transportDir,
+		JoinProtocol:    cf.JoinProtocol,
+		Role:            store.PeerRoleCreator,
+		Description:     description,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}

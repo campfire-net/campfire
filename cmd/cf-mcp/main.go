@@ -1525,6 +1525,7 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 			Encrypted:       state.Encrypted,
 			JoinProtocol:    state.JoinProtocol,
 			TransportDir:    transport.CampfireDir(campfireID),
+			TransportType:   "filesystem",
 		}); admitErr != nil {
 			return errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
 		}
@@ -1596,6 +1597,7 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 			Encrypted:       state.Encrypted,
 			JoinProtocol:    state.JoinProtocol,
 			TransportDir:    transport.CampfireDir(campfireID),
+			TransportType:   "filesystem",
 		}); admitErr != nil {
 			return errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
 		}
@@ -1808,6 +1810,10 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 
 	// Write self as a member and record membership via AdmitMember.
 	// Role is derived from cfState.Encrypted: encrypted → RoleBlindRelay, plain → RoleFull.
+	remoteJoinTransportType := "filesystem"
+	if s.httpTransport != nil {
+		remoteJoinTransportType = "p2p-http"
+	}
 	if _, admitErr := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
 		FSTransport: transport,
 		Store:       st,
@@ -1819,6 +1825,7 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		Endpoint:        myEndpoint,
 		JoinProtocol:    result.JoinProtocol,
 		TransportDir:    campfireDir,
+		TransportType:   remoteJoinTransportType,
 	}); admitErr != nil {
 		return errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
 	}
