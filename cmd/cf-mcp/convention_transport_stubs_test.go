@@ -11,10 +11,10 @@ import (
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
 
-// TestMCPTransportSendCampfireKeySigned verifies that SendCampfireKeySigned
+// TestSendCampfireKeySignedMessage verifies that sendCampfireKeySignedMessage
 // signs a message with the campfire's Ed25519 key (not the agent's member key)
 // and stores it. The message sender should be the campfire public key hex.
-func TestMCPTransportSendCampfireKeySigned(t *testing.T) {
+func TestSendCampfireKeySignedMessage(t *testing.T) {
 	srv := newTestServer(t)
 
 	// Create a campfire and write its state so ReadState can find it.
@@ -49,15 +49,13 @@ func TestMCPTransportSendCampfireKeySigned(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	adapter := &conventionTransportAdapter{server: srv}
 	ctx := context.Background()
-
-	msgID, err := adapter.SendCampfireKeySigned(ctx, cfID, []byte(`{"test":"payload"}`), []string{"convention:operation"}, nil)
+	msgID, err := srv.sendCampfireKeySignedMessage(ctx, cfID, []byte(`{"test":"payload"}`), []string{"convention:operation"}, nil)
 	if err != nil {
-		t.Fatalf("SendCampfireKeySigned: unexpected error: %v", err)
+		t.Fatalf("sendCampfireKeySignedMessage: unexpected error: %v", err)
 	}
 	if msgID == "" {
-		t.Fatal("SendCampfireKeySigned: expected non-empty msgID")
+		t.Fatal("sendCampfireKeySignedMessage: expected non-empty msgID")
 	}
 
 	// Verify message is in the store.
@@ -75,38 +73,17 @@ func TestMCPTransportSendCampfireKeySigned(t *testing.T) {
 	}
 }
 
-// TestMCPTransportSendCampfireKeySignedNoState verifies that
-// SendCampfireKeySigned returns an error when no campfire state exists.
-func TestMCPTransportSendCampfireKeySignedNoState(t *testing.T) {
+// TestSendCampfireKeySignedMessageNoState verifies that
+// sendCampfireKeySignedMessage returns an error when no campfire state exists.
+func TestSendCampfireKeySignedMessageNoState(t *testing.T) {
 	srv := newTestServer(t)
-	adapter := &conventionTransportAdapter{server: srv}
 	ctx := context.Background()
 
-	_, err := adapter.SendCampfireKeySigned(ctx, "nonexistent-campfire", []byte(`{}`), nil, nil)
+	_, err := srv.sendCampfireKeySignedMessage(ctx, "nonexistent-campfire", []byte(`{}`), nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing campfire state, got nil")
 	}
 	if !strings.Contains(err.Error(), "loading campfire key") {
 		t.Errorf("expected 'loading campfire key' in error, got: %v", err)
-	}
-}
-
-// TestMCPTransportSendFutureAndAwaitStub documents the current stub behavior:
-// SendFutureAndAwait returns an error indicating the feature is not yet
-// implemented. This test pins that behavior so regressions are caught.
-func TestMCPTransportSendFutureAndAwaitStub(t *testing.T) {
-	srv := newTestServer(t)
-	adapter := &conventionTransportAdapter{server: srv}
-	ctx := context.Background()
-
-	result, err := adapter.SendFutureAndAwait(ctx, "test-campfire-id", []byte(`{}`), []string{"test:future"}, 0)
-	if err == nil {
-		t.Fatal("SendFutureAndAwait: expected error for unimplemented stub, got nil")
-	}
-	if result != nil {
-		t.Errorf("SendFutureAndAwait: expected nil result on error, got %v", result)
-	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("SendFutureAndAwait: expected 'not yet implemented' in error, got: %v", err)
 	}
 }

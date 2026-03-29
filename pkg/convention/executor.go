@@ -8,14 +8,113 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/campfire-net/campfire/pkg/protocol"
 )
 
-// ExecutorTransport abstracts message sending for testability.
-type ExecutorTransport interface {
+// executorTransport is the internal interface used by the Executor for sending and
+// reading messages. In production code the executor is always backed by a
+// *protocol.Client (via clientAdapter). The interface is kept unexported so that
+// production callers must use NewExecutor(*protocol.Client, …).
+//
+// External packages that need to inject a mock for unit testing should use
+// NewExecutorForTest, which accepts the exported ExecutorBackend interface.
+type executorTransport interface {
+	sendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, campfireKey bool) (msgID string, err error)
+	readMessages(ctx context.Context, campfireID string, tags []string) ([]MessageRecord, error)
+	sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) (fulfillmentPayload []byte, err error)
+}
+
+// ExecutorBackend is the exported interface for injecting a test double into the
+// Executor via NewExecutorForTest. It mirrors the four send/read operations that
+// the Executor requires. Production code always uses NewExecutor(*protocol.Client, …).
+type ExecutorBackend interface {
 	SendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (msgID string, err error)
 	SendCampfireKeySigned(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (msgID string, err error)
 	ReadMessages(ctx context.Context, campfireID string, tags []string) ([]MessageRecord, error)
 	SendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) (fulfillmentPayload []byte, err error)
+}
+
+// backendAdapter bridges ExecutorBackend to executorTransport. Used by
+// NewExecutorForTest so external test doubles can implement the exported interface.
+type backendAdapter struct{ b ExecutorBackend }
+
+func (a *backendAdapter) sendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, campfireKey bool) (string, error) {
+	if campfireKey {
+		return a.b.SendCampfireKeySigned(ctx, campfireID, payload, tags, antecedents)
+	}
+	return a.b.SendMessage(ctx, campfireID, payload, tags, antecedents)
+}
+
+func (a *backendAdapter) readMessages(ctx context.Context, campfireID string, tags []string) ([]MessageRecord, error) {
+	return a.b.ReadMessages(ctx, campfireID, tags)
+}
+
+func (a *backendAdapter) sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) ([]byte, error) {
+	return a.b.SendFutureAndAwait(ctx, campfireID, payload, tags, timeout)
+}
+
+// clientAdapter bridges *protocol.Client to executorTransport.
+type clientAdapter struct {
+	client *protocol.Client
+}
+
+func (a *clientAdapter) sendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, campfireKey bool) (string, error) {
+	mode := protocol.SigningModeMemberKey
+	if campfireKey {
+		mode = protocol.SigningModeCampfireKey
+	}
+	msg, err := a.client.Send(protocol.SendRequest{
+		CampfireID:  campfireID,
+		Payload:     payload,
+		Tags:        tags,
+		Antecedents: antecedents,
+		SigningMode: mode,
+	})
+	if err != nil {
+		return "", err
+	}
+	return msg.ID, nil
+}
+
+func (a *clientAdapter) readMessages(_ context.Context, campfireID string, tags []string) ([]MessageRecord, error) {
+	result, err := a.client.Read(protocol.ReadRequest{
+		CampfireID: campfireID,
+		Tags:       tags,
+	})
+	if err != nil {
+		return nil, err
+	}
+	records := make([]MessageRecord, len(result.Messages))
+	for i, m := range result.Messages {
+		records[i] = MessageRecord{
+			ID:     m.ID,
+			Sender: m.Sender,
+			Tags:   m.Tags,
+		}
+	}
+	return records, nil
+}
+
+func (a *clientAdapter) sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) ([]byte, error) {
+	msg, err := a.client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    payload,
+		Tags:       append(tags, "future"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sending future: %w", err)
+	}
+
+	fulfillment, err := a.client.Await(protocol.AwaitRequest{
+		CampfireID:  campfireID,
+		TargetMsgID: msg.ID,
+		Timeout:     timeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("awaiting fulfillment: %w", err)
+	}
+	return fulfillment.Payload, nil
 }
 
 // MessageRecord is a minimal message record for executor use.
@@ -35,7 +134,7 @@ type ProvenanceChecker interface {
 
 // Executor runs convention operations: validates args, composes tags, and sends messages.
 type Executor struct {
-	transport   ExecutorTransport
+	transport   executorTransport
 	selfKey     string
 	rateLimiter *rateLimiter
 	provenance  ProvenanceChecker
@@ -57,12 +156,23 @@ func sharedRateLimiter() *rateLimiter {
 	return globalRateLimiter
 }
 
-// NewExecutor creates an Executor using the given transport and agent public key.
+// NewExecutor creates an Executor backed by the given protocol.Client and agent public key.
 // All Executors created within the same process share a single rate limiter so that
 // rate limits are enforced across multiple sequential CLI calls.
-func NewExecutor(transport ExecutorTransport, selfKey string) *Executor {
+func NewExecutor(client *protocol.Client, selfKey string) *Executor {
 	return &Executor{
-		transport:   transport,
+		transport:   &clientAdapter{client: client},
+		selfKey:     selfKey,
+		rateLimiter: sharedRateLimiter(),
+	}
+}
+
+// NewExecutorForTest creates an Executor backed by an ExecutorBackend test double.
+// Use this in test packages that need to inject a mock transport. Production code
+// should always use NewExecutor(*protocol.Client, …).
+func NewExecutorForTest(backend ExecutorBackend, selfKey string) *Executor {
+	return &Executor{
+		transport:   &backendAdapter{b: backend},
 		selfKey:     selfKey,
 		rateLimiter: sharedRateLimiter(),
 	}
@@ -80,11 +190,29 @@ func (e *Executor) WithProvenance(checker ProvenanceChecker) *Executor {
 
 // newExecutorWithLimiter creates an Executor with an explicit rate limiter.
 // Use this in tests that need isolated rate limit state.
-func newExecutorWithLimiter(transport ExecutorTransport, selfKey string, rl *rateLimiter) *Executor {
+func newExecutorWithLimiter(transport executorTransport, selfKey string, rl *rateLimiter) *Executor {
 	return &Executor{
 		transport:   transport,
 		selfKey:     selfKey,
 		rateLimiter: rl,
+	}
+}
+
+// newExecutorFromBackendWithLimiter creates an Executor from a test backend with an
+// explicit rate limiter. Use this in tests that need isolated rate limit state and a mock.
+func newExecutorFromBackendWithLimiter(backend ExecutorBackend, selfKey string, rl *rateLimiter) *Executor {
+	return newExecutorWithLimiter(&backendAdapter{b: backend}, selfKey, rl)
+}
+
+// newExecutorWithSharedLimiter creates an Executor backed by the given transport using
+// the process-level shared rate limiter. This is the internal equivalent of NewExecutor
+// but accepts any executorTransport — used by same-package tests to verify singleton
+// rate limiter behaviour without requiring a real *protocol.Client.
+func newExecutorWithSharedLimiter(transport executorTransport, selfKey string) *Executor {
+	return &Executor{
+		transport:   transport,
+		selfKey:     selfKey,
+		rateLimiter: sharedRateLimiter(),
 	}
 }
 
@@ -157,11 +285,7 @@ func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfir
 	}
 
 	// 7. Send.
-	if decl.Signing == "campfire_key" {
-		_, err = e.transport.SendCampfireKeySigned(ctx, campfireID, payload, composed, antecedents)
-	} else {
-		_, err = e.transport.SendMessage(ctx, campfireID, payload, composed, antecedents)
-	}
+	_, err = e.transport.sendMessage(ctx, campfireID, payload, composed, antecedents, decl.Signing == "campfire_key")
 	if err != nil {
 		return fmt.Errorf("send message: %w", err)
 	}
@@ -223,7 +347,7 @@ func (e *Executor) executeQueryStep(ctx context.Context, step Step, campfireID s
 		}
 	}
 
-	result, err := e.transport.SendFutureAndAwait(ctx, campfireID, futurePayload, futureTags, 30*time.Second)
+	result, err := e.transport.sendFutureAndAwait(ctx, campfireID, futurePayload, futureTags, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("query future: %w", err)
 	}
@@ -256,7 +380,7 @@ func (e *Executor) executeSendStep(ctx context.Context, step Step, campfireID st
 		}
 	}
 
-	_, err := e.transport.SendMessage(ctx, campfireID, nil, stepTags, antecedents)
+	_, err := e.transport.sendMessage(ctx, campfireID, nil, stepTags, antecedents, false)
 	return err
 }
 
@@ -280,7 +404,7 @@ func (e *Executor) resolveAntecedents(ctx context.Context, decl *Declaration, ca
 	case "exactly_one(self_prior)":
 		// Query campfire for agent's prior message with matching operation tags.
 		opTag := decl.Convention + ":" + decl.Operation
-		msgs, err := e.transport.ReadMessages(ctx, campfireID, []string{opTag})
+		msgs, err := e.transport.readMessages(ctx, campfireID, []string{opTag})
 		if err != nil {
 			return nil, fmt.Errorf("read messages for self_prior: %w", err)
 		}
@@ -295,7 +419,7 @@ func (e *Executor) resolveAntecedents(ctx context.Context, decl *Declaration, ca
 		// Like exactly_one(self_prior) but genesis is allowed: if no prior exists,
 		// send with no antecedent (nil). Subsequent messages must reference the prior.
 		opTag := decl.Convention + ":" + decl.Operation
-		msgs, err := e.transport.ReadMessages(ctx, campfireID, []string{opTag})
+		msgs, err := e.transport.readMessages(ctx, campfireID, []string{opTag})
 		if err != nil {
 			return nil, fmt.Errorf("read messages for self_prior: %w", err)
 		}

@@ -6,9 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/provenance"
+	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/campfire-net/campfire/pkg/trust"
 )
 
@@ -726,6 +729,15 @@ func buildGatedConventionEntry(t *testing.T, minLevel int) *conventionToolEntry 
 	}
 }
 
+// buildGatedConventionEntryForCampfire is like buildGatedConventionEntry but uses
+// the given campfire ID. Use this when the test needs a real campfire with membership.
+func buildGatedConventionEntryForCampfire(t *testing.T, minLevel int, campfireID string) *conventionToolEntry {
+	t.Helper()
+	entry := buildGatedConventionEntry(t, minLevel)
+	entry.campfireID = campfireID
+	return entry
+}
+
 // TestHandleConventionTool_MinOperatorLevel_Level0Rejected verifies that
 // handleConventionTool rejects a min_operator_level=2 operation when the
 // server's identity has provenance level 0 (anonymous, no attestations).
@@ -775,31 +787,62 @@ func TestHandleConventionTool_MinOperatorLevel_Level0Rejected(t *testing.T) {
 // the provenance store is now consulted and a level-1 operator passes a
 // min_operator_level=1 gate through the full MCP handler path.
 func TestHandleConventionTool_MinOperatorLevel_ClaimedLevelAccepted(t *testing.T) {
-	srv, _ := newTestServerWithStore(t)
+	srv, st := newTestServerWithStore(t)
 
-	// Generate and save an identity.
-	agentID, err := identity.Generate()
-	if err != nil {
-		t.Fatalf("generating identity: %v", err)
+	// Initialize identity via campfire_init so the server has a real identity file.
+	initResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if initResp.Error != nil {
+		t.Fatalf("campfire_init: %+v", initResp.Error)
 	}
-	if err := agentID.Save(srv.identityPath()); err != nil {
-		t.Fatalf("saving identity: %v", err)
+
+	agentID, err := identity.Load(srv.identityPath())
+	if err != nil {
+		t.Fatalf("loading identity: %v", err)
+	}
+
+	// Create a real campfire and register membership so protocol.Client.Send
+	// can pass the membership check when the convention executor sends a message.
+	cf, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("creating campfire: %v", err)
+	}
+	cfID := cf.PublicKeyHex()
+	fsT := fs.New(srv.cfHome)
+	if err := fsT.Init(cf); err != nil {
+		t.Fatalf("initializing campfire fs state: %v", err)
+	}
+	// Add the agent as a member in the FS transport so protocol.Client recognizes us.
+	if err := fsT.WriteMember(cfID, campfire.MemberRecord{PublicKey: agentID.PublicKey}); err != nil {
+		t.Fatalf("adding member to fs transport: %v", err)
+	}
+	// Register membership in the store.
+	if err := st.AddMembership(store.Membership{
+		CampfireID:      cfID,
+		MemberPubKeyHex: agentID.PublicKeyHex(),
+		TransportDir:    fsT.CampfireDir(cfID),
+		JoinProtocol:    "open",
+		Role:            "full",
+		JoinedAt:        1,
+		TransportType:   "filesystem",
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
 	}
 
 	// Set provenance level 1 (Claimed) for this identity in the local store.
 	// This is the simplest provenance level to set directly without a
 	// challenge/response ceremony.
 	storePath := filepath.Join(srv.cfHome, "attestations.json")
-	ps, err := provenance.NewFileStore(storePath, provenance.DefaultConfig())
-	if err != nil {
-		t.Fatalf("opening provenance store: %v", err)
+	ps, psErr := provenance.NewFileStore(storePath, provenance.DefaultConfig())
+	if psErr != nil {
+		t.Fatalf("opening provenance store: %v", psErr)
 	}
 	if err := ps.SetSelfClaimed(agentID.PublicKeyHex()); err != nil {
 		t.Fatalf("setting self-claimed: %v", err)
 	}
 
 	// Use min_operator_level=1: the claimed identity should satisfy the gate.
-	entry := buildGatedConventionEntry(t, 1)
+	// The entry uses a real campfire ID so protocol.Client can pass the membership check.
+	entry := buildGatedConventionEntryForCampfire(t, 1, cfID)
 	args := map[string]interface{}{
 		"peer_key": strings.Repeat("d", 64),
 	}

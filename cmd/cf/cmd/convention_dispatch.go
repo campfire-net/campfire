@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/spf13/pflag"
 )
@@ -205,8 +206,8 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 		}
 	})
 
-	transport := &cliTransportAdapter{agentID: agentID, store: s}
-	executor := convention.NewExecutor(transport, agentID.PublicKeyHex())
+	client := protocol.New(s, agentID)
+	executor := convention.NewExecutor(client, agentID.PublicKeyHex())
 
 	if err := executor.Execute(ctx, matched, campfireID, args); err != nil {
 		return fmt.Errorf("convention operation failed: %w", err)

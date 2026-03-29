@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// mockTransport implements ExecutorTransport for testing.
+// mockTransport implements executorTransport for testing.
 type mockTransport struct {
 	sentMessages []sentMessage
 	readResults  []MessageRecord
@@ -26,33 +26,25 @@ type sentMessage struct {
 	campfireKey bool
 }
 
-func (m *mockTransport) SendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
+func (m *mockTransport) sendMessage(_ context.Context, campfireID string, payload []byte, tags []string, antecedents []string, campfireKey bool) (string, error) {
 	m.sentMessages = append(m.sentMessages, sentMessage{
 		campfireID:  campfireID,
 		payload:     payload,
 		tags:        tags,
 		antecedents: antecedents,
-		campfireKey: false,
+		campfireKey: campfireKey,
 	})
+	if campfireKey {
+		return "msg-ck-" + campfireID, nil
+	}
 	return "msg-sent-" + campfireID, nil
 }
 
-func (m *mockTransport) SendCampfireKeySigned(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
-	m.sentMessages = append(m.sentMessages, sentMessage{
-		campfireID:  campfireID,
-		payload:     payload,
-		tags:        tags,
-		antecedents: antecedents,
-		campfireKey: true,
-	})
-	return "msg-ck-" + campfireID, nil
-}
-
-func (m *mockTransport) ReadMessages(ctx context.Context, campfireID string, tags []string) ([]MessageRecord, error) {
+func (m *mockTransport) readMessages(_ context.Context, _ string, _ []string) ([]MessageRecord, error) {
 	return m.readResults, nil
 }
 
-func (m *mockTransport) SendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) ([]byte, error) {
+func (m *mockTransport) sendFutureAndAwait(ctx context.Context, _ string, _ []byte, _ []string, _ time.Duration) ([]byte, error) {
 	if m.futureDelay > 0 {
 		select {
 		case <-time.After(m.futureDelay):
@@ -173,7 +165,7 @@ func selfPriorDecl() *Declaration {
 // TestExecute_SocialPost verifies the §16.1 social post path.
 func TestExecute_SocialPost(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := socialPostDecl()
 
 	args := map[string]any{
@@ -213,7 +205,7 @@ func TestExecute_SocialPost(t *testing.T) {
 // TestExecute_Vote verifies the §16.2 vote path.
 func TestExecute_Vote(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := voteDecl()
 
 	args := map[string]any{
@@ -243,7 +235,7 @@ func TestExecute_Vote(t *testing.T) {
 // TestExecute_MissingRequiredArg verifies required arg enforcement.
 func TestExecute_MissingRequiredArg(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := socialPostDecl() // "text" is required
 
 	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{})
@@ -258,7 +250,7 @@ func TestExecute_MissingRequiredArg(t *testing.T) {
 // TestExecute_MaxLengthExceeded verifies max_length enforcement.
 func TestExecute_MaxLengthExceeded(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := socialPostDecl() // text has max_length=65536
 
 	longText := strings.Repeat("a", 70000)
@@ -271,7 +263,7 @@ func TestExecute_MaxLengthExceeded(t *testing.T) {
 // TestExecute_PatternMismatch verifies pattern validation.
 func TestExecute_PatternMismatch(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := socialPostDecl() // topics has pattern [a-z0-9-]{1,64}
 
 	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
@@ -286,7 +278,7 @@ func TestExecute_PatternMismatch(t *testing.T) {
 // TestExecute_EnumInvalid verifies enum validation.
 func TestExecute_EnumInvalid(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := socialPostDecl() // content_type enum: text/plain, text/markdown, application/json
 
 	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
@@ -303,7 +295,7 @@ func TestExecute_EnumInvalid(t *testing.T) {
 // executor concern — the executor must see canonical values so tag composition works.
 func TestExecute_EnumRejectsShortForm(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := voteDecl() // direction enum: social:upvote, social:downvote
 
 	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
@@ -322,7 +314,7 @@ func TestExecute_EnumRejectsShortForm(t *testing.T) {
 // passes validation and produces the correct tag.
 func TestExecute_EnumFullFormAccepted(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := voteDecl() // direction enum: social:upvote, social:downvote
 
 	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
@@ -364,7 +356,7 @@ func TestExecute_TagDenylist(t *testing.T) {
 	}
 
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for denylist tag 'future'")
@@ -414,7 +406,7 @@ func TestExecute_RateLimitExceeded(t *testing.T) {
 // TestExecute_CampfireKeyOp verifies campfire_key uses SendCampfireKeySigned.
 func TestExecute_CampfireKeyOp(t *testing.T) {
 	tr := &mockTransport{}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := campfireKeyDecl()
 
 	if err := ex.Execute(context.Background(), decl, "cf-ck", map[string]any{}); err != nil {
@@ -435,7 +427,7 @@ func TestExecute_MultiStep_ProfileUpdate(t *testing.T) {
 	tr := &mockTransport{
 		futureResult: futurePayload,
 	}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := profileUpdateDecl()
 
 	if err := ex.Execute(context.Background(), decl, "cf-profile", map[string]any{}); err != nil {
@@ -463,7 +455,7 @@ func TestExecute_MultiStep_Timeout(t *testing.T) {
 	tr := &mockTransport{
 		futureDelay: 35 * time.Second,
 	}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := profileUpdateDecl()
 
 	ctx := context.Background()
@@ -525,10 +517,10 @@ func TestExecute_RateLimitSenderAndCampfire(t *testing.T) {
 // a new rate limiter was created per Executor, allowing the same sender to bypass rate
 // limits by constructing a new Executor (as the CLI does on every invocation).
 //
-// This test calls NewExecutor (the real CLI path — not newExecutorWithLimiter) to prove
-// that the globalRateLimiterOnce singleton is actually wired. Two separate NewExecutor()
-// calls must share limiter state so the second invocation is throttled after the first
-// saturates the quota.
+// This test calls newExecutorWithSharedLimiter (which mirrors the real production path)
+// to prove that the globalRateLimiterOnce singleton is actually wired. Two separate
+// executor instances must share limiter state so the second invocation is throttled
+// after the first saturates the quota.
 //
 // Isolation: the singleton is reset before the test and restored on cleanup so that
 // this test does not bleed state into other tests (or inherit state from them).
@@ -562,17 +554,17 @@ func TestExecute_RateLimitSharedAcrossExecutors(t *testing.T) {
 		t.Fatalf("Parse error: %v", err)
 	}
 
-	// First "invocation": NewExecutor uses sharedRateLimiter() — initialises the singleton.
+	// First "invocation": newExecutorWithSharedLimiter uses sharedRateLimiter() — initialises the singleton.
 	tr1 := &mockTransport{}
-	ex1 := NewExecutor(tr1, testSenderKey)
+	ex1 := newExecutorWithSharedLimiter(tr1, testSenderKey)
 	if err := ex1.Execute(context.Background(), decl, "cf-shared-rl", map[string]any{}); err != nil {
 		t.Fatalf("first invocation unexpected error: %v", err)
 	}
 
-	// Second "invocation": a new Executor constructed via NewExecutor (as the CLI does).
+	// Second "invocation": a new Executor constructed via newExecutorWithSharedLimiter (as the CLI does).
 	// It must pick up the same singleton and be throttled.
 	tr2 := &mockTransport{}
-	ex2 := NewExecutor(tr2, testSenderKey)
+	ex2 := newExecutorWithSharedLimiter(tr2, testSenderKey)
 	err = ex2.Execute(context.Background(), decl, "cf-shared-rl", map[string]any{})
 	if err == nil {
 		t.Fatal("second invocation should be rate-limited because the first invocation saturated the quota")
@@ -594,7 +586,7 @@ func TestExecute_SelfPriorAntecedent(t *testing.T) {
 			{ID: "prior-msg-999", Sender: testSenderKey, Tags: []string{"status:update"}},
 		},
 	}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := selfPriorDecl()
 
 	if err := ex.Execute(context.Background(), decl, "cf-self-prior", map[string]any{}); err != nil {
@@ -636,7 +628,7 @@ func zeroOrOneSelfPriorDecl() *Declaration {
 func TestExecute_ZeroOrOneSelfPrior_Genesis(t *testing.T) {
 	// No prior messages on campfire.
 	tr := &mockTransport{readResults: nil}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := zeroOrOneSelfPriorDecl()
 
 	if err := ex.Execute(context.Background(), decl, "cf-rate", map[string]any{}); err != nil {
@@ -660,7 +652,7 @@ func TestExecute_ZeroOrOneSelfPrior_Subsequent(t *testing.T) {
 			{ID: "rate-msg-001", Sender: testSenderKey, Tags: []string{"dontguess-exchange:scrip:rate-publish"}},
 		},
 	}
-	ex := NewExecutor(tr, testSenderKey)
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := zeroOrOneSelfPriorDecl()
 
 	if err := ex.Execute(context.Background(), decl, "cf-rate", map[string]any{}); err != nil {

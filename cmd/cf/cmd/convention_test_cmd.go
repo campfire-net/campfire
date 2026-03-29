@@ -259,7 +259,7 @@ func (t *digitalTwin) testDeclaration(src declSource) declTestResult {
 
 	// Step 4: Execute with synthetic args.
 	tr := &syntheticTransport{}
-	exec := convention.NewExecutor(tr, t.conventionRegID)
+	exec := convention.NewExecutorForTest(tr, t.conventionRegID)
 	synArgs := buildSyntheticArgs(decl)
 	step4 := declTestStep{Name: "execute"}
 	if err := exec.Execute(context.Background(), decl, t.conventionRegID, synArgs); err != nil {
