@@ -878,3 +878,74 @@ func TestConventionToolsPersistAcrossServerInstances(t *testing.T) {
 		t.Error("convention tool 'post' not found in tools/list on second server instance")
 	}
 }
+
+// TestJoinerDeclarationsGetCampfireKeyAuthority verifies that declarations
+// received in a join response are granted SignerCampfireKey authority.
+// This is the bug fix for campfire-agent-jb6: before the fix, the joiner
+// re-read declarations from the store via readDeclarations, which runs
+// Parse → ResolveAuthority. Member-key-signed declarations (signing="member_key")
+// always got AuthorityUntrusted, and campfire-key-signed declarations
+// whose stored Sender didn't match campfireID also got demoted.
+// The fix parses declarations directly from the join response and forces
+// SignerCampfireKey, matching publishDeclarations' behavior.
+func TestJoinerDeclarationsGetCampfireKeyAuthority(t *testing.T) {
+	tags := []string{convention.ConventionOperationTag}
+
+	// Simulate what the joiner does: parse the declaration with campfireID
+	// as both sender and campfireKey, then force SignerCampfireKey.
+	decl, result, err := convention.Parse(tags, socialPostPayload, "campfire-id-hex", "campfire-id-hex")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("Parse returned invalid: %v", result.Warnings)
+	}
+
+	// Before the fix: signing="member_key" → SignerMemberKey → AuthorityUntrusted.
+	// Verify that without the force, it would be untrusted.
+	preFix := trust.ResolveAuthority(decl, nil)
+	if preFix != trust.AuthorityUntrusted {
+		t.Fatalf("expected member_key declaration to be untrusted without force, got %v", preFix)
+	}
+
+	// Apply the fix: force SignerCampfireKey (matches publishDeclarations line 219).
+	decl.SignerType = convention.SignerCampfireKey
+	postFix := trust.ResolveAuthority(decl, nil)
+	if postFix != trust.AuthorityOperational {
+		t.Fatalf("expected forced campfire_key declaration to be operational, got %v", postFix)
+	}
+
+	// Verify tool registration works with the forced declaration.
+	m := newConventionToolMap()
+	names := registerConventionTools(m, "test-campfire", []*convention.Declaration{decl})
+	if len(names) != 1 {
+		t.Fatalf("expected 1 registered tool, got %d", len(names))
+	}
+	if names[0] != "post" {
+		t.Errorf("expected tool name 'post', got %q", names[0])
+	}
+}
+
+// TestMemberKeyDeclarationIsUntrustedWithoutForce confirms that
+// signing="member_key" declarations are classified as untrusted by
+// ResolveAuthority. This documents why the joiner must force
+// SignerCampfireKey on declarations from the join response.
+func TestMemberKeyDeclarationIsUntrustedWithoutForce(t *testing.T) {
+	tags := []string{convention.ConventionOperationTag}
+	decl, result, err := convention.Parse(tags, socialPostPayload, "any-sender", "any-campfire")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("Parse returned invalid: %v", result.Warnings)
+	}
+
+	// signing="member_key" → SignerMemberKey → AuthorityUntrusted.
+	if decl.SignerType != convention.SignerMemberKey {
+		t.Fatalf("expected SignerMemberKey, got %v", decl.SignerType)
+	}
+	level := trust.ResolveAuthority(decl, nil)
+	if level != trust.AuthorityUntrusted {
+		t.Errorf("expected AuthorityUntrusted for member_key declaration, got %v", level)
+	}
+}

@@ -34,6 +34,7 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/pkg/convention"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
@@ -1886,7 +1887,15 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 	}
 
 	// Store convention declaration messages received from the admitting node.
-	// These must be written before readDeclarations so the joiner can discover them.
+	// Also parse them directly with campfire-key authority — declarations in
+	// the join response were published by the campfire key on the admitting
+	// node, so they carry operational authority. Re-reading through
+	// readDeclarations would lose this: Parse sees the stored Sender (which
+	// may differ from campfireID) and demotes signing="campfire_key" to
+	// member_key, while signing="member_key" declarations are always
+	// classified as untrusted by ResolveAuthority. This matches how
+	// publishDeclarations grants SignerCampfireKey at publish time.
+	var joinDecls []*convention.Declaration
 	for _, dm := range result.Declarations {
 		st.AddMessage(store.MessageRecord{ //nolint:errcheck
 			ID:         dm.ID,
@@ -1898,19 +1907,29 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 			Signature:  dm.Signature,
 			ReceivedAt: store.NowNano(),
 		})
+		// Parse directly and grant campfire-key authority.
+		decl, parseResult, parseErr := convention.Parse(dm.Tags, dm.Payload, campfireID, campfireID)
+		if parseErr != nil {
+			log.Printf("convention: parsing join declaration %s: %v", dm.ID, parseErr)
+			continue
+		}
+		if !parseResult.Valid {
+			log.Printf("convention: join declaration %s invalid: %v", dm.ID, parseResult.Warnings)
+			continue
+		}
+		decl.SignerType = convention.SignerCampfireKey
+		decl.MessageID = dm.ID
+		joinDecls = append(joinDecls, decl)
 	}
 
-	// Post-join: discover convention:operation declarations and register as tools.
+	// Post-join: register convention tools from parsed declarations.
 	if s.conventionTools == nil {
 		s.conventionTools = newConventionToolMap()
 	}
 	var httpToolNames []string
-	httpDecls, httpDeclErr := readDeclarations(st, campfireID, campfireID)
-	if httpDeclErr != nil {
-		log.Printf("convention: reading declarations for %s: %v", campfireID, httpDeclErr)
-	} else if len(httpDecls) > 0 {
-		httpToolNames = registerConventionTools(s.conventionTools, campfireID, httpDecls)
-		log.Printf("convention: registered %d tools for campfire %s", len(httpDecls), campfireID)
+	if len(joinDecls) > 0 {
+		httpToolNames = registerConventionTools(s.conventionTools, campfireID, joinDecls)
+		log.Printf("convention: registered %d tools for campfire %s", len(joinDecls), campfireID)
 	}
 	if s.sess != nil {
 		s.sess.conventionTools = s.conventionTools
