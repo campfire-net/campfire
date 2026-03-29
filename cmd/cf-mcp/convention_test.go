@@ -817,13 +817,12 @@ func TestHandleConventionTool_MinOperatorLevel_ClaimedLevelAccepted(t *testing.T
 	}
 	// Register membership in the store.
 	if err := st.AddMembership(store.Membership{
-		CampfireID:      cfID,
-		MemberPubKeyHex: agentID.PublicKeyHex(),
-		TransportDir:    fsT.CampfireDir(cfID),
-		JoinProtocol:    "open",
-		Role:            "full",
-		JoinedAt:        1,
-		TransportType:   "filesystem",
+		CampfireID:    cfID,
+		TransportDir:  fsT.CampfireDir(cfID),
+		JoinProtocol:  "open",
+		Role:          "full",
+		JoinedAt:      1,
+		TransportType: "filesystem",
 	}); err != nil {
 		t.Fatalf("adding membership: %v", err)
 	}
