@@ -398,6 +398,93 @@ func TestEnvelopedResponse_OperatorProvenance_Anonymous(t *testing.T) {
 	}
 }
 
+// TestCreateWithDeclarations verifies that campfire_create with a declarations
+// parameter publishes campfire-key-signed declarations and registers them as
+// convention tools. This is the bootstrap path: convention tools from birth.
+func TestCreateWithDeclarations(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+
+	// Initialize identity.
+	initResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if initResp.Error != nil {
+		t.Fatalf("campfire_init: %+v", initResp.Error)
+	}
+
+	// Create a campfire with an inline declaration.
+	createArgs := map[string]interface{}{
+		"name": "campfire_create",
+		"arguments": map[string]interface{}{
+			"description": "test campfire with conventions",
+			"declarations": []interface{}{
+				map[string]interface{}{
+					"convention":    "test-bootstrap",
+					"version":       "0.1",
+					"operation":     "greet",
+					"description":   "Say hello",
+					"signing":       "member_key",
+					"antecedents":   "none",
+					"produces_tags": []interface{}{map[string]interface{}{"tag": "test:greet", "cardinality": "exactly_one"}},
+					"args": []interface{}{
+						map[string]interface{}{"name": "greeting", "type": "string", "required": true, "max_length": 256},
+					},
+				},
+			},
+		},
+	}
+	createJSON, _ := json.Marshal(createArgs)
+	createResp := srv.dispatch(makeReq("tools/call", string(createJSON)))
+	if createResp.Error != nil {
+		t.Fatalf("campfire_create: %+v", createResp.Error)
+	}
+
+	// Extract the result to verify convention_tools_registered.
+	b, _ := json.Marshal(createResp.Result)
+	var outer struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(b, &outer); err != nil || len(outer.Content) == 0 {
+		t.Fatalf("extracting content: %v — raw: %s", err, string(b))
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(outer.Content[0].Text), &payload); err != nil {
+		t.Fatalf("parsing create result: %v", err)
+	}
+
+	toolCount, _ := payload["convention_tools_registered"].(float64)
+	if toolCount != 1 {
+		t.Errorf("convention_tools_registered: got %v, want 1", payload["convention_tools_registered"])
+	}
+
+	toolNames, _ := payload["convention_tools"].([]interface{})
+	if len(toolNames) != 1 || toolNames[0] != "greet" {
+		t.Errorf("convention_tools: got %v, want [greet]", toolNames)
+	}
+
+	// Verify the tool appears in tools/list.
+	listResp := srv.dispatch(makeReq("tools/list", "{}"))
+	if listResp.Error != nil {
+		t.Fatalf("tools/list: %+v", listResp.Error)
+	}
+	lb, _ := json.Marshal(listResp.Result)
+	var listResult map[string]interface{}
+	json.Unmarshal(lb, &listResult)
+
+	toolsRaw, _ := listResult["tools"].([]interface{})
+	found := false
+	for _, tr := range toolsRaw {
+		tool, _ := tr.(map[string]interface{})
+		if tool["name"] == "greet" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("convention tool 'greet' not found in tools/list after create with declarations")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Regression test: MCP path must wire WithProvenance into the executor.
 //

@@ -5,8 +5,12 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	ioPkg "io"
 	"log"
+	httpPkg "net/http"
 	"path/filepath"
+
+	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"sync"
 	"time"
 
@@ -15,7 +19,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/provenance"
 	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/campfire-net/campfire/pkg/trust"
 )
 
@@ -80,6 +83,129 @@ func readDeclarations(st store.Store, campfireID, campfireKey string) ([]*conven
 		accepted = append(accepted, decl)
 	}
 	return accepted, nil
+}
+
+const wellKnownDeclBaseURL = "https://aietf.getcampfire.dev/.well-known/campfire/declarations"
+
+// resolveDeclarationPayload resolves a declaration entry to its JSON payload bytes.
+// Accepts:
+//   - string URL (https://...) → fetched
+//   - string name (e.g. "social-post") → resolved via well-known URL
+//   - map/object → marshaled directly
+func resolveDeclarationPayload(entry interface{}) ([]byte, error) {
+	switch v := entry.(type) {
+	case string:
+		url := v
+		if !isURL(url) {
+			// Treat as well-known name
+			url = wellKnownDeclBaseURL + "/" + v + ".json"
+		}
+		return fetchDeclarationURL(url)
+	case map[string]interface{}:
+		return json.Marshal(v)
+	default:
+		return nil, fmt.Errorf("unsupported declaration entry type %T", entry)
+	}
+}
+
+func isURL(s string) bool {
+	return len(s) > 8 && (s[:8] == "https://" || s[:7] == "http://")
+}
+
+// fetchDeclarationURL fetches a declaration JSON from a URL.
+func fetchDeclarationURL(url string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := httpPkg.NewRequestWithContext(ctx, httpPkg.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request for %s: %w", url, err)
+	}
+	resp, err := httpPkg.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("fetching %s: HTTP %d", url, resp.StatusCode)
+	}
+	body, err := ioPkg.ReadAll(ioPkg.LimitReader(resp.Body, 1<<20)) // 1 MiB limit
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", url, err)
+	}
+	return body, nil
+}
+
+// publishDeclarations resolves and publishes declaration entries as campfire-key-signed
+// convention:operation messages. Returns the count of successfully published declarations
+// and the tool names registered from them.
+//
+// Since we sign each declaration with the campfire key ourselves, we know they're
+// trusted. We parse and register them directly rather than going through
+// readDeclarations (which filters on SignerType — and the signing field in the
+// declaration JSON describes execution semantics, not declaration trust).
+func (s *server) publishDeclarations(st store.Store, campfireID string, entries []interface{}) (int, []string) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+
+	adapter := &conventionTransportAdapter{server: s}
+	var toolNames []string
+	var decls []*convention.Declaration
+	published := 0
+
+	for _, entry := range entries {
+		payload, err := resolveDeclarationPayload(entry)
+		if err != nil {
+			log.Printf("convention: resolving declaration: %v", err)
+			continue
+		}
+
+		// Validate that the payload is valid JSON and looks like a declaration.
+		var check map[string]interface{}
+		if err := json.Unmarshal(payload, &check); err != nil {
+			log.Printf("convention: declaration payload is not valid JSON: %v", err)
+			continue
+		}
+
+		tags := []string{"convention:operation"}
+		if _, err := adapter.SendCampfireKeySigned(context.Background(), campfireID, payload, tags, nil); err != nil {
+			log.Printf("convention: publishing declaration to %s: %v", campfireID, err)
+			continue
+		}
+		published++
+
+		// Parse the declaration directly. We just signed it with the campfire key,
+		// so we grant it SignerCampfireKey authority (operational) regardless of the
+		// signing field in the JSON (which describes execution, not declaration trust).
+		decl, result, parseErr := convention.Parse(tags, payload, campfireID, campfireID)
+		if parseErr != nil {
+			log.Printf("convention: parsing declaration: %v", parseErr)
+			continue
+		}
+		if !result.Valid {
+			log.Printf("convention: declaration invalid: %v", result.Warnings)
+			continue
+		}
+		// Force campfire key signer type since we published it with the campfire key.
+		decl.SignerType = convention.SignerCampfireKey
+		decls = append(decls, decl)
+
+		// Extract operation name for the response.
+		if op, ok := check["operation"].(string); ok {
+			toolNames = append(toolNames, op)
+		}
+	}
+
+	// Register parsed declarations as convention tools.
+	if len(decls) > 0 {
+		if s.conventionTools == nil {
+			s.conventionTools = newConventionToolMap()
+		}
+		registerConventionTools(s.conventionTools, campfireID, decls)
+	}
+
+	return published, toolNames
 }
 
 // registerConventionTools registers parsed declarations as convention tools.
@@ -251,7 +377,11 @@ func (a *conventionTransportAdapter) SendMessage(ctx context.Context, campfireID
 
 func (a *conventionTransportAdapter) SendCampfireKeySigned(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
 	// Resolve the campfire's Ed25519 keypair from the filesystem state.
-	fsT := fs.New(a.server.cfHome)
+	// Try the transport base dir first (production), then cfHome (tests, hosted).
+	fsT := a.server.fsTransport()
+	if _, err := fsT.ReadState(campfireID); err != nil && a.server.cfHome != "" {
+		fsT = fs.New(a.server.cfHome)
+	}
 	state, err := fsT.ReadState(campfireID)
 	if err != nil {
 		return "", fmt.Errorf("loading campfire key for %s: %w", campfireID, err)
