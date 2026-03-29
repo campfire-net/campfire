@@ -1,7 +1,9 @@
 package admission_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
@@ -32,12 +34,21 @@ type mockStore struct {
 	peerEndpoints []store.PeerEndpoint
 	membershipErr error
 	peerEndpointErr error
+	seenCampfireIDs map[string]bool
 }
 
 func (m *mockStore) AddMembership(ms store.Membership) error {
 	if m.membershipErr != nil {
 		return m.membershipErr
 	}
+	// Reject duplicates, mirroring the SQLiteStore PRIMARY KEY constraint.
+	if m.seenCampfireIDs == nil {
+		m.seenCampfireIDs = make(map[string]bool)
+	}
+	if m.seenCampfireIDs[ms.CampfireID] {
+		return errors.New("mockStore: duplicate campfire_id")
+	}
+	m.seenCampfireIDs[ms.CampfireID] = true
 	m.memberships = append(m.memberships, ms)
 	return nil
 }
@@ -115,6 +126,19 @@ func TestAdmitMember_FullPath(t *testing.T) {
 	if !fs.called {
 		t.Error("expected FSTransport.WriteMember to be called")
 	}
+
+	// Finding 2: assert WriteMember received the correct arguments.
+	if fs.writtenCampfireID != req.CampfireID {
+		t.Errorf("WriteMember campfireID: want %q, got %q", req.CampfireID, fs.writtenCampfireID)
+	}
+	wantPubKey, _ := hex.DecodeString(validPubKeyHex)
+	if !bytes.Equal(fs.writtenMember.PublicKey, wantPubKey) {
+		t.Errorf("WriteMember PublicKey: want %x, got %x", wantPubKey, fs.writtenMember.PublicKey)
+	}
+	if fs.writtenMember.Role != result.EffectiveRole {
+		t.Errorf("WriteMember Role: want %q, got %q", result.EffectiveRole, fs.writtenMember.Role)
+	}
+
 	if len(st.memberships) != 1 {
 		t.Errorf("expected 1 membership, got %d", len(st.memberships))
 	}
@@ -287,9 +311,40 @@ func TestAdmitMember_ErrorOnStoreFail(t *testing.T) {
 		t.Fatal("expected error from store failure, got nil")
 	}
 
+	// Finding 3: document the partial-state orphan — WriteMember is called
+	// before AddMembership, so a member file is written even when the store
+	// fails. This is the current behavior; this assertion pins it so any
+	// future change to the ordering is deliberate.
+	if !fs.called {
+		t.Error("expected FSTransport.WriteMember to have been called before store failure (orphan member file)")
+	}
+
 	// No peer endpoint should be registered after a membership error
 	if len(st.peerEndpoints) != 0 {
 		t.Errorf("expected no peer endpoints registered after membership error, got %d", len(st.peerEndpoints))
+	}
+}
+
+func TestAdmitMember_DuplicateCampfireRejected(t *testing.T) {
+	st := &mockStore{}
+
+	deps := admission.AdmitterDeps{
+		Store: st,
+	}
+	req := baseRequest()
+	req.Endpoint = ""
+
+	// First admission should succeed.
+	_, err := admission.AdmitMember(context.Background(), deps, req)
+	if err != nil {
+		t.Fatalf("first admission: unexpected error: %v", err)
+	}
+
+	// Second admission with the same campfire_id must be rejected, mirroring
+	// the SQLiteStore PRIMARY KEY constraint.
+	_, err = admission.AdmitMember(context.Background(), deps, req)
+	if err == nil {
+		t.Fatal("second admission with duplicate campfire_id: expected error, got nil")
 	}
 }
 
