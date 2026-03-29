@@ -177,6 +177,9 @@ type JoinResult struct {
 	// DeliveryModes is the campfire's supported delivery modes from the join response.
 	// Defaults to ["pull"] when not set (backward compat: pre-DeliveryModes servers).
 	DeliveryModes []string
+	// Declarations carries convention:operation messages from the admitting node.
+	// The joiner stores these locally so readDeclarations can discover them.
+	Declarations []DeclarationMessage
 }
 
 // Join sends a join request to the given peer endpoint and returns the
@@ -230,6 +233,7 @@ func Join(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint str
 		Peers:                 joinResp.Peers,
 		MyParticipantID:       joinResp.JoinerParticipantID,
 		DeliveryModes:         campfire.EffectiveDeliveryModes(joinResp.DeliveryModes),
+		Declarations:          joinResp.Declarations,
 	}
 
 	// Decode campfire public key.

@@ -231,6 +231,9 @@ func (s *server) publishDeclarations(st store.Store, campfireID string, entries 
 			s.conventionTools = newConventionToolMap()
 		}
 		registerConventionTools(s.conventionTools, campfireID, decls)
+		if s.sess != nil {
+			s.sess.conventionTools = s.conventionTools
+		}
 	}
 
 	// Auto-publish views declared inside conventions.
@@ -342,6 +345,9 @@ func (s *server) publishViews(st store.Store, campfireID string, entries []inter
 			s.conventionTools = newConventionToolMap()
 		}
 		registerViewTool(s.conventionTools, campfireID, name, desc, pred)
+		if s.sess != nil {
+			s.sess.conventionTools = s.conventionTools
+		}
 	}
 
 	return published, viewNames
@@ -383,6 +389,9 @@ func (s *server) readAndRegisterViews(st store.Store, campfireID string) (int, [
 	for _, v := range latest {
 		registerViewTool(s.conventionTools, campfireID, v.name, v.desc, v.pred)
 		names = append(names, v.name)
+	}
+	if s.sess != nil {
+		s.sess.conventionTools = s.conventionTools
 	}
 	return len(names), names
 }

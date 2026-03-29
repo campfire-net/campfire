@@ -751,3 +751,69 @@ func TestHandleConventionTool_MinOperatorLevel_ClaimedLevelAccepted(t *testing.T
 		t.Errorf("expected success for level-1 operator on min_operator_level=1 gate, got error: %q", resp.Error.Message)
 	}
 }
+
+// TestConventionToolsPersistAcrossServerInstances verifies that convention tools
+// registered on one per-request server instance survive on the next server instance
+// created from the same Session. Before the fix, Session.server() created a fresh
+// *server each request and conventionTools lived only on *server, so tools vanished.
+func TestConventionToolsPersistAcrossServerInstances(t *testing.T) {
+	tags := []string{convention.ConventionOperationTag}
+	decl, _, err := convention.Parse(tags, socialPostPayload, "aaaa", "bbbb")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Create a Session with its own cfHome.
+	sess := &Session{
+		cfHome:    t.TempDir(),
+		beaconDir: t.TempDir(),
+	}
+
+	// Simulate first request: create server from session, register convention tools.
+	srv1 := sess.server(nil)
+	srv1.conventionTools = newConventionToolMap()
+	registerConventionTools(srv1.conventionTools, "cf-test", []*convention.Declaration{decl})
+	// Persist back to session (as production code now does).
+	sess.conventionTools = srv1.conventionTools
+
+	// Verify srv1 has the tool.
+	if len(srv1.conventionTools.list()) != 1 {
+		t.Fatalf("srv1: expected 1 tool, got %d", len(srv1.conventionTools.list()))
+	}
+
+	// Simulate second request: create a new server from the same session.
+	srv2 := sess.server(nil)
+
+	// Before the fix, srv2.conventionTools would be nil here.
+	if srv2.conventionTools == nil {
+		t.Fatal("srv2.conventionTools is nil: convention tools did not persist across server instances")
+	}
+	tools := srv2.conventionTools.list()
+	if len(tools) != 1 {
+		t.Fatalf("srv2: expected 1 tool, got %d", len(tools))
+	}
+	if tools[0].Name != "post" {
+		t.Errorf("srv2: expected tool name 'post', got %q", tools[0].Name)
+	}
+
+	// Verify the tool shows up in tools/list dispatch.
+	resp := srv2.dispatch(makeReq("tools/list", "{}"))
+	if resp.Error != nil {
+		t.Fatalf("tools/list: %+v", resp.Error)
+	}
+	b, _ := json.Marshal(resp.Result)
+	var listResult map[string]interface{}
+	json.Unmarshal(b, &listResult)
+	toolsRaw, _ := listResult["tools"].([]interface{})
+	found := false
+	for _, tr := range toolsRaw {
+		tool, _ := tr.(map[string]interface{})
+		if tool["name"] == "post" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("convention tool 'post' not found in tools/list on second server instance")
+	}
+}

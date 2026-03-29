@@ -1655,6 +1655,9 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		registerConventionTools(s.conventionTools, campfireID, decls)
 		log.Printf("convention: registered %d tools for campfire %s", len(decls), campfireID)
 	}
+	if s.sess != nil {
+		s.sess.conventionTools = s.conventionTools
+	}
 
 	// Post-join: discover convention views and register as read tools.
 	viewCount, viewNames := s.readAndRegisterViews(st, campfireID)
@@ -1887,6 +1890,21 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		})
 	}
 
+	// Store convention declaration messages received from the admitting node.
+	// These must be written before readDeclarations so the joiner can discover them.
+	for _, dm := range result.Declarations {
+		st.AddMessage(store.MessageRecord{ //nolint:errcheck
+			ID:         dm.ID,
+			CampfireID: campfireID,
+			Sender:     dm.Sender,
+			Payload:    dm.Payload,
+			Tags:       dm.Tags,
+			Timestamp:  dm.Timestamp,
+			Signature:  dm.Signature,
+			ReceivedAt: store.NowNano(),
+		})
+	}
+
 	// Post-join: discover convention:operation declarations and register as tools.
 	if s.conventionTools == nil {
 		s.conventionTools = newConventionToolMap()
@@ -1897,6 +1915,9 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 	} else if len(httpDecls) > 0 {
 		registerConventionTools(s.conventionTools, campfireID, httpDecls)
 		log.Printf("convention: registered %d tools for campfire %s", len(httpDecls), campfireID)
+	}
+	if s.sess != nil {
+		s.sess.conventionTools = s.conventionTools
 	}
 
 	// Post-join: discover convention views and register as read tools.

@@ -33,6 +33,17 @@ type PeerEntry struct {
 	ParticipantID uint32 `json:"participant_id,omitempty"` // FROST participant ID (0 = unknown / threshold=1)
 }
 
+// DeclarationMessage is a convention declaration message included in the join
+// response so the joiner can register convention tools without a separate sync.
+type DeclarationMessage struct {
+	ID        string   `json:"id"`
+	Sender    string   `json:"sender"`
+	Payload   []byte   `json:"payload"`
+	Tags      []string `json:"tags"`
+	Timestamp int64    `json:"timestamp"`
+	Signature []byte   `json:"signature,omitempty"`
+}
+
 // JoinResponse is returned by the admitting member on success.
 type JoinResponse struct {
 	// EncryptedPrivKey is the campfire private key encrypted with AES-256-GCM.
@@ -64,6 +75,9 @@ type JoinResponse struct {
 	// Populated from the campfire's on-disk state; defaults to ["pull"] when absent.
 	// Clients use this to determine whether push delivery (endpoint registration) is supported.
 	DeliveryModes []string `json:"delivery_modes,omitempty"`
+	// Declarations carries active convention:operation messages so the joiner can
+	// register convention tools immediately without a separate message sync.
+	Declarations []DeclarationMessage `json:"declarations,omitempty"`
 }
 
 // handleJoin processes a join request from a new member.
@@ -318,6 +332,23 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 			ParticipantID: joinerParticipantID,
 		})
 		h.transport.AddPeer(campfireID, senderHex, req.JoinerEndpoint)
+	}
+
+	// Include active convention:operation messages so the joiner can register
+	// convention tools without a separate message sync round-trip.
+	if declMsgs, err := h.store.ListMessages(campfireID, 0, store.MessageFilter{
+		Tags: []string{"convention:operation"},
+	}); err == nil {
+		for _, m := range declMsgs {
+			resp.Declarations = append(resp.Declarations, DeclarationMessage{
+				ID:        m.ID,
+				Sender:    m.Sender,
+				Payload:   m.Payload,
+				Tags:      m.Tags,
+				Timestamp: m.Timestamp,
+				Signature: m.Signature,
+			})
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

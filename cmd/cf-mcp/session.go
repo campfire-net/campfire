@@ -294,9 +294,10 @@ type Session struct {
 	st           store.Store
 	httpTransport *cfhttp.Transport // non-nil in hosted HTTP mode
 	router        *TransportRouter  // non-nil in hosted HTTP mode; used by Close to unregister routes
-	auditWriter   *AuditWriter      // non-nil after first campfire_init; persisted across per-request server instances
-	lastActivity  time.Time
-	mu            sync.Mutex
+	auditWriter     *AuditWriter      // non-nil after first campfire_init; persisted across per-request server instances
+	conventionTools *conventionToolMap // persisted across per-request server instances
+	lastActivity    time.Time
+	mu              sync.Mutex
 }
 
 // server returns a *server wired to this session's cfHome and beaconDir.
@@ -307,13 +308,14 @@ type Session struct {
 // goroutines by creating a new one each time.
 func (s *Session) server(manager *SessionManager) *server {
 	srv := &server{
-		cfHome:         s.cfHome,
-		beaconDir:      s.beaconDir,
-		cfHomeExplicit: true,
-		sessionToken:   s.token,
-		st:             s.st,
-		sess:           s,
-		auditWriter:    s.auditWriter,
+		cfHome:          s.cfHome,
+		beaconDir:       s.beaconDir,
+		cfHomeExplicit:  true,
+		sessionToken:    s.token,
+		st:              s.st,
+		sess:            s,
+		auditWriter:     s.auditWriter,
+		conventionTools: s.conventionTools,
 	}
 	if manager != nil && manager.router != nil {
 		srv.httpTransport = s.httpTransport
