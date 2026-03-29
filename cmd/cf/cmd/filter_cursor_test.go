@@ -54,7 +54,7 @@ func TestCursorAdvancesOnPreFilterMessages(t *testing.T) {
 	}
 
 	// Apply filter.
-	filtered := filterMessages(allMsgs, []string{"blocker"}, "")
+	filtered := filterMessages(allMsgs, store.MessageFilter{Tags: []string{"blocker"}})
 	if len(filtered) != 1 {
 		t.Fatalf("expected 1 filtered message, got %d", len(filtered))
 	}

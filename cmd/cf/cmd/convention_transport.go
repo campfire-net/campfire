@@ -8,37 +8,36 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
 // ErrNotImplemented is returned by stub transport methods that are not yet implemented.
 var ErrNotImplemented = errors.New("not yet implemented")
 
-// cliTransportAdapter implements convention.ExecutorTransport using the local store.
+// cliTransportAdapter implements convention.ExecutorTransport by routing
+// messages through the same transport layer that `cf send` uses.
 type cliTransportAdapter struct {
 	agentID *identity.Identity
 	store   store.Store
 }
 
 func (a *cliTransportAdapter) SendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
-	msg, err := message.NewMessage(a.agentID.PrivateKey, a.agentID.PublicKey, payload, tags, antecedents)
+	m, err := a.store.GetMembership(campfireID)
 	if err != nil {
-		return "", fmt.Errorf("creating message: %w", err)
+		return "", fmt.Errorf("querying membership: %w", err)
 	}
-	rec := store.MessageRecord{
-		ID:          msg.ID,
-		CampfireID:  campfireID,
-		Sender:      msg.SenderHex(),
-		Payload:     msg.Payload,
-		Tags:        msg.Tags,
-		Antecedents: msg.Antecedents,
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
+	if m == nil {
+		return "", fmt.Errorf("not a member of campfire %s", campfireID[:min(12, len(campfireID))])
 	}
-	if _, err := a.store.AddMessage(rec); err != nil {
-		return "", fmt.Errorf("writing message: %w", err)
+
+	msg, err := routeMessage(campfireID, string(payload), tags, antecedents, "", a.agentID, a.store, m)
+	if err != nil {
+		return "", fmt.Errorf("send message: %w", err)
 	}
+
+	// Store locally so the sender can read back their own messages without a sync.
+	a.store.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())) //nolint:errcheck
+
 	return msg.ID, nil
 }
 
