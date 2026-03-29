@@ -176,7 +176,7 @@ cmd/cf-mcp/          MCP server (JSON-RPC over stdio and HTTP)
 cmd/cf-functions/    Azure Functions custom handler
 cmd/cf-ui/           Operator portal (Go + htmx)
 cmd/cf-teams/        Microsoft Teams bridge
-pkg/protocol/        Client: Send, Read, Await — transport-agnostic
+pkg/protocol/        Server SDK — Client for Send/Read/Await across all transports
 pkg/convention/      Declaration parser, operation executor, MCP tool generator
 pkg/identity/        Ed25519 keypairs, X25519 conversion
 pkg/message/         Message envelope, provenance chain
@@ -196,8 +196,18 @@ pkg/transport/
   http/              P2P HTTP transport + long poll
   github/            GitHub Issues transport
 bridge/              Bridge framework (Teams, extensible)
-docs/                Protocol spec, CLI and MCP references, convention SDK guide
+docs/
+  protocol-spec.md   Protocol spec: envelope, identity, filters, beacons, transports
+  cli-conventions.md CLI convention reference
+  mcp-conventions.md MCP convention reference
+  convention-sdk.md  Go SDK guide: pkg/convention + pkg/protocol
 ```
+
+Convention layering: `pkg/convention/` → `pkg/protocol/` → `pkg/transport/`
+
+- `pkg/convention/` — parses declarations, executes typed operations, generates MCP tools
+- `pkg/protocol/` — Send/Read/Await against any transport (transport-agnostic client)
+- `pkg/transport/` — concrete transports: filesystem, HTTP, GitHub Issues
 
 ---
 
