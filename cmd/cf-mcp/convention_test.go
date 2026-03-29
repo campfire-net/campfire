@@ -485,6 +485,136 @@ func TestCreateWithDeclarations(t *testing.T) {
 	}
 }
 
+// TestCreateWithViews verifies that campfire_create with a views parameter
+// publishes campfire:view messages and registers view tools that return
+// filtered messages.
+func TestCreateWithViews(t *testing.T) {
+	srv, _ := newTestServerWithStore(t)
+
+	// Initialize identity.
+	initResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
+	if initResp.Error != nil {
+		t.Fatalf("campfire_init: %+v", initResp.Error)
+	}
+
+	// Create a campfire with a view.
+	createArgs := map[string]interface{}{
+		"name": "campfire_create",
+		"arguments": map[string]interface{}{
+			"description": "test campfire with views",
+			"views": []interface{}{
+				map[string]interface{}{
+					"name":        "greetings",
+					"predicate":   `(tag "test:greet")`,
+					"description": "All greeting messages",
+				},
+			},
+		},
+	}
+	createJSON, _ := json.Marshal(createArgs)
+	createResp := srv.dispatch(makeReq("tools/call", string(createJSON)))
+	if createResp.Error != nil {
+		t.Fatalf("campfire_create: %+v", createResp.Error)
+	}
+
+	// Extract result.
+	result := extractInitResult(t, createResp)
+	campfireID, _ := result["campfire_id"].(string)
+
+	viewCount, _ := result["convention_views_registered"].(float64)
+	if viewCount != 1 {
+		t.Errorf("convention_views_registered: got %v, want 1", result["convention_views_registered"])
+	}
+
+	// Verify greetings view appears in tools/list.
+	listResp := srv.dispatch(makeReq("tools/list", "{}"))
+	lb, _ := json.Marshal(listResp.Result)
+	var listResult map[string]interface{}
+	json.Unmarshal(lb, &listResult)
+	toolsRaw, _ := listResult["tools"].([]interface{})
+	found := false
+	for _, tr := range toolsRaw {
+		tool, _ := tr.(map[string]interface{})
+		if tool["name"] == "greetings" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("view tool 'greetings' not found in tools/list")
+	}
+
+	// Send some messages — one matching, one not.
+	sendMatching := map[string]interface{}{
+		"name": "campfire_send",
+		"arguments": map[string]interface{}{
+			"campfire_id": campfireID,
+			"message":     "hello world",
+			"tags":        []interface{}{"test:greet"},
+		},
+	}
+	smJSON, _ := json.Marshal(sendMatching)
+	if resp := srv.dispatch(makeReq("tools/call", string(smJSON))); resp.Error != nil {
+		t.Fatalf("send matching: %+v", resp.Error)
+	}
+
+	sendOther := map[string]interface{}{
+		"name": "campfire_send",
+		"arguments": map[string]interface{}{
+			"campfire_id": campfireID,
+			"message":     "not a greeting",
+			"tags":        []interface{}{"test:other"},
+		},
+	}
+	soJSON, _ := json.Marshal(sendOther)
+	if resp := srv.dispatch(makeReq("tools/call", string(soJSON))); resp.Error != nil {
+		t.Fatalf("send other: %+v", resp.Error)
+	}
+
+	// Call the greetings view tool.
+	viewCall := map[string]interface{}{
+		"name":      "greetings",
+		"arguments": map[string]interface{}{},
+	}
+	vcJSON, _ := json.Marshal(viewCall)
+	viewResp := srv.dispatch(makeReq("tools/call", string(vcJSON)))
+	if viewResp.Error != nil {
+		t.Fatalf("greetings view call: %+v", viewResp.Error)
+	}
+
+	// Extract the view result from the trust envelope.
+	vb, _ := json.Marshal(viewResp.Result)
+	var vOuter struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	json.Unmarshal(vb, &vOuter)
+	if len(vOuter.Content) == 0 {
+		t.Fatal("empty content in view response")
+	}
+
+	// The response is a trust envelope — view data is in tainted.content.
+	var envelope map[string]interface{}
+	json.Unmarshal([]byte(vOuter.Content[0].Text), &envelope)
+
+	tainted, _ := envelope["tainted"].(map[string]interface{})
+	data, _ := tainted["content"].(map[string]interface{})
+	if data == nil {
+		t.Fatalf("no tainted.content in envelope: %s", vOuter.Content[0].Text)
+	}
+
+	count, _ := data["count"].(float64)
+	if count != 1 {
+		t.Errorf("view returned %v messages, want 1 (only the test:greet message), got count=%v", count, data["count"])
+	}
+
+	msgs, _ := data["messages"].([]interface{})
+	if len(msgs) != 1 {
+		t.Fatalf("view returned %d messages, want 1", len(msgs))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Regression test: MCP path must wire WithProvenance into the executor.
 //

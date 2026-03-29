@@ -400,6 +400,23 @@ Each entry can be:
 
 Example: ["social-post", "peering"] seeds the campfire with social-post and peering convention tools.`,
 					},
+					"views": map[string]interface{}{
+						"type": "array",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"name":        map[string]interface{}{"type": "string", "description": "View name — becomes a callable MCP tool."},
+								"predicate":   map[string]interface{}{"type": "string", "description": "S-expression filter, e.g. (tag \"exchange:match\") or (and (tag \"exchange:put\") (not (tag \"exchange:revoke\")))"},
+								"description": map[string]interface{}{"type": "string", "description": "Human-readable description of what this view returns."},
+							},
+							"required": []string{"name", "predicate"},
+						},
+						"description": `Named views to create at campfire birth. Each view becomes a callable MCP tool that returns filtered messages matching the predicate. Joiners discover views automatically.
+
+Example: [{"name": "inventory", "predicate": "(tag \"exchange:phase:put-accept\")", "description": "Active listings on the exchange"}]
+
+Predicate operators: (tag "x"), (sender "hex"), (and ...), (or ...), (not ...), (field "path"), (eq/gt/lt/gte/lte ...).`,
+					},
 				},
 				"required": []string{},
 			}),
@@ -1113,6 +1130,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	encrypted := getBool(params, "encrypted")
 	deliveryModes := getStringSlice(params, "delivery_modes")
 	declarations := getSlice(params, "declarations")
+	views := getSlice(params, "views")
 
 	// Validate delivery_modes: only "pull" and "push" are valid.
 	for _, mode := range deliveryModes {
@@ -1151,7 +1169,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	// In hosted HTTP mode, use the session's local fs for campfire state and
 	// the HTTP transport for message delivery. Beacons point to the server URL.
 	if s.httpTransport != nil {
-		return s.handleCreateHTTP(id, cf, agentID, description, serviceRole, declarations)
+		return s.handleCreateHTTP(id, cf, agentID, description, serviceRole, declarations, views)
 	}
 
 	transport := s.fsTransport()
@@ -1246,8 +1264,22 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		if count > 0 {
 			resultMap["convention_tools_registered"] = count
 			resultMap["convention_tools"] = toolNames
-			resultMap["guide"] = fmt.Sprintf("%d convention tools registered. Call tools/list to see them.", count)
 		}
+	}
+
+	if len(views) > 0 {
+		vCount, vNames := s.publishViews(st, cf.PublicKeyHex(), views)
+		if vCount > 0 {
+			resultMap["convention_views_registered"] = vCount
+			resultMap["convention_views"] = vNames
+		}
+	}
+
+	toolCount, _ := resultMap["convention_tools_registered"].(int)
+	viewCount, _ := resultMap["convention_views_registered"].(int)
+	total := toolCount + viewCount
+	if total > 0 {
+		resultMap["guide"] = fmt.Sprintf("%d convention tools + %d views registered. Call tools/list to see them.", toolCount, viewCount)
 	}
 
 	result, _ := toolResultJSON(resultMap)
@@ -1261,7 +1293,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 //
 // serviceRole is the campfire membership role the hosted service should use.
 // For encrypted campfires, this is campfire.RoleBlindRelay (spec §5.c).
-func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID *identity.Identity, description string, serviceRole string, declarations []interface{}) jsonRPCResponse {
+func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID *identity.Identity, description string, serviceRole string, declarations []interface{}, views []interface{}) jsonRPCResponse {
 	// Use the session's cfHome as the fs transport base for state storage.
 	fsTransport := fs.New(s.cfHome)
 	if err := fsTransport.Init(cf); err != nil {
@@ -1379,8 +1411,22 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		if count > 0 {
 			resultMap["convention_tools_registered"] = count
 			resultMap["convention_tools"] = toolNames
-			resultMap["guide"] = fmt.Sprintf("%d convention tools registered. Call tools/list to see them.", count)
 		}
+	}
+
+	if len(views) > 0 {
+		vCount, vNames := s.publishViews(st, cf.PublicKeyHex(), views)
+		if vCount > 0 {
+			resultMap["convention_views_registered"] = vCount
+			resultMap["convention_views"] = vNames
+		}
+	}
+
+	toolCount, _ := resultMap["convention_tools_registered"].(int)
+	viewCount, _ := resultMap["convention_views_registered"].(int)
+	total := toolCount + viewCount
+	if total > 0 {
+		resultMap["guide"] = fmt.Sprintf("%d convention tools + %d views registered. Call tools/list to see them.", toolCount, viewCount)
 	}
 
 	result, _ := toolResultJSON(resultMap)
@@ -1610,7 +1656,10 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		log.Printf("convention: registered %d tools for campfire %s", len(decls), campfireID)
 	}
 
-	// Build response with convention tool discovery results.
+	// Post-join: discover convention views and register as read tools.
+	viewCount, viewNames := s.readAndRegisterViews(st, campfireID)
+
+	// Build response with convention tool + view discovery results.
 	joinResult := map[string]interface{}{
 		"campfire_id": campfireID,
 		"status":      "joined",
@@ -1622,12 +1671,23 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		}
 		joinResult["convention_tools_registered"] = len(decls)
 		joinResult["convention_tools"] = toolNames
+	}
+	if viewCount > 0 {
+		joinResult["convention_views_registered"] = viewCount
+		joinResult["convention_views"] = viewNames
+	}
+	total := len(decls) + viewCount
+	if total > 0 {
+		allNames := make([]string, 0, total)
+		for _, d := range decls {
+			allNames = append(allNames, d.Operation)
+		}
+		allNames = append(allNames, viewNames...)
 		joinResult["guide"] = fmt.Sprintf(
-			"%d convention tools are now available: %s. "+
-				"Call these tools directly instead of using campfire_send — "+
-				"they handle argument validation, tag composition, and signing automatically. "+
+			"%d tools + %d views are now available: %s. "+
+				"Call these directly — tools handle writes, views handle reads. "+
 				"Run tools/list to see their full schemas.",
-			len(decls), strings.Join(toolNames, ", "))
+			len(decls), viewCount, strings.Join(allNames, ", "))
 	}
 
 	result, _ := toolResultJSON(joinResult)
@@ -1839,6 +1899,9 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		log.Printf("convention: registered %d tools for campfire %s", len(httpDecls), campfireID)
 	}
 
+	// Post-join: discover convention views and register as read tools.
+	httpViewCount, httpViewNames := s.readAndRegisterViews(st, campfireID)
+
 	httpJoinResult := map[string]interface{}{
 		"campfire_id": campfireID,
 		"status":      "joined",
@@ -1852,12 +1915,23 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 		}
 		httpJoinResult["convention_tools_registered"] = len(httpDecls)
 		httpJoinResult["convention_tools"] = toolNames
+	}
+	if httpViewCount > 0 {
+		httpJoinResult["convention_views_registered"] = httpViewCount
+		httpJoinResult["convention_views"] = httpViewNames
+	}
+	httpTotal := len(httpDecls) + httpViewCount
+	if httpTotal > 0 {
+		allNames := make([]string, 0, httpTotal)
+		for _, d := range httpDecls {
+			allNames = append(allNames, d.Operation)
+		}
+		allNames = append(allNames, httpViewNames...)
 		httpJoinResult["guide"] = fmt.Sprintf(
-			"%d convention tools are now available: %s. "+
-				"Call these tools directly instead of using campfire_send — "+
-				"they handle argument validation, tag composition, and signing automatically. "+
+			"%d tools + %d views are now available: %s. "+
+				"Call these directly — tools handle writes, views handle reads. "+
 				"Run tools/list to see their full schemas.",
-			len(httpDecls), strings.Join(toolNames, ", "))
+			len(httpDecls), httpViewCount, strings.Join(allNames, ", "))
 	}
 
 	joinResult, _ := toolResultJSON(httpJoinResult)
@@ -3406,6 +3480,9 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 			if s.conventionTools != nil {
 				if entry, ok := s.conventionTools.get(callParams.Name); ok {
 					return s.handleConventionTool(req.ID, entry, callParams.Arguments)
+				}
+				if viewEntry, ok := s.conventionTools.getView(callParams.Name); ok {
+					return s.handleViewTool(req.ID, viewEntry, callParams.Arguments)
 				}
 			}
 			return errResponse(req.ID, -32601, fmt.Sprintf("unknown tool: %s", callParams.Name))
