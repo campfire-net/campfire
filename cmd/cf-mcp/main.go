@@ -251,6 +251,16 @@ func getStringSlice(params map[string]interface{}, key string) []string {
 	return nil
 }
 
+// getSlice extracts a []interface{} param (returns nil if missing).
+func getSlice(params map[string]interface{}, key string) []interface{} {
+	if v, ok := params[key]; ok {
+		if s, ok := v.([]interface{}); ok {
+			return s
+		}
+	}
+	return nil
+}
+
 // getBool extracts a bool param.
 func getBool(params map[string]interface{}, key string) bool {
 	if v, ok := params[key]; ok {
@@ -377,6 +387,18 @@ Use 'encrypted: true' to create an E2E encrypted campfire. When encrypted, the h
 						"description": `Delivery modes for this campfire. Controls how the server delivers messages to members.
 Valid values: "pull" (members poll for messages, default), "push" (server pushes to members).
 Default: ["pull"]. Example: ["pull","push"] to enable both modes.`,
+					},
+					"declarations": map[string]interface{}{
+						"type":  "array",
+						"items": map[string]interface{}{},
+						"description": `Convention declarations to publish at creation time. Each entry is signed with the campfire key and published as a convention:operation message, so convention tools are available immediately after creation. Joiners get them automatically.
+
+Each entry can be:
+- A URL string: fetched and published (e.g. "https://aietf.getcampfire.dev/.well-known/campfire/declarations/social-post.json")
+- A well-known name string: resolved via https://aietf.getcampfire.dev/.well-known/campfire/declarations/<name>.json
+- An inline declaration object: published directly
+
+Example: ["social-post", "peering"] seeds the campfire with social-post and peering convention tools.`,
 					},
 				},
 				"required": []string{},
@@ -1090,6 +1112,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	description := getStr(params, "description")
 	encrypted := getBool(params, "encrypted")
 	deliveryModes := getStringSlice(params, "delivery_modes")
+	declarations := getSlice(params, "declarations")
 
 	// Validate delivery_modes: only "pull" and "push" are valid.
 	for _, mode := range deliveryModes {
@@ -1128,7 +1151,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	// In hosted HTTP mode, use the session's local fs for campfire state and
 	// the HTTP transport for message delivery. Beacons point to the server URL.
 	if s.httpTransport != nil {
-		return s.handleCreateHTTP(id, cf, agentID, description, serviceRole)
+		return s.handleCreateHTTP(id, cf, agentID, description, serviceRole, declarations)
 	}
 
 	transport := s.fsTransport()
@@ -1207,14 +1230,27 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 		})
 	}
 
-	result, _ := toolResultJSON(map[string]interface{}{
+	// Publish convention declarations if provided. These are signed with the
+	// campfire key so they pass the trust gate on readDeclarations.
+	resultMap := map[string]interface{}{
 		"campfire_id":            cf.PublicKeyHex(),
 		"join_protocol":          cf.JoinProtocol,
 		"reception_requirements": cf.ReceptionRequirements,
 		"delivery_modes":         campfire.EffectiveDeliveryModes(cf.DeliveryModes),
 		"transport_dir":          transport.CampfireDir(cf.PublicKeyHex()),
 		"invite_code":            inviteCode,
-	})
+	}
+
+	if len(declarations) > 0 {
+		count, toolNames := s.publishDeclarations(st, cf.PublicKeyHex(), declarations)
+		if count > 0 {
+			resultMap["convention_tools_registered"] = count
+			resultMap["convention_tools"] = toolNames
+			resultMap["guide"] = fmt.Sprintf("%d convention tools registered. Call tools/list to see them.", count)
+		}
+	}
+
+	result, _ := toolResultJSON(resultMap)
 	return okResponse(id, result)
 }
 
@@ -1225,7 +1261,7 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 //
 // serviceRole is the campfire membership role the hosted service should use.
 // For encrypted campfires, this is campfire.RoleBlindRelay (spec §5.c).
-func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID *identity.Identity, description string, serviceRole string) jsonRPCResponse {
+func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID *identity.Identity, description string, serviceRole string, declarations []interface{}) jsonRPCResponse {
 	// Use the session's cfHome as the fs transport base for state storage.
 	fsTransport := fs.New(s.cfHome)
 	if err := fsTransport.Init(cf); err != nil {
@@ -1327,7 +1363,8 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		})
 	}
 
-	result, _ := toolResultJSON(map[string]interface{}{
+	// Publish convention declarations if provided.
+	resultMap := map[string]interface{}{
 		"campfire_id":            cf.PublicKeyHex(),
 		"join_protocol":          cf.JoinProtocol,
 		"reception_requirements": cf.ReceptionRequirements,
@@ -1335,7 +1372,18 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		"transport":              "p2p-http",
 		"endpoint":               s.externalAddr,
 		"invite_code":            inviteCode,
-	})
+	}
+
+	if len(declarations) > 0 {
+		count, toolNames := s.publishDeclarations(st, cf.PublicKeyHex(), declarations)
+		if count > 0 {
+			resultMap["convention_tools_registered"] = count
+			resultMap["convention_tools"] = toolNames
+			resultMap["guide"] = fmt.Sprintf("%d convention tools registered. Call tools/list to see them.", count)
+		}
+	}
+
+	result, _ := toolResultJSON(resultMap)
 	return okResponse(id, result)
 }
 
