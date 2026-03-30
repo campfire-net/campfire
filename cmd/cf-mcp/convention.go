@@ -16,9 +16,11 @@ import (
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/predicate"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/provenance"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	"github.com/campfire-net/campfire/pkg/trust"
 )
 
@@ -578,6 +580,137 @@ func (s *server) handleViewTool(id interface{}, entry *viewToolEntry, args map[s
 	})
 }
 
+// sendMessageHTTPMode sends a message via the embedded HTTP transport. This is
+// the HTTP-mode equivalent of protocol.Client.Send: it builds the message
+// inline (bypassing the filesystem-path protocol client) because the campfire
+// state lives in cfHome while the membership's TransportDir holds an external
+// HTTP URL that protocol.Client cannot resolve via its sendP2PHTTP path.
+//
+// Returns the signed message on success so callers can extract the message ID.
+func (s *server) sendMessageHTTPMode(st store.Store, agentID *identity.Identity, campfireID string, payload []byte, tags []string, antecedents []string) (*message.Message, error) {
+	m, err := st.GetMembership(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("querying membership: %w", err)
+	}
+	if m == nil {
+		return nil, fmt.Errorf("not a member of campfire %s", shortID(campfireID, 12))
+	}
+
+	fsT := s.fsTransport()
+	members, listErr := fsT.ListMembers(campfireID)
+	if listErr != nil {
+		return nil, fmt.Errorf("listing members: %w", listErr)
+	}
+
+	isMember := false
+	for _, mem := range members {
+		if fmt.Sprintf("%x", mem.PublicKey) == agentID.PublicKeyHex() {
+			isMember = true
+			break
+		}
+	}
+	if !isMember {
+		return nil, fmt.Errorf("not recognized as a member in the transport directory")
+	}
+
+	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, payload, tags, antecedents)
+	if err != nil {
+		return nil, fmt.Errorf("creating message: %w", err)
+	}
+
+	state, stateErr := fsT.ReadState(campfireID)
+	if stateErr != nil {
+		return nil, fmt.Errorf("reading campfire state: %w", stateErr)
+	}
+
+	cf := campfireFromState(state, members)
+	if hopErr := msg.AddHop(
+		state.PrivateKey, state.PublicKey,
+		cf.MembershipHash(), len(members),
+		state.JoinProtocol, state.ReceptionRequirements,
+		m.Role,
+	); hopErr != nil {
+		return nil, fmt.Errorf("adding provenance hop: %w", hopErr)
+	}
+
+	if _, storeErr := st.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); storeErr != nil {
+		return nil, fmt.Errorf("storing message: %w", storeErr)
+	}
+	// Wake any long-polling goroutines (hosted and external peers).
+	s.httpTransport.PollBrokerNotify(campfireID)
+	// Deliver to external HTTP peers.
+	peers := s.httpTransport.Peers(campfireID)
+	if len(peers) > 0 {
+		endpoints := make([]string, len(peers))
+		for i, p := range peers {
+			endpoints[i] = p.Endpoint
+		}
+		cfhttp.DeliverToAll(endpoints, campfireID, msg, agentID)
+	}
+	return msg, nil
+}
+
+// httpModeBackend is a convention.ExecutorBackend that routes sends through
+// the server's embedded HTTP transport. It is used by handleConventionTool
+// when s.httpTransport != nil so that convention tool sends use the same path
+// as handleSend — building messages inline rather than delegating to a
+// protocol.Client that cannot resolve HTTP campfire state.
+type httpModeBackend struct {
+	srv     *server
+	st      store.Store
+	agentID *identity.Identity
+	client  *protocol.Client // used for ReadMessages and SendFutureAndAwait
+}
+
+func (b *httpModeBackend) SendMessage(_ context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
+	msg, err := b.srv.sendMessageHTTPMode(b.st, b.agentID, campfireID, payload, tags, antecedents)
+	if err != nil {
+		return "", err
+	}
+	return msg.ID, nil
+}
+
+// SendCampfireKeySigned is an alias for SendMessage in the HTTP transport:
+// the campfire key is embedded in the provenance hop regardless of signing mode.
+func (b *httpModeBackend) SendCampfireKeySigned(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (string, error) {
+	return b.SendMessage(ctx, campfireID, payload, tags, antecedents)
+}
+
+func (b *httpModeBackend) ReadMessages(_ context.Context, campfireID string, tags []string) ([]convention.MessageRecord, error) {
+	result, err := b.client.Read(protocol.ReadRequest{
+		CampfireID: campfireID,
+		Tags:       tags,
+	})
+	if err != nil {
+		return nil, err
+	}
+	records := make([]convention.MessageRecord, len(result.Messages))
+	for i, m := range result.Messages {
+		records[i] = convention.MessageRecord{
+			ID:     m.ID,
+			Sender: m.Sender,
+			Tags:   m.Tags,
+		}
+	}
+	return records, nil
+}
+
+func (b *httpModeBackend) SendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) ([]byte, error) {
+	msg, err := b.srv.sendMessageHTTPMode(b.st, b.agentID, campfireID, payload, append(tags, "future"), nil)
+	if err != nil {
+		return nil, fmt.Errorf("sending future: %w", err)
+	}
+	fulfillment, awaitErr := b.client.Await(protocol.AwaitRequest{
+		CampfireID:  campfireID,
+		TargetMsgID: msg.ID,
+		Timeout:     timeout,
+	})
+	if awaitErr != nil {
+		return nil, fmt.Errorf("awaiting fulfillment: %w", awaitErr)
+	}
+	return fulfillment.Payload, nil
+}
+
 // handleConventionTool dispatches a convention tool invocation through the executor.
 func (s *server) handleConventionTool(rpcID interface{}, entry *conventionToolEntry, args map[string]interface{}) jsonRPCResponse {
 	agentKey := ""
@@ -598,7 +731,21 @@ func (s *server) handleConventionTool(rpcID interface{}, entry *conventionToolEn
 	}
 
 	client := newProtocolClient(st, agentID)
-	executor := convention.NewExecutor(client, agentKey)
+	var executor *convention.Executor
+	if s.httpTransport != nil {
+		// HTTP mode: route sends through the embedded HTTP transport so the
+		// convention tool uses the same path as handleSend. Without this,
+		// protocol.Client tries to os.ReadFile the membership's TransportDir
+		// (an HTTP URL) and fails. Fix for campfire-agent-jyd.
+		executor = convention.NewExecutorForTest(&httpModeBackend{
+			srv:     s,
+			st:      st,
+			agentID: agentID,
+			client:  client,
+		}, agentKey)
+	} else {
+		executor = convention.NewExecutor(client, agentKey)
+	}
 
 	// Wire in the provenance store so min_operator_level gates are enforced.
 	// Without this, senderLevel defaults to 0 inside Execute and all gated
