@@ -48,9 +48,6 @@ type AdmitterDeps struct {
 	// Optional — if nil, AddPeer is not called but the store record is still written.
 	HTTPTransport HTTPTransport
 
-	// ExternalAddr is this node's externally reachable address, available for
-	// callers that need it. AdmitMember does not use it directly.
-	ExternalAddr string
 }
 
 // AdmissionRequest carries all inputs needed to admit a member.
@@ -60,7 +57,6 @@ type AdmissionRequest struct {
 	Endpoint        string // HTTP endpoint for peer delivery; empty = no peer endpoint
 	Role            string // explicit role; empty = derive from Encrypted flag
 	Encrypted       bool
-	Source          string
 	ParticipantID   uint32
 	JoinProtocol    string
 	TransportDir    string

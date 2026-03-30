@@ -85,7 +85,6 @@ func baseRequest() admission.AdmissionRequest {
 		Endpoint:      "https://example.com/peer",
 		Role:          "",
 		Encrypted:     false,
-		Source:        "test-source",
 		ParticipantID: 1,
 		JoinProtocol:  "v1",
 		TransportDir:  "/tmp/transport",
@@ -104,7 +103,6 @@ func TestAdmitMember_FullPath(t *testing.T) {
 		FSTransport:   fs,
 		Store:         st,
 		HTTPTransport: http,
-		ExternalAddr:  "https://myserver.com",
 	}
 	req := baseRequest()
 
