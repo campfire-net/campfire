@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
@@ -152,7 +153,7 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 		return nil, fmt.Errorf("publishing beacon: %w", err)
 	}
 
-	beaconPath := fmt.Sprintf("%s/%x.beacon", beaconDir, cf.PublicKey)
+	beaconPath := filepath.Join(beaconDir, fmt.Sprintf("%x.beacon", cf.PublicKey))
 
 	return &CreateResult{
 		CampfireID: campfireID,
