@@ -90,9 +90,13 @@ func TestFollowFilesystemPicksUpNewMessages(t *testing.T) {
 	}
 
 	// Write a message to the filesystem transport BEFORE starting follow.
+	// Messages must have at least one provenance hop so syncFromFilesystem accepts them.
 	transport := fs.New(tmpDir)
 	msg1, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("first message"), []string{"test"}, nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := msg1.AddHop(id.PrivateKey, id.PublicKey, nil, 1, "open", []string{}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := transport.WriteMessage(campfireID, msg1); err != nil {
@@ -117,6 +121,9 @@ func TestFollowFilesystemPicksUpNewMessages(t *testing.T) {
 	// Now simulate what the follow loop does: sync again after a new message arrives.
 	msg2, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("second message"), []string{"test"}, nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := msg2.AddHop(id.PrivateKey, id.PublicKey, nil, 1, "open", []string{}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := transport.WriteMessage(campfireID, msg2); err != nil {
