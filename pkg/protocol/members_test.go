@@ -239,10 +239,9 @@ func TestMembers_ReflectsEvictions(t *testing.T) {
 	}
 
 	// A evicts C.
-	err = A.client.Evict(protocol.EvictRequest{
-		CampfireID:       campfireID,
-		MemberPubKeyHex:  C.id.PublicKeyHex(),
-		TransportDir:     campfireDir,
+	_, err = A.client.Evict(protocol.EvictRequest{
+		CampfireID:      campfireID,
+		MemberPubKeyHex: C.id.PublicKeyHex(),
 	})
 	if err != nil {
 		t.Fatalf("A Evict C: %v", err)
