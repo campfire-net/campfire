@@ -89,8 +89,7 @@ func testEvictThenSendRejected(t *testing.T) {
 	base := t.TempDir()
 	beaconDir := t.TempDir()
 	createResult, err := clientA.Create(protocol.CreateRequest{
-		TransportDir:  base,
-		TransportType: "filesystem",
+		Transport: &protocol.FilesystemTransport{Dir: base},
 		BeaconDir:     beaconDir,
 	})
 	if err != nil {
@@ -101,9 +100,8 @@ func testEvictThenSendRejected(t *testing.T) {
 
 	clientB := newEvictClient(t)
 	_, err = clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -146,8 +144,7 @@ func testEvictRemovesFromMembers(t *testing.T) {
 	base := t.TempDir()
 	beaconDir := t.TempDir()
 	createResult, err := clientA.Create(protocol.CreateRequest{
-		TransportDir:  base,
-		TransportType: "filesystem",
+		Transport: &protocol.FilesystemTransport{Dir: base},
 		BeaconDir:     beaconDir,
 	})
 	if err != nil {
@@ -158,9 +155,8 @@ func testEvictRemovesFromMembers(t *testing.T) {
 
 	clientB := newEvictClient(t)
 	_, err = clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -228,11 +224,8 @@ func testEvictDKGRekey(t *testing.T) {
 	transportDirA := t.TempDir()
 	beaconDir := t.TempDir()
 	createResult, err := clientA.Create(protocol.CreateRequest{
-		TransportDir:   transportDirA,
-		TransportType:  "p2p-http",
+		Transport: &protocol.P2PHTTPTransport{Transport: trA, MyEndpoint: endpointA, Dir: transportDirA},
 		BeaconDir:      beaconDir,
-		HTTPTransport:  trA,
-		MyHTTPEndpoint: endpointA,
 		Threshold:      2, // threshold=2, need 3 participants for the test
 	})
 	if err != nil {
@@ -249,12 +242,8 @@ func testEvictDKGRekey(t *testing.T) {
 	trB := startHTTPTransport(t, addrB, sB)
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
 		CampfireID:     campfireID,
-		TransportDir:   transportDirB,
-		TransportType:  "p2p-http",
-		PeerEndpoint:   endpointA,
-		MyHTTPEndpoint: endpointB,
-		HTTPTransport:  trB,
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -266,12 +255,8 @@ func testEvictDKGRekey(t *testing.T) {
 	trC := startHTTPTransport(t, addrC, sC)
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trC, MyEndpoint: endpointC, PeerEndpoint: endpointA, Dir: transportDirC},
 		CampfireID:     campfireID,
-		TransportDir:   transportDirC,
-		TransportType:  "p2p-http",
-		PeerEndpoint:   endpointA,
-		MyHTTPEndpoint: endpointC,
-		HTTPTransport:  trC,
 	})
 	if err != nil {
 		t.Fatalf("C.Join: %v", err)
@@ -295,9 +280,9 @@ func testEvictDKGRekey(t *testing.T) {
 
 	// A evicts B.
 	evictResult, err := clientA.Evict(protocol.EvictRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trA},
 		CampfireID:      campfireID,
 		MemberPubKeyHex: clientB.Identity().PublicKeyHex(),
-		HTTPTransport:   trA,
 	})
 	if err != nil {
 		t.Fatalf("A.Evict(B): %v", err)
@@ -465,11 +450,8 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 	transportDirA := t.TempDir()
 	beaconDir := t.TempDir()
 	createResult, err := clientA.Create(protocol.CreateRequest{
-		TransportDir:   transportDirA,
-		TransportType:  "p2p-http",
+		Transport: &protocol.P2PHTTPTransport{Transport: trA, MyEndpoint: endpointA2, Dir: transportDirA},
 		BeaconDir:      beaconDir,
-		HTTPTransport:  trA,
-		MyHTTPEndpoint: endpointA2,
 		Threshold:      2,
 	})
 	if err != nil {
@@ -483,12 +465,8 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 	trB := startHTTPTransport(t, addrB2, sB)
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB2, PeerEndpoint: endpointA2, Dir: transportDirB},
 		CampfireID:     campfireID,
-		TransportDir:   transportDirB,
-		TransportType:  "p2p-http",
-		PeerEndpoint:   endpointA2,
-		MyHTTPEndpoint: endpointB2,
-		HTTPTransport:  trB,
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -511,12 +489,8 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 	trC := startHTTPTransport(t, addrC2, sC)
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trC, MyEndpoint: endpointC2, PeerEndpoint: endpointA2, Dir: transportDirC},
 		CampfireID:     campfireID,
-		TransportDir:   transportDirC,
-		TransportType:  "p2p-http",
-		PeerEndpoint:   endpointA2,
-		MyHTTPEndpoint: endpointC2,
-		HTTPTransport:  trC,
 	})
 	if err != nil {
 		t.Fatalf("C.Join: %v", err)
@@ -524,9 +498,9 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 
 	// A evicts B (triggers DKG rekey).
 	evictResult, err := clientA.Evict(protocol.EvictRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trA},
 		CampfireID:      campfireID,
 		MemberPubKeyHex: clientB.Identity().PublicKeyHex(),
-		HTTPTransport:   trA,
 	})
 	if err != nil {
 		t.Fatalf("A.Evict(B): %v", err)
@@ -588,8 +562,7 @@ func testEvictFilesystemMemberRecordRemoved(t *testing.T) {
 	base := t.TempDir()
 	beaconDir := t.TempDir()
 	createResult, err := clientA.Create(protocol.CreateRequest{
-		TransportDir:  base,
-		TransportType: "filesystem",
+		Transport: &protocol.FilesystemTransport{Dir: base},
 		BeaconDir:     beaconDir,
 	})
 	if err != nil {
@@ -600,9 +573,8 @@ func testEvictFilesystemMemberRecordRemoved(t *testing.T) {
 
 	clientB := newEvictClient(t)
 	_, err = clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -641,8 +613,7 @@ func testEvictSelfRejected(t *testing.T) {
 	base := t.TempDir()
 	beaconDir := t.TempDir()
 	createResult, err := clientA.Create(protocol.CreateRequest{
-		TransportDir:  base,
-		TransportType: "filesystem",
+		Transport: &protocol.FilesystemTransport{Dir: base},
 		BeaconDir:     beaconDir,
 	})
 	if err != nil {

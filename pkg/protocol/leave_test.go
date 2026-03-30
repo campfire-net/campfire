@@ -70,8 +70,8 @@ func setupLeaveEnv(t *testing.T) *leaveTestEnv {
 
 	// A creates the campfire.
 	createResult, err := clientA.Create(protocol.CreateRequest{
+		Transport: &protocol.FilesystemTransport{Dir: transportBaseDir},
 		JoinProtocol: "open",
-		TransportDir: transportBaseDir,
 		BeaconDir:    t.TempDir(),
 	})
 	if err != nil {
@@ -99,9 +99,8 @@ func setupLeaveEnv(t *testing.T) *leaveTestEnv {
 
 	// B joins (open campfire, no Admit needed).
 	_, err = clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B Join: %v", err)
@@ -137,9 +136,8 @@ func (e *leaveTestEnv) addMemberC(t *testing.T) {
 
 	campfireDir := filepath.Join(e.transportBaseDir, e.campfireID)
 	_, err = clientC.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    e.campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("C Join: %v", err)
