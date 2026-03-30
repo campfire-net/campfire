@@ -124,43 +124,33 @@ func hasGlob(tag string) bool {
 	return len(tag) > 0 && tag[len(tag)-1] == '*'
 }
 
-// Serve polls campfireID for incoming convention operation messages and
+// Serve subscribes to campfireID for incoming convention operation messages and
 // dispatches them to registered handlers. Responses are sent auto-threaded
 // (antecedent = incoming message ID, tag "fulfills").
 //
-// Serve blocks until ctx is cancelled. It polls at the configured poll interval
-// and advances an internal cursor so each message is processed at most once.
+// Serve blocks until ctx is cancelled. It uses client.Subscribe() internally,
+// advancing the cursor via the Subscription.Messages() channel.
 //
 // Returns ctx.Err() when the context is cancelled.
 func (s *Server) Serve(ctx context.Context, campfireID string) error {
 	pollTags := s.operationTags()
-	var afterTS int64
 
-	for {
-		// Poll for new messages.
-		result, err := s.client.Read(protocol.ReadRequest{
-			CampfireID:     campfireID,
-			Tags:           pollTags,
-			AfterTimestamp: afterTS,
-		})
-		if err != nil {
-			s.errFn(fmt.Errorf("convention server: read: %w", err))
-		} else {
-			for _, msg := range result.Messages {
-				s.dispatch(ctx, campfireID, msg)
-			}
-			if result.MaxTimestamp > afterTS {
-				afterTS = result.MaxTimestamp
-			}
-		}
+	sub := s.client.Subscribe(ctx, protocol.SubscribeRequest{
+		CampfireID:   campfireID,
+		Tags:         pollTags,
+		PollInterval: s.pollInterval,
+	})
 
-		// Wait for next poll or cancellation.
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(s.pollInterval):
-		}
+	for msg := range sub.Messages() {
+		s.dispatch(ctx, campfireID, msg)
 	}
+
+	// If the subscription ended due to a transport error, surface it.
+	if err := sub.Err(); err != nil {
+		s.errFn(fmt.Errorf("convention server: subscription error: %w", err))
+	}
+
+	return ctx.Err()
 }
 
 // dispatch parses one message and calls the registered handler, then sends the
