@@ -17,6 +17,10 @@ import (
 
 // CreateRequest holds all parameters for Client.Create().
 type CreateRequest struct {
+	// Description is an optional human-readable description of the campfire.
+	// Stored in the membership metadata.
+	Description string
+
 	// JoinProtocol is "open" (default) or "invite-only".
 	JoinProtocol string
 
@@ -28,34 +32,23 @@ type CreateRequest struct {
 	// Values > 1 require the P2P HTTP transport and trigger DKG.
 	Threshold uint
 
-	// TransportDir is the base directory for the filesystem transport, or the
-	// directory where P2P HTTP campfire state files are stored.
-	// Required for "filesystem" and "p2p-http" transports.
-	// For GitHub transport, set this to the github: JSON metadata string.
-	TransportDir string
-
-	// TransportType selects the transport: "filesystem" (default), "p2p-http", or "github".
-	// Empty string defaults to "filesystem".
-	TransportType string
+	// Transport selects and configures the transport. Use FilesystemTransport,
+	// P2PHTTPTransport, or GitHubTransport. Required.
+	Transport Transport
 
 	// BeaconDir is the directory to publish the beacon file.
 	// If empty, beacon.DefaultBeaconDir() is used.
 	BeaconDir string
-
-	// HTTPTransport is the P2P HTTP Transport instance. Required when
-	// TransportType is "p2p-http". The transport must already be started
-	// (or the caller starts it after Create returns).
-	HTTPTransport *cfhttp.Transport
-
-	// MyHTTPEndpoint is this node's HTTP endpoint (e.g. "http://host:port").
-	// Used when TransportType is "p2p-http".
-	MyHTTPEndpoint string
 }
 
 // CreateResult holds the outcome of a successful Create() call.
 type CreateResult struct {
 	// CampfireID is the hex-encoded campfire public key.
 	CampfireID string
+
+	// BeaconID is the hex-encoded beacon identity (same as CampfireID), provided
+	// as a convenience so callers can use it directly without parsing Beacon.
+	BeaconID string
 
 	// Beacon is the published beacon for this campfire.
 	Beacon *beacon.Beacon
@@ -90,22 +83,32 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 	}
 	campfireID := cf.PublicKeyHex()
 
-	transportType := req.TransportType
-	if transportType == "" {
-		transportType = "filesystem"
-	}
-
+	var transportType string
 	var transportDir string
 
-	switch transportType {
-	case "filesystem":
-		transportDir, err = c.createFilesystemCampfire(cf, req)
-	case "p2p-http":
-		transportDir, err = c.createP2PHTTPCampfire(cf, req)
-	case "github":
-		transportDir = req.TransportDir
+	switch t := req.Transport.(type) {
+	case *FilesystemTransport:
+		transportType = "filesystem"
+		transportDir, err = c.createFilesystemCampfire(cf, t)
+	case FilesystemTransport:
+		transportType = "filesystem"
+		transportDir, err = c.createFilesystemCampfire(cf, &t)
+	case *P2PHTTPTransport:
+		transportType = "p2p-http"
+		transportDir, err = c.createP2PHTTPCampfire(cf, t)
+	case P2PHTTPTransport:
+		transportType = "p2p-http"
+		transportDir, err = c.createP2PHTTPCampfire(cf, &t)
+	case *GitHubTransport:
+		transportType = "github"
+		transportDir = githubTransportDirFromConfig(t)
+	case GitHubTransport:
+		transportType = "github"
+		transportDir = githubTransportDirFromConfig(&t)
+	case nil:
+		return nil, fmt.Errorf("Transport is required for Create (use FilesystemTransport, P2PHTTPTransport, or GitHubTransport)")
 	default:
-		return nil, fmt.Errorf("unsupported transport type: %q", transportType)
+		return nil, fmt.Errorf("unsupported transport type: %T", req.Transport)
 	}
 	if err != nil {
 		return nil, err
@@ -121,6 +124,7 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 		Threshold:     req.Threshold,
 		TransportType: transportType,
 		CreatorPubkey: c.identity.PublicKeyHex(),
+		Description:   req.Description,
 	}
 	if err := c.store.AddMembership(membership); err != nil {
 		return nil, fmt.Errorf("recording membership: %w", err)
@@ -132,7 +136,7 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 		beaconDir = beacon.DefaultBeaconDir()
 	}
 
-	transportConfig := buildBeaconTransport(transportType, transportDir, req)
+	transportConfig := buildBeaconTransportFromTyped(req.Transport, transportType, transportDir)
 	b, err := beacon.New(
 		cf.PublicKey, cf.PrivateKey,
 		req.JoinProtocol,
@@ -159,12 +163,12 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 
 // createFilesystemCampfire initializes the filesystem transport for a new campfire
 // and returns the TransportDir (the campfire-specific subdirectory).
-func (c *Client) createFilesystemCampfire(cf *campfire.Campfire, req CreateRequest) (string, error) {
-	if req.TransportDir == "" {
-		return "", fmt.Errorf("TransportDir is required for filesystem transport")
+func (c *Client) createFilesystemCampfire(cf *campfire.Campfire, t *FilesystemTransport) (string, error) {
+	if t.Dir == "" {
+		return "", fmt.Errorf("FilesystemTransport.Dir is required for filesystem transport")
 	}
 
-	tr := fs.New(req.TransportDir)
+	tr := fs.New(t.Dir)
 
 	// Create directory structure and write campfire state.
 	if err := tr.Init(cf); err != nil {
@@ -187,27 +191,32 @@ func (c *Client) createFilesystemCampfire(cf *campfire.Campfire, req CreateReque
 // For threshold>1, runs a local DKG and stores the creator's share plus pending
 // shares for future members.
 // Returns the TransportDir (the directory where the state CBOR is written).
-func (c *Client) createP2PHTTPCampfire(cf *campfire.Campfire, req CreateRequest) (string, error) {
-	if req.TransportDir == "" {
-		return "", fmt.Errorf("TransportDir is required for p2p-http transport")
-	}
-	if req.HTTPTransport == nil {
-		return "", fmt.Errorf("HTTPTransport is required for p2p-http transport")
+func (c *Client) createP2PHTTPCampfire(cf *campfire.Campfire, t *P2PHTTPTransport) (string, error) {
+	if t.Transport == nil {
+		return "", fmt.Errorf("P2PHTTPTransport.Transport is required for p2p-http transport")
 	}
 
 	campfireID := cf.PublicKeyHex()
 
 	// P2P HTTP campfires support both pull and push delivery.
-	// Without push, joiners providing an endpoint will be rejected by handleJoin.
 	cf.DeliveryModes = []string{campfire.DeliveryModePull, campfire.DeliveryModePush}
 	state := cf.State()
 
-	// Write campfire state CBOR file to TransportDir/{campfireID}.cbor
+	// Write campfire state CBOR to stateDir/{campfireID}.cbor.
+	// Use Dir from the transport config if set, otherwise create a temp dir.
+	stateDir := t.Dir
+	if stateDir == "" {
+		var err error
+		stateDir, err = os.MkdirTemp("", "campfire-p2p-")
+		if err != nil {
+			return "", fmt.Errorf("creating temp transport dir: %w", err)
+		}
+	}
 	stateData, err := cfencoding.Marshal(state)
 	if err != nil {
 		return "", fmt.Errorf("encoding campfire state: %w", err)
 	}
-	statePath := fmt.Sprintf("%s/%s.cbor", req.TransportDir, campfireID)
+	statePath := fmt.Sprintf("%s/%s.cbor", stateDir, campfireID)
 	if err := atomicWriteFile(statePath, stateData); err != nil {
 		return "", fmt.Errorf("writing campfire state: %w", err)
 	}
@@ -219,19 +228,16 @@ func (c *Client) createP2PHTTPCampfire(cf *campfire.Campfire, req CreateRequest)
 	copy(cfPubKey, cf.PublicKey)
 	cfID := campfireID
 
-	req.HTTPTransport.SetKeyProvider(func(id string) ([]byte, []byte, error) {
+	t.Transport.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == cfID {
 			return cfPrivKey, cfPubKey, nil
 		}
 		return nil, nil, fmt.Errorf("campfire %s not hosted on this node", shortID(id))
 	})
 
-	// Register delivery modes provider so the join handler can determine
-	// the campfire's supported delivery modes without reading a campfire.cbor
-	// at the root of TransportDir (the state file lives at {campfireID}.cbor, not
-	// campfire.cbor, in P2P HTTP mode).
+	// Register delivery modes provider.
 	deliveryModes := cf.DeliveryModes
-	req.HTTPTransport.SetDeliveryModesProvider(func(id string) []string {
+	t.Transport.SetDeliveryModesProvider(func(id string) []string {
 		if id == cfID {
 			return deliveryModes
 		}
@@ -239,12 +245,12 @@ func (c *Client) createP2PHTTPCampfire(cf *campfire.Campfire, req CreateRequest)
 	})
 
 	// Register self info on the transport and in the store.
-	if req.MyHTTPEndpoint != "" {
-		req.HTTPTransport.SetSelfInfo(c.identity.PublicKeyHex(), req.MyHTTPEndpoint)
+	if t.MyEndpoint != "" {
+		t.Transport.SetSelfInfo(c.identity.PublicKeyHex(), t.MyEndpoint)
 		if err := c.store.UpsertPeerEndpoint(store.PeerEndpoint{
 			CampfireID:    campfireID,
 			MemberPubkey:  c.identity.PublicKeyHex(),
-			Endpoint:      req.MyHTTPEndpoint,
+			Endpoint:      t.MyEndpoint,
 			ParticipantID: 1,
 		}); err != nil {
 			return "", fmt.Errorf("registering peer endpoint: %w", err)
@@ -253,12 +259,22 @@ func (c *Client) createP2PHTTPCampfire(cf *campfire.Campfire, req CreateRequest)
 
 	// For threshold>1: run DKG and store creator's share + pending shares.
 	if cf.Threshold > 1 {
-		if err := c.initThresholdDKG(cf, campfireID, req.HTTPTransport); err != nil {
+		if err := c.initThresholdDKG(cf, campfireID, t.Transport); err != nil {
 			return "", fmt.Errorf("initializing threshold DKG: %w", err)
 		}
 	}
 
-	return req.TransportDir, nil
+	return stateDir, nil
+}
+
+// githubTransportDirFromConfig encodes a GitHubTransport as a transport dir string.
+// The GitHub transport stores metadata as a JSON string in TransportDir.
+// This is a legacy format maintained for store compatibility.
+func githubTransportDirFromConfig(t *GitHubTransport) string {
+	if t.Owner != "" && t.Repo != "" {
+		return fmt.Sprintf("github:%s/%s", t.Owner, t.Repo)
+	}
+	return ""
 }
 
 // initThresholdDKG runs an in-process DKG for a new threshold campfire.
@@ -320,15 +336,17 @@ func (c *Client) initThresholdDKG(cf *campfire.Campfire, campfireID string, tr *
 	return nil
 }
 
-// buildBeaconTransport constructs the beacon.TransportConfig for the given transport type.
-func buildBeaconTransport(transportType, transportDir string, req CreateRequest) beacon.TransportConfig {
+// buildBeaconTransportFromTyped constructs the beacon.TransportConfig from a typed Transport.
+func buildBeaconTransportFromTyped(t Transport, transportType, transportDir string) beacon.TransportConfig {
 	switch transportType {
 	case "p2p-http":
 		config := map[string]string{
 			"protocol": "p2p-http",
 		}
-		if req.MyHTTPEndpoint != "" {
-			config["endpoint"] = req.MyHTTPEndpoint
+		if p, ok := t.(*P2PHTTPTransport); ok && p.MyEndpoint != "" {
+			config["endpoint"] = p.MyEndpoint
+		} else if p, ok := t.(P2PHTTPTransport); ok && p.MyEndpoint != "" {
+			config["endpoint"] = p.MyEndpoint
 		}
 		return beacon.TransportConfig{
 			Protocol: "p2p-http",

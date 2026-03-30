@@ -32,9 +32,10 @@ type EvictRequest struct {
 	// MemberPubKeyHex is the hex-encoded Ed25519 public key of the member to evict. Required.
 	MemberPubKeyHex string
 
-	// HTTPTransport is required for P2P HTTP campfires with threshold>1 so that
-	// the key provider can be updated after rekey.
-	HTTPTransport *cfhttp.Transport
+	// Transport is required for P2P HTTP campfires with threshold>1 so that
+	// the key provider can be updated after rekey. Pass a P2PHTTPTransport.
+	// For filesystem campfires, Transport may be nil.
+	Transport Transport
 }
 
 // EvictResult holds the outcome of a successful Evict() call.
@@ -122,8 +123,8 @@ func (c *Client) evictFilesystem(req EvictRequest, m *store.Membership) (*EvictR
 // For threshold>1, re-runs DKG and rekeys the campfire.
 func (c *Client) evictP2PHTTP(req EvictRequest, m *store.Membership) (*EvictResult, error) {
 	// Remove from in-memory transport routing table.
-	if req.HTTPTransport != nil {
-		req.HTTPTransport.RemovePeer(req.CampfireID, req.MemberPubKeyHex)
+	if httpTr := p2pHTTPTransportFrom(req.Transport); httpTr != nil {
+		httpTr.RemovePeer(req.CampfireID, req.MemberPubKeyHex)
 	}
 
 	// Remove from store's peer endpoints.
@@ -272,18 +273,18 @@ func (c *Client) rekeyAfterEvict(req EvictRequest, m *store.Membership) (*EvictR
 	}
 
 	// Update the transport's key provider and threshold share provider if provided.
-	if req.HTTPTransport != nil {
+	if httpTr := p2pHTTPTransportFrom(req.Transport); httpTr != nil {
 		newPubKey := []byte(newGroupPub)
 		newPrivKey := oldState.PrivateKey
 		newCfID := newCampfireID
-		req.HTTPTransport.SetKeyProvider(func(id string) ([]byte, []byte, error) {
+		httpTr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 			if id == newCfID {
 				return newPrivKey, newPubKey, nil
 			}
 			return nil, nil, fmt.Errorf("campfire %s not hosted on this node", shortID(id))
 		})
 		s := c.store
-		req.HTTPTransport.SetThresholdShareProvider(func(id string) (uint32, []byte, error) {
+		httpTr.SetThresholdShareProvider(func(id string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(id)
 			if err != nil {
 				return 0, nil, err
@@ -299,4 +300,16 @@ func (c *Client) rekeyAfterEvict(req EvictRequest, m *store.Membership) (*EvictR
 		NewCampfireID: newCampfireID,
 		Rekeyed:       true,
 	}, nil
+}
+
+// p2pHTTPTransportFrom extracts the underlying *cfhttp.Transport from a Transport
+// interface value. Returns nil if t is nil or not a P2PHTTPTransport.
+func p2pHTTPTransportFrom(t Transport) *cfhttp.Transport {
+	switch v := t.(type) {
+	case *P2PHTTPTransport:
+		return v.Transport
+	case P2PHTTPTransport:
+		return v.Transport
+	}
+	return nil
 }

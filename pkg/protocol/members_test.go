@@ -63,8 +63,8 @@ func TestMembers_ReflectsJoins(t *testing.T) {
 
 	// A creates.
 	createResult, err := A.client.Create(protocol.CreateRequest{
+		Transport: &protocol.FilesystemTransport{Dir: transportBaseDir},
 		JoinProtocol: "open",
-		TransportDir: transportBaseDir,
 		BeaconDir:    t.TempDir(),
 	})
 	if err != nil {
@@ -82,9 +82,8 @@ func TestMembers_ReflectsJoins(t *testing.T) {
 
 	// B joins. Prove membership by sending.
 	_, err = B.client.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B Join: %v", err)
@@ -106,9 +105,8 @@ func TestMembers_ReflectsJoins(t *testing.T) {
 
 	// C joins. Prove membership by sending.
 	_, err = C.client.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("C Join: %v", err)
@@ -138,8 +136,8 @@ func TestMembers_ReflectsLeaves(t *testing.T) {
 	C := newMembersTestAgent(t, "C")
 
 	createResult, err := A.client.Create(protocol.CreateRequest{
+		Transport: &protocol.FilesystemTransport{Dir: transportBaseDir},
 		JoinProtocol: "open",
-		TransportDir: transportBaseDir,
 		BeaconDir:    t.TempDir(),
 	})
 	if err != nil {
@@ -150,9 +148,8 @@ func TestMembers_ReflectsLeaves(t *testing.T) {
 
 	for name, agent := range map[string]*membersTestAgent{"B": B, "C": C} {
 		_, err = agent.client.Join(protocol.JoinRequest{
+			Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 			CampfireID:    campfireID,
-			TransportDir:  campfireDir,
-			TransportType: "filesystem",
 		})
 		if err != nil {
 			t.Fatalf("%s Join: %v", name, err)
@@ -202,8 +199,8 @@ func TestMembers_ReflectsEvictions(t *testing.T) {
 	C := newMembersTestAgent(t, "C")
 
 	createResult, err := A.client.Create(protocol.CreateRequest{
+		Transport: &protocol.FilesystemTransport{Dir: transportBaseDir},
 		JoinProtocol: "open",
-		TransportDir: transportBaseDir,
 		BeaconDir:    t.TempDir(),
 	})
 	if err != nil {
@@ -213,9 +210,8 @@ func TestMembers_ReflectsEvictions(t *testing.T) {
 	campfireDir := filepath.Join(transportBaseDir, campfireID)
 
 	_, err = C.client.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("C Join: %v", err)
@@ -267,8 +263,8 @@ func TestMembers_SyncBeforeQuery(t *testing.T) {
 	B := newMembersTestAgent(t, "B")
 
 	createResult, err := A.client.Create(protocol.CreateRequest{
+		Transport: &protocol.FilesystemTransport{Dir: transportBaseDir},
 		JoinProtocol: "open",
-		TransportDir: transportBaseDir,
 		BeaconDir:    t.TempDir(),
 	})
 	if err != nil {
@@ -279,9 +275,8 @@ func TestMembers_SyncBeforeQuery(t *testing.T) {
 
 	// B joins and sends (proving real membership in shared transport).
 	_, err = B.client.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B Join: %v", err)
@@ -316,8 +311,8 @@ func TestMembers_Roles(t *testing.T) {
 	B := newMembersTestAgent(t, "B")
 
 	createResult, err := A.client.Create(protocol.CreateRequest{
+		Transport: &protocol.FilesystemTransport{Dir: transportBaseDir},
 		JoinProtocol: "invite-only",
-		TransportDir: transportBaseDir,
 		BeaconDir:    t.TempDir(),
 	})
 	if err != nil {
@@ -328,10 +323,10 @@ func TestMembers_Roles(t *testing.T) {
 
 	// A pre-admits B with role=writer.
 	err = A.client.Admit(protocol.AdmitRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:      campfireID,
 		MemberPubKeyHex: B.id.PublicKeyHex(),
 		Role:            "writer",
-		TransportDir:    campfireDir,
 	})
 	if err != nil {
 		t.Fatalf("A Admit B as writer: %v", err)
@@ -339,9 +334,8 @@ func TestMembers_Roles(t *testing.T) {
 
 	// B joins (invite-only, pre-admitted).
 	_, err = B.client.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B Join (invite-only): %v", err)

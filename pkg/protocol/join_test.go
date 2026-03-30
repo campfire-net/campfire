@@ -66,9 +66,8 @@ func createFSCampfire(t *testing.T, client *protocol.Client, joinProtocol string
 	base := t.TempDir()
 	beaconDir := t.TempDir()
 	result, err := client.Create(protocol.CreateRequest{
+		Transport: &protocol.FilesystemTransport{Dir: base},
 		JoinProtocol:  joinProtocol,
-		TransportDir:  base,
-		TransportType: "filesystem",
 		BeaconDir:     beaconDir,
 	})
 	if err != nil {
@@ -88,9 +87,8 @@ func testJoinFilesystemSendRead(t *testing.T) {
 
 	clientB := newJoinClient(t)
 	_, err := clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -141,11 +139,8 @@ func testJoinP2PHTTPSendRead(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	createResult, err := clientA.Create(protocol.CreateRequest{
-		TransportDir:   transportDirA,
-		TransportType:  "p2p-http",
+		Transport: &protocol.P2PHTTPTransport{Transport: trA, MyEndpoint: endpointA, Dir: transportDirA},
 		BeaconDir:      beaconDir,
-		HTTPTransport:  trA,
-		MyHTTPEndpoint: endpointA,
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -163,12 +158,8 @@ func testJoinP2PHTTPSendRead(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	_, err = clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
 		CampfireID:     campfireID,
-		TransportDir:   transportDirB,
-		TransportType:  "p2p-http",
-		PeerEndpoint:   endpointA,
-		MyHTTPEndpoint: endpointB,
-		HTTPTransport:  trB,
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -207,9 +198,8 @@ func testJoinInviteOnlyRejection(t *testing.T) {
 
 	clientB := newJoinClient(t)
 	_, err := clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err == nil {
 		t.Fatal("expected error joining invite-only campfire without admission, got nil")
@@ -229,18 +219,17 @@ func testJoinInviteOnlyAccept(t *testing.T) {
 
 	// A pre-admits B.
 	if err := clientA.Admit(protocol.AdmitRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:      campfireID,
 		MemberPubKeyHex: clientB.Identity().PublicKeyHex(),
-		TransportDir:    campfireDir,
 	}); err != nil {
 		t.Fatalf("A.Admit(B): %v", err)
 	}
 
 	// Now B joins — should succeed.
 	_, err := clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B.Join after admission: %v", err)
@@ -288,9 +277,8 @@ func testJoinConventionSync(t *testing.T) {
 	// B joins.
 	clientB := newJoinClient(t)
 	_, err = clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -337,9 +325,8 @@ func testJoinTrustComparison(t *testing.T) {
 	// B joins AFTER A has sent messages.
 	clientB := newJoinClient(t)
 	_, err := clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)

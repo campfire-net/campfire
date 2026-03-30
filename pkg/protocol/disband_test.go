@@ -44,9 +44,8 @@ func testDisbandPreventsAllOperations(t *testing.T) {
 
 	clientB := newJoinClient(t)
 	_, err := clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -149,9 +148,8 @@ func testDisbandNonCreatorRejected(t *testing.T) {
 
 	clientB := newJoinClient(t)
 	_, err := clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportDir:  campfireDir,
-		TransportType: "filesystem",
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -185,9 +183,8 @@ func testDisbandIdempotent(t *testing.T) {
 	base := t.TempDir()
 	beaconDir := t.TempDir()
 	result, err := clientA.Create(protocol.CreateRequest{
+		Transport: &protocol.FilesystemTransport{Dir: base},
 		JoinProtocol:  "open",
-		TransportDir:  base,
-		TransportType: "filesystem",
 		BeaconDir:     beaconDir,
 	})
 	if err != nil {

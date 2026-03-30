@@ -60,8 +60,7 @@ func testCreateFilesystemRoundTrip(t *testing.T) {
 	t.Cleanup(func() { clientA.Close() })
 
 	result, err := clientA.Create(protocol.CreateRequest{
-		TransportDir:  transportBaseDir,
-		TransportType: "filesystem",
+		Transport: &protocol.FilesystemTransport{Dir: transportBaseDir},
 		BeaconDir:     beaconDir,
 	})
 	if err != nil {
@@ -85,9 +84,8 @@ func testCreateFilesystemRoundTrip(t *testing.T) {
 	// CampfireDir() returns req.TransportDir directly, so campfire.cbor lives at
 	// req.TransportDir/campfire.cbor.
 	if _, err := clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:    campfireID,
-		TransportType: "filesystem",
-		TransportDir:  campfireDir,
 	}); err != nil {
 		t.Fatalf("Join: %v", err)
 	}
@@ -172,11 +170,8 @@ func testCreateP2PHTTPRoundTrip(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	createResult, err := clientA.Create(protocol.CreateRequest{
-		TransportDir:   transportDirA,
-		TransportType:  "p2p-http",
+		Transport: &protocol.P2PHTTPTransport{Transport: trA, MyEndpoint: endpointA, Dir: transportDirA},
 		BeaconDir:      beaconDir,
-		HTTPTransport:  trA,
-		MyHTTPEndpoint: endpointA,
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -200,12 +195,8 @@ func testCreateP2PHTTPRoundTrip(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	if _, err := clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
 		CampfireID:     campfireID,
-		TransportType:  "p2p-http",
-		PeerEndpoint:   endpointA,
-		TransportDir:   transportDirB,
-		HTTPTransport:  trB,
-		MyHTTPEndpoint: endpointB,
 	}); err != nil {
 		t.Fatalf("Join: %v", err)
 	}
@@ -262,8 +253,7 @@ func testCreateBeaconPublished(t *testing.T) {
 	t.Cleanup(func() { client.Close() })
 
 	result, err := client.Create(protocol.CreateRequest{
-		TransportDir:  transportDir,
-		TransportType: "filesystem",
+		Transport: &protocol.FilesystemTransport{Dir: transportDir},
 		BeaconDir:     beaconDir,
 	})
 	if err != nil {
@@ -323,8 +313,7 @@ func testCreateSelfAdmitted(t *testing.T) {
 	t.Cleanup(func() { client.Close() })
 
 	result, err := client.Create(protocol.CreateRequest{
-		TransportDir:  transportDir,
-		TransportType: "filesystem",
+		Transport: &protocol.FilesystemTransport{Dir: transportDir},
 		BeaconDir:     beaconDir,
 	})
 	if err != nil {
@@ -398,12 +387,9 @@ func testCreateDKGCompleted(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	result, err := client.Create(protocol.CreateRequest{
-		TransportDir:   transportDir,
-		TransportType:  "p2p-http",
+		Transport: &protocol.P2PHTTPTransport{Transport: tr, MyEndpoint: endpointA, Dir: transportDir},
 		BeaconDir:      beaconDir,
 		Threshold:      2,
-		HTTPTransport:  tr,
-		MyHTTPEndpoint: endpointA,
 	})
 	if err != nil {
 		t.Fatalf("Create with threshold=2: %v", err)
