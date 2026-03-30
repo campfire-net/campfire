@@ -107,15 +107,37 @@ Most agents should use convention operations instead (cf <campfire> <operation>)
 		}
 		campfireName := args[0]
 		operationName := ""
+		// Recover convention flags from os.Args because cobra's UnknownFlags
+		// whitelist silently consumes unknown --flags instead of passing them
+		// through in args. Find the operation name in the raw args and take
+		// everything after it.
 		var flagArgs []string
 		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
 			operationName = args[1]
-			flagArgs = args[2:]
-		} else {
+			flagArgs = conventionFlagsFromRawArgs(os.Args, operationName)
+		} else if len(args) > 1 {
 			flagArgs = args[1:]
 		}
 		return dispatchConventionOp(cmd.Context(), campfireName, operationName, flagArgs)
 	}
+}
+
+// conventionFlagsFromRawArgs extracts flags for a convention operation from the
+// raw os.Args. Cobra's UnknownFlags whitelist silently eats unknown --flags,
+// so we recover them from the original argv by finding the operation name and
+// taking everything after it.
+func conventionFlagsFromRawArgs(rawArgs []string, operationName string) []string {
+	// Find the operation name in rawArgs. Skip rawArgs[0] (binary name).
+	for i := 1; i < len(rawArgs); i++ {
+		if rawArgs[i] == operationName {
+			return rawArgs[i+1:]
+		}
+		// Handle -- separator: everything after -- is passthrough.
+		if rawArgs[i] == "--" {
+			break
+		}
+	}
+	return nil
 }
 
 // CFHome returns the resolved campfire home directory.
