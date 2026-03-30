@@ -10,18 +10,6 @@ package protocol_test
 //   - A's membership has TransportType="p2p-http" and Threshold=2.
 //   - B's transport has a ThresholdShareProvider configured for the sign endpoint.
 //
-// Design note on HasMessage:
-//
-//	The sign handler at peer B cross-references HopSignInput.MessageID against its local
-//	store (commit 9f2530e) to prevent provenance fraud. sendP2PHTTP creates the message
-//	and immediately threshold-signs it — before delivering to peers. B cannot have the
-//	message yet. To make the test work, B's transport uses an alwaysHasMessageStore
-//	wrapper that returns true for HasMessage. This is the same escape hatch documented
-//	in validateMessageToSign: "Pass ms=nil to skip the store check (only for tests that
-//	set up the transport before inserting the message)." The wrapper is the equivalent
-//	non-nil form of that escape. This is a test-only affordance — it does NOT indicate
-//	that the production flow is correct for new messages; see campfire-agent-ijv notes.
-//
 // Assertions:
 //   - Client.Send() returns a non-nil message with no error.
 //   - The message has exactly one provenance hop.
@@ -51,16 +39,6 @@ import (
 func portBaseFROST() int {
 	return 21000 + (os.Getpid() % 500)
 }
-
-// alwaysHasMessageStore wraps a real store.Store and overrides HasMessage to
-// always return true. Used to allow the sign handler to accept HopSignInput
-// before the message has been delivered to this node (test-only escape hatch;
-// see comment in validateMessageToSign about ms=nil).
-type alwaysHasMessageStore struct {
-	store.Store
-}
-
-func (a *alwaysHasMessageStore) HasMessage(_ string) (bool, error) { return true, nil }
 
 // TestSendFROST calls Client.Send() on a P2P HTTP campfire with threshold=2,
 // requiring FROST signing. Verifies the resulting message has a valid threshold
@@ -141,15 +119,11 @@ func TestSendFROST(t *testing.T) {
 	t.Cleanup(func() { sA.Close() })
 
 	storeBDir := t.TempDir()
-	rawSB, err := store.Open(filepath.Join(storeBDir, "store.db"))
+	sB, err := store.Open(filepath.Join(storeBDir, "store.db"))
 	if err != nil {
 		t.Fatalf("opening store B: %v", err)
 	}
-	t.Cleanup(func() { rawSB.Close() })
-	// sB is the store exposed to B's transport. alwaysHasMessageStore overrides
-	// HasMessage so the sign handler accepts HopSignInput for the new message
-	// before it has been delivered to B. See the design note above.
-	sB := &alwaysHasMessageStore{rawSB}
+	t.Cleanup(func() { sB.Close() })
 
 	// --- Network addresses ---
 	base := portBaseFROST()

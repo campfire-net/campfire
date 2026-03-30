@@ -586,14 +586,19 @@ func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
 // workspace-qrcl — HopSignInput MessageID store cross-reference
 // ---------------------------------------------------------------------------
 
-// TestHandleSignFabricatedHopMessageIDRejected verifies that a round-1 sign
-// request with a HopSignInput whose MessageID does NOT exist in the local
-// message store is rejected with HTTP 400.
+// TestHandleSignFabricatedHopMessageIDAccepted verifies that a round-1 sign
+// request with a structurally valid HopSignInput is accepted even if the
+// MessageID does not exist in the local message store.
 //
-// This closes the provenance-fraud attack surface: a campfire member cannot
-// request a co-signature for a HopSignInput referencing a fabricated MessageID
-// that was never received by this node.
-func TestHandleSignFabricatedHopMessageIDRejected(t *testing.T) {
+// This reflects the nil-store fix: when Client A initiates threshold signing
+// for a new message, peer B has not received the message yet. The handler
+// passes nil to validateMessageToSign, skipping the HasMessage cross-check.
+// Structural validation (non-empty MessageID + non-empty CampfireID) still runs.
+//
+// The prior behavior (store check in handleSign) created a chicken-and-egg
+// deadlock: new messages must be threshold-signed before delivery to peers,
+// so co-signers can never have the message in their store at signing time.
+func TestHandleSignFabricatedHopMessageIDAccepted(t *testing.T) {
 	campfireID := "sign-fabricated-hop"
 
 	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
@@ -686,11 +691,10 @@ func TestHandleSignFabricatedHopMessageIDRejected(t *testing.T) {
 
 	respBody, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400 Bad Request for fabricated HopSignInput.MessageID, got %d: %s", resp.StatusCode, string(respBody))
-	}
-	if !bytes.Contains(respBody, []byte("message_to_sign")) {
-		t.Errorf("expected error to mention message_to_sign, got: %s", string(respBody))
+	// The request must succeed (200 OK): store check is skipped (nil store),
+	// structural validation passes (non-empty MessageID + CampfireID).
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK for structurally valid HopSignInput, got %d: %s", resp.StatusCode, string(respBody))
 	}
 }
 
