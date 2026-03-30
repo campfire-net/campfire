@@ -54,8 +54,8 @@ func (t *e2eNoopTransport) ReadMessages(_ context.Context, _ string, _ []string)
 	return nil, nil
 }
 
-func (t *e2eNoopTransport) SendFutureAndAwait(_ context.Context, _ string, _ []byte, _ []string, _ time.Duration) ([]byte, error) {
-	return nil, nil
+func (t *e2eNoopTransport) SendFutureAndAwait(_ context.Context, _ string, _ []byte, _ []string, _ []string, _ time.Duration) (string, []byte, error) {
+	return "", nil, nil
 }
 
 // e2eProvenanceChecker bridges provenance.Store to convention.ProvenanceChecker.
