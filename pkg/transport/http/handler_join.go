@@ -1,7 +1,6 @@
 package http
 
 import (
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/campfire-net/campfire/pkg/admission"
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/store"
@@ -332,44 +330,17 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 		})
 	}
 
-	// Admit the joiner: record membership and peer endpoint.
-	// When an admitter is configured, delegate to admission.AdmitMember so the joiner
-	// appears in campfire_members on this node with the correct role. Otherwise fall
-	// back to the legacy inline behavior (UpsertPeerEndpoint + AddPeer only).
-	if h.transport != nil {
-		h.transport.mu.RLock()
-		admitter := h.transport.admitter
-		h.transport.mu.RUnlock()
-		if admitter != nil {
-			admReq := admission.AdmissionRequest{
-				CampfireID:      campfireID,
-				MemberPubKeyHex: senderHex,
-				Endpoint:        req.JoinerEndpoint,
-				Encrypted:       campfireEncrypted,
-				ParticipantID:   joinerParticipantID,
-				JoinProtocol:    membership.JoinProtocol,
-				TransportDir:    membership.TransportDir,
-				TransportType:   membership.TransportType,
-				Description:     membership.Description,
-				CreatorPubkey:   membership.CreatorPubkey,
-			}
-			if _, err := admission.AdmitMember(context.Background(), *admitter, admReq); err != nil {
-				log.Printf("handleJoin: AdmitMember failed for campfire %s joiner %s: %v", campfireID, senderHex[:min(8, len(senderHex))], err)
-				http.Error(w, "admission failed", http.StatusInternalServerError)
-				return
-			}
-		} else if req.JoinerEndpoint != "" {
-			// Legacy fallback: no admitter configured — inline persist.
-			h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
-				CampfireID:    campfireID,
-				MemberPubkey:  senderHex,
-				Endpoint:      req.JoinerEndpoint,
-				ParticipantID: joinerParticipantID,
-			})
-			h.transport.AddPeer(campfireID, senderHex, req.JoinerEndpoint)
-		}
+	// Register the joiner's peer endpoint for push delivery.
+	if h.transport != nil && req.JoinerEndpoint != "" {
+		h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+			CampfireID:    campfireID,
+			MemberPubkey:  senderHex,
+			Endpoint:      req.JoinerEndpoint,
+			ParticipantID: joinerParticipantID,
+		})
+		h.transport.AddPeer(campfireID, senderHex, req.JoinerEndpoint)
 	} else if req.JoinerEndpoint != "" {
-		// No transport (handler used standalone): legacy inline persist.
+		// No transport (handler used standalone): inline persist.
 		h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 			CampfireID:    campfireID,
 			MemberPubkey:  senderHex,

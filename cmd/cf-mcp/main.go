@@ -1246,7 +1246,6 @@ func (s *server) handleCreate(id interface{}, params map[string]interface{}) jso
 	if _, admitErr := admission.AdmitMember(context.Background(), fsDeps, admission.AdmissionRequest{
 		CampfireID:      cf.PublicKeyHex(),
 		MemberPubKeyHex: agentID.PublicKeyHex(),
-		Source:          "create",
 		Role:            serviceRole,
 		Encrypted:       encrypted,
 		JoinProtocol:    cf.JoinProtocol,
@@ -1376,7 +1375,6 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 	if _, admitErr := admission.AdmitMember(context.Background(), httpDeps, admission.AdmissionRequest{
 		CampfireID:      cf.PublicKeyHex(),
 		MemberPubKeyHex: agentID.PublicKeyHex(),
-		Source:          "create",
 		Role:            serviceRole,
 		Encrypted:       cf.Encrypted,
 		Endpoint:        s.externalAddr,
@@ -1558,7 +1556,6 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		}, admission.AdmissionRequest{
 			CampfireID:      campfireID,
 			MemberPubKeyHex: agentID.PublicKeyHex(),
-			Source:          "local-join",
 			Role:            serviceRole,
 			Encrypted:       state.Encrypted,
 			JoinProtocol:    state.JoinProtocol,
@@ -1630,7 +1627,6 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		}, admission.AdmissionRequest{
 			CampfireID:      campfireID,
 			MemberPubKeyHex: agentID.PublicKeyHex(),
-			Source:          "local-join",
 			Role:            serviceRole,
 			Encrypted:       state.Encrypted,
 			JoinProtocol:    state.JoinProtocol,
@@ -1858,7 +1854,6 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 	}, admission.AdmissionRequest{
 		CampfireID:      campfireID,
 		MemberPubKeyHex: agentID.PublicKeyHex(),
-		Source:          "remote-join",
 		Encrypted:       cfState.Encrypted,
 		Endpoint:        myEndpoint,
 		JoinProtocol:    result.JoinProtocol,

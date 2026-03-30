@@ -189,12 +189,11 @@ func TestAdmissionE2E_ThreeInstanceAllPaths(t *testing.T) {
 	// membership, and each joiner for theirs.
 	//
 	// Each node records its own membership via AdmitMember in the admission
-	// refactor (campfire-agent-jjk). The transport-layer join handler on East
-	// does not yet call SetAdmitter, so East's campfire_members does not yet
-	// accumulate all 3 entries from joiners (that wiring is a separate bead).
-	// What the admission refactor guarantees: each node has at least itself
-	// in campfire_members, and West/Central were successfully admitted (the
-	// call would error if admission failed).
+	// refactor (campfire-agent-jjk). The transport-layer join handler records
+	// joiner endpoints inline (UpsertPeerEndpoint + AddPeer). What the
+	// admission refactor guarantees: each node has at least itself in
+	// campfire_members, and West/Central were successfully admitted (the call
+	// would error if admission failed).
 	// -----------------------------------------------------------------------
 
 	// East must have at least itself as a member.
