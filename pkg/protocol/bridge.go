@@ -127,5 +127,6 @@ func Bridge(ctx context.Context, source, dest *Client, campfireID string, opts B
 	// Wait for the first error (or context cancellation propagated through a pump).
 	err := <-errCh
 	cancel() // stop the other pump
+	<-errCh  // join second goroutine to prevent leak
 	return err
 }

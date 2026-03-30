@@ -42,6 +42,13 @@ func nameTag(name string) string {
 func Register(ctx context.Context, client *protocol.Client, campfireID, name, targetCampfireID string, opts *RegisterOptions) (*message.Message, error) {
 	_ = ctx // reserved for future use (e.g. deadline propagation)
 
+	if name == "" {
+		return nil, fmt.Errorf("name must not be empty")
+	}
+	if err := ValidateSegment(name); err != nil {
+		return nil, fmt.Errorf("invalid name: %w", err)
+	}
+
 	ttl := DefaultTTL
 	if opts != nil && opts.TTL > 0 {
 		ttl = opts.TTL

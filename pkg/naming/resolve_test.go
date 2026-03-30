@@ -33,7 +33,7 @@ func (m *mockTransport) Resolve(ctx context.Context, campfireID, name string) (*
 	if resp, ok := m.resolveMap[key]; ok {
 		return resp, nil
 	}
-	return nil, fmt.Errorf("name %q not found in campfire %s", name, campfireID[:12])
+	return nil, fmt.Errorf("name %q not found in campfire %s", name, shortID(campfireID))
 }
 
 func (m *mockTransport) ListChildren(ctx context.Context, campfireID, prefix string) (*ListResponse, error) {
@@ -50,14 +50,14 @@ func (m *mockTransport) ListChildren(ctx context.Context, campfireID, prefix str
 		}
 		return &ListResponse{Names: filtered}, nil
 	}
-	return nil, fmt.Errorf("campfire %s not found", campfireID[:12])
+	return nil, fmt.Errorf("campfire %s not found", shortID(campfireID))
 }
 
 func (m *mockTransport) ListAPI(ctx context.Context, campfireID string) ([]APIDeclaration, error) {
 	if decls, ok := m.apiMap[campfireID]; ok {
 		return decls, nil
 	}
-	return nil, fmt.Errorf("campfire %s not found", campfireID[:12])
+	return nil, fmt.Errorf("campfire %s not found", shortID(campfireID))
 }
 
 func (m *mockTransport) Invoke(ctx context.Context, campfireID string, req *InvokeRequest) (*InvokeResponse, error) {
@@ -65,7 +65,7 @@ func (m *mockTransport) Invoke(ctx context.Context, campfireID string, req *Invo
 	if resp, ok := m.invokeMap[key]; ok {
 		return resp, nil
 	}
-	return nil, fmt.Errorf("endpoint %q not found in campfire %s", req.Endpoint, campfireID[:12])
+	return nil, fmt.Errorf("endpoint %q not found in campfire %s", req.Endpoint, shortID(campfireID))
 }
 
 const (

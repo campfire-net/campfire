@@ -129,7 +129,7 @@ func autoJoinViaClient(client *protocol.Client, campfireID string, beaconDirOver
 		return nil
 	}
 
-	return fmt.Errorf("no beacon found for campfire %s", campfireID[:12])
+	return fmt.Errorf("no beacon found for campfire %s", shortID(campfireID))
 }
 
 // transportFromBeacon converts a beacon's transport config to a protocol.Transport.
@@ -208,9 +208,11 @@ func (t *clientTransport) sendFuture(ctx context.Context, campfireID string, pay
 // awaitFulfillment polls via client.Await() for a message fulfilling targetMsgID.
 // Honours ctx cancellation by using a deadline derived from ctx.
 func (t *clientTransport) awaitFulfillment(ctx context.Context, campfireID, targetMsgID string) ([]byte, error) {
-	timeout := time.Duration(0)
+	var timeout time.Duration
 	if deadline, ok := ctx.Deadline(); ok {
 		timeout = time.Until(deadline)
+	} else {
+		timeout = DefaultResolutionTimeout
 	}
 
 	rec, err := t.client.Await(protocol.AwaitRequest{

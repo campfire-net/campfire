@@ -209,7 +209,7 @@ func (r *Resolver) ResolveName(ctx context.Context, segments []string) (string, 
 
 		// Circular resolution detection
 		if visited[resolved] {
-			return "", fmt.Errorf("circular resolution detected at segment %q (campfire %s already visited)", seg, resolved[:12])
+			return "", fmt.Errorf("circular resolution detected at segment %q (campfire %s already visited)", seg, shortID(resolved))
 		}
 		visited[resolved] = true
 
@@ -242,7 +242,7 @@ func (r *Resolver) resolveSegment(ctx context.Context, parentID, name string) (s
 	// Auto-join if needed before reading.
 	if r.AutoJoinFunc != nil {
 		if err := r.AutoJoinFunc(parentID); err != nil {
-			return "", fmt.Errorf("auto-join campfire %s: %w", parentID[:12], err)
+			return "", fmt.Errorf("auto-join campfire %s: %w", shortID(parentID), err)
 		}
 	}
 
@@ -325,7 +325,7 @@ type TOFUViolation struct {
 }
 
 func (e *TOFUViolation) Error() string {
-	return fmt.Sprintf("TOFU violation for %q: pinned %s, resolved %s", e.Name, e.PinnedID[:12], e.ResolvedID[:12])
+	return fmt.Sprintf("TOFU violation for %q: pinned %s, resolved %s", e.Name, shortID(e.PinnedID), shortID(e.ResolvedID))
 }
 
 // SetDurabilityHint records the max-ttl durability value for a campfire ID.
@@ -340,6 +340,14 @@ func (r *Resolver) SetDurabilityHint(campfireID, maxTTL string) {
 		r.durabilityHints[campfireID] = maxTTL
 	}
 	r.mu.Unlock()
+}
+
+// shortID safely truncates an ID to at most 12 characters for display.
+func shortID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:12]
 }
 
 // InvalidateCache removes a specific name mapping from the cache.
