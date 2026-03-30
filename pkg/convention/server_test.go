@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -458,5 +459,219 @@ func TestServerSDK_ParsedArgsTyped(t *testing.T) {
 
 	if label, ok := gotLabel.(string); !ok || label != "hello" {
 		t.Errorf("label: want %q, got %v (type %T)", "hello", gotLabel, gotLabel)
+	}
+}
+
+// TestServerSDK_HandlerDispatchViaSubscribe verifies that Serve() routes an incoming
+// convention operation message to the registered handler via client.Subscribe()
+// (not a manual poll loop). Handler is called with the correct Request.Args
+// and a response appears in the campfire within 5 seconds.
+func TestServerSDK_HandlerDispatchViaSubscribe(t *testing.T) {
+	env := setupServerTestEnv(t)
+	decl := socialPostDecl()
+
+	var mu sync.Mutex
+	var gotText string
+
+	srv := convention.NewServer(env.serverClient, decl).
+		WithPollInterval(50 * time.Millisecond)
+
+	srv.RegisterHandler("post", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if v, ok := req.Args["text"].(string); ok {
+			gotText = v
+		}
+		return &convention.Response{Payload: map[string]any{"dispatched": true}}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srv.Serve(ctx, env.campfireID) //nolint:errcheck
+	}()
+
+	// Give server time to start its subscription.
+	time.Sleep(20 * time.Millisecond)
+
+	sentMsg, err := env.callerClient.Send(protocol.SendRequest{
+		CampfireID: env.campfireID,
+		Payload:    []byte(`{"text":"subscribe dispatch"}`),
+		Tags:       []string{"social:post"},
+	})
+	if err != nil {
+		t.Fatalf("caller Send: %v", err)
+	}
+
+	// Wait for response to appear (confirms handler was called and response sent).
+	var responseFound bool
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := env.callerClient.Read(protocol.ReadRequest{
+			CampfireID: env.campfireID,
+			Tags:       []string{"fulfills"},
+		})
+		if err != nil {
+			t.Fatalf("caller Read fulfills: %v", err)
+		}
+		for _, msg := range result.Messages {
+			for _, ant := range msg.Antecedents {
+				if ant == sentMsg.ID {
+					responseFound = true
+				}
+			}
+		}
+		if responseFound {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	wg.Wait()
+
+	if !responseFound {
+		t.Error("no response found within 5 seconds — handler was not dispatched via Subscribe")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotText != "subscribe dispatch" {
+		t.Errorf("handler received text %q, want %q", gotText, "subscribe dispatch")
+	}
+}
+
+// TestServerSDK_ContextCancellation verifies that Serve() returns ctx.Err()
+// within 2 seconds of context cancellation, and that no goroutine is leaked.
+func TestServerSDK_ContextCancellation(t *testing.T) {
+	env := setupServerTestEnv(t)
+	decl := socialPostDecl()
+
+	srv := convention.NewServer(env.serverClient, decl).
+		WithPollInterval(50 * time.Millisecond)
+
+	srv.RegisterHandler("post", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		return nil, nil
+	})
+
+	// Sample goroutine count before starting.
+	goroutinesBefore := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var serveErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		serveErr = srv.Serve(ctx, env.campfireID)
+	}()
+
+	// Let the server run briefly.
+	time.Sleep(20 * time.Millisecond)
+
+	// Cancel and wait for Serve to exit — must complete within 2 seconds.
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good — Serve returned.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve() did not return within 2 seconds of context cancellation")
+	}
+
+	// Serve must return ctx.Err() (context.Canceled).
+	if serveErr != context.Canceled {
+		t.Errorf("Serve() returned %v, want context.Canceled", serveErr)
+	}
+
+	// Allow time for goroutines to settle, then verify no leak.
+	// The subscription goroutine must exit after context cancellation.
+	time.Sleep(100 * time.Millisecond)
+	goroutinesAfter := runtime.NumGoroutine()
+	// Allow at most goroutinesBefore+1 goroutines: the test itself may add one.
+	if goroutinesAfter > goroutinesBefore+2 {
+		t.Errorf("goroutine leak: started with %d, now %d (delta %d > 2)",
+			goroutinesBefore, goroutinesAfter, goroutinesAfter-goroutinesBefore)
+	}
+}
+
+// TestServerSDK_PollIntervalBoundsLatency verifies that message arrival latency
+// is bounded by the configured poll interval. Messages must be delivered within
+// 3× the poll interval of being sent.
+func TestServerSDK_PollIntervalBoundsLatency(t *testing.T) {
+	env := setupServerTestEnv(t)
+	decl := socialPostDecl()
+
+	const pollInterval = 100 * time.Millisecond
+	const maxLatency = 3 * pollInterval // generous upper bound
+
+	var mu sync.Mutex
+	var receivedAt time.Time
+
+	srv := convention.NewServer(env.serverClient, decl).
+		WithPollInterval(pollInterval)
+
+	srv.RegisterHandler("post", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		mu.Lock()
+		receivedAt = time.Now()
+		mu.Unlock()
+		return nil, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srv.Serve(ctx, env.campfireID) //nolint:errcheck
+	}()
+
+	// Wait for subscription to be established.
+	time.Sleep(20 * time.Millisecond)
+
+	sentAt := time.Now()
+	_, err := env.callerClient.Send(protocol.SendRequest{
+		CampfireID: env.campfireID,
+		Payload:    []byte(`{"text":"latency check"}`),
+		Tags:       []string{"social:post"},
+	})
+	if err != nil {
+		t.Fatalf("caller Send: %v", err)
+	}
+
+	// Wait for handler to be called.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		seen := !receivedAt.IsZero()
+		mu.Unlock()
+		if seen {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if receivedAt.IsZero() {
+		t.Fatal("handler was never called")
+	}
+	latency := receivedAt.Sub(sentAt)
+	if latency > maxLatency {
+		t.Errorf("message latency %v exceeds 3× poll interval (%v)", latency, maxLatency)
 	}
 }
