@@ -15,7 +15,7 @@ func (c *Client) Get(id string) (*Message, error) {
 	if r == nil {
 		return nil, nil
 	}
-	m := messageFromRecord(*r)
+	m := MessageFromRecord(*r)
 	return &m, nil
 }
 
@@ -33,6 +33,6 @@ func (c *Client) GetByPrefix(prefix string) (*Message, error) {
 	if r == nil {
 		return nil, nil
 	}
-	m := messageFromRecord(*r)
+	m := MessageFromRecord(*r)
 	return &m, nil
 }
