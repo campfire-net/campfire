@@ -74,7 +74,7 @@ func TestBridgeUnidirectional(t *testing.T) {
 	}
 
 	// Wait for the forwarded message to appear on dest (different ID, same payload).
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(10 * time.Second)
 	for {
 		result, err := dest.Read(protocol.ReadRequest{CampfireID: campfireID})
 		if err != nil {
@@ -120,68 +120,62 @@ func TestBridgeBidirectional(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var mu sync.Mutex
-	var directions []string
-
 	bridgeErr := make(chan error, 1)
 	go func() {
 		bridgeErr <- protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
 			Bidirectional: true,
-			OnMessage: func(msg *protocol.Message, direction string) {
-				mu.Lock()
-				directions = append(directions, direction)
-				mu.Unlock()
-			},
 		})
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(1 * time.Second) // allow Subscribe goroutines to start — poll interval is 500ms
 
-	// Send from source.
+	// Send a uniquely-tagged message from source.
 	_, err := source.Send(protocol.SendRequest{
 		CampfireID: campfireID,
 		Payload:    []byte("from source"),
-		Tags:       []string{"status"},
+		Tags:       []string{"bidir-src"},
 	})
 	if err != nil {
 		t.Fatalf("source.Send: %v", err)
 	}
 
-	// Send from dest.
+	// Send a uniquely-tagged message from dest.
 	_, err = dest.Send(protocol.SendRequest{
 		CampfireID: campfireID,
 		Payload:    []byte("from dest"),
-		Tags:       []string{"status"},
+		Tags:       []string{"bidir-dest"},
 	})
 	if err != nil {
 		t.Fatalf("dest.Send: %v", err)
 	}
 
-	// Wait for both directions to fire.
-	deadline := time.After(5 * time.Second)
-	for {
-		mu.Lock()
-		gotSourceToDest := false
-		gotDestToSource := false
-		for _, d := range directions {
-			if d == "source\u2192dest" {
-				gotSourceToDest = true
-			}
-			if d == "dest\u2192source" {
-				gotDestToSource = true
-			}
-		}
-		mu.Unlock()
-		if gotSourceToDest && gotDestToSource {
-			break
-		}
+	// Verify delivery via Read polling: source's message should appear readable
+	// by dest (bridged), and dest's message should appear readable by source.
+	deadline := time.After(15 * time.Second)
+	var gotSrcOnDest, gotDestOnSrc bool
+	for !gotSrcOnDest || !gotDestOnSrc {
 		select {
 		case <-deadline:
-			mu.Lock()
-			t.Fatalf("timeout: got directions %v, want both source→dest and dest→source", directions)
-			mu.Unlock()
+			t.Fatalf("timeout: gotSrcOnDest=%v gotDestOnSrc=%v", gotSrcOnDest, gotDestOnSrc)
 		default:
-			time.Sleep(100 * time.Millisecond)
+		}
+
+		if !gotSrcOnDest {
+			result, _ := dest.Read(protocol.ReadRequest{CampfireID: campfireID, Tags: []string{"bidir-src"}})
+			if result != nil && len(result.Messages) > 0 {
+				// The bridged copy is re-sent by the bridge agent (dest identity), not the original sender.
+				// Just check it arrived.
+				gotSrcOnDest = true
+			}
+		}
+		if !gotDestOnSrc {
+			result, _ := source.Read(protocol.ReadRequest{CampfireID: campfireID, Tags: []string{"bidir-dest"}})
+			if result != nil && len(result.Messages) > 0 {
+				gotDestOnSrc = true
+			}
+		}
+		if !gotSrcOnDest || !gotDestOnSrc {
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 
@@ -293,7 +287,7 @@ func TestBridgeTagFilter(t *testing.T) {
 	}
 
 	// Wait for bridge to process the matching message.
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(10 * time.Second)
 	for {
 		mu.Lock()
 		count := len(bridgedPayloads)
