@@ -897,12 +897,29 @@ func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonR
 		fmt.Fprintf(lf, "%d\n", os.Getpid())
 		s.lockFile = lf
 		s.cfHome = namedHome
+		// Persist the named home into the Session so subsequent per-request
+		// servers (built via Session.server()) inherit the correct directory.
+		// beaconDir lives inside cfHome so update it too.
+		if s.sess != nil {
+			s.sess.mu.Lock()
+			s.sess.cfHome = namedHome
+			s.sess.beaconDir = filepath.Join(namedHome, "beacons")
+			s.sess.mu.Unlock()
+			s.beaconDir = s.sess.beaconDir
+		}
 	} else if !s.cfHomeExplicit {
 		tmpDir, err := os.MkdirTemp("", "campfire-session-*")
 		if err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("creating session temp dir: %v", err))
 		}
 		s.cfHome = tmpDir
+		// Persist the temp home into the Session so subsequent per-request
+		// servers inherit the correct directory.
+		if s.sess != nil {
+			s.sess.mu.Lock()
+			s.sess.cfHome = tmpDir
+			s.sess.mu.Unlock()
+		}
 	}
 
 	force := getBool(params, "force")
@@ -2245,8 +2262,9 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 			afterTS, _ = st.GetReadCursor(cfID)
 		}
 		result, readErr := client.Read(protocol.ReadRequest{
-			CampfireID:     cfID,
-			AfterTimestamp: afterTS,
+			CampfireID:       cfID,
+			AfterTimestamp:   afterTS,
+			IncludeCompacted: readAll,
 		})
 		if readErr != nil {
 			return errResponse(id, -32000, fmt.Sprintf("listing messages: %v", readErr))
