@@ -75,7 +75,7 @@ client := protocol.New(s, id)
     fmt.Println("fulfilled by:", fulfillment.ID)
 
     // 7. Execute a convention operation
-    exec := convention.NewExecutor(client, id.PublicKeyHex())
+    exec := convention.NewExecutor(client, client.PublicKeyHex())
 
     decl := &convention.Declaration{
         Convention:  "my-protocol",
@@ -111,6 +111,54 @@ client := protocol.New(store, identity)
 `identity` may be nil for read-only clients. All operations use the same `Client` regardless of transport — the campfire's membership record determines whether to sync from filesystem, push to GitHub, or deliver via P2P HTTP.
 
 `Client` is not safe for concurrent use. Use one `Client` per goroutine.
+
+To get the hex-encoded public key of the client's identity (e.g., to pass to `convention.NewExecutor`):
+
+```go
+pubKeyHex := client.PublicKeyHex() // returns "" for read-only clients
+```
+
+## Message type
+
+`protocol.Message` is the SDK-facing message type returned by `Read`, `Get`, `GetByPrefix`, `Await`, and `Subscribe`:
+
+```go
+type Message struct {
+    ID          string
+    CampfireID  string
+    Sender      string   // hex-encoded Ed25519 public key
+    Payload     []byte
+    Tags        []string
+    Antecedents []string
+    Timestamp   int64
+    Instance    string   // tainted (sender-asserted) role label
+    Signature   []byte
+    Provenance  []message.ProvenanceHop
+}
+```
+
+`Sender`, `Tags`, `Antecedents`, `Instance`, and `Payload` are tainted — sender-asserted, not cryptographically verified beyond authorship. Never make access-control decisions based solely on these fields. `Signature` and `Provenance` are verified.
+
+```go
+// Test whether the message was bridged from an external system (Teams, Slack, etc.)
+if msg.IsBridged() {
+    // at least one provenance hop is a blind-relay
+}
+```
+
+## Get and GetByPrefix
+
+Retrieve a single message by its ID (or an unambiguous prefix) from the local store:
+
+```go
+// Exact ID lookup — returns nil, nil if not found
+msg, err := client.Get(messageID)
+
+// Prefix lookup — returns error if the prefix is ambiguous
+msg, err := client.GetByPrefix("a1b2c3d4")
+```
+
+Both return `*protocol.Message` or `nil` if not found. Use these for targeted lookups after you already know the message ID (e.g., fetching a specific future by ID after receiving its ID from a peer).
 
 ## Send
 
@@ -231,7 +279,7 @@ The `"future"` tag is a promise — a signal that the sender expects a fulfillme
 `convention.Executor` wraps a `Client` with convention dispatch: it validates args, composes the correct tag set, enforces rate limits, and calls `Send`.
 
 ```go
-exec := convention.NewExecutor(client, id.PublicKeyHex())
+exec := convention.NewExecutor(client, client.PublicKeyHex())
 ```
 
 A `Declaration` describes one operation: its convention name, version, argument schema, tag composition rules, and signing mode.
@@ -287,15 +335,35 @@ Implement `convention.ProvenanceChecker` to map public keys to integer trust lev
 
 ## Transport abstraction
 
-The same `Client` and `Executor` code runs on all transports. Transport selection is determined by the campfire's membership record in the store, not by client configuration:
+The same `Client` and `Executor` code runs on all transports. At create/join time, pass a typed transport config. After that, transport selection is automatic — the campfire's membership record determines the routing.
 
-| Transport dir prefix | Transport |
-|----------------------|-----------|
-| (filesystem path) | Local filesystem — sync-before-query |
-| `github:{...}` | GitHub Issues — needs `GITHUB_TOKEN` or `SendRequest.GitHubToken` |
-| (peer HTTP endpoint) | P2P HTTP — messages delivered via push |
+Three typed transport configs are available in `pkg/protocol`:
 
-For GitHub transport, pass the token:
+```go
+// Local filesystem — members share a directory
+protocol.FilesystemTransport{Dir: "/path/to/campfires"}
+
+// P2P HTTP — direct peer-to-peer HTTP delivery
+protocol.P2PHTTPTransport{
+    Transport:    httpTransport,   // *cfhttp.Transport, already started
+    MyEndpoint:   "http://host:9001",
+    PeerEndpoint: "http://peer:9001", // required for Join
+    Dir:          "/optional/state/dir",
+}
+
+// GitHub Issues — messages stored as issue comments
+protocol.GitHubTransport{
+    Owner:  "org",
+    Repo:   "repo",
+    Branch: "main",
+    Dir:    "campfires/",
+    Token:  os.Getenv("GITHUB_TOKEN"), // or use SendRequest.GitHubToken
+}
+```
+
+The `Transport` interface is sealed — only these three types are accepted by `CreateRequest` and `JoinRequest`.
+
+For GitHub transport, pass the token at send time:
 
 ```go
 msg, err := client.Send(protocol.SendRequest{
@@ -353,25 +421,46 @@ When `AfterTimestamp` is 0 (default), all existing messages are delivered first,
 
 ```go
 result, err := client.Create(protocol.CreateRequest{
-    JoinProtocol:  "open",        // or "invite-only"
-    TransportType: "filesystem",  // or "p2p-http", "github"
-    TransportDir:  "/path/to/campfires",
-    Threshold:     1,             // >1 triggers FROST DKG
+    JoinProtocol: "open",  // or "invite-only"
+    Transport:    protocol.FilesystemTransport{Dir: "/path/to/campfires"},
+    Threshold:    1,       // >1 triggers FROST DKG (P2P HTTP only)
 })
 // result.CampfireID — hex-encoded campfire public key
 // result.Beacon — published beacon for discovery
 ```
 
+For P2P HTTP:
+
+```go
+result, err := client.Create(protocol.CreateRequest{
+    JoinProtocol: "open",
+    Transport: protocol.P2PHTTPTransport{
+        Transport:  httpTransport,
+        MyEndpoint: "http://localhost:9001",
+    },
+})
+```
+
 ### Join
 
 ```go
+// Filesystem
 result, err := client.Join(protocol.JoinRequest{
     CampfireID: campfireID,
-    // For P2P HTTP: Via (peer endpoint), MyHTTPEndpoint
-    // For GitHub: GitHubToken
+    Transport:  protocol.FilesystemTransport{Dir: "/path/to/campfires"},
 })
-// result.Role — assigned membership role
-// result.Conventions — discovered convention declarations
+
+// P2P HTTP — PeerEndpoint is required
+result, err := client.Join(protocol.JoinRequest{
+    CampfireID: campfireID,
+    Transport: protocol.P2PHTTPTransport{
+        Transport:    httpTransport,
+        MyEndpoint:   "http://localhost:9002",
+        PeerEndpoint: "http://peer:9001",
+    },
+})
+// result.CampfireID — joined campfire ID
+// result.JoinProtocol — "open" or "invite-only"
 ```
 
 After joining, Send/Read/Subscribe work immediately.
@@ -388,18 +477,19 @@ client.Disband(campfireID)  // creator-only: tear down campfire entirely
 ```go
 // Pre-admit a member (they can then Join without invite-only rejection)
 client.Admit(protocol.AdmitRequest{
-    CampfireID:   campfireID,
-    PubKeyHex:    memberPubKeyHex,
-    Role:         "writer",  // "full", "writer", "observer"
+    CampfireID:      campfireID,
+    MemberPubKeyHex: memberPubKeyHex,
+    Role:            "writer",  // "full", "writer", "observer"
+    Transport:       protocol.FilesystemTransport{Dir: "/path/to/campfires"},
 })
 
-// Remove a member and rekey (FROST DKG re-run for P2P HTTP)
+// Remove a member (rekeys the campfire for P2P HTTP with threshold>1)
 result, err := client.Evict(protocol.EvictRequest{
-    CampfireID: campfireID,
-    PubKeyHex:  memberPubKeyHex,
-    Reason:     "policy violation",
+    CampfireID:      campfireID,
+    MemberPubKeyHex: memberPubKeyHex,
 })
 // result.Rekeyed — true if campfire was rekeyed
+// result.NewCampfireID — new campfire ID after rekey (threshold>1 only)
 ```
 
 ### Members
