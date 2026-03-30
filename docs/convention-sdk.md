@@ -473,6 +473,156 @@ type Response struct {
 
 When a handler returns a `*Response`, the Server sends it as a message with `Antecedents: [req.MessageID]` and tag `"fulfills"` — so the caller's `client.Await(targetMsgID)` resolves automatically.
 
+## Dual-loop pattern: Subscribe + convention.Server concurrently
+
+Some agents need to both **serve convention requests** (handle inbound operations from other agents) and **monitor campfire activity** (react to arbitrary messages — status updates, findings, peer beads). The dual-loop pattern runs both loops simultaneously in the same process.
+
+**When to use this pattern**: Your agent serves at least one convention operation AND needs to watch the campfire for messages that arrive outside of a request/response convention — for example, a coordinator that handles task submissions and also watches for status broadcasts from other agents, or an orchestrator that dispatches work via a convention and monitors completion signals in parallel.
+
+If your agent only serves conventions, use `convention.Server` alone. If it only watches, use `Subscribe` alone. Use the dual-loop when you need both.
+
+### Setup: two Client instances from the same configDir
+
+`Client` is not safe for concurrent use from multiple goroutines. The dual-loop pattern requires two separate Client instances — one for the Subscribe loop, one for the convention.Server. Both are created from the same `configDir`, which means they share the same identity and the same SQLite store file. The store handles concurrent access internally (WAL journal mode, 5-second busy timeout).
+
+```go
+// Client A: drives the Subscribe loop.
+clientA, err := protocol.Init("~/.campfire")
+if err != nil {
+    log.Fatal(err)
+}
+defer clientA.Close()
+
+// Client B: drives convention.Server.Serve().
+// Same configDir → same identity, same store file, separate handle.
+clientB, err := protocol.Init("~/.campfire")
+if err != nil {
+    log.Fatal(err)
+}
+defer clientB.Close()
+```
+
+### Code example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "os/signal"
+    "syscall"
+
+    "github.com/campfire-net/campfire/pkg/convention"
+    "github.com/campfire-net/campfire/pkg/protocol"
+)
+
+func main() {
+    campfireID := os.Args[1]
+
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    // Shut down cleanly on SIGINT / SIGTERM.
+    sigs := make(chan os.Signal, 1)
+    signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+    go func() {
+        <-sigs
+        cancel()
+    }()
+
+    // Client A: Subscribe loop — monitors all campfire activity.
+    clientA, err := protocol.Init("~/.campfire")
+    if err != nil {
+        log.Fatalf("init clientA: %v", err)
+    }
+    defer clientA.Close()
+
+    // Client B: convention.Server — handles inbound operation requests.
+    clientB, err := protocol.Init("~/.campfire")
+    if err != nil {
+        log.Fatalf("init clientB: %v", err)
+    }
+    defer clientB.Close()
+
+    // Build the convention server on clientB.
+    decl := &convention.Declaration{
+        Convention: "task-runner",
+        Version:    "0.1",
+        Operation:  "submit-task",
+        Signing:    "member_key",
+        Args: []convention.ArgDescriptor{
+            {Name: "task_id", Type: "string", Required: true},
+            {Name: "payload", Type: "string", Required: true},
+        },
+        ProducesTags: []convention.TagRule{
+            {Tag: "task:accepted", Cardinality: "exactly_one"},
+        },
+    }
+
+    srv := convention.NewServer(clientB, decl)
+    srv.WithErrorHandler(func(err error) {
+        log.Printf("convention server error: %v", err)
+    })
+
+    srv.RegisterHandler("submit-task", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+        taskID := req.Args["task_id"].(string)
+        log.Printf("handling task %s from %s", taskID, req.Sender[:8])
+        return &convention.Response{
+            Payload: []byte(fmt.Sprintf(`{"status":"accepted","task_id":"%s"}`, taskID)),
+        }, nil
+    })
+
+    // Loop 1 (goroutine): convention.Server polls for convention requests.
+    srvErr := make(chan error, 1)
+    go func() {
+        srvErr <- srv.Serve(ctx, campfireID)
+    }()
+
+    // Loop 2 (goroutine): Subscribe watches all non-convention messages.
+    sub := clientA.Subscribe(ctx, protocol.SubscribeRequest{
+        CampfireID:  campfireID,
+        ExcludeTags: []string{"convention:operation"}, // skip what the server handles
+    })
+    subDone := make(chan struct{})
+    go func() {
+        defer close(subDone)
+        for msg := range sub.Messages() {
+            log.Printf("[monitor] %s: %s", msg.Sender[:8], msg.Payload)
+        }
+        if err := sub.Err(); err != nil {
+            log.Printf("subscribe error: %v", err)
+        }
+    }()
+
+    // Wait for either loop to finish (context cancel or error).
+    select {
+    case err := <-srvErr:
+        if err != nil {
+            log.Printf("convention server stopped: %v", err)
+        }
+    case <-subDone:
+    }
+}
+```
+
+### Concurrency notes
+
+Both clients open the same SQLite file at `configDir/store.db`. The store is opened with WAL journal mode and a 5-second busy timeout, so concurrent reads and writes from separate client handles proceed without coordination from your code. Writes (Send, message delivery) briefly hold a write lock; reads (Subscribe polls, convention.Server polls) run concurrently.
+
+You do not need a mutex around the two clients. Each client is used exclusively by its own goroutine — clientA by the Subscribe goroutine, clientB by the `srv.Serve` goroutine. This is what "one `Client` per goroutine" means in practice.
+
+### Teardown
+
+Both loops respect context cancellation. Calling `cancel()` stops both:
+
+- `Subscribe` closes its `Messages()` channel and its goroutine exits.
+- `convention.Server.Serve` returns once the context is cancelled.
+
+The `defer clientA.Close()` and `defer clientB.Close()` calls release the SQLite handles after both loops have stopped. Closing in the wrong order (closing a client while its goroutine is still running) is safe — the goroutine will see a context cancellation or a store error and exit cleanly before the next poll.
+
 ## Integration hierarchy
 
 | Building... | Use | Why |

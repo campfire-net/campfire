@@ -8,6 +8,7 @@ package http_test
 //   - Non-member C attempts to relay a message signed by Member A → 403.
 //   - Observer member C attempts to relay a message signed by full member A → 403.
 //   - Direct delivery (sender == deliverer) still works → 200.
+//   - Message with forged provenance hop (invalid signature) rejected with 400.
 //
 // Port block: 440-459 (handler_message_test.go)
 
@@ -19,6 +20,7 @@ import (
 	"testing"
 
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/message"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
@@ -241,5 +243,66 @@ func TestDirectDeliverStillWorks(t *testing.T) {
 	msg := newTestMessage(t, idA)
 	if err := cfhttp.Deliver(ep, campfireID, msg, idA); err != nil {
 		t.Fatalf("direct deliver failed: %v", err)
+	}
+}
+
+// TestDeliverForgedProvenanceHopRejected verifies that a message with a forged
+// provenance hop (invalid hop signature) is rejected by handleDeliver with 400.
+//
+// This is the fix for campfire-agent-pq2: prior to the fix, forged blind-relay hops
+// would be stored, corrupting IsBridged() results. The hop verification loop now
+// mirrors the check in pkg/protocol/read.go before calling store.AddMessage.
+func TestDeliverForgedProvenanceHopRejected(t *testing.T) {
+	campfireID := "deliver-forged-hop"
+	idA := tempIdentity(t) // message author and deliverer
+
+	s := tempStore(t)
+	addMembership(t, s, campfireID)
+	addPeerEndpoint(t, s, campfireID, idA.PublicKeyHex())
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+445)
+	startTransportWithSelf(t, addr, s, idA)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	// A signs a valid message.
+	msg := newTestMessage(t, idA)
+
+	// Attach a forged provenance hop: valid-looking hop with an all-zero (invalid) signature.
+	// A real hop signature covers the hop fields signed with the campfire key.
+	// We use idA's pubkey as the CampfireID to form a structurally valid hop, but
+	// provide a random garbage signature so VerifyHop returns false.
+	forgedHop := message.ProvenanceHop{
+		CampfireID:     idA.PublicKey,        // any non-empty key bytes; signature won't match
+		MembershipHash: []byte("fake-hash"),
+		MemberCount:    2,
+		JoinProtocol:   "http",
+		Timestamp:      msg.Timestamp,
+		Role:           "blind-relay",
+		Signature:      make([]byte, 64), // all-zero signature — invalid
+	}
+	msg.Provenance = append(msg.Provenance, forgedHop)
+
+	body, err := cfencoding.Marshal(msg)
+	if err != nil {
+		t.Fatalf("encoding message: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	signTestRequest(req, idA, body)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("deliver request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for forged provenance hop, got %d: %s", resp.StatusCode, respBody)
 	}
 }

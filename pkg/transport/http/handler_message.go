@@ -109,6 +109,18 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		return
 	}
 
+	// Verify all provenance hops before storing.
+	// The filesystem sync path (pkg/protocol/read.go) applies the same check.
+	// A message with a forged blind-relay hop (invalid signature) must be rejected
+	// to prevent corrupt IsBridged() results (spec §7.5).
+	for _, hop := range msg.Provenance {
+		if !message.VerifyHop(msg.ID, hop) {
+			log.Printf("handleDeliver: invalid provenance hop signature for message %s in campfire %s", msg.ID, campfireID)
+			http.Error(w, "invalid provenance hop signature", http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Store in local SQLite
 	if _, err := h.store.AddMessage(store.MessageRecordFromMessage(campfireID, &msg, store.NowNano())); err != nil {
 		log.Printf("handleDeliver: failed to store message for campfire %s: %v", campfireID, err)
