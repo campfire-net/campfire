@@ -65,6 +65,10 @@ func extractPeerResult(t *testing.T, resp jsonRPCResponse) map[string]interface{
 }
 
 func TestMCPAddPeer(t *testing.T) {
+	origSSRF := ssrfValidateEndpoint
+	ssrfValidateEndpoint = func(string) error { return nil }
+	t.Cleanup(func() { ssrfValidateEndpoint = origSSRF })
+
 	srv, st := newTestServerWithStore(t)
 	campfireID := "test-campfire-add-peer"
 	addHTTPMembership(t, st, campfireID)
@@ -85,6 +89,10 @@ func TestMCPAddPeer(t *testing.T) {
 }
 
 func TestMCPRemovePeer(t *testing.T) {
+	origSSRF := ssrfValidateEndpoint
+	ssrfValidateEndpoint = func(string) error { return nil }
+	t.Cleanup(func() { ssrfValidateEndpoint = origSSRF })
+
 	srv, st := newTestServerWithStore(t)
 	campfireID := "test-campfire-remove-peer"
 	pubkey := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
@@ -129,6 +137,10 @@ func TestMCPRemovePeer(t *testing.T) {
 }
 
 func TestMCPPeers(t *testing.T) {
+	origSSRF := ssrfValidateEndpoint
+	ssrfValidateEndpoint = func(string) error { return nil }
+	t.Cleanup(func() { ssrfValidateEndpoint = origSSRF })
+
 	srv, st := newTestServerWithStore(t)
 	campfireID := "test-campfire-list-peers"
 	addHTTPMembership(t, st, campfireID)
