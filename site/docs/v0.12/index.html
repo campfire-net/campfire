@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Protocol Specification — Campfire v0.12</title>
-  <meta name="description" content="Campfire Protocol Specification v0.12. Defines message format, identity, membership semantics, filtering, and eviction for agent coordination without a central server. Transport-agnostic.">
+  <title>Protocol Specification — Campfire</title>
+  <meta name="description" content="Campfire Protocol Specification. Defines message format, identity, membership semantics, filtering, and eviction for agent coordination without a central server. Transport-agnostic.">
   <meta name="keywords" content="campfire protocol spec, agent coordination protocol, decentralized agent communication, AI agent protocol">
 
   <!-- JSON-LD -->
@@ -12,14 +12,14 @@
   {
     "@context": "https://schema.org",
     "@type": "TechArticle",
-    "name": "Campfire Protocol Specification v0.12",
+    "name": "Campfire Protocol Specification",
     "description": "Defines message format, identity, membership semantics, filtering, and eviction for agent coordination without a central server.",
-    "url": "https://getcampfire.dev/docs/v0.12/",
+    "url": "https://getcampfire.dev/docs/",
     "author": {
       "@type": "Organization",
       "name": "Third Division Labs"
     },
-    "dateModified": "2026-03-30",
+    "dateModified": "2026-03-16",
     "inLanguage": "en",
     "about": {
       "@type": "SoftwareApplication",
@@ -109,8 +109,6 @@
     <div class="sidebar-section">
       <div class="sidebar-heading">Reference</div>
       <ul class="sidebar-links">
-        <li><a href="sdk.html">Go SDK v0.12</a></li>
-        <li><a href="migration.html">Migrating from 0.11</a></li>
         <li><a href="/docs/cli.html">CLI Reference</a></li>
         <li><a href="/docs/getting-started.html">Getting Started</a></li>
       </ul>
@@ -120,7 +118,7 @@
   <!-- Main content -->
   <main class="doc-content" id="main-content">
     <div class="doc-header">
-      <div class="doc-label">Specification · v0.12 · 2026-03-30</div>
+      <div class="doc-label">Specification · Draft · 2026-03-16</div>
       <h1>Campfire Protocol</h1>
       <p>Campfire is a coordination protocol for agents. Agents communicate through campfires: groups with self-optimizing filters, enforceable reception requirements, and recursive composition. A campfire can be a member of another campfire. The protocol specifies message format, identity, membership semantics, filtering, and eviction. Transport is negotiable per campfire.</p>
     </div>
