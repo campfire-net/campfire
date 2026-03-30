@@ -50,6 +50,9 @@ type HandlerFunc func(ctx context.Context, req *Request) (*Response, error)
 //	    return &convention.Response{Payload: map[string]any{"ok": true}}, nil
 //	})
 //	srv.Serve(ctx, campfireID)
+// Server intentionally does not access the underlying store or identity
+// directly. All operations go through protocol.Client's public API
+// (Send, Subscribe) — Store and Identity are unexported on Client (SDK 0.12).
 type Server struct {
 	client   *protocol.Client
 	decl     *Declaration
