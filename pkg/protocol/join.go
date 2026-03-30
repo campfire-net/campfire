@@ -276,6 +276,42 @@ func (c *Client) joinP2PHTTP(req JoinRequest) (*JoinResult, error) {
 		}
 	}
 
+	// Store threshold DKG share from the join response (threshold>1 only).
+	// The share is encrypted by the admitting node and decrypted during cfhttp.Join.
+	if len(result.ThresholdShareData) > 0 && result.MyParticipantID > 0 {
+		if err := c.store.UpsertThresholdShare(store.ThresholdShare{
+			CampfireID:    req.CampfireID,
+			ParticipantID: result.MyParticipantID,
+			SecretShare:   result.ThresholdShareData,
+		}); err != nil {
+			return nil, fmt.Errorf("protocol.Client.Join: storing threshold share: %w", err)
+		}
+		// Register threshold share provider on the HTTP transport so this node
+		// can participate in FROST signing rounds as a co-signer.
+		if req.HTTPTransport != nil {
+			s := c.store
+			req.HTTPTransport.SetThresholdShareProvider(func(id string) (uint32, []byte, error) {
+				share, err := s.GetThresholdShare(id)
+				if err != nil {
+					return 0, nil, err
+				}
+				if share == nil {
+					return 0, nil, fmt.Errorf("no threshold share for campfire %s", shortID(id))
+				}
+				return share.ParticipantID, share.SecretShare, nil
+			})
+		}
+		// Store self in peer endpoints with the assigned participant ID.
+		if req.MyHTTPEndpoint != "" {
+			c.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+				CampfireID:    req.CampfireID,
+				MemberPubkey:  c.identity.PublicKeyHex(),
+				Endpoint:      req.MyHTTPEndpoint,
+				ParticipantID: result.MyParticipantID,
+			})
+		}
+	}
+
 	// Store convention declarations from the join response so B can read them immediately.
 	for _, decl := range result.Declarations {
 		ts := decl.Timestamp
