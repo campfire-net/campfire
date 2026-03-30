@@ -156,6 +156,7 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 
 	return &CreateResult{
 		CampfireID: campfireID,
+		BeaconID:   campfireID,
 		Beacon:     b,
 		BeaconPath: beaconPath,
 	}, nil

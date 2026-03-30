@@ -37,16 +37,9 @@ func (m *Message) IsBridged() bool {
 	return false
 }
 
-// OriginalSender returns the hex-encoded public key of the actual message signer.
-// For bridged messages, this is the bridge's public key (the party that signed
-// the protocol message). The external user's identity is encoded by the bridge
-// in the message payload or Instance field, not in the protocol sender field.
-func (m *Message) OriginalSender() string {
-	return m.Sender
-}
-
-// messageFromRecord converts a store.MessageRecord to a protocol.Message.
-// Sender is already stored as a hex string so no conversion is needed.
+// MessageFromRecord converts a store.MessageRecord to a protocol.Message.
+// Use this when you need bridge-aware helpers (IsBridged) on messages
+// returned by client.Read().
 func MessageFromRecord(r store.MessageRecord) Message {
 	tags := r.Tags
 	if tags == nil {
