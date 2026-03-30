@@ -137,6 +137,8 @@ func searchBeaconDir(dir string, prefix string, addMatch func(string)) {
 // resolveNamingURI resolves a cf:// URI to a campfire ID using the naming protocol.
 // Uses NewResolverFromClient (direct-read) instead of the deprecated CLITransport.
 func resolveNamingURI(uri string, s store.Store) (string, error) {
+	_ = s // store is unused — protocol.Init opens its own store
+
 	client, err := protocol.Init(CFHome())
 	if err != nil {
 		return "", fmt.Errorf("initializing protocol client for name resolution: %w", err)
