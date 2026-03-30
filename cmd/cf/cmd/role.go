@@ -4,11 +4,11 @@ package cmd
 // Phase 1: client enforces only. Transport-level enforcement is future work.
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
@@ -57,22 +57,26 @@ func checkRoleCanSend(role string, tags []string) error {
 	}
 }
 
-// sendFilesystemWithRoleCheck is the role-enforcing wrapper around sendFilesystem.
-// It checks the membership role from the store before attempting to send.
-// This is the integration point used by tests and the send command.
-func sendFilesystemWithRoleCheck(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s store.Store) error {
-	m, err := s.GetMembership(campfireID)
-	if err != nil {
-		return fmt.Errorf("querying membership: %w", err)
+// sendWithRoleCheck sends a message via protocol.Client.Send, which
+// enforces membership roles. Role errors are wrapped as roleEnforcementError so
+// that test helpers using isRoleError() continue to work.
+func sendWithRoleCheck(campfireID, payload string, tags, antecedents []string, instance string, agentID *identity.Identity, s store.Store) error {
+	client := protocol.New(s, agentID)
+	_, err := client.Send(protocol.SendRequest{
+		CampfireID:  campfireID,
+		Payload:     []byte(payload),
+		Tags:        tags,
+		Antecedents: antecedents,
+		Instance:    instance,
+	})
+	if err == nil {
+		return nil
 	}
-	if m == nil {
-		return fmt.Errorf("not a member of campfire %s", campfireID[:min(12, len(campfireID))])
+	// Translate protocol.RoleError to the local roleEnforcementError so that
+	// test helpers using isRoleError() continue to distinguish role errors.
+	var re *protocol.RoleError
+	if protocol.IsRoleError(err, &re) {
+		return &roleEnforcementError{msg: re.Error()}
 	}
-
-	if err := checkRoleCanSend(m.Role, tags); err != nil {
-		return err
-	}
-
-	_, err = sendFilesystem(campfireID, payload, tags, antecedents, instance, agentID, m.TransportDir)
 	return err
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/spf13/cobra"
 )
 
@@ -57,12 +58,13 @@ If no .campfire/root exists, returns an error.`,
 			defer s.Close()
 
 			farewell := fmt.Sprintf("swarm ended by %s", agentShortID)
-			rootMembership, merr := s.GetMembership(campfireIDStr)
-			if merr == nil && rootMembership != nil {
-				_, serr := sendFilesystem(campfireIDStr, farewell, []string{"status"}, nil, "", agentID, rootMembership.TransportDir)
-				if serr != nil {
-					fmt.Fprintf(os.Stderr, "warning: could not send farewell message: %v\n", serr)
-				}
+			fClient := protocol.New(s, agentID)
+			if _, serr := fClient.Send(protocol.SendRequest{
+				CampfireID: campfireIDStr,
+				Payload:    []byte(farewell),
+				Tags:       []string{"status"},
+			}); serr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not send farewell message: %v\n", serr)
 			}
 		}
 

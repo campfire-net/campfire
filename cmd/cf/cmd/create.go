@@ -12,6 +12,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
@@ -124,7 +125,7 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 	if _, pd, ok := ProjectRoot(); ok {
 		seedProjectDir = pd
 	}
-	seedCampfireFilesystem(cf.PublicKeyHex(), transport.CampfireDir(cf.PublicKeyHex()), agentID, cf, seedProjectDir)
+	seedCampfireFilesystem(cf.PublicKeyHex(), transport.CampfireDir(cf.PublicKeyHex()), agentID, cf, seedProjectDir, s)
 
 	// Build beacon
 	b, err := beacon.New(
@@ -165,7 +166,12 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 		announcePayload := fmt.Sprintf("sub-campfire created: %s (%s)", description, subShortID)
 		rootMembership, merr := s.GetMembership(rootCampfireID)
 		if merr == nil && rootMembership != nil {
-			if _, serr := sendFilesystem(rootCampfireID, announcePayload, []string{"campfire:sub-created"}, nil, "", agentID, rootMembership.TransportDir); serr != nil {
+			announceClient := protocol.New(s, agentID)
+			if _, serr := announceClient.Send(protocol.SendRequest{
+				CampfireID: rootCampfireID,
+				Payload:    []byte(announcePayload),
+				Tags:       []string{"campfire:sub-created"},
+			}); serr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not announce sub-campfire to root campfire: %v\n", serr)
 			}
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
@@ -48,6 +49,51 @@ func setupCompactTestEnv(t *testing.T, role string) (*identity.Identity, store.S
 	return agentID, s, campfireID, transportBaseDir, cfHomeDir
 }
 
+
+// writeMessageToTransport writes a signed message to the filesystem transport WITHOUT
+// inserting it into the local store. This is a test-only helper that replaces the
+// former sendFilesystem call in tests that need to control the store timestamp
+// independently (e.g., TestCompactBeforeZeroTimestamp).
+func writeMessageToTransport(t *testing.T, campfireID string, payload string, tags []string, agentID *identity.Identity, transportBaseDir string) *message.Message {
+	t.Helper()
+	tr := fs.New(transportBaseDir)
+
+	// Read campfire state for provenance hop.
+	campfireDir := filepath.Join(transportBaseDir, campfireID)
+	stateData, err := os.ReadFile(filepath.Join(campfireDir, "campfire.cbor"))
+	if err != nil {
+		t.Fatalf("writeMessageToTransport: reading campfire state: %v", err)
+	}
+	var state campfire.CampfireState
+	if err := cfencoding.Unmarshal(stateData, &state); err != nil {
+		t.Fatalf("writeMessageToTransport: decoding campfire state: %v", err)
+	}
+	members, err := tr.ListMembers(campfireID)
+	if err != nil {
+		t.Fatalf("writeMessageToTransport: listing members: %v", err)
+	}
+
+	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, nil)
+	if err != nil {
+		t.Fatalf("writeMessageToTransport: creating message: %v", err)
+	}
+
+	cf := campfireFromState(&state, members)
+	if err := msg.AddHop(
+		state.PrivateKey, state.PublicKey,
+		cf.MembershipHash(), len(members),
+		state.JoinProtocol, state.ReceptionRequirements,
+		campfire.RoleFull,
+	); err != nil {
+		t.Fatalf("writeMessageToTransport: adding provenance hop: %v", err)
+	}
+
+	if err := tr.WriteMessage(campfireID, msg); err != nil {
+		t.Fatalf("writeMessageToTransport: writing message: %v", err)
+	}
+	return msg
+}
+
 // seedMessages sends n messages to the campfire via the filesystem transport
 // and stores them in the local store. Returns the list of message IDs.
 func seedMessages(t *testing.T, n int, agentID *identity.Identity, s store.Store, campfireID, transportBaseDir string) []string {
@@ -69,13 +115,8 @@ func seedMessages(t *testing.T, n int, agentID *identity.Identity, s store.Store
 			t.Fatalf("listing members: %v", err)
 		}
 
-		cf := campfireFromState(&state, members)
-		transportDir := filepath.Join(transportBaseDir, campfireID)
-		msg, err := sendFilesystem(campfireID, "message content", []string{"status"}, []string{}, "", agentID, transportDir)
-		if err != nil {
-			_ = cf // suppress unused warning
-			t.Fatalf("sendFilesystem: %v", err)
-		}
+		_ = campfireFromState(&state, members) // still needed for unused variable suppression
+		msg := writeMessageToTransport(t, campfireID, "message content", []string{"status"}, agentID, transportBaseDir)
 		ids = append(ids, msg.ID)
 
 		// Store locally.
@@ -368,14 +409,9 @@ func TestCompactBeforeSentinelIsMatchedID(t *testing.T) {
 // be included in a compaction event).
 func TestCompactBeforeZeroTimestamp(t *testing.T) {
 	agentID, s, campfireID, transportBaseDir, _ := setupCompactTestEnv(t, campfire.RoleFull)
-	transportDir := filepath.Join(transportBaseDir, campfireID)
-
 	// Seed a message with Timestamp=0 to verify it is excluded from compaction results
 	// (ListMessages uses WHERE timestamp > 0, so zero-timestamp messages are filtered out).
-	msg0, err := sendFilesystem(campfireID, "zero-timestamp message", []string{"status"}, []string{}, "", agentID, transportDir)
-	if err != nil {
-		t.Fatalf("sendFilesystem msg0: %v", err)
-	}
+	msg0 := writeMessageToTransport(t, campfireID, "zero-timestamp message", []string{"status"}, agentID, transportBaseDir)
 	if _, err := s.AddMessage(store.MessageRecord{
 		ID:         msg0.ID,
 		CampfireID: campfireID,
@@ -394,10 +430,7 @@ func TestCompactBeforeZeroTimestamp(t *testing.T) {
 	// ListMessages(campfireID, 0) (which uses WHERE timestamp > 0). This value is the
 	// canonical stand-in for the zero-sentinel regression: any boundary message whose
 	// Timestamp resolves to 1 would be adjacent to the zero-initialiser boundary.
-	msg1, err := sendFilesystem(campfireID, "msg to compact (ts=1)", []string{"status"}, []string{}, "", agentID, transportDir)
-	if err != nil {
-		t.Fatalf("sendFilesystem msg1: %v", err)
-	}
+	msg1 := writeMessageToTransport(t, campfireID, "msg to compact (ts=1)", []string{"status"}, agentID, transportBaseDir)
 	if _, err := s.AddMessage(store.MessageRecord{
 		ID:         msg1.ID,
 		CampfireID: campfireID,
@@ -416,10 +449,7 @@ func TestCompactBeforeZeroTimestamp(t *testing.T) {
 	// The old sentinel `beforeTS == 0` would not fire here (beforeTS > 0), but the test
 	// verifies that the matchedID-based sentinel correctly identifies the boundary at any
 	// timestamp — including the degenerate Timestamp=1 case for msg1.
-	msg2, err := sendFilesystem(campfireID, "boundary message", []string{"status"}, []string{}, "", agentID, transportDir)
-	if err != nil {
-		t.Fatalf("sendFilesystem msg2: %v", err)
-	}
+	msg2 := writeMessageToTransport(t, campfireID, "boundary message", []string{"status"}, agentID, transportBaseDir)
 	msg2TS := store.NowNano()
 	if _, err := s.AddMessage(store.MessageRecord{
 		ID:         msg2.ID,
@@ -470,15 +500,11 @@ func TestCompactBeforeZeroTimestamp(t *testing.T) {
 // so only the exact boundary message (and strictly-later messages) are excluded.
 func TestCompactBeforeTimestampCollision(t *testing.T) {
 	agentID, s, campfireID, transportBaseDir, _ := setupCompactTestEnv(t, campfire.RoleFull)
-	transportDir := filepath.Join(transportBaseDir, campfireID)
 
 	sharedTS := store.NowNano()
 
 	sendAndStore := func(payload string) string {
-		msg, err := sendFilesystem(campfireID, payload, []string{"status"}, []string{}, "", agentID, transportDir)
-		if err != nil {
-			t.Fatalf("sendFilesystem: %v", err)
-		}
+		msg := writeMessageToTransport(t, campfireID, payload, []string{"status"}, agentID, transportBaseDir)
 		s.AddMessage(store.MessageRecord{ //nolint:errcheck
 			ID:          msg.ID,
 			CampfireID:  campfireID,

@@ -9,8 +9,8 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/predicate"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/spf13/cobra"
 )
 
@@ -154,27 +154,16 @@ func runViewCreate(campfireIDArg, name, viewPredicate, viewProjection, viewOrder
 		return fmt.Errorf("encoding view definition: %w", err)
 	}
 
-	// Route to transport — same path as cf send.
-	// sendP2PHTTP stores locally itself; sendFilesystem and sendGitHub do not.
-	var msg *message.Message
-	transportType := transport.ResolveType(*m)
-	switch transportType {
-	case transport.TypeGitHub:
-		msg, err = sendGitHub(campfireID, string(payloadBytes), tags, []string{}, "", agentID, s, m)
-	case transport.TypePeerHTTP:
-		msg, err = sendP2PHTTP(campfireID, string(payloadBytes), tags, []string{}, "", agentID, s, m)
-	default:
-		msg, err = sendFilesystem(campfireID, string(payloadBytes), tags, []string{}, "", agentID, m.TransportDir)
-	}
+	// Send via protocol.Client.Send — handles transport dispatch, role enforcement,
+	// message signing, provenance hop, and local store mirroring.
+	client := protocol.New(s, agentID)
+	msg, err := client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    payloadBytes,
+		Tags:       tags,
+	})
 	if err != nil {
 		return fmt.Errorf("sending view message: %w", err)
-	}
-
-	// Store locally for filesystem and GitHub transports (P2P HTTP stores in sendP2PHTTP).
-	if transportType != transport.TypePeerHTTP {
-		if _, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); err != nil {
-			return fmt.Errorf("storing view message: %w", err)
-		}
 	}
 
 	if jsonOutput {

@@ -21,7 +21,9 @@ import (
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/seed"
+	"github.com/campfire-net/campfire/pkg/store"
 )
 
 // seedCampfireFilesystem seeds a newly created filesystem campfire with:
@@ -41,6 +43,7 @@ func seedCampfireFilesystem(
 	agentID *identity.Identity,
 	cf *campfire.Campfire,
 	projectDir string,
+	s store.Store,
 ) {
 	// Step 1: Post embedded promote declaration (always, unconditionally).
 	promoteDecl := convention.PromoteDeclaration()
@@ -49,7 +52,12 @@ func seedCampfireFilesystem(
 		fmt.Fprintf(os.Stderr, "warning: failed to marshal promote declaration: %v\n", err)
 	} else {
 		tags := []string{convention.ConventionOperationTag}
-		if _, err := sendFilesystem(campfireID, string(promotePayload), tags, nil, "", agentID, transportDir); err != nil {
+		client := protocol.New(s, agentID)
+		if _, err := client.Send(protocol.SendRequest{
+			CampfireID: campfireID,
+			Payload:    promotePayload,
+			Tags:       tags,
+		}); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to post promote declaration: %v\n", err)
 		}
 	}
@@ -80,7 +88,12 @@ func seedCampfireFilesystem(
 			fmt.Fprintf(os.Stderr, "warning: skipping invalid seed declaration (validation failed): %v\n", lintResult.Errors)
 			continue
 		}
-		if _, err := sendFilesystem(campfireID, string(msg.Payload), msg.Tags, nil, "", agentID, transportDir); err != nil {
+		seedClient := protocol.New(s, agentID)
+		if _, err := seedClient.Send(protocol.SendRequest{
+			CampfireID: campfireID,
+			Payload:    msg.Payload,
+			Tags:       msg.Tags,
+		}); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to copy seed declaration: %v\n", err)
 		}
 	}

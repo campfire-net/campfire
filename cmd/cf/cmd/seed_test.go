@@ -18,6 +18,7 @@ import (
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
 
@@ -51,8 +52,25 @@ func TestSeedCampfireFilesystem_PostsPromoteDeclaration(t *testing.T) {
 		t.Fatalf("writing member: %v", err)
 	}
 
+	// Open a store and register membership so protocol.Client.Send can look it up.
+	s, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   cf.PublicKeyHex(),
+		TransportDir: tr.CampfireDir(cf.PublicKeyHex()),
+		JoinProtocol: cf.JoinProtocol,
+		Role:         store.PeerRoleCreator,
+		JoinedAt:     time.Now().UnixNano(),
+		Threshold:    cf.Threshold,
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
 	// Exercise seedCampfireFilesystem (no project dir, so no seed beacon search)
-	seedCampfireFilesystem(cf.PublicKeyHex(), tr.CampfireDir(cf.PublicKeyHex()), agentID, cf, "")
+	seedCampfireFilesystem(cf.PublicKeyHex(), tr.CampfireDir(cf.PublicKeyHex()), agentID, cf, "", s)
 
 	// Verify at least one convention:operation message was written
 	msgs, err := tr.ListMessages(cf.PublicKeyHex())
@@ -175,7 +193,24 @@ func TestSeedCampfireFilesystem_WithSeedBeacon(t *testing.T) {
 		t.Fatalf("writing target member: %v", err)
 	}
 
-	seedCampfireFilesystem(targetCF.PublicKeyHex(), targetTr.CampfireDir(targetCF.PublicKeyHex()), agentID, targetCF, projectDir)
+	// Open a store and register membership for targetCF.
+	s2, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s2.Close()
+	if err := s2.AddMembership(store.Membership{
+		CampfireID:   targetCF.PublicKeyHex(),
+		TransportDir: targetTr.CampfireDir(targetCF.PublicKeyHex()),
+		JoinProtocol: targetCF.JoinProtocol,
+		Role:         store.PeerRoleCreator,
+		JoinedAt:     time.Now().UnixNano(),
+		Threshold:    targetCF.Threshold,
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	seedCampfireFilesystem(targetCF.PublicKeyHex(), targetTr.CampfireDir(targetCF.PublicKeyHex()), agentID, targetCF, projectDir, s2)
 
 	// Verify the promote declaration is present
 	msgs, err := targetTr.ListMessages(targetCF.PublicKeyHex())
@@ -494,7 +529,24 @@ func TestSeedCampfireFilesystem_RejectsDeniedTags(t *testing.T) {
 		t.Fatalf("writing target member: %v", err)
 	}
 
-	seedCampfireFilesystem(targetCF.PublicKeyHex(), targetTr.CampfireDir(targetCF.PublicKeyHex()), agentID, targetCF, projectDir)
+	// Open a store and register membership for targetCF.
+	s3, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s3.Close()
+	if err := s3.AddMembership(store.Membership{
+		CampfireID:   targetCF.PublicKeyHex(),
+		TransportDir: targetTr.CampfireDir(targetCF.PublicKeyHex()),
+		JoinProtocol: targetCF.JoinProtocol,
+		Role:         store.PeerRoleCreator,
+		JoinedAt:     time.Now().UnixNano(),
+		Threshold:    targetCF.Threshold,
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	seedCampfireFilesystem(targetCF.PublicKeyHex(), targetTr.CampfireDir(targetCF.PublicKeyHex()), agentID, targetCF, projectDir, s3)
 
 	// --- Inspect target campfire messages ---
 	msgs, err := targetTr.ListMessages(targetCF.PublicKeyHex())

@@ -128,8 +128,26 @@ func e2eCreateCampfire(t *testing.T, agentID *identity.Identity, transportBaseDi
 		t.Fatalf("writing owner member: %v", err)
 	}
 
+	// Open a temporary store and register membership so seedCampfireFilesystem
+	// can use protocol.Client.Send (which requires a membership record).
+	seedStore, serr := store.Open(filepath.Join(t.TempDir(), "seed-store.db"))
+	if serr != nil {
+		t.Fatalf("opening seed store: %v", serr)
+	}
+	t.Cleanup(func() { seedStore.Close() })
+	if serr := seedStore.AddMembership(store.Membership{
+		CampfireID:   cf.PublicKeyHex(),
+		TransportDir: tr.CampfireDir(cf.PublicKeyHex()),
+		JoinProtocol: cf.JoinProtocol,
+		Role:         store.PeerRoleCreator,
+		JoinedAt:     time.Now().UnixNano(),
+		Threshold:    cf.Threshold,
+	}); serr != nil {
+		t.Fatalf("adding seed membership: %v", serr)
+	}
+
 	// Seed: embed promote declaration + seed from beacon.
-	seedCampfireFilesystem(cf.PublicKeyHex(), tr.CampfireDir(cf.PublicKeyHex()), agentID, cf, projectDir)
+	seedCampfireFilesystem(cf.PublicKeyHex(), tr.CampfireDir(cf.PublicKeyHex()), agentID, cf, projectDir, seedStore)
 
 	return cf, tr
 }

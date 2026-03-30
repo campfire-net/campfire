@@ -1,13 +1,11 @@
 package cmd
 
-// TestFSTransportDirFromMembership verifies that sendFilesystem and syncFromFilesystem
-// use the TransportDir from the membership record instead of fs.DefaultBaseDir().
+// fs_transport_dir_test.go — verifies that protocol.Client.Send uses the
+// TransportDir from the membership record instead of fs.DefaultBaseDir().
 //
-// The test creates a campfire in a custom temp directory (not CF_TRANSPORT_DIR),
-// joins it, sends a message, syncs via syncFromFilesystem, and asserts the
-// message appears in the store — without setting CF_TRANSPORT_DIR.
-//
-// Verifies sendFilesystem/syncFromFilesystem use membership TransportDir.
+// This replaces the former sendFilesystem-based test that directly passed
+// a transportDir argument. Now that all callers use protocol.Client.Send,
+// the transport dir is always sourced from the membership record in the store.
 
 import (
 	"fmt"
@@ -17,10 +15,15 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
 
+// TestFSTransportDirFromMembership verifies that protocol.Client.Send uses the
+// TransportDir from the membership record to route the message — NOT the default
+// base dir. The campfire is created in a custom temp directory that differs from
+// CF_TRANSPORT_DIR, ensuring the membership TransportDir is the only path that works.
 func TestFSTransportDirFromMembership(t *testing.T) {
 	// Create a custom base dir — completely separate from DefaultBaseDir().
 	customBaseDir := t.TempDir()
@@ -38,15 +41,15 @@ func TestFSTransportDirFromMembership(t *testing.T) {
 	}
 	cf.AddMember(agentID.PublicKey)
 
-	transport := fs.New(customBaseDir)
-	if err := transport.Init(cf); err != nil {
+	tr := fs.New(customBaseDir)
+	if err := tr.Init(cf); err != nil {
 		t.Fatalf("init transport: %v", err)
 	}
 
 	campfireID := cf.PublicKeyHex()
 
 	// Write the agent as a member in the transport dir.
-	if err := transport.WriteMember(campfireID, campfire.MemberRecord{
+	if err := tr.WriteMember(campfireID, campfire.MemberRecord{
 		PublicKey: agentID.PublicKey,
 		JoinedAt:  time.Now().UnixNano(),
 	}); err != nil {
@@ -54,7 +57,7 @@ func TestFSTransportDirFromMembership(t *testing.T) {
 	}
 
 	// TransportDir as stored by create/join: the campfire-specific subdirectory.
-	transportDir := transport.CampfireDir(campfireID)
+	transportDir := tr.CampfireDir(campfireID)
 
 	// Open a local store.
 	s, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
@@ -75,18 +78,23 @@ func TestFSTransportDirFromMembership(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	// Send a message using sendFilesystem with the membership TransportDir.
-	// This must NOT fall back to DefaultBaseDir() — it must use customBaseDir.
-	msg, err := sendFilesystem(campfireID, "hello from transport-dir-test", nil, nil, "", agentID, transportDir)
+	// Send a message via protocol.Client.Send — must use TransportDir from membership,
+	// NOT DefaultBaseDir(). If it falls back to DefaultBaseDir() the message would
+	// be written to the wrong directory and the sync step would find nothing.
+	client := protocol.New(s, agentID)
+	msg, err := client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("hello from transport-dir-test"),
+	})
 	if err != nil {
-		t.Fatalf("sendFilesystem: %v", err)
+		t.Fatalf("protocol.Client.Send: %v", err)
 	}
 	if msg == nil {
-		t.Fatal("sendFilesystem returned nil message")
+		t.Fatal("protocol.Client.Send returned nil message")
 	}
 
 	// Sync messages from the filesystem transport into the store.
-	// Again must use customBaseDir, not DefaultBaseDir().
+	// Must use customBaseDir, not DefaultBaseDir().
 	syncFromFilesystem(campfireID, transportDir, s)
 
 	// Verify the message is now in the store.
@@ -116,26 +124,31 @@ func TestFSTransportDirFromMembership(t *testing.T) {
 	}
 }
 
-// TestFSTransportDirFallback verifies that sendFilesystem and syncFromFilesystem
-// fall back to DefaultBaseDir() when transportDir is empty.
-func TestFSTransportDirFallback(t *testing.T) {
-	// This test just verifies the path — we don't need real filesystem data.
-	// sendFilesystem with empty transportDir should use fs.DefaultBaseDir()
-	// which is /tmp/campfire (or CF_TRANSPORT_DIR env). The campfire won't
-	// exist there, so it will return an error — but the important thing is
-	// that it does NOT panic and does NOT use a garbage path.
+// TestProtocolClientSendNotMember verifies that protocol.Client.Send returns an error
+// when the agent is not a member of the campfire (no membership record in the store).
+// This replaces TestFSTransportDirFallback which tested the old sendFilesystem fallback
+// behavior when transportDir was empty.
+func TestProtocolClientSendNotMember(t *testing.T) {
+	// This test just verifies the error path — we don't need real filesystem data.
 	fakeID := fmt.Sprintf("%064x", [32]byte{1, 2, 3})
 	agentID, err := identity.Generate()
 	if err != nil {
 		t.Fatalf("generating identity: %v", err)
 	}
 
-	// Should fail with "listing members" error (transport dir doesn't exist),
-	// not a nil-pointer panic or unexpected error about an unrelated dir.
-	_, err = sendFilesystem(fakeID, "test", nil, nil, "", agentID, "")
-	if err == nil {
-		t.Fatal("expected error for non-existent campfire, got nil")
+	s, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
 	}
-	// Should mention members or campfire state (transport-layer error).
-	// Just confirm it doesn't panic.
+	defer s.Close()
+
+	// Should fail with "not a member" error since no membership is in the store.
+	client := protocol.New(s, agentID)
+	_, err = client.Send(protocol.SendRequest{
+		CampfireID: fakeID,
+		Payload:    []byte("test"),
+	})
+	if err == nil {
+		t.Fatal("expected error for non-member campfire, got nil")
+	}
 }
