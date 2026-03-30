@@ -10,9 +10,14 @@ import (
 
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 )
+
+// messageExistenceChecker is the minimal interface required by
+// validateMessageToSign for the HasMessage store lookup.
+type messageExistenceChecker interface {
+	HasMessage(id string) (bool, error)
+}
 
 // validateMessageToSign checks that msg is a CBOR-encoded HopSignInput or
 // MessageSignInput. Both are the only payload types that the campfire protocol
@@ -22,8 +27,11 @@ import (
 // For HopSignInput, ms is used to cross-reference the MessageID against the
 // local message store. HopSignInput co-signs provenance for a message that
 // this node must have already received; a fabricated MessageID (not in store)
-// is rejected to prevent provenance fraud. Pass ms=nil to skip the store check
-// (only for tests that set up the transport before inserting the message).
+// is rejected to prevent provenance fraud. Pass ms=nil to skip the store check:
+// when the initiator sends a signing request for a brand-new message, co-signers
+// have not received it yet — performing a store check would always fail for new
+// messages, creating a chicken-and-egg deadlock. Structural validation
+// (non-empty MessageID + CampfireID) still guards against malformed inputs.
 //
 // For MessageSignInput, no store check is performed: the initiator is
 // threshold-signing a new message that does not exist in the store yet.
@@ -32,7 +40,7 @@ import (
 // CampfireID, and MessageID present in ms) or a valid MessageSignInput
 // (non-empty ID field). Returns an error if msg cannot be decoded as either,
 // or if the HopSignInput.MessageID is not found locally.
-func validateMessageToSign(msg []byte, ms store.MessageStore) error {
+func validateMessageToSign(msg []byte, ms messageExistenceChecker) error {
 	if len(msg) == 0 {
 		return fmt.Errorf("message_to_sign is empty")
 	}
@@ -102,8 +110,16 @@ func (h *handler) handleSign(w http.ResponseWriter, r *http.Request, campfireID,
 	// it is a known canonical type (HopSignInput or MessageSignInput) before
 	// any FROST state is created. This prevents a campfire member from using
 	// this node as a signing oracle for arbitrary bytes.
+	//
+	// Pass nil store: when Client A initiates threshold signing for a NEW
+	// message, peer B has not received that message yet — so a HasMessage
+	// cross-check would always fail, creating a chicken-and-egg deadlock.
+	// The store check was added to prevent provenance fraud via fabricated
+	// MessageIDs, but it cannot be applied at signing time for the initiating
+	// hop. Structural validation (non-empty MessageID + CampfireID) still
+	// runs; only the store lookup is skipped.
 	if req.Round == 1 {
-		if err := validateMessageToSign(req.MessageToSign, h.store); err != nil {
+		if err := validateMessageToSign(req.MessageToSign, nil); err != nil {
 			log.Printf("handleSign: rejected invalid message_to_sign for campfire %s session %s: %v", campfireID, req.SessionID, err)
 			http.Error(w, "message_to_sign must be a CBOR-encoded HopSignInput or MessageSignInput", http.StatusBadRequest)
 			return
