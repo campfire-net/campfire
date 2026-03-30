@@ -360,7 +360,7 @@ func testJoinTrustComparison(t *testing.T) {
 }
 
 // assertContainsPayload verifies that msgs contains a message with the given payload.
-func assertContainsPayload(t *testing.T, msgs []store.MessageRecord, want, context string) {
+func assertContainsPayload(t *testing.T, msgs []protocol.Message, want, context string) {
 	t.Helper()
 	for _, m := range msgs {
 		if string(m.Payload) == want {

@@ -14,7 +14,7 @@ import (
 
 // awaitFulfillment is a thin helper for tests: creates a protocol.Client and
 // calls Await with a 0-timeout to check for an existing fulfillment without blocking.
-func awaitFulfillment(s store.Store, campfireID, targetMsgID string) (*store.MessageRecord, error) {
+func awaitFulfillment(s store.Store, campfireID, targetMsgID string) (*protocol.Message, error) {
 	id, err := identity.Generate()
 	if err != nil {
 		return nil, err
@@ -226,7 +226,7 @@ func TestAwaitTimeout(t *testing.T) {
 
 // TestOutputFulfillmentText verifies text output format.
 func TestOutputFulfillmentText(t *testing.T) {
-	msg := store.MessageRecord{
+	msg := protocol.Message{
 		ID:      fmt.Sprintf("%032d", 1), // 32-char ID
 		Payload: []byte("Use optimistic locking"),
 	}

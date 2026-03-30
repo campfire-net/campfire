@@ -4,8 +4,6 @@ import (
 	"context"
 	"sync"
 	"time"
-
-	"github.com/campfire-net/campfire/pkg/store"
 )
 
 // SubscribeRequest specifies the parameters for a Subscribe operation.
@@ -40,7 +38,7 @@ type SubscribeRequest struct {
 //
 // Subscription is safe for concurrent reads from Messages() and Err().
 type Subscription struct {
-	msgs chan store.MessageRecord
+	msgs chan Message
 	err  error
 	mu   sync.Mutex
 	done chan struct{}
@@ -48,7 +46,7 @@ type Subscription struct {
 
 // Messages returns the channel on which incoming messages are delivered.
 // The channel is closed when the subscription ends (context cancelled or error).
-func (sub *Subscription) Messages() <-chan store.MessageRecord {
+func (sub *Subscription) Messages() <-chan Message {
 	return sub.msgs
 }
 
@@ -72,7 +70,7 @@ func (sub *Subscription) setErr(err error) {
 // *Subscription immediately; the background goroutine polls via Client.Read()
 // with proper cursor advancement (AfterTimestamp from ReadResult.MaxTimestamp).
 //
-// The Messages() channel delivers store.MessageRecord values as they arrive.
+// The Messages() channel delivers protocol.Message values as they arrive.
 // When the context is cancelled, the channel is closed and the goroutine exits.
 //
 // If the underlying Read() encounters an error, the error is surfaced via
@@ -87,7 +85,7 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) *Subscript
 
 	sub := &Subscription{
 		// Buffered channel: holds up to 64 messages to absorb bursts without blocking polls.
-		msgs: make(chan store.MessageRecord, 64),
+		msgs: make(chan Message, 64),
 		done: make(chan struct{}),
 	}
 

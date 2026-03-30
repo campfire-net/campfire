@@ -272,7 +272,11 @@ func runViewRead(campfireIDArg, name string) error {
 		return outputViewProjected(matched, def.Projection)
 	}
 
-	printMessages(matched, s)
+	converted := make([]protocol.Message, len(matched))
+	for i, m := range matched {
+		converted[i] = protocol.MessageFromRecord(m)
+	}
+	printMessages(converted, s)
 	return nil
 }
 

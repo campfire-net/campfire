@@ -2255,7 +2255,7 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 	client := newProtocolClient(st, nil) // nil identity: read-only
 
 	// Collect messages per campfire.
-	var allMessages []store.MessageRecord
+	var allMessages []protocol.Message
 	for _, cfID := range campfireIDs {
 		var afterTS int64
 		if !readAll {
