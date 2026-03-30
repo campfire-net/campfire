@@ -55,7 +55,7 @@ func TestCorePeerEstablish_Level1Rejected(t *testing.T) {
 	exec := convention.NewExecutorForTest(transport, provSenderKey).
 		WithProvenance(&staticProvenanceChecker{levels: map[string]int{provSenderKey: 1}})
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key":      strings.Repeat("a", 64),
 		"peer_endpoint": "https://peer.example.com",
 		"transport":     "https",
@@ -84,7 +84,7 @@ func TestCorePeerEstablish_Level2Accepted(t *testing.T) {
 	exec := convention.NewExecutorForTest(transport, provSenderKey).
 		WithProvenance(&staticProvenanceChecker{levels: map[string]int{provSenderKey: 2}})
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key":      strings.Repeat("a", 64),
 		"peer_endpoint": "https://peer.example.com",
 		"transport":     "https",
@@ -107,7 +107,7 @@ func TestCorePeerWithdraw_Level1Rejected(t *testing.T) {
 	exec := convention.NewExecutorForTest(transport, provSenderKey).
 		WithProvenance(&staticProvenanceChecker{levels: map[string]int{provSenderKey: 1}})
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key": strings.Repeat("b", 64),
 	})
 
@@ -131,7 +131,7 @@ func TestCorePeerWithdraw_Level2Accepted(t *testing.T) {
 	exec := convention.NewExecutorForTest(transport, provSenderKey).
 		WithProvenance(&staticProvenanceChecker{levels: map[string]int{provSenderKey: 2}})
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key": strings.Repeat("b", 64),
 	})
 
@@ -152,7 +152,7 @@ func TestCorePeerEstablish_Level0Rejected(t *testing.T) {
 	exec := convention.NewExecutorForTest(transport, provSenderKey).
 		WithProvenance(&staticProvenanceChecker{levels: map[string]int{}}) // level 0 = not in map
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key":      strings.Repeat("a", 64),
 		"peer_endpoint": "https://peer.example.com",
 		"transport":     "https",
@@ -172,7 +172,7 @@ func TestCorePeerEstablish_Level3Accepted(t *testing.T) {
 	exec := convention.NewExecutorForTest(transport, provSenderKey).
 		WithProvenance(&staticProvenanceChecker{levels: map[string]int{provSenderKey: 3}})
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key":      strings.Repeat("a", 64),
 		"peer_endpoint": "https://peer.example.com",
 		"transport":     "https",

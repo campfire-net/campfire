@@ -764,7 +764,7 @@ func (s *server) handleConventionTool(rpcID interface{}, entry *conventionToolEn
 	ctx, cancel := context.WithTimeout(context.Background(), conventionToolTimeout)
 	defer cancel()
 
-	if err := executor.Execute(ctx, entry.decl, entry.campfireID, args); err != nil {
+	if _, err := executor.Execute(ctx, entry.decl, entry.campfireID, args); err != nil {
 		return errResponse(rpcID, -32000, fmt.Sprintf("convention operation failed: %v", err))
 	}
 

@@ -3,6 +3,7 @@ package convention
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 // mockTransport implements executorTransport for testing.
 type mockTransport struct {
 	sentMessages []sentMessage
+	futureCalls  []sentMessage // records sendFutureAndAwait calls separately
 	readResults  []MessageRecord
 	futureResult []byte
 	futureErr    error
@@ -44,7 +46,16 @@ func (m *mockTransport) readMessages(_ context.Context, _ string, _ []string) ([
 	return m.readResults, nil
 }
 
-func (m *mockTransport) sendFutureAndAwait(ctx context.Context, _ string, _ []byte, _ []string, _ time.Duration) ([]byte, error) {
+func (m *mockTransport) sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, _ time.Duration) ([]byte, error) {
+	// Record in both sentMessages (so existing tests that check sentMessages see the call)
+	// and futureCalls (so tests can distinguish futures from normal sends).
+	call := sentMessage{
+		campfireID: campfireID,
+		payload:    payload,
+		tags:       tags,
+	}
+	m.futureCalls = append(m.futureCalls, call)
+	m.sentMessages = append(m.sentMessages, call)
 	if m.futureDelay > 0 {
 		select {
 		case <-time.After(m.futureDelay):
@@ -173,7 +184,7 @@ func TestExecute_SocialPost(t *testing.T) {
 		"topics": []string{"ai"},
 	}
 
-	if err := ex.Execute(context.Background(), decl, "cf-abc", args); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-abc", args); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(tr.sentMessages) != 1 {
@@ -213,7 +224,7 @@ func TestExecute_Vote(t *testing.T) {
 		"direction":     "social:upvote",
 	}
 
-	if err := ex.Execute(context.Background(), decl, "cf-vote", args); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-vote", args); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(tr.sentMessages) != 1 {
@@ -238,7 +249,7 @@ func TestExecute_MissingRequiredArg(t *testing.T) {
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := socialPostDecl() // "text" is required
 
-	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{})
+	_, err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for missing required arg 'text'")
 	}
@@ -254,7 +265,7 @@ func TestExecute_MaxLengthExceeded(t *testing.T) {
 	decl := socialPostDecl() // text has max_length=65536
 
 	longText := strings.Repeat("a", 70000)
-	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{"text": longText})
+	_, err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{"text": longText})
 	if err == nil {
 		t.Fatal("expected error for text exceeding max_length")
 	}
@@ -266,7 +277,7 @@ func TestExecute_PatternMismatch(t *testing.T) {
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := socialPostDecl() // topics has pattern [a-z0-9-]{1,64}
 
-	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
+	_, err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
 		"text":   "hello",
 		"topics": []string{"INVALID!"},
 	})
@@ -281,7 +292,7 @@ func TestExecute_EnumInvalid(t *testing.T) {
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := socialPostDecl() // content_type enum: text/plain, text/markdown, application/json
 
-	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
+	_, err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
 		"text":         "hello",
 		"content_type": "application/xml",
 	})
@@ -298,7 +309,7 @@ func TestExecute_EnumRejectsShortForm(t *testing.T) {
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := voteDecl() // direction enum: social:upvote, social:downvote
 
-	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
+	_, err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
 		"target_msg_id": "msg-123",
 		"direction":     "upvote", // short form — should be rejected
 	})
@@ -317,7 +328,7 @@ func TestExecute_EnumFullFormAccepted(t *testing.T) {
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := voteDecl() // direction enum: social:upvote, social:downvote
 
-	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
+	_, err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{
 		"target_msg_id": "msg-123",
 		"direction":     "social:upvote", // full form
 	})
@@ -357,7 +368,7 @@ func TestExecute_TagDenylist(t *testing.T) {
 
 	tr := &mockTransport{}
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
-	err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{})
+	_, err := ex.Execute(context.Background(), decl, "cf-abc", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for denylist tag 'future'")
 	}
@@ -388,13 +399,13 @@ func TestExecute_RateLimitExceeded(t *testing.T) {
 	// Use an isolated limiter so this test is not affected by other tests' state.
 	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
 
-	if err := ex.Execute(context.Background(), decl, "cf-rl-exceeded", map[string]any{}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-rl-exceeded", map[string]any{}); err != nil {
 		t.Fatalf("call 1 unexpected error: %v", err)
 	}
-	if err := ex.Execute(context.Background(), decl, "cf-rl-exceeded", map[string]any{}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-rl-exceeded", map[string]any{}); err != nil {
 		t.Fatalf("call 2 unexpected error: %v", err)
 	}
-	err = ex.Execute(context.Background(), decl, "cf-rl-exceeded", map[string]any{})
+	_, err = ex.Execute(context.Background(), decl, "cf-rl-exceeded", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error on 3rd call (rate limit exceeded)")
 	}
@@ -409,7 +420,7 @@ func TestExecute_CampfireKeyOp(t *testing.T) {
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := campfireKeyDecl()
 
-	if err := ex.Execute(context.Background(), decl, "cf-ck", map[string]any{}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-ck", map[string]any{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(tr.sentMessages) != 1 {
@@ -430,14 +441,19 @@ func TestExecute_MultiStep_ProfileUpdate(t *testing.T) {
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := profileUpdateDecl()
 
-	if err := ex.Execute(context.Background(), decl, "cf-profile", map[string]any{}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-profile", map[string]any{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// The second step should be a send with antecedent from the binding.
-	if len(tr.sentMessages) != 1 {
-		t.Fatalf("expected 1 sent message (step 2), got %d", len(tr.sentMessages))
+	// sentMessages includes both the query future (step 1) and the send (step 2).
+	// We want the non-future send: filter by checking sentMessages not in futureCalls.
+	normalSends := len(tr.sentMessages) - len(tr.futureCalls)
+	if normalSends != 1 {
+		t.Fatalf("expected 1 normal sent message (step 2), got %d (total=%d, futures=%d)",
+			normalSends, len(tr.sentMessages), len(tr.futureCalls))
 	}
-	msg := tr.sentMessages[0]
+	// The normal send is the last message in sentMessages (after the future).
+	msg := tr.sentMessages[len(tr.sentMessages)-1]
 	if len(msg.antecedents) == 0 || msg.antecedents[0] != "prior-profile-msg" {
 		t.Errorf("expected antecedent 'prior-profile-msg'; got %v", msg.antecedents)
 	}
@@ -459,7 +475,7 @@ func TestExecute_MultiStep_Timeout(t *testing.T) {
 	decl := profileUpdateDecl()
 
 	ctx := context.Background()
-	err := ex.Execute(ctx, decl, "cf-timeout", map[string]any{})
+	_, err := ex.Execute(ctx, decl, "cf-timeout", map[string]any{})
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -500,15 +516,15 @@ func TestExecute_RateLimitSenderAndCampfire(t *testing.T) {
 	exB := newExecutorWithLimiter(trB, "senderB", sharedLimiter)
 
 	// senderA uses their 1 quota on campfireX.
-	if err := exA.Execute(context.Background(), declA, "campfireX", map[string]any{}); err != nil {
+	if _, err := exA.Execute(context.Background(), declA, "campfireX", map[string]any{}); err != nil {
 		t.Fatalf("senderA call 1: %v", err)
 	}
 	// senderA second call should be rate-limited.
-	if err := exA.Execute(context.Background(), declA, "campfireX", map[string]any{}); err == nil {
+	if _, err := exA.Execute(context.Background(), declA, "campfireX", map[string]any{}); err == nil {
 		t.Fatal("expected senderA to be rate-limited on 2nd call")
 	}
 	// senderB has a separate quota — should succeed even with shared limiter.
-	if err := exB.Execute(context.Background(), declB, "campfireX", map[string]any{}); err != nil {
+	if _, err := exB.Execute(context.Background(), declB, "campfireX", map[string]any{}); err != nil {
 		t.Fatalf("senderB call 1 should not be rate-limited: %v", err)
 	}
 }
@@ -557,7 +573,7 @@ func TestExecute_RateLimitSharedAcrossExecutors(t *testing.T) {
 	// First "invocation": newExecutorWithSharedLimiter uses sharedRateLimiter() — initialises the singleton.
 	tr1 := &mockTransport{}
 	ex1 := newExecutorWithSharedLimiter(tr1, testSenderKey)
-	if err := ex1.Execute(context.Background(), decl, "cf-shared-rl", map[string]any{}); err != nil {
+	if _, err := ex1.Execute(context.Background(), decl, "cf-shared-rl", map[string]any{}); err != nil {
 		t.Fatalf("first invocation unexpected error: %v", err)
 	}
 
@@ -565,7 +581,7 @@ func TestExecute_RateLimitSharedAcrossExecutors(t *testing.T) {
 	// It must pick up the same singleton and be throttled.
 	tr2 := &mockTransport{}
 	ex2 := newExecutorWithSharedLimiter(tr2, testSenderKey)
-	err = ex2.Execute(context.Background(), decl, "cf-shared-rl", map[string]any{})
+	_, err = ex2.Execute(context.Background(), decl, "cf-shared-rl", map[string]any{})
 	if err == nil {
 		t.Fatal("second invocation should be rate-limited because the first invocation saturated the quota")
 	}
@@ -589,7 +605,7 @@ func TestExecute_SelfPriorAntecedent(t *testing.T) {
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := selfPriorDecl()
 
-	if err := ex.Execute(context.Background(), decl, "cf-self-prior", map[string]any{}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-self-prior", map[string]any{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(tr.sentMessages) != 1 {
@@ -631,7 +647,7 @@ func TestExecute_ZeroOrOneSelfPrior_Genesis(t *testing.T) {
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := zeroOrOneSelfPriorDecl()
 
-	if err := ex.Execute(context.Background(), decl, "cf-rate", map[string]any{}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-rate", map[string]any{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(tr.sentMessages) != 1 {
@@ -655,7 +671,7 @@ func TestExecute_ZeroOrOneSelfPrior_Subsequent(t *testing.T) {
 	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
 	decl := zeroOrOneSelfPriorDecl()
 
-	if err := ex.Execute(context.Background(), decl, "cf-rate", map[string]any{}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-rate", map[string]any{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(tr.sentMessages) != 1 {
@@ -693,12 +709,12 @@ func TestIntegerRange_MaxEnforcedWhenMinIsZero(t *testing.T) {
 	decl := intRangeDecl(0, 10)
 
 	// Value within range should pass.
-	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 5}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 5}); err != nil {
 		t.Errorf("value=5 with Min=0,Max=10: expected no error, got %v", err)
 	}
 
 	// Value exceeding Max should fail.
-	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 15}); err == nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 15}); err == nil {
 		t.Error("value=15 with Min=0,Max=10: expected range error, got nil")
 	}
 }
@@ -714,12 +730,12 @@ func TestIntegerRange_NegativeAllowedWhenMinUndeclared(t *testing.T) {
 	decl := intRangeDecl(0, 0) // Min=0, MinSet=false, no Max
 
 	// Zero should pass.
-	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 0}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 0}); err != nil {
 		t.Errorf("value=0 with min undeclared: expected no error, got %v", err)
 	}
 
 	// Negative must also pass — min is not declared so no floor applies.
-	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": -1}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": -1}); err != nil {
 		t.Errorf("value=-1 with min undeclared: expected no error, got %v", err)
 	}
 }
@@ -750,12 +766,12 @@ func TestIntegerRange_NegativeRejectedWhenMinDeclaredZero(t *testing.T) {
 	ex := newExecutorWithLimiter(tr, testSenderKey, newRateLimiter())
 
 	// Zero should pass (at boundary).
-	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 0}); err != nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": 0}); err != nil {
 		t.Errorf("value=0 with min:0 declared: expected no error, got %v", err)
 	}
 
 	// Negative must fail — min was explicitly declared as 0.
-	if err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": -1}); err == nil {
+	if _, err := ex.Execute(context.Background(), decl, "cf-test", map[string]any{"count": -1}); err == nil {
 		t.Error("value=-1 with min:0 declared: expected error, got nil")
 	}
 }
@@ -860,7 +876,7 @@ func TestValidateArgs_StripUndeclared_ViaExecute(t *testing.T) {
 		},
 	}
 
-	err := ex.Execute(context.Background(), decl, "cf-testfire", map[string]any{
+	_, err := ex.Execute(context.Background(), decl, "cf-testfire", map[string]any{
 		"text":          "hello world",
 		"injected_arg":  "should_not_appear",
 	})
@@ -882,6 +898,184 @@ func TestValidateArgs_StripUndeclared_ViaExecute(t *testing.T) {
 	}
 	if v, ok := payload["text"]; !ok || v != "hello world" {
 		t.Errorf("declared arg 'text' should be in payload with value 'hello world', got %v (ok=%v)", v, ok)
+	}
+}
+
+// ---- ExecuteResult tests (response=sync/async/none) ----
+
+// syncDecl returns a declaration with response="sync" explicitly set.
+func syncDecl() *Declaration {
+	payload := mustJSON(map[string]any{
+		"convention":       "test-sync",
+		"version":          "0.1",
+		"operation":        "ask",
+		"description":      "Ask and await a sync response",
+		"signing":          "member_key",
+		"response":         "sync",
+		"response_timeout": "5s",
+		"produces_tags": []any{
+			map[string]any{"tag": "test-sync:ask", "cardinality": "exactly_one"},
+		},
+	})
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		panic("syncDecl: " + err.Error())
+	}
+	return decl
+}
+
+// asyncDecl returns a declaration with response="async" explicitly set.
+func asyncDecl() *Declaration {
+	payload := mustJSON(map[string]any{
+		"convention":  "test-async",
+		"version":     "0.1",
+		"operation":   "fire",
+		"description": "Fire-and-forget async operation",
+		"signing":     "member_key",
+		"response":    "async",
+		"produces_tags": []any{
+			map[string]any{"tag": "test-async:fire", "cardinality": "exactly_one"},
+		},
+	})
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		panic("asyncDecl: " + err.Error())
+	}
+	return decl
+}
+
+// noneDecl returns a declaration with response="none" explicitly set.
+func noneDecl() *Declaration {
+	payload := mustJSON(map[string]any{
+		"convention":  "test-none",
+		"version":     "0.1",
+		"operation":   "emit",
+		"description": "Emit with no response",
+		"signing":     "member_key",
+		"response":    "none",
+		"produces_tags": []any{
+			map[string]any{"tag": "test-none:emit", "cardinality": "exactly_one"},
+		},
+	})
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		panic("noneDecl: " + err.Error())
+	}
+	return decl
+}
+
+// TestExecuteResult_Sync verifies that a sync declaration returns ExecuteResult
+// with the fulfillment payload in Response and a non-zero MessageID is absent
+// (sendFutureAndAwait handles send internally).
+func TestExecuteResult_Sync(t *testing.T) {
+	respPayload := []byte(`{"answer":"42"}`)
+	tr := &mockTransport{futureResult: respPayload}
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
+	decl := syncDecl()
+
+	result, err := ex.Execute(context.Background(), decl, "cf-sync", map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil ExecuteResult")
+	}
+	if string(result.Response) != string(respPayload) {
+		t.Errorf("Response = %s, want %s", result.Response, respPayload)
+	}
+	// Sync path went through sendFutureAndAwait — should be recorded in futureCalls.
+	if len(tr.futureCalls) != 1 {
+		t.Errorf("expected 1 future call, got %d", len(tr.futureCalls))
+	}
+	// Tags must be composed correctly.
+	foundTag := false
+	for _, tag := range tr.futureCalls[0].tags {
+		if tag == "test-sync:ask" {
+			foundTag = true
+		}
+	}
+	if !foundTag {
+		t.Errorf("expected test-sync:ask tag in future call, got %v", tr.futureCalls[0].tags)
+	}
+}
+
+// TestExecuteResult_Async verifies that an async declaration returns ExecuteResult
+// with MessageID set and Response nil.
+func TestExecuteResult_Async(t *testing.T) {
+	tr := &mockTransport{}
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
+	decl := asyncDecl()
+
+	result, err := ex.Execute(context.Background(), decl, "cf-async", map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil ExecuteResult")
+	}
+	if result.MessageID == "" {
+		t.Error("expected non-empty MessageID for async send")
+	}
+	if result.Response != nil {
+		t.Errorf("expected nil Response for async, got %s", result.Response)
+	}
+	// async path uses sendMessage, not sendFutureAndAwait.
+	if len(tr.futureCalls) != 0 {
+		t.Errorf("expected 0 future calls for async, got %d", len(tr.futureCalls))
+	}
+}
+
+// TestExecuteResult_None verifies that a none declaration returns ExecuteResult
+// with MessageID set and Response nil.
+func TestExecuteResult_None(t *testing.T) {
+	tr := &mockTransport{}
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
+	decl := noneDecl()
+
+	result, err := ex.Execute(context.Background(), decl, "cf-none", map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil ExecuteResult")
+	}
+	if result.MessageID == "" {
+		t.Error("expected non-empty MessageID for none-response send")
+	}
+	if result.Response != nil {
+		t.Errorf("expected nil Response for none, got %s", result.Response)
+	}
+	if len(tr.futureCalls) != 0 {
+		t.Errorf("expected 0 future calls for none, got %d", len(tr.futureCalls))
+	}
+}
+
+// TestExecuteResult_SyncTimeout verifies that when sendFutureAndAwait times out
+// (context deadline), Execute returns ErrResponseTimeout sentinel.
+func TestExecuteResult_SyncTimeout(t *testing.T) {
+	tr := &mockTransport{
+		futureDelay: 35 * time.Second, // longer than the step timeout
+	}
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
+	decl := syncDecl()
+
+	// Use a context that expires quickly to trigger the timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	result, err := ex.Execute(ctx, decl, "cf-sync-timeout", map[string]any{})
+	if err == nil {
+		t.Fatal("expected ErrResponseTimeout, got nil")
+	}
+	if !errors.Is(err, ErrResponseTimeout) {
+		t.Errorf("expected errors.Is(err, ErrResponseTimeout), got: %v", err)
+	}
+	// Result should be non-nil with Response nil (no fulfillment arrived).
+	if result == nil {
+		t.Fatal("expected non-nil ExecuteResult even on timeout")
+	}
+	if result.Response != nil {
+		t.Errorf("expected nil Response on timeout, got %s", result.Response)
 	}
 }
 

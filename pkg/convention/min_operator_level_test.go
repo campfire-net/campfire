@@ -93,7 +93,7 @@ func TestMinOperatorLevel_RejectedWhenLevelInsufficient(t *testing.T) {
 		levels: map[string]int{provSenderKey: 1},
 	})
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key": strings.Repeat("a", 64),
 	})
 
@@ -123,7 +123,7 @@ func TestMinOperatorLevel_AcceptedWhenLevelSufficient(t *testing.T) {
 		levels: map[string]int{provSenderKey: 2},
 	})
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key": strings.Repeat("a", 64),
 	})
 
@@ -146,7 +146,7 @@ func TestMinOperatorLevel_AcceptedWhenLevelExceedsMinimum(t *testing.T) {
 		levels: map[string]int{provSenderKey: 3},
 	})
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key": strings.Repeat("a", 64),
 	})
 
@@ -164,7 +164,7 @@ func TestMinOperatorLevel_ZeroGateAllowsAny(t *testing.T) {
 	// No provenance checker needed — zero gate skips the check entirely.
 	exec := convention.NewExecutorForTest(transport, provSenderKey)
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key": strings.Repeat("a", 64),
 	})
 
@@ -183,7 +183,7 @@ func TestMinOperatorLevel_NoCheckerDefaultsToZero(t *testing.T) {
 	exec := convention.NewExecutorForTest(transport, provSenderKey)
 	// No WithProvenance call — sender defaults to level 0.
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key": strings.Repeat("a", 64),
 	})
 
@@ -212,7 +212,7 @@ func TestMinOperatorLevel_ErrorContainsOperationName(t *testing.T) {
 	exec := convention.NewExecutorForTest(&noopTransport{}, provSenderKey).
 		WithProvenance(&staticProvenanceChecker{levels: map[string]int{provSenderKey: 0}})
 
-	err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
+	_, err := exec.Execute(context.Background(), decl, "campfire-abc", map[string]any{
 		"peer_key": strings.Repeat("a", 64),
 	})
 
@@ -262,7 +262,7 @@ func TestMinOperatorLevel_WorkflowRejected(t *testing.T) {
 	exec := convention.NewExecutorForTest(transport, provSenderKey).
 		WithProvenance(&staticProvenanceChecker{levels: map[string]int{provSenderKey: 1}})
 
-	execErr := exec.Execute(context.Background(), decl, "campfire-abc", nil)
+	_, execErr := exec.Execute(context.Background(), decl, "campfire-abc", nil)
 	if execErr == nil {
 		t.Fatal("expected workflow to be rejected at level 1 gate")
 	}

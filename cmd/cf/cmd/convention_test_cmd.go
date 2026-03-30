@@ -262,7 +262,7 @@ func (t *digitalTwin) testDeclaration(src declSource) declTestResult {
 	exec := convention.NewExecutorForTest(tr, t.conventionRegID)
 	synArgs := buildSyntheticArgs(decl)
 	step4 := declTestStep{Name: "execute"}
-	if err := exec.Execute(context.Background(), decl, t.conventionRegID, synArgs); err != nil {
+	if _, err := exec.Execute(context.Background(), decl, t.conventionRegID, synArgs); err != nil {
 		step4.Pass = false
 		step4.Note = err.Error()
 		// campfire_key declarations can't be executed with a member key — downgrade to note.

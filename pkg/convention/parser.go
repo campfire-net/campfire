@@ -52,6 +52,10 @@ type Declaration struct {
 	// "async" — caller does not block; response arrives out-of-band.
 	// "none" — no response is expected.
 	Response string `json:"response,omitempty"`
+	// ResponseExplicit is true when the "response" field was present in the JSON payload.
+	// When false, Response was defaulted to "sync" for backward compat and the executor
+	// should treat the operation as a normal (non-blocking) send.
+	ResponseExplicit bool `json:"-"`
 	// ResponseTimeoutRaw is the raw duration string from JSON (e.g. "30s").
 	// Parse populates ResponseTimeout from this field.
 	ResponseTimeoutRaw string `json:"response_timeout,omitempty"`
@@ -227,8 +231,11 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*De
 	validResponseValues := map[string]bool{"sync": true, "async": true, "none": true}
 	if decl.Response == "" {
 		decl.Response = "sync"
+		decl.ResponseExplicit = false
 	} else if !validResponseValues[decl.Response] {
 		return nil, nil, fmt.Errorf("invalid response value %q: must be one of \"sync\", \"async\", \"none\"", decl.Response)
+	} else {
+		decl.ResponseExplicit = true
 	}
 	if decl.ResponseTimeoutRaw != "" {
 		d, err := time.ParseDuration(decl.ResponseTimeoutRaw)

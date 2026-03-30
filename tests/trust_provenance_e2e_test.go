@@ -181,7 +181,7 @@ func TestTrustProvenanceE2E_HappyPath(t *testing.T) {
 	checker := &e2eProvenanceChecker{store: store}
 	exec := convention.NewExecutorForTest(transport, e2eOperatorKey).WithProvenance(checker)
 
-	if err := exec.Execute(context.Background(), decl, e2eCampfireID, map[string]any{
+	if _, err := exec.Execute(context.Background(), decl, e2eCampfireID, map[string]any{
 		"peer_key": strings.Repeat("a", 64),
 	}); err != nil {
 		t.Fatalf("Execute gated op (should succeed): %v", err)
@@ -222,7 +222,7 @@ func TestTrustProvenanceE2E_RejectionPath(t *testing.T) {
 	checker := &e2eProvenanceChecker{store: store}
 	exec := convention.NewExecutorForTest(transport, e2eOperatorKey).WithProvenance(checker)
 
-	err := exec.Execute(context.Background(), decl, e2eCampfireID, map[string]any{
+	_, err := exec.Execute(context.Background(), decl, e2eCampfireID, map[string]any{
 		"peer_key": strings.Repeat("a", 64),
 	})
 	if err == nil {
@@ -322,7 +322,7 @@ func TestTrustProvenanceE2E_PersistenceRoundTrip(t *testing.T) {
 	transport := &e2eNoopTransport{}
 	exec := convention.NewExecutorForTest(transport, e2eOperatorKey).WithProvenance(checker)
 
-	if err := exec.Execute(context.Background(), decl, e2eCampfireID, map[string]any{
+	if _, err := exec.Execute(context.Background(), decl, e2eCampfireID, map[string]any{
 		"peer_key": strings.Repeat("b", 64),
 	}); err != nil {
 		t.Errorf("gated op on reloaded store: %v", err)
@@ -648,7 +648,7 @@ func TestTrustProvenanceE2E_CoSignedCap(t *testing.T) {
 	transport := &e2eNoopTransport{}
 	checker := &e2eProvenanceChecker{store: store}
 	exec := convention.NewExecutorForTest(transport, e2eOperatorKey).WithProvenance(checker)
-	if err := exec.Execute(context.Background(), decl, e2eCampfireID, map[string]any{
+	if _, err := exec.Execute(context.Background(), decl, e2eCampfireID, map[string]any{
 		"peer_key": strings.Repeat("c", 64),
 	}); err == nil {
 		t.Error("expected rejection for non-co-signed attestation (level 1), got nil")

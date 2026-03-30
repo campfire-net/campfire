@@ -209,7 +209,7 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 	client := protocol.New(s, agentID)
 	executor := convention.NewExecutor(client, agentID.PublicKeyHex())
 
-	if err := executor.Execute(ctx, matched, campfireID, args); err != nil {
+	if _, err := executor.Execute(ctx, matched, campfireID, args); err != nil {
 		return fmt.Errorf("convention operation failed: %w", err)
 	}
 

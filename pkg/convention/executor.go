@@ -216,8 +216,22 @@ func newExecutorWithSharedLimiter(transport executorTransport, selfKey string) *
 	}
 }
 
+// ExecuteResult holds the result of a successful Execute call.
+type ExecuteResult struct {
+	// MessageID is the ID of the message that was sent.
+	MessageID string
+	// Response is the fulfillment payload for sync declarations. Nil for async/none.
+	Response []byte
+	// Elapsed is the round-trip time for sync declarations.
+	Elapsed time.Duration
+}
+
+// ErrResponseTimeout is returned by Execute when a sync operation's response
+// times out waiting for fulfillment. Callers can check with errors.Is.
+var ErrResponseTimeout = fmt.Errorf("convention: response timeout waiting for fulfillment")
+
 // Execute validates args, composes tags, enforces rate limits, and sends messages.
-func (e *Executor) Execute(ctx context.Context, decl *Declaration, campfireID string, args map[string]any) error {
+func (e *Executor) Execute(ctx context.Context, decl *Declaration, campfireID string, args map[string]any) (*ExecuteResult, error) {
 	// Operator provenance gate: reject if sender's level is below the declared minimum.
 	// See Operator Provenance Convention v0.1 §8.1.
 	if decl.MinOperatorLevel > 0 {
@@ -226,7 +240,7 @@ func (e *Executor) Execute(ctx context.Context, decl *Declaration, campfireID st
 			senderLevel = e.provenance.Level(e.selfKey)
 		}
 		if senderLevel < decl.MinOperatorLevel {
-			return fmt.Errorf("operator provenance level %d insufficient: operation %q requires level %d",
+			return nil, fmt.Errorf("operator provenance level %d insufficient: operation %q requires level %d",
 				senderLevel, decl.Convention+":"+decl.Operation, decl.MinOperatorLevel)
 		}
 	}
@@ -238,17 +252,17 @@ func (e *Executor) Execute(ctx context.Context, decl *Declaration, campfireID st
 }
 
 // executeSingle runs a single-step convention operation.
-func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfireID string, args map[string]any) error {
+func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfireID string, args map[string]any) (*ExecuteResult, error) {
 	// 1. Validate and apply defaults.
 	resolved, err := validateArgs(decl.Args, args)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// 2. Compose tags.
 	composed, err := composeTags(decl, resolved)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// 3. Tag denylist check.
@@ -260,34 +274,63 @@ func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfir
 			continue
 		}
 		if err := checkDeniedTag(tag); err != nil {
-			return fmt.Errorf("composed tag rejected by denylist: %w", err)
+			return nil, fmt.Errorf("composed tag rejected by denylist: %w", err)
 		}
 	}
 
 	// 4. Construct antecedents.
 	antecedents, err := e.resolveAntecedents(ctx, decl, campfireID, resolved)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// 5. Rate limit enforcement.
 	if decl.RateLimit != nil {
 		key := rateLimitKey(decl, campfireID, e.selfKey)
 		if err := e.rateLimiter.Check(key, decl.RateLimit); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	// 6. Build payload.
 	payload, err := json.Marshal(resolved)
 	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
+		return nil, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	// 7. Send.
-	_, err = e.transport.sendMessage(ctx, campfireID, payload, composed, antecedents, decl.Signing == "campfire_key")
+	// 7. Send (or send-as-future for sync response declarations).
+	// Only use the future/await path when response="sync" was explicitly declared.
+	// Declarations that defaulted to "sync" (ResponseExplicit=false) use the normal path.
+	if decl.Response == "sync" && decl.ResponseExplicit {
+		// Sync: send as future and await fulfillment.
+		start := time.Now()
+		timeout := decl.ResponseTimeout
+		if timeout == 0 {
+			timeout = 30 * time.Second
+		}
+		respPayload, err := e.transport.sendFutureAndAwait(ctx, campfireID, payload, composed, timeout)
+		elapsed := time.Since(start)
+		if err != nil {
+			// Check if it's a timeout — context deadline exceeded from sendFutureAndAwait.
+			if ctx.Err() != nil || isTimeoutErr(err) {
+				// Return partial result with ErrResponseTimeout sentinel.
+				// We don't have a msgID since sendFutureAndAwait handles send internally.
+				return &ExecuteResult{Elapsed: elapsed}, ErrResponseTimeout
+			}
+			return nil, fmt.Errorf("send message: %w", err)
+		}
+		// Record rate limit usage after successful send.
+		if decl.RateLimit != nil {
+			key := rateLimitKey(decl, campfireID, e.selfKey)
+			e.rateLimiter.Record(key, decl.RateLimit)
+		}
+		return &ExecuteResult{Response: respPayload, Elapsed: elapsed}, nil
+	}
+
+	// Async or none (or empty/unset): send normally and return msgID.
+	msgID, err := e.transport.sendMessage(ctx, campfireID, payload, composed, antecedents, decl.Signing == "campfire_key")
 	if err != nil {
-		return fmt.Errorf("send message: %w", err)
+		return nil, fmt.Errorf("send message: %w", err)
 	}
 
 	// 8. Record rate limit usage after successful send.
@@ -296,11 +339,23 @@ func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfir
 		e.rateLimiter.Record(key, decl.RateLimit)
 	}
 
-	return nil
+	return &ExecuteResult{MessageID: msgID}, nil
+}
+
+// isTimeoutErr returns true if err looks like a deadline/timeout error.
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "context deadline") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "timed out")
 }
 
 // executeWorkflow runs a multi-step convention operation.
-func (e *Executor) executeWorkflow(ctx context.Context, decl *Declaration, campfireID string, args map[string]any) error {
+func (e *Executor) executeWorkflow(ctx context.Context, decl *Declaration, campfireID string, args map[string]any) (*ExecuteResult, error) {
 	const totalTimeout = 120 * time.Second
 	const stepTimeout = 30 * time.Second
 
@@ -315,10 +370,11 @@ func (e *Executor) executeWorkflow(ctx context.Context, decl *Declaration, campf
 		err := e.executeStep(stepCtx, step, campfireID, bindings)
 		stepCancel()
 		if err != nil {
-			return fmt.Errorf("step[%d] (%s): %w", i, step.Action, err)
+			return nil, fmt.Errorf("step[%d] (%s): %w", i, step.Action, err)
 		}
 	}
-	return nil
+	// Multi-step workflows handle their own await internally; return empty result.
+	return &ExecuteResult{}, nil
 }
 
 func (e *Executor) executeStep(ctx context.Context, step Step, campfireID string, bindings map[string]map[string]any) error {
