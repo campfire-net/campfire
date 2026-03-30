@@ -48,8 +48,8 @@ func (n *noopTransport) ReadMessages(_ context.Context, _ string, _ []string) ([
 	return nil, nil
 }
 
-func (n *noopTransport) SendFutureAndAwait(_ context.Context, _ string, _ []byte, _ []string, _ time.Duration) ([]byte, error) {
-	return nil, nil
+func (n *noopTransport) SendFutureAndAwait(_ context.Context, _ string, _ []byte, _ []string, _ []string, _ time.Duration) (string, []byte, error) {
+	return "", nil, nil
 }
 
 // parseGatedDecl builds a Declaration with min_operator_level set to minLevel.

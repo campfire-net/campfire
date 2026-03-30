@@ -696,10 +696,10 @@ func (b *httpModeBackend) ReadMessages(_ context.Context, campfireID string, tag
 	return records, nil
 }
 
-func (b *httpModeBackend) SendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) ([]byte, error) {
-	msg, err := b.srv.sendMessageHTTPMode(b.st, b.agentID, campfireID, payload, append(tags, "future"), nil)
+func (b *httpModeBackend) SendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, timeout time.Duration) (string, []byte, error) {
+	msg, err := b.srv.sendMessageHTTPMode(b.st, b.agentID, campfireID, payload, append(tags, "future"), antecedents)
 	if err != nil {
-		return nil, fmt.Errorf("sending future: %w", err)
+		return "", nil, fmt.Errorf("sending future: %w", err)
 	}
 	fulfillment, awaitErr := b.client.Await(protocol.AwaitRequest{
 		CampfireID:  campfireID,
@@ -707,9 +707,9 @@ func (b *httpModeBackend) SendFutureAndAwait(ctx context.Context, campfireID str
 		Timeout:     timeout,
 	})
 	if awaitErr != nil {
-		return nil, fmt.Errorf("awaiting fulfillment: %w", awaitErr)
+		return msg.ID, nil, fmt.Errorf("awaiting fulfillment: %w", awaitErr)
 	}
-	return fulfillment.Payload, nil
+	return msg.ID, fulfillment.Payload, nil
 }
 
 // handleConventionTool dispatches a convention tool invocation through the executor.

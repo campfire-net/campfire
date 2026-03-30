@@ -112,11 +112,11 @@ func (t *integrationTransport) ReadMessages(_ context.Context, _ string, _ []str
 	return nil, nil
 }
 
-func (t *integrationTransport) SendFutureAndAwait(_ context.Context, campfireID string, _ []byte, _ []string, _ time.Duration) ([]byte, error) {
+func (t *integrationTransport) SendFutureAndAwait(_ context.Context, campfireID string, _ []byte, _ []string, _ []string, _ time.Duration) (string, []byte, error) {
 	if t.futureResult != nil {
-		return t.futureResult, nil
+		return "future-msg-" + campfireID, t.futureResult, nil
 	}
-	return []byte(`{"msg_id":"prior-msg-123"}`), nil
+	return "future-msg-" + campfireID, []byte(`{"msg_id":"prior-msg-123"}`), nil
 }
 
 // ---- helpers ----

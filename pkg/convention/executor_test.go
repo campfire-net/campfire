@@ -47,13 +47,14 @@ func (m *mockTransport) readMessages(_ context.Context, _ string, _ []string) ([
 	return m.readResults, nil
 }
 
-func (m *mockTransport) sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, _ time.Duration) ([]byte, error) {
+func (m *mockTransport) sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, _ time.Duration) (string, []byte, error) {
 	// Record in both sentMessages (so existing tests that check sentMessages see the call)
 	// and futureCalls (so tests can distinguish futures from normal sends).
 	call := sentMessage{
-		campfireID: campfireID,
-		payload:    payload,
-		tags:       tags,
+		campfireID:  campfireID,
+		payload:     payload,
+		tags:        tags,
+		antecedents: antecedents,
 	}
 	m.futureCalls = append(m.futureCalls, call)
 	m.sentMessages = append(m.sentMessages, call)
@@ -61,10 +62,11 @@ func (m *mockTransport) sendFutureAndAwait(ctx context.Context, campfireID strin
 		select {
 		case <-time.After(m.futureDelay):
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return "", nil, ctx.Err()
 		}
 	}
-	return m.futureResult, m.futureErr
+	msgID := "future-msg-" + campfireID
+	return msgID, m.futureResult, m.futureErr
 }
 
 // socialPostDecl returns the §16.1 Declaration.
@@ -966,8 +968,7 @@ func noneDecl() *Declaration {
 }
 
 // TestExecuteResult_Sync verifies that a sync declaration returns ExecuteResult
-// with the fulfillment payload in Response and a non-zero MessageID is absent
-// (sendFutureAndAwait handles send internally).
+// with the fulfillment payload in Response and MessageID populated from the sent message.
 func TestExecuteResult_Sync(t *testing.T) {
 	respPayload := []byte(`{"answer":"42"}`)
 	tr := &mockTransport{futureResult: respPayload}
@@ -997,6 +998,64 @@ func TestExecuteResult_Sync(t *testing.T) {
 	}
 	if !foundTag {
 		t.Errorf("expected test-sync:ask tag in future call, got %v", tr.futureCalls[0].tags)
+	}
+	// MessageID must be populated on sync path from the returned msgID.
+	if result.MessageID == "" {
+		t.Error("expected non-empty MessageID on sync path")
+	}
+	wantMsgID := "future-msg-cf-sync"
+	if result.MessageID != wantMsgID {
+		t.Errorf("MessageID = %q, want %q", result.MessageID, wantMsgID)
+	}
+}
+
+// TestExecuteResult_Sync_AntecedentsPassedThrough verifies that antecedents resolved
+// by executeSingle are forwarded to sendFutureAndAwait on the sync path.
+func TestExecuteResult_Sync_AntecedentsPassedThrough(t *testing.T) {
+	// Provide a prior message so that self_prior antecedent resolution finds one.
+	// The opTag for resolution is "test-sync-prior:ask" (convention:operation).
+	priorMsg := MessageRecord{ID: "prior-sync-msg", Sender: testSenderKey, Tags: []string{"test-sync-prior:ask"}}
+	respPayload := []byte(`{"ok":true}`)
+	tr := &mockTransport{
+		futureResult: respPayload,
+		readResults:  []MessageRecord{priorMsg},
+	}
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
+
+	// Build a sync decl with exactly_one(self_prior) antecedents so we can verify pass-through.
+	syncSelfPriorPayload := mustJSON(map[string]any{
+		"convention":  "test-sync-prior",
+		"version":     "0.1",
+		"operation":   "ask",
+		"description": "Sync ask with self_prior antecedent",
+		"args":        []any{},
+		"response":    "sync",
+		"antecedents": "exactly_one(self_prior)",
+		"signing":     "member_key",
+	})
+	decl, _, err := Parse(tags(ConventionOperationTag), syncSelfPriorPayload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	result, err := ex.Execute(context.Background(), decl, "cf-sync-ant", map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil ExecuteResult")
+	}
+	// The antecedent should have been passed to sendFutureAndAwait.
+	if len(tr.futureCalls) != 1 {
+		t.Fatalf("expected 1 future call, got %d", len(tr.futureCalls))
+	}
+	got := tr.futureCalls[0].antecedents
+	if len(got) != 1 || got[0] != priorMsg.ID {
+		t.Errorf("antecedents passed to sendFutureAndAwait = %v, want [%s]", got, priorMsg.ID)
+	}
+	// MessageID must still be populated.
+	if result.MessageID == "" {
+		t.Error("expected non-empty MessageID on sync path with antecedents")
 	}
 }
 

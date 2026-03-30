@@ -23,7 +23,7 @@ import (
 type executorTransport interface {
 	sendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, campfireKey bool) (msgID string, err error)
 	readMessages(ctx context.Context, campfireID string, tags []string) ([]MessageRecord, error)
-	sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) (fulfillmentPayload []byte, err error)
+	sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, timeout time.Duration) (msgID string, fulfillmentPayload []byte, err error)
 }
 
 // ExecutorBackend is the exported interface for injecting a test double into the
@@ -33,7 +33,7 @@ type ExecutorBackend interface {
 	SendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (msgID string, err error)
 	SendCampfireKeySigned(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (msgID string, err error)
 	ReadMessages(ctx context.Context, campfireID string, tags []string) ([]MessageRecord, error)
-	SendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) (fulfillmentPayload []byte, err error)
+	SendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, timeout time.Duration) (msgID string, fulfillmentPayload []byte, err error)
 }
 
 // backendAdapter bridges ExecutorBackend to executorTransport. Used by
@@ -51,8 +51,8 @@ func (a *backendAdapter) readMessages(ctx context.Context, campfireID string, ta
 	return a.b.ReadMessages(ctx, campfireID, tags)
 }
 
-func (a *backendAdapter) sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) ([]byte, error) {
-	return a.b.SendFutureAndAwait(ctx, campfireID, payload, tags, timeout)
+func (a *backendAdapter) sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, timeout time.Duration) (string, []byte, error) {
+	return a.b.SendFutureAndAwait(ctx, campfireID, payload, tags, antecedents, timeout)
 }
 
 // clientAdapter bridges *protocol.Client to executorTransport.
@@ -97,14 +97,15 @@ func (a *clientAdapter) readMessages(_ context.Context, campfireID string, tags 
 	return records, nil
 }
 
-func (a *clientAdapter) sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, timeout time.Duration) ([]byte, error) {
+func (a *clientAdapter) sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, timeout time.Duration) (string, []byte, error) {
 	msg, err := a.client.Send(protocol.SendRequest{
-		CampfireID: campfireID,
-		Payload:    payload,
-		Tags:       append(tags, "future"),
+		CampfireID:  campfireID,
+		Payload:     payload,
+		Tags:        append(tags, "future"),
+		Antecedents: antecedents,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("sending future: %w", err)
+		return "", nil, fmt.Errorf("sending future: %w", err)
 	}
 
 	fulfillment, err := a.client.Await(protocol.AwaitRequest{
@@ -113,9 +114,9 @@ func (a *clientAdapter) sendFutureAndAwait(ctx context.Context, campfireID strin
 		Timeout:     timeout,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("awaiting fulfillment: %w", err)
+		return msg.ID, nil, fmt.Errorf("awaiting fulfillment: %w", err)
 	}
-	return fulfillment.Payload, nil
+	return msg.ID, fulfillment.Payload, nil
 }
 
 // MessageRecord is a minimal message record for executor use.
@@ -309,14 +310,13 @@ func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfir
 		if timeout == 0 {
 			timeout = 30 * time.Second
 		}
-		respPayload, err := e.transport.sendFutureAndAwait(ctx, campfireID, payload, composed, timeout)
+		msgID, respPayload, err := e.transport.sendFutureAndAwait(ctx, campfireID, payload, composed, antecedents, timeout)
 		elapsed := time.Since(start)
 		if err != nil {
 			// Check if it's a timeout — context deadline exceeded from sendFutureAndAwait.
 			if ctx.Err() != nil || isTimeoutErr(err) {
 				// Return partial result with ErrResponseTimeout sentinel.
-				// We don't have a msgID since sendFutureAndAwait handles send internally.
-				return &ExecuteResult{Elapsed: elapsed}, ErrResponseTimeout
+				return &ExecuteResult{MessageID: msgID, Elapsed: elapsed}, ErrResponseTimeout
 			}
 			return nil, fmt.Errorf("send message: %w", err)
 		}
@@ -325,7 +325,7 @@ func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfir
 			key := rateLimitKey(decl, campfireID, e.selfKey)
 			e.rateLimiter.Record(key, decl.RateLimit)
 		}
-		return &ExecuteResult{Response: respPayload, Elapsed: elapsed}, nil
+		return &ExecuteResult{MessageID: msgID, Response: respPayload, Elapsed: elapsed}, nil
 	}
 
 	// Async or none (or empty/unset): send normally and return msgID.
@@ -410,7 +410,7 @@ func (e *Executor) executeQueryStep(ctx context.Context, step Step, campfireID s
 		}
 	}
 
-	result, err := e.transport.sendFutureAndAwait(ctx, campfireID, futurePayload, futureTags, 30*time.Second)
+	_, result, err := e.transport.sendFutureAndAwait(ctx, campfireID, futurePayload, futureTags, nil, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("query future: %w", err)
 	}

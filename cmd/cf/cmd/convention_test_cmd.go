@@ -379,6 +379,6 @@ func (t *syntheticTransport) ReadMessages(_ context.Context, _ string, _ []strin
 	return nil, nil
 }
 
-func (t *syntheticTransport) SendFutureAndAwait(_ context.Context, _ string, _ []byte, _ []string, _ time.Duration) ([]byte, error) {
-	return []byte(`{"msg_id":"synthetic-prior-id"}`), nil
+func (t *syntheticTransport) SendFutureAndAwait(_ context.Context, _ string, _ []byte, _ []string, _ []string, _ time.Duration) (string, []byte, error) {
+	return "synthetic-future-msg", []byte(`{"msg_id":"synthetic-prior-id"}`), nil
 }
