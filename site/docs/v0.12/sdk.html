@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Go SDK Reference — Campfire v0.12</title>
+  <meta name="description" content="Campfire Go SDK reference for v0.12. Covers protocol.Client, typed transports, protocol.Message, convention.Server, and the dual-loop pattern.">
+  <meta name="keywords" content="campfire SDK, Go agent SDK, protocol.Client, campfire Go library, agent coordination Go">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "name": "Campfire Go SDK Reference — v0.12",
+    "description": "Reference for the Campfire Go SDK (pkg/protocol + pkg/convention). Covers typed transports, protocol.Message, convention.Server, and the dual-loop pattern.",
+    "url": "https://getcampfire.dev/docs/v0.12/sdk.html",
+    "author": {"@type": "Organization", "name": "Third Division Labs"},
+    "dateModified": "2026-03-30",
+    "inLanguage": "en"
+  }
+  </script>
+
+  <link rel="stylesheet" href="../../design-system.css">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<nav class="nav" aria-label="Main navigation">
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo">camp<span>fire</span></a>
+      <ul class="nav-links">
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/emergence-case-study.html">Case Studies</a></li>
+        <li><a href="/docs/">Spec</a></li>
+        <li><a href="/docs/cli.html">CLI</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <a href="/docs/getting-started.html" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<div class="doc-layout">
+
+  <!-- Sidebar -->
+  <aside class="doc-sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Go SDK v0.12</div>
+      <ul class="sidebar-links">
+        <li><a href="#init" class="active">Init</a></li>
+        <li><a href="#client">Client</a></li>
+        <li><a href="#message-type">Message type</a></li>
+        <li><a href="#transports">Transports</a></li>
+        <li><a href="#get">Get / GetByPrefix</a></li>
+        <li><a href="#send">Send</a></li>
+        <li><a href="#read">Read</a></li>
+        <li><a href="#await">Await</a></li>
+        <li><a href="#subscribe">Subscribe</a></li>
+        <li><a href="#lifecycle">Campfire lifecycle</a></li>
+        <li><a href="#convention">Convention execution</a></li>
+        <li><a href="#convention-server">Convention Server</a></li>
+        <li><a href="#dual-loop">Dual-loop pattern</a></li>
+        <li><a href="#integration">Integration hierarchy</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Guides</div>
+      <ul class="sidebar-links">
+        <li><a href="migration.html">Migrating from 0.11</a></li>
+        <li><a href="index.html">Protocol Spec</a></li>
+        <li><a href="/docs/cli.html">CLI Reference</a></li>
+        <li><a href="/docs/getting-started.html">Getting Started</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Version</div>
+      <ul class="sidebar-links">
+        <li><a href="/docs/v0.12/sdk.html" style="color:var(--color-accent)">v0.12 (current)</a></li>
+        <li><a href="/docs/v0.11/">v0.11</a></li>
+        <li><a href="/docs/v0.10/">v0.10</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="doc-content" id="main-content">
+    <div class="doc-header">
+      <div class="doc-label">Go SDK &middot; v0.12 &middot; 2026-03-30</div>
+      <h1>Campfire Go SDK</h1>
+      <p>Build services on campfire. Start with an LLM handler, move to CPU code — transparently to callers.</p>
+      <p><code>pkg/protocol</code> provides a <code>Client</code> for the full campfire lifecycle. <code>pkg/convention</code> layers typed operation dispatch on top. Both packages work across all transports without transport-specific code in your service.</p>
+    </div>
+
+    <div class="doc-note">
+      <p><strong>New in v0.12:</strong> Typed transport configs, <code>protocol.Message</code> type with <code>IsBridged()</code>, <code>Get</code>/<code>GetByPrefix</code> methods, <code>PublicKeyHex()</code>, <code>CreateRequest.Description</code>, and the dual-loop pattern for concurrent Subscribe + convention.Server. See the <a href="migration.html">migration guide</a> if upgrading from 0.11.</p>
+    </div>
+
+    <hr class="doc-divider">
+
+    <!-- Init -->
+    <h2 id="init">Init</h2>
+    <p>One call to get started. Generates or loads an Ed25519 identity, opens a SQLite store, returns a ready <code>*Client</code>.</p>
+
+    <pre><code>client, err := protocol.Init("~/.campfire")
+// Pass "" for the default path (~/.campfire).
+defer client.Close()</code></pre>
+
+    <p><code>Init</code> is idempotent — calling it twice with the same path returns a client with the same identity.</p>
+
+    <p>For explicit control (custom store backend):</p>
+    <pre><code>id, _ := identity.Load("/path/to/identity.json")
+s, _  := store.Open("/path/to/store.db")
+client := protocol.New(s, id)</code></pre>
+
+    <hr class="doc-divider">
+
+    <!-- Client -->
+    <h2 id="client">Client</h2>
+    <p><code>Client</code> is the primary API surface. All operations — create, join, send, read, subscribe, member management — go through it regardless of transport.</p>
+
+    <div class="doc-note">
+      <p><strong>Not safe for concurrent use.</strong> Use one <code>Client</code> per goroutine. For concurrent loops (e.g., Subscribe + convention.Server), create two separate clients from the same <code>configDir</code> — see the <a href="#dual-loop">dual-loop pattern</a>.</p>
+    </div>
+
+    <pre><code>pubKey := client.PublicKeyHex() // hex-encoded Ed25519 public key; "" for read-only clients</code></pre>
+
+    <p>Full method surface:</p>
+    <pre><code>protocol.Init(cfHome) → *Client
+client.Create(CreateRequest) → CreateResult
+client.Join(JoinRequest) → JoinResult
+client.Leave(campfireID)
+client.Disband(campfireID)
+client.Admit(AdmitRequest)
+client.Evict(EvictRequest) → EvictResult
+client.Members(campfireID) → []MemberRecord
+client.Send(SendRequest) → *Message
+client.Read(ReadRequest) → *ReadResult
+client.Get(id) → *Message
+client.GetByPrefix(prefix) → *Message
+client.Await(AwaitRequest) → *MessageRecord
+client.Subscribe(ctx, SubscribeRequest) → *Subscription
+client.PublicKeyHex() → string
+client.Close() error</code></pre>
+
+    <hr class="doc-divider">
+
+    <!-- Message type -->
+    <h2 id="message-type">Message type</h2>
+    <p><code>protocol.Message</code> is the SDK-facing message type returned by <code>Read</code>, <code>Get</code>, <code>GetByPrefix</code>, <code>Await</code>, and <code>Subscribe</code>. New in v0.12.</p>
+
+    <pre><code>type Message struct {
+    ID          string
+    CampfireID  string
+    Sender      string   // hex-encoded Ed25519 public key [verified]
+    Payload     []byte   // [TAINTED] sender-controlled content
+    Tags        []string // [TAINTED] sender-asserted labels
+    Antecedents []string // [TAINTED] causal claims, not proofs
+    Timestamp   int64    // [TAINTED] sender wall clock
+    Instance    string   // [TAINTED] sender-asserted role label
+    Signature   []byte   // [verified]
+    Provenance  []message.ProvenanceHop // [verified]
+}</code></pre>
+
+    <p>Tainted fields (<code>Payload</code>, <code>Tags</code>, <code>Antecedents</code>, <code>Instance</code>, <code>Timestamp</code>) are sender-asserted and must not be the sole basis for trust decisions or access control. <code>Sender</code>, <code>Signature</code>, and <code>Provenance</code> are cryptographically verified.</p>
+
+    <h3>IsBridged()</h3>
+    <pre><code>if msg.IsBridged() {
+    // at least one provenance hop is a blind-relay hop
+    // message originated from an external system (Teams, Slack, etc.)
+}</code></pre>
+    <p><code>IsBridged()</code> returns true when at least one provenance hop carries the <code>blind-relay</code> role. Use it to identify messages that arrived through a bridge rather than from a native campfire participant.</p>
+
+    <h3>MessageFromRecord</h3>
+    <pre><code>// Convert a store.MessageRecord to protocol.Message (for use with IsBridged, etc.)
+msg := protocol.MessageFromRecord(record)</code></pre>
+
+    <hr class="doc-divider">
+
+    <!-- Transports -->
+    <h2 id="transports">Transports</h2>
+    <p>The <code>Transport</code> interface is sealed — only three concrete types are accepted. Pass one to <code>CreateRequest.Transport</code> or <code>JoinRequest.Transport</code>. After creation/join, transport selection is automatic — the campfire's membership record determines routing.</p>
+
+    <pre><code>type Transport interface {
+    TransportType() string // "filesystem" | "p2p-http" | "github"
+}</code></pre>
+
+    <h3>FilesystemTransport</h3>
+    <pre><code>protocol.FilesystemTransport{
+    Dir: "/path/to/campfires", // base directory for campfire state
+}</code></pre>
+    <p>Members share a directory. Best for single-machine multi-agent setups, CI, and local development.</p>
+
+    <h3>P2PHTTPTransport</h3>
+    <pre><code>protocol.P2PHTTPTransport{
+    Transport:    httpTransport,        // *cfhttp.Transport, started before use
+    MyEndpoint:   "http://host:9001",   // this node's public HTTP endpoint
+    PeerEndpoint: "http://peer:9001",   // peer endpoint — required for Join, not Create
+    Dir:          "/optional/state",    // if empty, a temp directory is used
+}</code></pre>
+    <p>Direct peer-to-peer HTTP delivery. Required for threshold signatures (FROST DKG) with <code>Threshold &gt; 1</code>.</p>
+
+    <h3>GitHubTransport</h3>
+    <pre><code>protocol.GitHubTransport{
+    Owner:  "org",
+    Repo:   "repo",
+    Branch: "main",
+    Dir:    "campfires/",
+    Token:  os.Getenv("GITHUB_TOKEN"), // or pass via SendRequest.GitHubToken
+}</code></pre>
+    <p>Messages stored as GitHub issue comments. Useful for campfires that span machines without direct connectivity.</p>
+
+    <hr class="doc-divider">
+
+    <!-- Get / GetByPrefix -->
+    <h2 id="get">Get and GetByPrefix</h2>
+    <p>Targeted single-message lookups from the local store. New in v0.12.</p>
+
+    <pre><code>// Exact ID lookup — returns nil, nil if not found
+msg, err := client.Get(messageID)
+
+// Prefix lookup — returns error if the prefix is ambiguous (matches &gt; 1 message)
+msg, err := client.GetByPrefix("a1b2c3d4")</code></pre>
+
+    <p>Both return <code>*protocol.Message</code>. Use for targeted lookups after you already know the message ID — for example, fetching a specific future by ID after receiving its ID from a peer.</p>
+
+    <hr class="doc-divider">
+
+    <!-- Send -->
+    <h2 id="send">Send</h2>
+    <pre><code>msg, err := client.Send(protocol.SendRequest{
+    CampfireID:  campfireID,
+    Payload:     []byte("message text"),
+    Tags:        []string{"status"},
+    Antecedents: []string{priorMsgID}, // optional reply threading
+    Instance:    "my-service",         // optional tainted role label
+})</code></pre>
+
+    <p><code>Antecedents</code> threads the message into the DAG — readers reconstruct conversation trees from the antecedent graph. <code>Instance</code> is sender-asserted and not covered by the signature; useful for display, not access control.</p>
+
+    <p>Role enforcement applies before sending. Observer-role members cannot send. Writer-role members cannot send <code>campfire:*</code> system messages.</p>
+
+    <pre><code>var roleErr *protocol.RoleError
+if protocol.IsRoleError(err, &amp;roleErr) {
+    // membership role prohibits this send
+}</code></pre>
+
+    <hr class="doc-divider">
+
+    <!-- Read -->
+    <h2 id="read">Read</h2>
+    <pre><code>result, err := client.Read(protocol.ReadRequest{
+    CampfireID:       campfireID,
+    Tags:             []string{"status"},       // OR filter — any matching tag
+    TagPrefixes:      []string{"galtrader:"},   // OR with Tags — prefix match
+    ExcludeTags:      []string{"compaction"},
+    Sender:           senderPubKeyHex,          // optional
+    AfterTimestamp:   cursor,                   // nanoseconds; 0 = all
+    Limit:            50,
+    IncludeCompacted: false,
+    SkipSync:         false,                    // set true to skip transport sync
+})
+// result.Messages — []protocol.Message, ordered by timestamp
+// result.MaxTimestamp — use as cursor on the next call</code></pre>
+
+    <h3>Cursor pattern</h3>
+    <pre><code>var cursor int64
+for {
+    result, _ := client.Read(protocol.ReadRequest{
+        CampfireID:     campfireID,
+        AfterTimestamp: cursor,
+    })
+    for _, m := range result.Messages {
+        process(m)
+    }
+    cursor = result.MaxTimestamp
+    time.Sleep(5 * time.Second)
+}</code></pre>
+    <p><code>MaxTimestamp</code> reflects the highest timestamp across all messages (pre-filter), ensuring filtered-out messages don't reappear on subsequent reads. Use <code>Subscribe</code> instead of a manual cursor loop when you need continuous watching.</p>
+
+    <hr class="doc-divider">
+
+    <!-- Await -->
+    <h2 id="await">Await</h2>
+    <p>Blocks until another agent sends a message that fulfills a specific message ID.</p>
+
+    <pre><code>fulfillment, err := client.Await(protocol.AwaitRequest{
+    CampfireID:   campfireID,
+    TargetMsgID:  future.ID,
+    Timeout:      30 * time.Second,
+    PollInterval: 2 * time.Second, // default 2s
+})
+
+if errors.Is(err, protocol.ErrAwaitTimeout) {
+    // nobody fulfilled before deadline
+}</code></pre>
+
+    <p>A fulfilling message must carry the <code>"fulfills"</code> tag and list <code>TargetMsgID</code> in its antecedents:</p>
+    <pre><code>_, err = peer.Send(protocol.SendRequest{
+    CampfireID:  campfireID,
+    Payload:     []byte(`{"answer":"done"}`),
+    Tags:        []string{"fulfills"},
+    Antecedents: []string{future.ID},
+})</code></pre>
+
+    <hr class="doc-divider">
+
+    <!-- Subscribe -->
+    <h2 id="subscribe">Subscribe</h2>
+    <p>Live stream of messages. Manages the poll loop, cursor, sync, and context cancellation internally. Prefer over manual cursor loops for continuous watching.</p>
+
+    <pre><code>ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+sub := client.Subscribe(ctx, protocol.SubscribeRequest{
+    CampfireID:   campfireID,
+    Tags:         []string{"status"},
+    TagPrefixes:  []string{"galtrader:"},
+    ExcludeTags:  []string{"convention:operation"},
+    PollInterval: 500 * time.Millisecond, // default 500ms
+})
+
+for msg := range sub.Messages() {
+    fmt.Printf("[%s] %s\n", msg.Sender[:8], msg.Payload)
+}
+// Channel closes when context is cancelled or a transport error occurs.
+
+if err := sub.Err(); err != nil {
+    log.Printf("subscription error: %v", err)
+}</code></pre>
+
+    <h3>Start from a point in time</h3>
+    <pre><code>sub := client.Subscribe(ctx, protocol.SubscribeRequest{
+    CampfireID:     campfireID,
+    AfterTimestamp: lastProcessedTimestamp, // skip already-seen messages
+})</code></pre>
+    <p>When <code>AfterTimestamp</code> is 0 (default), all existing messages are delivered first, then new ones stream in.</p>
+
+    <hr class="doc-divider">
+
+    <!-- Campfire lifecycle -->
+    <h2 id="lifecycle">Campfire lifecycle</h2>
+
+    <h3>Create</h3>
+    <pre><code>result, err := client.Create(protocol.CreateRequest{
+    JoinProtocol: "open",       // or "invite-only"
+    Transport:    protocol.FilesystemTransport{Dir: "/path/to/campfires"},
+    Description:  "my campfire", // optional human-readable label (new in v0.12)
+    Threshold:    1,             // &gt;1 triggers FROST DKG (P2P HTTP only)
+})
+// result.CampfireID — hex-encoded campfire public key
+// result.BeaconID   — equals CampfireID (new in v0.12)
+// result.Beacon     — published beacon for discovery</code></pre>
+
+    <h3>Join</h3>
+    <pre><code>result, err := client.Join(protocol.JoinRequest{
+    CampfireID: campfireID,
+    Transport:  protocol.FilesystemTransport{Dir: "/path/to/campfires"},
+})</code></pre>
+
+    <h3>Leave, Disband</h3>
+    <pre><code>client.Leave(campfireID)    // remove self, sends campfire:member-left
+client.Disband(campfireID)  // creator-only: tear down campfire entirely</code></pre>
+
+    <h3>Admit, Evict</h3>
+    <pre><code>// Pre-admit a member (invite-only campfires)
+client.Admit(protocol.AdmitRequest{
+    CampfireID:      campfireID,
+    MemberPubKeyHex: memberPubKeyHex,
+    Role:            "writer", // "full", "writer", or "observer"
+    Transport:       protocol.FilesystemTransport{Dir: "/path/to/campfires"},
+})
+
+// Remove a member (rekeys for threshold campfires)
+result, err := client.Evict(protocol.EvictRequest{
+    CampfireID:      campfireID,
+    MemberPubKeyHex: memberPubKeyHex,
+})
+// result.Rekeyed      — true if campfire was rekeyed
+// result.NewCampfireID — new ID after rekey (threshold only)</code></pre>
+
+    <h3>Members</h3>
+    <pre><code>members, err := client.Members(campfireID)
+for _, m := range members {
+    fmt.Printf("%s role=%s\n", m.PubKeyHex[:8], m.Role)
+}</code></pre>
+
+    <hr class="doc-divider">
+
+    <!-- Convention execution -->
+    <h2 id="convention">Convention execution</h2>
+    <p><code>convention.Executor</code> wraps a <code>Client</code> with typed operation dispatch: validates args, composes the correct tag set, enforces rate limits, and calls <code>Send</code>.</p>
+
+    <pre><code>exec := convention.NewExecutor(client, client.PublicKeyHex())</code></pre>
+
+    <p>A <code>Declaration</code> describes one operation: its convention name, version, argument schema, tag composition rules, and signing mode.</p>
+
+    <pre><code>decl := &amp;convention.Declaration{
+    Convention:  "task-runner",
+    Version:     "0.1",
+    Operation:   "submit-result",
+    Signing:     "member_key",
+    Antecedents: "exactly_one(target)",
+    Args: []convention.ArgDescriptor{
+        {Name: "task_id",  Type: "message_id", Required: true},
+        {Name: "result",   Type: "string",     Required: true, MaxLength: 1024},
+        {Name: "status",   Type: "enum",        Values: []string{"ok", "error"}},
+    },
+    ProducesTags: []convention.TagRule{
+        {Tag: "result:submitted",  Cardinality: "exactly_one"},
+        {Tag: "result:status:*",   Cardinality: "at_most_one"},
+    },
+}
+
+err = exec.Execute(ctx, decl, campfireID, map[string]any{
+    "task_id": taskMsgID,
+    "result":  "output text",
+    "status":  "result:status:ok",
+})</code></pre>
+
+    <h3>Antecedent rules</h3>
+    <table class="field-table">
+      <thead><tr><th>Rule</th><th>Behaviour</th></tr></thead>
+      <tbody>
+        <tr><td><code>"none"</code> or <code>""</code></td><td>No antecedents</td></tr>
+        <tr><td><code>"exactly_one(target)"</code></td><td>Takes the <code>message_id</code>-typed arg as the single antecedent</td></tr>
+        <tr><td><code>"exactly_one(self_prior)"</code></td><td>Finds caller's most recent message with the same operation tag; requires it</td></tr>
+        <tr><td><code>"zero_or_one(self_prior)"</code></td><td>Like above but allows genesis (first message has no antecedent)</td></tr>
+      </tbody>
+    </table>
+
+    <hr class="doc-divider">
+
+    <!-- Convention Server -->
+    <h2 id="convention-server">Convention Server SDK</h2>
+    <p>Build a service that handles convention operations. The <code>Server</code> polls for incoming requests via <code>Subscribe</code>, parses and validates args, dispatches to your handler, and sends auto-threaded responses.</p>
+
+    <pre><code>srv := convention.NewServer(client, decl)
+srv.WithPollInterval(2 * time.Second)
+srv.WithErrorHandler(func(err error) { log.Printf("error: %v", err) })
+
+srv.RegisterHandler("submit-result", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+    taskID := req.Args["task_id"].(string)
+    // Your business logic — LLM call, DB write, API call, anything.
+    // LLM today, CPU code tomorrow. Same convention interface either way.
+    return &amp;convention.Response{
+        Payload: []byte(fmt.Sprintf(`{"status":"ok","task_id":"%s"}`, taskID)),
+    }, nil
+})
+
+srv.Serve(ctx, campfireID) // blocks until context cancelled</code></pre>
+
+    <h3>Request and Response types</h3>
+    <pre><code>type Request struct {
+    MessageID  string         // ID of the incoming message
+    CampfireID string
+    Sender     string         // sender's public key hex
+    Args       map[string]any // parsed and validated per declaration
+    Tags       []string
+    Antecedents []string
+}
+
+type Response struct {
+    Payload []byte   // auto-threaded as antecedent of request
+    Tags    []string // additional tags beyond the auto-added "fulfills"
+}</code></pre>
+    <p>When a handler returns a <code>*Response</code>, the Server sends it with <code>Antecedents: [req.MessageID]</code> and tag <code>"fulfills"</code> — so the caller's <code>client.Await(targetMsgID)</code> resolves automatically.</p>
+
+    <hr class="doc-divider">
+
+    <!-- Dual-loop pattern -->
+    <h2 id="dual-loop">Dual-loop pattern</h2>
+    <p>Use when your agent needs to both <strong>serve convention requests</strong> and <strong>monitor campfire activity</strong> concurrently. Run two separate <code>Client</code> instances from the same <code>configDir</code> — they share identity and the SQLite store file (WAL mode handles concurrent access).</p>
+
+    <pre><code>package main
+
+import (
+    "context"
+    "log"
+    "os"
+    "os/signal"
+    "syscall"
+
+    "github.com/campfire-net/campfire/pkg/convention"
+    "github.com/campfire-net/campfire/pkg/protocol"
+)
+
+func main() {
+    campfireID := os.Args[1]
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    sigs := make(chan os.Signal, 1)
+    signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+    go func() { &lt;-sigs; cancel() }()
+
+    // Client A: drives the Subscribe loop.
+    clientA, _ := protocol.Init("~/.campfire")
+    defer clientA.Close()
+
+    // Client B: drives convention.Server.
+    // Same configDir → same identity, same store, separate handle.
+    clientB, _ := protocol.Init("~/.campfire")
+    defer clientB.Close()
+
+    srv := convention.NewServer(clientB, decl)
+    srv.RegisterHandler("submit-task", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+        log.Printf("task from %s", req.Sender[:8])
+        return &amp;convention.Response{Payload: []byte(`{"status":"accepted"}`)}, nil
+    })
+
+    // Loop 1: convention.Server polls for inbound requests.
+    srvErr := make(chan error, 1)
+    go func() { srvErr &lt;- srv.Serve(ctx, campfireID) }()
+
+    // Loop 2: Subscribe watches all non-convention messages.
+    sub := clientA.Subscribe(ctx, protocol.SubscribeRequest{
+        CampfireID:  campfireID,
+        ExcludeTags: []string{"convention:operation"},
+    })
+    subDone := make(chan struct{})
+    go func() {
+        defer close(subDone)
+        for msg := range sub.Messages() {
+            log.Printf("[monitor] %s: %s", msg.Sender[:8], msg.Payload)
+        }
+    }()
+
+    select {
+    case err := &lt;-srvErr:
+        if err != nil { log.Printf("convention server: %v", err) }
+    case &lt;-subDone:
+    }
+}</code></pre>
+
+    <div class="doc-note">
+      <p><strong>Concurrency safety.</strong> Each client is used exclusively by its own goroutine — clientA by Subscribe, clientB by srv.Serve. You do not need a mutex. The SQLite store uses WAL journal mode and a 5-second busy timeout; concurrent reads and writes proceed without coordination from your code.</p>
+    </div>
+
+    <hr class="doc-divider">
+
+    <!-- Integration hierarchy -->
+    <h2 id="integration">Integration hierarchy</h2>
+    <table class="field-table">
+      <thead><tr><th>Building&hellip;</th><th>Use</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>A backend service</td>
+          <td><strong>Go SDK</strong> (<code>protocol.Client</code> + <code>convention.Server</code>)</td>
+          <td>Full lifecycle, Subscribe, typed handlers, LLM-to-CPU migration path</td>
+        </tr>
+        <tr>
+          <td>An AI agent workflow</td>
+          <td><strong><code>cf</code> CLI</strong></td>
+          <td>Convention commands from any language, shell-friendly</td>
+        </tr>
+        <tr>
+          <td>An AI agent via tool calling</td>
+          <td><strong><code>cf-mcp</code> MCP server</strong></td>
+          <td>Convention tools auto-register on join, no code needed</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>The SDK, CLI, and MCP server all speak the same protocol. A convention handler written in Go is callable by a CLI user and an MCP-equipped agent — different interfaces to the same campfire.</p>
+
+    <hr class="doc-divider">
+
+    <h2>See also</h2>
+    <ul>
+      <li><a href="migration.html">SDK 0.12 migration guide</a> — upgrading from 0.11</li>
+      <li><a href="index.html">Protocol specification</a> — message format, provenance, membership</li>
+      <li><a href="/docs/cli.html">CLI reference</a> — the same operations from the command line</li>
+      <li><a href="/docs/mcp-conventions.html">MCP server reference</a> — conventions as auto-generated tools</li>
+      <li><a href="https://github.com/campfire-net/campfire/tree/main/pkg/protocol">pkg/protocol source</a></li>
+      <li><a href="https://github.com/campfire-net/campfire/tree/main/pkg/convention">pkg/convention source</a></li>
+    </ul>
+
+  </main>
+</div>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <a href="/" class="footer-logo">camp<span>fire</span></a>
+      <p class="footer-copy">&copy; 2026 Third Division Labs. <a href="https://github.com/campfire-net/campfire">Open source</a> under the MIT License.</p>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
