@@ -161,7 +161,7 @@ func testCreateP2PHTTPRoundTrip(t *testing.T) {
 	}
 	t.Cleanup(func() { clientA.Close() })
 
-	sA := clientA.Store()
+	sA := clientA.ClientStore()
 	trA := cfhttp.New(addrA, sA)
 	if err := trA.Start(); err != nil {
 		t.Fatalf("Start transport A: %v", err)
@@ -186,7 +186,7 @@ func testCreateP2PHTTPRoundTrip(t *testing.T) {
 	}
 	t.Cleanup(func() { clientB.Close() })
 
-	sB := clientB.Store()
+	sB := clientB.ClientStore()
 	trB := cfhttp.New(addrB, sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("Start transport B: %v", err)
@@ -321,7 +321,7 @@ func testCreateSelfAdmitted(t *testing.T) {
 	}
 
 	// Verify membership exists in the store.
-	m, err := client.Store().GetMembership(result.CampfireID)
+	m, err := client.ClientStore().GetMembership(result.CampfireID)
 	if err != nil {
 		t.Fatalf("GetMembership: %v", err)
 	}
@@ -333,7 +333,7 @@ func testCreateSelfAdmitted(t *testing.T) {
 	}
 
 	// Verify creator's pubkey appears in the transport member files.
-	creatorPubHex := client.Identity().PublicKeyHex()
+	creatorPubHex := client.PublicKeyHex()
 	memberFiles, err := os.ReadDir(filepath.Join(m.TransportDir, "members"))
 	if err != nil {
 		t.Fatalf("reading members dir: %v", err)
@@ -379,7 +379,7 @@ func testCreateDKGCompleted(t *testing.T) {
 	}
 	t.Cleanup(func() { client.Close() })
 
-	tr := cfhttp.New(addrA, client.Store())
+	tr := cfhttp.New(addrA, client.ClientStore())
 	if err := tr.Start(); err != nil {
 		t.Fatalf("Start transport: %v", err)
 	}
@@ -396,7 +396,7 @@ func testCreateDKGCompleted(t *testing.T) {
 	}
 
 	// GetThresholdShare must return a non-nil share for the creator.
-	share, err := client.Store().GetThresholdShare(result.CampfireID)
+	share, err := client.ClientStore().GetThresholdShare(result.CampfireID)
 	if err != nil {
 		t.Fatalf("GetThresholdShare: %v", err)
 	}

@@ -130,7 +130,7 @@ func testJoinP2PHTTPSendRead(t *testing.T) {
 
 	// Client A: creator with running HTTP transport.
 	clientA := newJoinClient(t)
-	sA := clientA.Store()
+	sA := clientA.ClientStore()
 	trA := cfhttp.New(addrA, sA)
 	if err := trA.Start(); err != nil {
 		t.Fatalf("start transport A: %v", err)
@@ -149,7 +149,7 @@ func testJoinP2PHTTPSendRead(t *testing.T) {
 
 	// Client B: joiner with running HTTP transport.
 	clientB := newJoinClient(t)
-	sB := clientB.Store()
+	sB := clientB.ClientStore()
 	trB := cfhttp.New(addrB, sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("start transport B: %v", err)
@@ -221,7 +221,7 @@ func testJoinInviteOnlyAccept(t *testing.T) {
 	if err := clientA.Admit(protocol.AdmitRequest{
 		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:      campfireID,
-		MemberPubKeyHex: clientB.Identity().PublicKeyHex(),
+		MemberPubKeyHex: clientB.PublicKeyHex(),
 	}); err != nil {
 		t.Fatalf("A.Admit(B): %v", err)
 	}
@@ -285,7 +285,7 @@ func testJoinConventionSync(t *testing.T) {
 	}
 
 	// B's store must contain the convention:operation message.
-	msgs, err := clientB.Store().ListMessages(campfireID, 0, store.MessageFilter{
+	msgs, err := clientB.ClientStore().ListMessages(campfireID, 0, store.MessageFilter{
 		Tags: []string{convention.ConventionOperationTag},
 	})
 	if err != nil {

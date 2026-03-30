@@ -63,14 +63,14 @@ func testInitIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Init: %v", err)
 	}
-	pub1 := c1.Identity().PublicKey
+	pub1 := c1.ClientIdentity().PublicKey
 	c1.Close()
 
 	c2, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("second Init: %v", err)
 	}
-	pub2 := c2.Identity().PublicKey
+	pub2 := c2.ClientIdentity().PublicKey
 	t.Cleanup(func() { c2.Close() })
 
 	if !bytes.Equal(pub1, pub2) {
@@ -91,8 +91,8 @@ func testInitRoundTrip(t *testing.T) {
 	}
 	t.Cleanup(func() { client.Close() })
 
-	agentID := client.Identity()
-	campfireID := setupFilesystemCampfire(t, agentID, client.Store(), transportDir, campfire.RoleFull)
+	agentID := client.ClientIdentity()
+	campfireID := setupFilesystemCampfire(t, agentID, client.ClientStore(), transportDir, campfire.RoleFull)
 
 	want := "round-trip payload"
 	_, err = client.Send(protocol.SendRequest{
@@ -131,8 +131,8 @@ func testInitStorePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Init: %v", err)
 	}
-	agentID := c1.Identity()
-	campfireID := setupFilesystemCampfire(t, agentID, c1.Store(), transportDir, campfire.RoleFull)
+	agentID := c1.ClientIdentity()
+	campfireID := setupFilesystemCampfire(t, agentID, c1.ClientStore(), transportDir, campfire.RoleFull)
 
 	want := "persistence payload"
 	_, err = c1.Send(protocol.SendRequest{
@@ -193,8 +193,8 @@ func testInitIdentityFileExists(t *testing.T) {
 	}
 
 	// Loaded identity must match what Init used.
-	if !bytes.Equal(loaded.PublicKey, client.Identity().PublicKey) {
+	if !bytes.Equal(loaded.PublicKey, client.ClientIdentity().PublicKey) {
 		t.Errorf("loaded public key %x doesn't match Init public key %x",
-			loaded.PublicKey, client.Identity().PublicKey)
+			loaded.PublicKey, client.ClientIdentity().PublicKey)
 	}
 }

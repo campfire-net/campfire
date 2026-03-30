@@ -116,7 +116,7 @@ func testDisbandStoreMembershipRemoved(t *testing.T) {
 	campfireID, _ := createFSCampfire(t, clientA, "open")
 
 	// Verify membership exists before disband.
-	m, err := clientA.Store().GetMembership(campfireID)
+	m, err := clientA.ClientStore().GetMembership(campfireID)
 	if err != nil {
 		t.Fatalf("GetMembership before Disband: %v", err)
 	}
@@ -129,7 +129,7 @@ func testDisbandStoreMembershipRemoved(t *testing.T) {
 	}
 
 	// Verify membership is removed.
-	m, err = clientA.Store().GetMembership(campfireID)
+	m, err = clientA.ClientStore().GetMembership(campfireID)
 	if err != nil {
 		t.Fatalf("GetMembership after Disband: %v", err)
 	}

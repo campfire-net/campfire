@@ -102,10 +102,13 @@ func New(s store.Store, id *identity.Identity) *Client {
 	return &Client{store: s, identity: id}
 }
 
-// Store returns the underlying store. Callers may use this for operations not
-// yet abstracted by the Client API.
-func (c *Client) Store() store.Store {
-	return c.store
+// PublicKeyHex returns the hex-encoded public key of the client's identity.
+// Returns an empty string if the client has no identity (read-only).
+func (c *Client) PublicKeyHex() string {
+	if c.identity == nil {
+		return ""
+	}
+	return c.identity.PublicKeyHex()
 }
 
 // Send creates a signed message and delivers it via the transport that backs

@@ -52,12 +52,6 @@ func Init(configDir string) (*Client, error) {
 	return New(s, id), nil
 }
 
-// Identity returns the identity associated with the Client. May be nil for
-// read-only clients created via New(s, nil).
-func (c *Client) Identity() *identity.Identity {
-	return c.identity
-}
-
 // Close releases resources held by the Client (currently the underlying store).
 // It is safe to call Close multiple times; subsequent calls return the first error.
 func (c *Client) Close() error {
