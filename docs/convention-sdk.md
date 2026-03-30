@@ -730,3 +730,4 @@ The SDK, CLI, and MCP server all speak the same protocol. A convention handler w
 - [Protocol spec](protocol-spec.md) — message envelope, provenance hops, identity
 - [CLI reference](cli-conventions.md) — the same operations, from the command line
 - [MCP server reference](mcp-conventions.md) — conventions as auto-generated MCP tools
+- [SDK 0.12 migration guide](sdk-migration-0.12.md) — upgrading from 0.11: typed transports, `protocol.Message`, removed exported fields
