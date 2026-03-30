@@ -1772,3 +1772,99 @@ func TestSessionManagerTuning(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Session persistence: named campfire_init
+// ---------------------------------------------------------------------------
+
+// TestHandleInit_NamedSessionPersistence verifies the fix from PR #146 (bead
+// campfire-8dm): calling campfire_init with a name= argument must update
+// s.sess.cfHome and s.sess.beaconDir so that subsequent MCP calls — which build
+// a fresh *server via Session.server() — inherit the named directory instead of
+// the original session-scoped directory.
+//
+// The failure mode before the fix: handleInit set s.cfHome but not s.sess.cfHome,
+// so Session.server() kept returning servers with the old (unnamed) path.
+func TestHandleInit_NamedSessionPersistence(t *testing.T) {
+	// Use a temp dir as HOME so os.UserHomeDir() resolves to a controlled path
+	// and we don't write to ~/.campfire/agents during the test.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// The session starts with a generic session-scoped directory (simulating
+	// what SessionManager.getOrCreate assigns before any campfire_init call).
+	sessionDir := t.TempDir()
+	sessionBeaconDir := filepath.Join(sessionDir, "beacons")
+	if err := os.MkdirAll(sessionBeaconDir, 0700); err != nil {
+		t.Fatalf("creating session beacon dir: %v", err)
+	}
+
+	sess := &Session{
+		cfHome:    sessionDir,
+		beaconDir: sessionBeaconDir,
+	}
+
+	// Build a per-request server backed by the session (mirrors Session.server()).
+	srv := &server{
+		cfHome:         sess.cfHome,
+		beaconDir:      sess.beaconDir,
+		cfHomeExplicit: true,
+		sess:           sess,
+	}
+
+	// Call campfire_init with name="testname". The named home will be created
+	// under fakeHome/.campfire/agents/testname.
+	resp := srv.handleInit(float64(1), map[string]interface{}{"name": "testname"})
+	if resp.Error != nil {
+		t.Fatalf("handleInit with name=testname failed: code=%d msg=%s",
+			resp.Error.Code, resp.Error.Message)
+	}
+
+	// The expected named home directory.
+	expectedCfHome := filepath.Join(fakeHome, ".campfire", "agents", "testname")
+	expectedBeaconDir := filepath.Join(expectedCfHome, "beacons")
+
+	// 1. Verify s.cfHome and s.beaconDir on the current server were updated.
+	if srv.cfHome != expectedCfHome {
+		t.Errorf("srv.cfHome = %q, want %q", srv.cfHome, expectedCfHome)
+	}
+	if srv.beaconDir != expectedBeaconDir {
+		t.Errorf("srv.beaconDir = %q, want %q", srv.beaconDir, expectedBeaconDir)
+	}
+
+	// 2. Verify sess.cfHome and sess.beaconDir were persisted into the Session.
+	// This is the regression test: before the fix, these would still point at
+	// sessionDir instead of the named directory.
+	if sess.cfHome != expectedCfHome {
+		t.Errorf("sess.cfHome = %q after named init, want %q — session was not updated (regression: s.sess.cfHome not set)",
+			sess.cfHome, expectedCfHome)
+	}
+	if sess.beaconDir != expectedBeaconDir {
+		t.Errorf("sess.beaconDir = %q after named init, want %q — session was not updated (regression: s.sess.beaconDir not set)",
+			sess.beaconDir, expectedBeaconDir)
+	}
+
+	// 3. Simulate a subsequent MCP call: build a new per-request server from
+	// the session (as Session.server() does) and verify it uses the named dir.
+	// Before the fix, this would use sessionDir because sess.cfHome was stale.
+	nextSrv := sess.server(nil)
+	if nextSrv.cfHome != expectedCfHome {
+		t.Errorf("subsequent server cfHome = %q, want %q — Session.server() returned stale path (regression)",
+			nextSrv.cfHome, expectedCfHome)
+	}
+	if nextSrv.beaconDir != expectedBeaconDir {
+		t.Errorf("subsequent server beaconDir = %q, want %q — Session.server() returned stale path (regression)",
+			nextSrv.beaconDir, expectedBeaconDir)
+	}
+
+	// 4. Verify identity.json was created in the named directory (not the old session dir).
+	idPath := filepath.Join(expectedCfHome, "identity.json")
+	if _, err := os.Stat(idPath); err != nil {
+		t.Errorf("identity.json not found in named directory %s: %v", expectedCfHome, err)
+	}
+	// And that it was NOT created in the old session directory.
+	oldIDPath := filepath.Join(sessionDir, "identity.json")
+	if _, err := os.Stat(oldIDPath); err == nil {
+		t.Errorf("identity.json unexpectedly found in old session directory %s — named init wrote to wrong path", sessionDir)
+	}
+}
