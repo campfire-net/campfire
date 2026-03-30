@@ -22,6 +22,10 @@ const (
 // convention declaration. Values above this are clamped with a warning.
 const maxRateLimitCeiling = 100
 
+// maxResponseTimeout is the maximum allowed value for response_timeout in a
+// convention declaration. Values above this are clamped to this value.
+const maxResponseTimeout = 5 * time.Minute
+
 // Declaration is a parsed convention:operation message.
 type Declaration struct {
 	Convention      string          `json:"convention"`
@@ -241,6 +245,13 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*De
 		d, err := time.ParseDuration(decl.ResponseTimeoutRaw)
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid response_timeout %q: %w", decl.ResponseTimeoutRaw, err)
+		}
+		if d < 0 {
+			return nil, nil, fmt.Errorf("invalid response_timeout %q: must be a non-negative duration", decl.ResponseTimeoutRaw)
+		}
+		if d > maxResponseTimeout {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("response_timeout clamped from %q to %q", decl.ResponseTimeoutRaw, maxResponseTimeout))
+			d = maxResponseTimeout
 		}
 		decl.ResponseTimeout = d
 	} else {

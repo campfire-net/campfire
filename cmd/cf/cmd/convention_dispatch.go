@@ -169,6 +169,10 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 	waitTimeout, _ := flags.GetDuration("wait-timeout")
 	jsonOutput, _ := flags.GetBool("json")
 
+	if waitTimeout < 0 {
+		return fmt.Errorf("--wait-timeout must be a non-negative duration (got %v)", waitTimeout)
+	}
+
 	// Build args map from changed flags only, expanding enum short forms.
 	// Skip the meta-flags: they are not convention args.
 	metaFlags := map[string]bool{"no-wait": true, "wait-timeout": true, "json": true}

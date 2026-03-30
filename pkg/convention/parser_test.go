@@ -635,3 +635,67 @@ func TestParse_ExistingSocialPostBackwardCompat(t *testing.T) {
 		t.Errorf("ResponseTimeout = %v, want 30s (backward compat default)", decl.ResponseTimeout)
 	}
 }
+
+// TestParse_ResponseTimeoutNegativeRejected verifies that a negative response_timeout
+// is rejected with an error.
+func TestParse_ResponseTimeoutNegativeRejected(t *testing.T) {
+	payload := basePayload(map[string]any{"response_timeout": "-1s"})
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err == nil {
+		t.Fatal("expected error for negative response_timeout, got nil")
+	}
+}
+
+// TestParse_ResponseTimeoutAboveMaxClamped verifies that a response_timeout above 5min
+// is clamped to 5min with a warning (not rejected).
+func TestParse_ResponseTimeoutAboveMaxClamped(t *testing.T) {
+	payload := basePayload(map[string]any{"response_timeout": "999999h"})
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error for large response_timeout: %v", err)
+	}
+	if decl.ResponseTimeout != 5*time.Minute {
+		t.Errorf("ResponseTimeout = %v, want 5m (clamped)", decl.ResponseTimeout)
+	}
+	found := false
+	for _, w := range result.Warnings {
+		if len(w) > 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected a warning for clamped response_timeout, got none")
+	}
+}
+
+// TestParse_ResponseTimeoutZeroDefaultsTo30s verifies that omitting response_timeout
+// defaults to 30s.
+func TestParse_ResponseTimeoutZeroDefaultsTo30s(t *testing.T) {
+	payload := basePayload(nil)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decl.ResponseTimeout != 30*time.Second {
+		t.Errorf("ResponseTimeout = %v, want 30s (default)", decl.ResponseTimeout)
+	}
+}
+
+// TestParse_ResponseTimeoutValidPasses verifies that a valid response_timeout (e.g. 2m)
+// parses without error and is not clamped.
+func TestParse_ResponseTimeoutValidPasses(t *testing.T) {
+	payload := basePayload(map[string]any{"response_timeout": "2m"})
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decl.ResponseTimeout != 2*time.Minute {
+		t.Errorf("ResponseTimeout = %v, want 2m", decl.ResponseTimeout)
+	}
+	for _, w := range result.Warnings {
+		if w != "" {
+			t.Errorf("unexpected warning: %q", w)
+		}
+	}
+}
