@@ -156,25 +156,27 @@ func TestSubscribe_ContextCancellation(t *testing.T) {
 		t.Fatal("Messages() channel did not close within 1 second after context cancellation")
 	}
 
-	// Wait for goroutine cleanup.
+	// Wait for goroutine cleanup. Give the runtime a moment to reap the goroutine.
+	time.Sleep(100 * time.Millisecond)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if runtime.NumGoroutine() <= goroutinesBefore+2 {
+		if runtime.NumGoroutine() <= goroutinesBefore+1 {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 
 	goroutinesAfter := runtime.NumGoroutine()
-	// Allow a tolerance of 3 goroutines (test framework, GC, etc.)
-	if goroutinesAfter > goroutinesBefore+3 {
-		t.Errorf("goroutine leak: before=%d, after=%d (tolerance=3)", goroutinesBefore, goroutinesAfter)
+	// Allow a tolerance of +1 goroutine only (runtime GC goroutine transient).
+	// A single leaked Subscribe goroutine must cause this test to fail.
+	if goroutinesAfter > goroutinesBefore+1 {
+		t.Errorf("goroutine leak: before=%d, after=%d (tolerance=1)", goroutinesBefore, goroutinesAfter)
 	}
 }
 
 // TestSubscribe_ErrorRecovery verifies that deleting the transport dir mid-subscribe
-// does not panic. The subscription must either surface an error via Err() or close
-// the channel gracefully.
+// causes the subscription to close the Messages() channel within a reasonable timeout.
+// A subscription that keeps running forever after transport deletion is a failure.
 func TestSubscribe_ErrorRecovery(t *testing.T) {
 	agentID, s, transportDir := setupTestEnv(t)
 	campfireID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
@@ -192,14 +194,14 @@ func TestSubscribe_ErrorRecovery(t *testing.T) {
 	// Let the subscription start.
 	time.Sleep(100 * time.Millisecond)
 
-	// Delete the transport directory.
+	// Delete the transport directory to inject an error mid-subscribe.
 	cfTransportDir := filepath.Join(transportDir, campfireID)
 	if err := os.RemoveAll(cfTransportDir); err != nil {
 		t.Fatalf("removing transport dir: %v", err)
 	}
 
-	// The subscription must close the channel or surface an error — not panic.
-	// We wait up to 2 seconds.
+	// The subscription MUST close the channel within 2 seconds.
+	// A subscription that keeps running forever is a failure — not an acceptable outcome.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -209,20 +211,13 @@ func TestSubscribe_ErrorRecovery(t *testing.T) {
 
 	select {
 	case <-done:
-		// Channel closed — acceptable outcome. Check err (may or may not be set).
-	case <-time.After(5 * time.Second):
-		// Channel not closed; that's also acceptable as long as no panic occurred.
-		// The subscription may continue if sync errors are non-fatal (they are).
-		// Cancel the context to clean up.
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Error("goroutine did not exit after context cancellation")
+		// Channel closed — correct. The error from Read() must be non-nil.
+		if err := sub.Err(); err == nil {
+			t.Error("expected Err() to be non-nil after transport dir deletion, got nil")
 		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Messages() channel did not close within 2 seconds after transport dir deletion: subscription kept running forever")
 	}
-
-	// The key assertion: no panic occurred (we're still here).
 }
 
 // TestSubscribe_ConventionServerIntegration sends a convention operation message

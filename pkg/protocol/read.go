@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
@@ -153,6 +154,17 @@ func (c *Client) syncIfFilesystem(campfireID string) error {
 	}
 
 	fsTransport := fs.ForDir(m.TransportDir)
+
+	// Check that the campfire transport directory exists before listing.
+	// ListMessages returns nil/nil for a missing directory (resilient design for
+	// one-shot reads), but for sync we must distinguish "no new messages" from
+	// "transport directory has been removed". A missing directory is a terminal
+	// error for subscriptions (the transport is gone; there is nothing to sync).
+	campfireDir := fsTransport.CampfireDir(campfireID)
+	if _, statErr := os.Stat(campfireDir); os.IsNotExist(statErr) {
+		return fmt.Errorf("campfire transport directory removed: %s", campfireDir)
+	}
+
 	fsMessages, err := fsTransport.ListMessages(campfireID)
 	if err != nil {
 		return fmt.Errorf("listing filesystem messages: %w", err)

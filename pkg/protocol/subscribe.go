@@ -105,6 +105,15 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) *Subscript
 			default:
 			}
 
+			// Sync explicitly so transport errors are visible to the subscription.
+			// Read() swallows sync errors for resilience in one-shot reads; here
+			// we need to surface them so the subscription can terminate cleanly
+			// when the transport becomes permanently unavailable (e.g. dir deleted).
+			if err := c.syncIfFilesystem(req.CampfireID); err != nil {
+				sub.setErr(err)
+				return
+			}
+
 			result, err := c.Read(ReadRequest{
 				CampfireID:         req.CampfireID,
 				AfterTimestamp:     cursor,
@@ -113,6 +122,7 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) *Subscript
 				ExcludeTags:        req.ExcludeTags,
 				ExcludeTagPrefixes: req.ExcludeTagPrefixes,
 				IncludeCompacted:   false,
+				SkipSync:           true, // already synced above
 			})
 			if err != nil {
 				sub.setErr(err)
