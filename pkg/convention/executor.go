@@ -3,6 +3,7 @@ package convention
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -343,9 +344,15 @@ func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfir
 }
 
 // isTimeoutErr returns true if err looks like a deadline/timeout error.
+// It checks errors.Is(err, context.DeadlineExceeded) first so that wrapped
+// sentinel errors are caught correctly, then falls back to string matching for
+// timeout errors that originate outside the standard library.
 func isTimeoutErr(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "deadline exceeded") ||

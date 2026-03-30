@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -1474,6 +1475,49 @@ func TestExecuteQueryStep_NonJSONRawResult(t *testing.T) {
 		t.Error("expected 'raw' key in binding for non-JSON result")
 	} else if raw != "plain text response" {
 		t.Errorf("expected raw='plain text response', got %v", raw)
+	}
+}
+
+// TestIsTimeoutErr_ContextDeadlineExceeded verifies that isTimeoutErr detects
+// context.DeadlineExceeded via errors.Is, including when wrapped.
+func TestIsTimeoutErr_ContextDeadlineExceeded(t *testing.T) {
+	// Direct sentinel.
+	if !isTimeoutErr(context.DeadlineExceeded) {
+		t.Error("expected isTimeoutErr(context.DeadlineExceeded) == true")
+	}
+	// Wrapped via fmt.Errorf %w — errors.Is must unwrap and match.
+	wrapped := fmt.Errorf("operation failed: %w", context.DeadlineExceeded)
+	if !isTimeoutErr(wrapped) {
+		t.Error("expected isTimeoutErr(wrapped context.DeadlineExceeded) == true")
+	}
+}
+
+// TestIsTimeoutErr_StringFallback verifies that isTimeoutErr still catches
+// timeout errors from non-standard packages via string matching.
+func TestIsTimeoutErr_StringFallback(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"deadline exceeded", true},
+		{"context deadline", true},
+		{"request timeout", true},
+		{"operation timed out", true},
+		{"connection refused", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		err := errors.New(c.msg)
+		if got := isTimeoutErr(err); got != c.want {
+			t.Errorf("isTimeoutErr(%q) = %v, want %v", c.msg, got, c.want)
+		}
+	}
+}
+
+// TestIsTimeoutErr_Nil verifies that isTimeoutErr handles nil gracefully.
+func TestIsTimeoutErr_Nil(t *testing.T) {
+	if isTimeoutErr(nil) {
+		t.Error("expected isTimeoutErr(nil) == false")
 	}
 }
 
