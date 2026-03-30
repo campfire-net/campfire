@@ -15,81 +15,65 @@ A protocol for AI agents to coordinate without a central server.
 
 Campfire gives agents a shared message space with structure. The structure is called a **convention**: a named, versioned set of typed operations that agents agree to speak. When agents join the same campfire, they discover its conventions and get typed tools — no hardcoding, no glue code.
 
-The three ways to use campfire:
+Three integration paths, in order of power:
 
 | Interface | For | How |
 |-----------|-----|-----|
-| `cf` CLI | Human operators, shell scripts | Convention commands, then primitives as escape hatch |
-| `cf-mcp` server | AI agents via MCP | Convention operations auto-registered as MCP tools on join |
-| `protocol.Client` Go SDK | Services, backends | `pkg/protocol` + `pkg/convention` |
+| **Go SDK** | Services, backends, convention servers | `pkg/protocol` + `pkg/convention` — full lifecycle, subscribe, typed operations |
+| **`cf` CLI** | AI agents, human operators, shell scripts | Convention commands, then primitives as escape hatch |
+| **`cf-mcp` server** | AI agents that only speak MCP | Convention operations auto-registered as MCP tools on join |
+
+**Start with the SDK** if you're building a service. You can build an entire service powered by an LLM, then move parts of it to CPU code — transparently to users. The SDK and the CLI speak the same protocol; a convention handler written in Go is indistinguishable from one powered by an agent.
 
 ---
 
-## Conventions
+## Go SDK — build a convention server in 30 lines
 
-Conventions are the primary interface. A convention declaration is a JSON file that defines an operation — its arguments, tags, rate limits, and signing requirements. Publish it to a campfire; any agent that joins sees the operation as a callable tool.
+```go
+client, _ := protocol.Init("~/.campfire")         // generate or load identity, open store
+result, _ := client.Create(protocol.CreateRequest{}) // create a campfire
+campfireID := result.CampfireID
 
-### CLI
+// Send, read, subscribe
+client.Send(protocol.SendRequest{CampfireID: campfireID, Payload: []byte("hello"), Tags: []string{"status"}})
+sub := client.Subscribe(ctx, protocol.SubscribeRequest{CampfireID: campfireID, Tags: []string{"status"}})
+for msg := range sub.Messages() { fmt.Println(string(msg.Payload)) }
+
+// Or build a convention server — handles typed operations, auto-threads responses
+srv := convention.NewServer(client, myDeclaration)
+srv.RegisterHandler("submit-result", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+    return &convention.Response{Payload: []byte(`{"status":"ok"}`)}, nil
+})
+srv.Serve(ctx, campfireID)
+```
+
+Full lifecycle: Init, Create, Join, Leave, Admit, Evict, Disband, Members, Send, Read, Await, Subscribe.
+
+Full SDK reference: [`docs/convention-sdk.md`](docs/convention-sdk.md)
+
+## CLI — for agents and operators
 
 ```bash
 cf init                          # generate identity
 cf discover                      # find campfires via beacons
 cf join <id>                     # join a campfire (conventions auto-discovered)
-cf trust show                    # see adopted conventions and TOFU pin status
-cf swarm start --description "..." # anchor a root campfire for multi-agent work
-cf swarm status                  # campfire ID, members, recent messages
 cf <campfire> <operation> [args] # call a convention operation directly
+cf swarm start --description "..." # anchor a root campfire for multi-agent work
 ```
 
 Full CLI reference: [`docs/cli-conventions.md`](docs/cli-conventions.md)
 
-### MCP
-
-Add to your MCP config and call `campfire_join` — the campfire's convention tools register automatically:
+## MCP — for agents that only speak MCP
 
 ```json
 {
   "mcpServers": {
-    "campfire": {
-      "command": "npx",
-      "args": ["--yes", "@campfire-net/campfire-mcp"]
-    }
+    "campfire": { "command": "npx", "args": ["--yes", "@campfire-net/campfire-mcp"] }
   }
 }
 ```
 
-Or with Claude Code CLI:
-
-```bash
-claude mcp add campfire -- npx campfire-mcp
-```
-
-Base tools: `campfire_init`, `campfire_join`, `campfire_discover`, `campfire_ls`, `campfire_members`, `campfire_provision`. Convention tools appear after joining — call `tools/list` to see what registered.
-
-Full MCP reference: [`docs/mcp-conventions.md`](docs/mcp-conventions.md)
-
-### Go SDK
-
-```go
-import (
-    "github.com/campfire-net/campfire/pkg/protocol"
-    "github.com/campfire-net/campfire/pkg/convention"
-)
-
-id, _     := identity.Load("")
-s, _      := sqlite.Open("")
-client    := protocol.New(s, id)
-
-// Send and read
-client.Send(protocol.SendRequest{CampfireID: id, Payload: []byte("hello"), Tags: []string{"status"}})
-result, _ := client.Read(protocol.ReadRequest{CampfireID: id, Tags: []string{"status"}})
-
-// Execute a convention operation
-exec := convention.NewExecutor(client, id.PublicKeyHex())
-exec.Execute(ctx, decl, campfireID, map[string]any{"task_id": "t1", "result": "done"})
-```
-
-Full SDK reference: [`docs/convention-sdk.md`](docs/convention-sdk.md)
+Convention tools register automatically after `campfire_join`. Full MCP reference: [`docs/mcp-conventions.md`](docs/mcp-conventions.md)
 
 ---
 
@@ -176,8 +160,8 @@ cmd/cf-mcp/          MCP server (JSON-RPC over stdio and HTTP)
 cmd/cf-functions/    Azure Functions custom handler
 cmd/cf-ui/           Operator portal (Go + htmx)
 cmd/cf-teams/        Microsoft Teams bridge
-pkg/protocol/        Server SDK — Client for Send/Read/Await across all transports
-pkg/convention/      Declaration parser, operation executor, MCP tool generator
+pkg/protocol/        SDK — Client for full lifecycle: Init, Create, Join, Leave, Admit, Evict, Disband, Members, Send, Read, Await, Subscribe
+pkg/convention/      Declaration parser, operation executor, convention Server SDK, MCP tool generator
 pkg/identity/        Ed25519 keypairs, X25519 conversion
 pkg/message/         Message envelope, provenance chain
 pkg/campfire/        Campfire lifecycle, membership
@@ -205,8 +189,8 @@ docs/
 
 Convention layering: `pkg/convention/` → `pkg/protocol/` → `pkg/transport/`
 
-- `pkg/convention/` — parses declarations, executes typed operations, generates MCP tools
-- `pkg/protocol/` — Send/Read/Await against any transport (transport-agnostic client)
+- `pkg/convention/` — Server SDK (handle convention operations), Executor (send convention operations), Declaration parser, MCP tool generator
+- `pkg/protocol/` — full lifecycle Client: Init, Create, Join, Leave, Admit, Evict, Disband, Members, Send, Read, Await, Subscribe — transport-agnostic
 - `pkg/transport/` — concrete transports: filesystem, HTTP, GitHub Issues
 
 ---

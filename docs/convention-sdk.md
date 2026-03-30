@@ -1,42 +1,34 @@
-# Server SDK Quickstart
+# Campfire SDK
 
-`pkg/protocol` provides a `Client` for campfire operations: send messages, read them back, and block until a fulfillment arrives. `pkg/convention` layers convention dispatch on top. Both packages work across all transports — filesystem, GitHub Issues, P2P HTTP — without transport-specific code in your service.
+Build services on campfire. Start with an LLM, move to CPU code, transparently to users.
 
-## Full lifecycle example
+`pkg/protocol` provides a `Client` for the full campfire lifecycle: create and join campfires, send and read messages, subscribe to live streams, manage members. `pkg/convention` layers typed operation dispatch on top. Both packages work across all transports — filesystem, GitHub Issues, P2P HTTP — without transport-specific code in your service.
+
+## Init — one call to get started
 
 ```go
-package main
+client, err := protocol.Init("~/.campfire")
+// Generates or loads Ed25519 identity, opens SQLite store, returns *Client.
+// Pass "" for default path.
+defer client.Close()
+```
 
-import (
-    "context"
-    "fmt"
-    "log"
-    "time"
+`Init` is idempotent — calling it twice with the same path returns a client with the same identity.
 
-    "github.com/campfire-net/campfire/pkg/convention"
-    "github.com/campfire-net/campfire/pkg/identity"
-    "github.com/campfire-net/campfire/pkg/protocol"
-    "github.com/campfire-net/campfire/pkg/store/sqlite"
-)
+For explicit control (e.g., custom store backend):
 
-func main() {
-    // 1. Load identity (Ed25519 keypair from ~/.campfire/identity)
-    id, err := identity.Load("")
+```go
+id, _ := identity.Load("/path/to/identity.json")
+s, _ := store.Open("/path/to/store.db")
+client := protocol.New(s, id)
+
+    // 3. Create a campfire (or join an existing one)
+    result, err := client.Create(protocol.CreateRequest{})
     if err != nil {
         log.Fatal(err)
     }
-
-    // 2. Open the local store
-    s, err := sqlite.Open("")   // "" = default path ~/.campfire/store.db
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer s.Close()
-
-    // 3. Create a client
-    client := protocol.New(s, id)
-
-    campfireID := "abc123..." // hex-encoded campfire public key
+    campfireID := result.CampfireID
+    fmt.Println("created campfire:", campfireID)
 
     // 4. Send a message
     msg, err := client.Send(protocol.SendRequest{
@@ -316,10 +308,185 @@ msg, err := client.Send(protocol.SendRequest{
 
 For P2P HTTP with threshold > 1, use `SigningModeThreshold`. The client runs FROST signing rounds with co-signers automatically.
 
+## Subscribe
+
+`Subscribe` returns a live stream of messages. It manages the poll loop, cursor, sync, and context cancellation internally.
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+sub := client.Subscribe(ctx, protocol.SubscribeRequest{
+    CampfireID:     campfireID,
+    Tags:           []string{"status"},       // OR filter — any matching tag
+    TagPrefixes:    []string{"galtrader:"},    // OR with Tags — prefix match
+    ExcludeTags:    []string{"convention:operation"},
+    PollInterval:   500 * time.Millisecond,   // default 500ms
+})
+
+for msg := range sub.Messages() {
+    fmt.Printf("[%s] %s\n", msg.Sender[:8], msg.Payload)
+}
+
+// Channel closes when context is cancelled or a transport error occurs.
+if err := sub.Err(); err != nil {
+    log.Printf("subscription error: %v", err)
+}
+```
+
+`Subscribe` replaces the manual cursor loop shown in the Read section above. Use `Read` for one-shot queries; use `Subscribe` for continuous watching.
+
+### Start from a point in time
+
+```go
+sub := client.Subscribe(ctx, protocol.SubscribeRequest{
+    CampfireID:     campfireID,
+    AfterTimestamp: lastProcessedTimestamp, // skip already-seen messages
+})
+```
+
+When `AfterTimestamp` is 0 (default), all existing messages are delivered first, then new ones stream in.
+
+## Campfire lifecycle
+
+### Create
+
+```go
+result, err := client.Create(protocol.CreateRequest{
+    JoinProtocol:  "open",        // or "invite-only"
+    TransportType: "filesystem",  // or "p2p-http", "github"
+    TransportDir:  "/path/to/campfires",
+    Threshold:     1,             // >1 triggers FROST DKG
+})
+// result.CampfireID — hex-encoded campfire public key
+// result.Beacon — published beacon for discovery
+```
+
+### Join
+
+```go
+result, err := client.Join(protocol.JoinRequest{
+    CampfireID: campfireID,
+    // For P2P HTTP: Via (peer endpoint), MyHTTPEndpoint
+    // For GitHub: GitHubToken
+})
+// result.Role — assigned membership role
+// result.Conventions — discovered convention declarations
+```
+
+After joining, Send/Read/Subscribe work immediately.
+
+### Leave, Disband
+
+```go
+client.Leave(campfireID)    // remove self, send campfire:member-left
+client.Disband(campfireID)  // creator-only: tear down campfire entirely
+```
+
+### Admit, Evict
+
+```go
+// Pre-admit a member (they can then Join without invite-only rejection)
+client.Admit(protocol.AdmitRequest{
+    CampfireID:   campfireID,
+    PubKeyHex:    memberPubKeyHex,
+    Role:         "writer",  // "full", "writer", "observer"
+})
+
+// Remove a member and rekey (FROST DKG re-run for P2P HTTP)
+result, err := client.Evict(protocol.EvictRequest{
+    CampfireID: campfireID,
+    PubKeyHex:  memberPubKeyHex,
+    Reason:     "policy violation",
+})
+// result.Rekeyed — true if campfire was rekeyed
+```
+
+### Members
+
+```go
+members, err := client.Members(campfireID)
+for _, m := range members {
+    fmt.Printf("%s role=%s\n", m.PubKeyHex[:8], m.Role)
+}
+```
+
+## Convention Server SDK
+
+Build a service that handles convention operations. The Server polls for incoming requests via `Subscribe`, parses and validates args per the declaration, dispatches to your handler, and sends auto-threaded responses.
+
+```go
+decl := &convention.Declaration{
+    Convention: "task-runner",
+    Version:    "0.1",
+    Operation:  "submit-result",
+    Signing:    "member_key",
+    Args: []convention.ArgDescriptor{
+        {Name: "task_id", Type: "string", Required: true},
+        {Name: "result",  Type: "string", Required: true},
+    },
+    ProducesTags: []convention.TagRule{
+        {Tag: "result:submitted", Cardinality: "exactly_one"},
+    },
+}
+
+srv := convention.NewServer(client, decl)
+srv.WithPollInterval(2 * time.Second)
+srv.WithErrorHandler(func(err error) { log.Printf("handler error: %v", err) })
+
+srv.RegisterHandler("submit-result", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+    taskID := req.Args["task_id"].(string)
+    result := req.Args["result"].(string)
+
+    // Your business logic here — LLM call, database write, API call, anything.
+    // This handler can be powered by an LLM today and moved to CPU code tomorrow.
+    // Callers see the same convention interface either way.
+
+    return &convention.Response{
+        Payload: []byte(fmt.Sprintf(`{"status":"ok","task_id":"%s"}`, taskID)),
+    }, nil
+})
+
+// Blocks until context is cancelled. Handles all matching messages.
+srv.Serve(ctx, campfireID)
+```
+
+**Key property: LLM-to-CPU transparency.** A convention handler powered by an LLM produces the same typed response as one implemented in pure Go. Callers don't know or care which is behind the convention. You can start with an LLM doing the work, validate the behavior, then replace the handler body with deterministic code — the convention interface is the contract.
+
+### Request and Response types
+
+```go
+type Request struct {
+    MessageID   string         // ID of the incoming message
+    CampfireID  string         // which campfire
+    Sender      string         // sender's public key hex
+    Args        map[string]any // parsed and validated per declaration
+    Tags        []string       // message tags
+    Antecedents []string       // message threading
+}
+
+type Response struct {
+    Payload []byte   // response payload (auto-threaded as antecedent of request)
+    Tags    []string // additional tags beyond the auto-added "fulfills"
+}
+```
+
+When a handler returns a `*Response`, the Server sends it as a message with `Antecedents: [req.MessageID]` and tag `"fulfills"` — so the caller's `client.Await(targetMsgID)` resolves automatically.
+
+## Integration hierarchy
+
+| Building... | Use | Why |
+|-------------|-----|-----|
+| A backend service | **Go SDK** (`protocol.Client` + `convention.Server`) | Full lifecycle, Subscribe, typed handlers, LLM-to-CPU migration |
+| An AI agent workflow | **`cf` CLI** | Convention commands from any language, shell-friendly |
+| An AI agent via tool calling | **`cf-mcp` MCP server** | Convention tools auto-register on join, no code needed |
+
+The SDK, CLI, and MCP server all speak the same protocol. A convention handler written against the SDK is callable by a CLI user and an MCP agent — they're different interfaces to the same campfire.
+
 ## See also
 
-- [`pkg/protocol/`](../pkg/protocol/) — `Client`, `SendRequest`, `ReadRequest`, `AwaitRequest`
-- [`pkg/convention/`](../pkg/convention/) — `Executor`, `Declaration`, `ArgDescriptor`
+- [`pkg/protocol/`](../pkg/protocol/) — `Client`, `SendRequest`, `ReadRequest`, `AwaitRequest`, `SubscribeRequest`, `CreateRequest`, `JoinRequest`
+- [`pkg/convention/`](../pkg/convention/) — `Server`, `Executor`, `Declaration`, `ArgDescriptor`
 - [Protocol spec](protocol-spec.md) — message envelope, provenance hops, identity
 - [CLI reference](cli-conventions.md) — the same operations, from the command line
 - [MCP server reference](mcp-conventions.md) — conventions as auto-generated MCP tools
