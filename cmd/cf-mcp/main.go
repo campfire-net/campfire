@@ -835,6 +835,71 @@ Returns: total actions, actions by type, latest Merkle root (if computed), and a
 				"required": []string{},
 			}),
 		},
+		// ---------------------------------------------------------------
+		// PEERING — add, remove, and list P2P HTTP peers
+		// ---------------------------------------------------------------
+		{
+			Name: "campfire_add_peer",
+			Description: `Add a peer endpoint to a P2P HTTP campfire.
+
+Registers a remote peer's HTTP endpoint so this node can exchange messages with it directly
+(peer-to-peer, no relay). Only works on campfires using HTTP transport.
+
+After adding a peer, messages sent to this campfire will be delivered to the peer's endpoint.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The campfire ID to add the peer to.",
+					},
+					"endpoint": map[string]interface{}{
+						"type":        "string",
+						"description": "HTTP endpoint URL of the peer (e.g. 'https://peer.example.com/campfire').",
+					},
+					"public_key_hex": map[string]interface{}{
+						"type":        "string",
+						"description": "The peer's Ed25519 public key (hex-encoded). Required for message verification.",
+					},
+				},
+				"required": []string{"campfire_id", "endpoint", "public_key_hex"},
+			}),
+		},
+		{
+			Name: "campfire_remove_peer",
+			Description: `Remove a peer from a P2P HTTP campfire by their public key.
+
+The peer's endpoint is removed so messages are no longer delivered to it. Only works on
+campfires using HTTP transport.`,
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The campfire ID to remove the peer from.",
+					},
+					"public_key_hex": map[string]interface{}{
+						"type":        "string",
+						"description": "The peer's Ed25519 public key (hex-encoded).",
+					},
+				},
+				"required": []string{"campfire_id", "public_key_hex"},
+			}),
+		},
+		{
+			Name:        "campfire_peers",
+			Description: "List all registered peers for a P2P HTTP campfire. Returns each peer's endpoint URL, public key, and participant ID. Only works on campfires using HTTP transport.",
+			InputSchema: mustJSON(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"campfire_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The campfire ID to list peers for.",
+					},
+				},
+				"required": []string{"campfire_id"},
+			}),
+		},
 	}
 
 	// Partition the full list into base tools and primitive tools.
@@ -3501,6 +3566,128 @@ func (s *server) handleAudit(id interface{}, params map[string]interface{}) json
 }
 
 // ---------------------------------------------------------------------------
+// Peer handlers
+// ---------------------------------------------------------------------------
+
+func (s *server) handleAddPeer(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	campfireID := getStr(params, "campfire_id")
+	if campfireID == "" {
+		return errResponse(id, -32602, "campfire_id is required")
+	}
+	endpoint := getStr(params, "endpoint")
+	if endpoint == "" {
+		return errResponse(id, -32602, "endpoint is required")
+	}
+	publicKeyHex := getStr(params, "public_key_hex")
+	if publicKeyHex == "" {
+		return errResponse(id, -32602, "public_key_hex is required")
+	}
+
+	st := s.st
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
+	}
+
+	client := newProtocolClient(st, nil)
+	if err := client.AddPeer(campfireID, protocol.PeerInfo{
+		Endpoint:     endpoint,
+		PublicKeyHex: publicKeyHex,
+	}); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("adding peer: %v", err))
+	}
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"status":         "ok",
+		"campfire_id":    campfireID,
+		"endpoint":       endpoint,
+		"public_key_hex": publicKeyHex,
+	})
+	return okResponse(id, result)
+}
+
+func (s *server) handleRemovePeer(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	campfireID := getStr(params, "campfire_id")
+	if campfireID == "" {
+		return errResponse(id, -32602, "campfire_id is required")
+	}
+	publicKeyHex := getStr(params, "public_key_hex")
+	if publicKeyHex == "" {
+		return errResponse(id, -32602, "public_key_hex is required")
+	}
+
+	st := s.st
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
+	}
+
+	client := newProtocolClient(st, nil)
+	if err := client.RemovePeer(campfireID, publicKeyHex); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("removing peer: %v", err))
+	}
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"status":         "ok",
+		"campfire_id":    campfireID,
+		"public_key_hex": publicKeyHex,
+	})
+	return okResponse(id, result)
+}
+
+func (s *server) handlePeers(id interface{}, params map[string]interface{}) jsonRPCResponse {
+	campfireID := getStr(params, "campfire_id")
+	if campfireID == "" {
+		return errResponse(id, -32602, "campfire_id is required")
+	}
+
+	st := s.st
+	if st == nil {
+		var err error
+		st, err = store.Open(s.storePath())
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("opening store: %v", err))
+		}
+		defer st.Close()
+	}
+
+	client := newProtocolClient(st, nil)
+	peers, err := client.Peers(campfireID)
+	if err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("listing peers: %v", err))
+	}
+
+	type peerEntry struct {
+		Endpoint      string `json:"endpoint"`
+		PublicKeyHex  string `json:"public_key_hex"`
+		ParticipantID string `json:"participant_id,omitempty"`
+	}
+	entries := make([]peerEntry, len(peers))
+	for i, p := range peers {
+		entries[i] = peerEntry{
+			Endpoint:      p.Endpoint,
+			PublicKeyHex:  p.PublicKeyHex,
+			ParticipantID: p.ParticipantID,
+		}
+	}
+
+	result, _ := toolResultJSON(map[string]interface{}{
+		"campfire_id": campfireID,
+		"peers":       entries,
+		"count":       len(entries),
+	})
+	return okResponse(id, result)
+}
+
+// ---------------------------------------------------------------------------
 // Request dispatch
 // ---------------------------------------------------------------------------
 
@@ -3583,6 +3770,12 @@ func (s *server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 			return s.handleRevokeInvite(req.ID, callParams.Arguments)
 		case "campfire_audit":
 			return s.handleAudit(req.ID, callParams.Arguments)
+		case "campfire_add_peer":
+			return s.handleAddPeer(req.ID, callParams.Arguments)
+		case "campfire_remove_peer":
+			return s.handleRemovePeer(req.ID, callParams.Arguments)
+		case "campfire_peers":
+			return s.handlePeers(req.ID, callParams.Arguments)
 		default:
 			if s.conventionTools != nil {
 				if entry, ok := s.conventionTools.get(callParams.Name); ok {

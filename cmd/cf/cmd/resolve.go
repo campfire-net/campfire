@@ -8,6 +8,7 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/naming"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
@@ -134,23 +135,22 @@ func searchBeaconDir(dir string, prefix string, addMatch func(string)) {
 }
 
 // resolveNamingURI resolves a cf:// URI to a campfire ID using the naming protocol.
+// Uses NewResolverFromClient (direct-read) instead of the deprecated CLITransport.
 func resolveNamingURI(uri string, s store.Store) (string, error) {
-	agentID, err := loadIdentity()
+	client, err := protocol.Init(CFHome())
 	if err != nil {
-		return "", fmt.Errorf("loading identity for name resolution: %w", err)
+		return "", fmt.Errorf("initializing protocol client for name resolution: %w", err)
 	}
-
-	transport := &naming.CLITransport{
-		Identity: agentID,
-		Store:    s,
-	}
+	defer client.Close()
 
 	rootID := getRootRegistryID()
 	if rootID == "" {
 		return "", fmt.Errorf("root registry not configured — set CF_ROOT_REGISTRY or join the root registry campfire")
 	}
 
-	resolver := naming.NewResolver(transport, rootID)
+	resolver := naming.NewResolverFromClient(client, rootID, naming.ResolverClientOptions{
+		BeaconDir: BeaconDir(),
+	})
 	result, err := resolver.ResolveURI(context.Background(), uri)
 	if err != nil {
 		return "", fmt.Errorf("resolving cf:// URI: %w", err)

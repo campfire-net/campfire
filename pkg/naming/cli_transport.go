@@ -11,6 +11,9 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
+// Deprecated: Use NewResolverFromClient instead. CLITransport uses futures which
+// require a server process. NewResolverFromClient uses direct-read resolution.
+//
 // CLITransport implements the naming.Transport interface using the local store
 // and identity for sending futures and polling for fulfillment.
 type CLITransport struct {
