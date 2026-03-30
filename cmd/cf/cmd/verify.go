@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/provenance"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/google/uuid"
@@ -87,7 +88,12 @@ func runVerifyChallenge(keyOrName, contactCampfireHint, initiatorKey string, tim
 	if err != nil {
 		return fmt.Errorf("loading identity: %w", err)
 	}
-	sentMsg, err := sendFilesystem(contactCampfireID, string(payloadBytes), []string{"provenance:challenge"}, nil, "", id, contactMembership.TransportDir)
+	client := protocol.New(s, id)
+	sentMsg, err := client.Send(protocol.SendRequest{
+		CampfireID: contactCampfireID,
+		Payload:    payloadBytes,
+		Tags:       []string{"provenance:challenge"},
+	})
 	if err != nil {
 		return fmt.Errorf("sending challenge: %w", err)
 	}

@@ -7,8 +7,8 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/spf13/cobra"
 )
 
@@ -189,38 +189,18 @@ func loadExistingDeclarations(s store.Store, registryID string) (map[string]*con
 }
 
 // sendDeclarationViaTransport sends a convention declaration message through the
-// campfire transport (filesystem, GitHub, or P2P HTTP) so that other agents
-// syncing the campfire will see the promoted declaration. This mirrors what
-// cf send does — routing is determined by the membership transport type.
-// After writing to transport, the message is also stored locally so that
-// loadExistingDeclarations and other local queries can find it.
-func sendDeclarationViaTransport(payload []byte, campfireID string, agentID *identity.Identity, s store.Store, m *store.Membership) (string, error) {
+// campfire transport. Delegates to protocol.Client.Send which handles transport
+// dispatch, role enforcement, message signing, provenance hop, and local store mirroring.
+func sendDeclarationViaTransport(payload []byte, campfireID string, agentID *identity.Identity, s store.Store, _ *store.Membership) (string, error) {
 	tags := []string{convention.ConventionOperationTag}
-
-	var msgID string
-	switch transport.ResolveType(*m) {
-	case transport.TypeGitHub:
-		result, err := sendGitHub(campfireID, string(payload), tags, nil, "", agentID, s, m)
-		if err != nil {
-			return "", fmt.Errorf("sending via GitHub transport: %w", err)
-		}
-		// GitHub transport stores locally in sendGitHub via s already.
-		return result.ID, nil
-	case transport.TypePeerHTTP:
-		result, err := sendP2PHTTP(campfireID, string(payload), tags, nil, "", agentID, s, m)
-		if err != nil {
-			return "", fmt.Errorf("sending via P2P HTTP transport: %w", err)
-		}
-		// P2P HTTP transport calls s.AddMessage internally.
-		return result.ID, nil
-	default:
-		result, err := sendFilesystem(campfireID, string(payload), tags, nil, "", agentID, m.TransportDir)
-		if err != nil {
-			return "", fmt.Errorf("sending via filesystem transport: %w", err)
-		}
-		msgID = result.ID
-		// Store locally so local queries (conflict detection, loadExistingDeclarations) can find it.
-		s.AddMessage(store.MessageRecordFromMessage(campfireID, result, store.NowNano())) //nolint:errcheck
-		return msgID, nil
+	client := protocol.New(s, agentID)
+	msg, err := client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    payload,
+		Tags:       tags,
+	})
+	if err != nil {
+		return "", fmt.Errorf("sending declaration: %w", err)
 	}
+	return msg.ID, nil
 }

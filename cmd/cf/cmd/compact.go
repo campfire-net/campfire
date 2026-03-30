@@ -20,9 +20,8 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/spf13/cobra"
 )
 
@@ -190,29 +189,20 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 	// Enforce role before sending.
 	_ = campfire.EffectiveRole(m.Role) // already checked above
 
-	// Route the compaction message through the appropriate transport.
+	// Route the compaction message through the appropriate transport via protocol.Client.Send.
 	compactTags := []string{"campfire:compact"}
 	compactAntes := []string{lastSupersededID}
 	payloadStr := string(payloadJSON)
 
-	var sentMsg *message.Message
-	transportType := transport.ResolveType(*m)
-	switch transportType {
-	case transport.TypeGitHub:
-		sentMsg, err = sendGitHub(campfireID, payloadStr, compactTags, compactAntes, "compact", agentID, s, m)
-	case transport.TypePeerHTTP:
-		sentMsg, err = sendP2PHTTP(campfireID, payloadStr, compactTags, compactAntes, "compact", agentID, s, m)
-	default: // TypeFilesystem
-		sentMsg, err = sendFilesystem(campfireID, payloadStr, compactTags, compactAntes, "compact", agentID, m.TransportDir)
-	}
-	if err != nil {
+	client := protocol.New(s, agentID)
+	if _, err = client.Send(protocol.SendRequest{
+		CampfireID:  campfireID,
+		Payload:     []byte(payloadStr),
+		Tags:        compactTags,
+		Antecedents: compactAntes,
+		Instance:    "compact",
+	}); err != nil {
 		return nil, fmt.Errorf("sending compaction event: %w", err)
-	}
-
-	// Store the compaction event in the local SQLite store so ListCompactionEvents can find it.
-	// sendP2PHTTP already calls s.AddMessage internally; skip it here to avoid a duplicate insert.
-	if transportType != transport.TypePeerHTTP {
-		s.AddMessage(store.MessageRecordFromMessage(campfireID, sentMsg, store.NowNano())) //nolint:errcheck
 	}
 
 	return &compactResult{

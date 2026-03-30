@@ -169,9 +169,6 @@ func createAndSeedHomeCampfire(cfHome string, agentID *identity.Identity) (strin
 		return "", fmt.Errorf("writing member record: %w", err)
 	}
 
-	// Seed: post embedded promote declaration + seed beacon declarations
-	seedCampfireFilesystem(homeCF.PublicKeyHex(), transport.CampfireDir(homeCF.PublicKeyHex()), agentID, homeCF, "")
-
 	// Build and publish beacon
 	b, err := beacon.New(
 		homeCF.PublicKey,
@@ -210,6 +207,10 @@ func createAndSeedHomeCampfire(cfHome string, agentID *identity.Identity) (strin
 	}); err != nil {
 		return "", fmt.Errorf("recording membership: %w", err)
 	}
+
+	// Seed: post embedded promote declaration + seed beacon declarations.
+	// Must run after AddMembership so protocol.Client.Send can look up membership.
+	seedCampfireFilesystem(homeCF.PublicKeyHex(), transport.CampfireDir(homeCF.PublicKeyHex()), agentID, homeCF, "", s)
 
 	// Set "home" alias
 	aliases := naming.NewAliasStore(cfHome)
