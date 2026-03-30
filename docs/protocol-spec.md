@@ -695,16 +695,48 @@ The Server SDK (`pkg/protocol.Client` and `pkg/convention.Executor`) is the prog
 
 **Client** (`protocol.Client`) handles the transport layer:
 
+- `Init(cfHome)` — generate or load Ed25519 identity, open SQLite store, return `*Client`
 - `Send(SendRequest)` — sign and deliver a message to a campfire
-- `Read(ReadRequest)` — retrieve messages with tag/sender/cursor filters
+- `Read(ReadRequest)` — retrieve messages with tag/sender/cursor filters; returns `[]protocol.Message`
+- `Get(id)` — fetch a single message by exact ID from the local store
+- `GetByPrefix(prefix)` — fetch a single message by unambiguous ID prefix
 - `Await(AwaitRequest)` — block until a specific future is fulfilled
+- `Subscribe(ctx, SubscribeRequest)` — live message stream via poll loop
+- `PublicKeyHex()` — hex-encoded Ed25519 public key of the client's identity
 
 `Client` is initialized with a local message store and an identity keypair. It is not safe for concurrent use — one `Client` per goroutine. Transport selection is automatic: the campfire's membership record determines whether to use filesystem, GitHub Issues, or P2P HTTP transport. Application code is transport-agnostic.
+
+**Transport abstraction.** At create/join time, callers pass a typed transport config. The `Transport` interface is sealed to three concrete types in `pkg/protocol`:
+
+- `FilesystemTransport{Dir}` — local filesystem, sync-before-query
+- `P2PHTTPTransport{Transport, MyEndpoint, PeerEndpoint, Dir}` — peer-to-peer HTTP
+- `GitHubTransport{Owner, Repo, Branch, Dir, Token}` — GitHub Issues as message store
+
+After joining, no transport config is needed in application code. The membership record carries the transport type and all routing information.
+
+**`protocol.Message`** is the SDK-facing message type returned by all read operations:
+
+```go
+type Message struct {
+    ID          string
+    CampfireID  string
+    Sender      string   // hex-encoded Ed25519 public key
+    Payload     []byte   // [TAINTED] sender-controlled
+    Tags        []string // [TAINTED] sender-chosen labels
+    Antecedents []string // [TAINTED] sender-asserted causal claims
+    Timestamp   int64
+    Instance    string   // [TAINTED] sender-asserted role label
+    Signature   []byte
+    Provenance  []message.ProvenanceHop // [verified]
+}
+```
+
+Use `msg.IsBridged()` to test whether any provenance hop is a blind-relay (i.e., the message was bridged from an external system such as Teams or Slack).
 
 **Executor** (`convention.Executor`) wraps `Client` with convention dispatch:
 
 ```go
-exec := convention.NewExecutor(client, id.PublicKeyHex())
+exec := convention.NewExecutor(client, client.PublicKeyHex())
 // Optionally attach operator provenance enforcement:
 exec = exec.WithProvenance(myProvenanceChecker)
 ```
@@ -759,6 +791,8 @@ TransportConfig {
 ```
 
 A member that cannot speak the campfire's transport cannot join. Transport migration (campfire switches transport because requirements changed) requires agreement from all current members or re-creation of the campfire.
+
+**SDK representation.** The Go SDK exposes `TransportConfig` as a sealed `Transport` interface with three concrete types: `FilesystemTransport`, `P2PHTTPTransport`, and `GitHubTransport`. These are passed to `CreateRequest.Transport` and `JoinRequest.Transport`. After joining, application code is transport-agnostic — the campfire's membership record carries the transport configuration and the `Client` routes automatically. See the SDK reference for details.
 
 The protocol is transport-agnostic. The only requirement is that the transport supports:
 - Reliable delivery (or at least delivery acknowledgment)

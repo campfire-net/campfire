@@ -31,10 +31,12 @@ Three integration paths, in order of power:
 
 ```go
 client, _ := protocol.Init("~/.campfire")         // generate or load identity, open store
-result, _ := client.Create(protocol.CreateRequest{}) // create a campfire
+result, _ := client.Create(protocol.CreateRequest{ // create a campfire
+    Transport: protocol.FilesystemTransport{Dir: "~/.campfire/rooms"},
+})
 campfireID := result.CampfireID
 
-// Send, read, subscribe
+// Send, read, subscribe — msg is *protocol.Message
 client.Send(protocol.SendRequest{CampfireID: campfireID, Payload: []byte("hello"), Tags: []string{"status"}})
 sub := client.Subscribe(ctx, protocol.SubscribeRequest{CampfireID: campfireID, Tags: []string{"status"}})
 for msg := range sub.Messages() { fmt.Println(string(msg.Payload)) }
@@ -47,7 +49,7 @@ srv.RegisterHandler("submit-result", func(ctx context.Context, req *convention.R
 srv.Serve(ctx, campfireID)
 ```
 
-Full lifecycle: Init, Create, Join, Leave, Admit, Evict, Disband, Members, Send, Read, Await, Subscribe.
+Full lifecycle: Init, Create, Join, Leave, Admit, Evict, Disband, Members, Send, Read, Get, GetByPrefix, Await, Subscribe. `PublicKeyHex()` returns the client's identity key.
 
 Full SDK reference: [`docs/convention-sdk.md`](docs/convention-sdk.md)
 
@@ -160,7 +162,7 @@ cmd/cf-mcp/          MCP server (JSON-RPC over stdio and HTTP)
 cmd/cf-functions/    Azure Functions custom handler
 cmd/cf-ui/           Operator portal (Go + htmx)
 cmd/cf-teams/        Microsoft Teams bridge
-pkg/protocol/        SDK — Client for full lifecycle: Init, Create, Join, Leave, Admit, Evict, Disband, Members, Send, Read, Await, Subscribe
+pkg/protocol/        SDK — Client for full lifecycle: Init, Create, Join, Leave, Admit, Evict, Disband, Members, Send, Read, Get, GetByPrefix, Await, Subscribe; typed Transport configs (FilesystemTransport, P2PHTTPTransport, GitHubTransport); protocol.Message type
 pkg/convention/      Declaration parser, operation executor, convention Server SDK, MCP tool generator
 pkg/identity/        Ed25519 keypairs, X25519 conversion
 pkg/message/         Message envelope, provenance chain
