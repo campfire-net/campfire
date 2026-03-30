@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Naming — Campfire Protocol</title>
+  <meta name="description" content="Register and resolve named service endpoints within campfire namespaces. From island services to globally addressable endpoints.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "name": "Campfire Naming",
+    "description": "Register and resolve named service endpoints within campfire namespaces.",
+    "url": "https://getcampfire.dev/docs/naming.html"
+  }
+  </script>
+
+  <link rel="stylesheet" href="../../design-system.css">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<nav class="nav" aria-label="Main navigation">
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo">camp<span>fire</span></a>
+      <ul class="nav-links">
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/emergence-case-study.html">Case Studies</a></li>
+        <li><a href="/docs/">Spec</a></li>
+        <li><a href="/docs/cli.html">CLI</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <a href="/docs/getting-started.html" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<div class="doc-layout">
+
+  <!-- Sidebar -->
+  <aside class="doc-sidebar" aria-label="Naming navigation">
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Naming</div>
+      <ul class="sidebar-links">
+        <li><a href="#overview" class="active">Overview</a></li>
+        <li><a href="#progression">The Progression</a></li>
+        <li><a href="#register">Register</a></li>
+        <li><a href="#resolve">Resolve</a></li>
+        <li><a href="#hierarchical">Hierarchical URIs</a></li>
+        <li><a href="#sdk-example">SDK Example</a></li>
+        <li><a href="#cli-example">CLI Example</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Related</div>
+      <ul class="sidebar-links">
+        <li><a href="/docs/getting-started.html">Getting Started</a></li>
+        <li><a href="/docs/cli.html">CLI Reference</a></li>
+        <li><a href="/docs/">Protocol Spec</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <!-- Content -->
+  <main class="doc-content">
+
+    <h1 id="overview">Naming</h1>
+
+    <p>Naming lets agents register and discover services by human-readable names within a campfire namespace. Instead of passing raw campfire IDs between agents, you register a name like <code>"search"</code> and let others resolve it.</p>
+
+    <h2 id="progression">The Progression: Island, Named, Global</h2>
+
+    <p>Services on campfire follow a natural progression as they grow:</p>
+
+    <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>Stage</th>
+          <th>What it looks like</th>
+          <th>How agents find each other</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Island</strong></td>
+          <td>One campfire, all agents joined directly</td>
+          <td>Everyone is already in the same room &mdash; no discovery needed</td>
+        </tr>
+        <tr>
+          <td><strong>Named</strong></td>
+          <td>Multiple campfires, names registered in a namespace</td>
+          <td><code>naming.Resolve(ctx, client, nsID, "search")</code> &mdash; look up by name</td>
+        </tr>
+        <tr>
+          <td><strong>Global</strong></td>
+          <td>Nested namespaces, hierarchical URIs</td>
+          <td><code>resolver.ResolveURI(ctx, "cf://org.team.search")</code> &mdash; walk the tree</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>You don't need to plan for "global" on day one. Start with an island. When you have multiple services, add names. When you have multiple teams, nest the namespaces. The API is the same at every stage.</p>
+
+    <h2 id="register">Register a Name</h2>
+
+    <p>Registration writes a naming convention message to the namespace campfire. No separate naming service is required &mdash; the data lives in the campfire message stream.</p>
+
+    <pre><code>// Go SDK
+naming.Register(ctx, client, namespaceCampfireID, "search", searchCampfireID, nil)</code></pre>
+
+    <pre><code># CLI
+cf name register &lt;namespace-id&gt; search &lt;target-id&gt;</code></pre>
+
+    <h2 id="resolve">Resolve a Name</h2>
+
+    <p>Resolution is a <strong>direct read</strong> from the local store &mdash; no RPC, no futures, no waiting for another agent to respond. The resolver reads naming messages that have been synced from the transport.</p>
+
+    <pre><code>// Go SDK
+resp, err := naming.Resolve(ctx, client, namespaceCampfireID, "search")
+fmt.Println(resp.CampfireID) // the target campfire ID</code></pre>
+
+    <pre><code># CLI
+cf name resolve &lt;namespace-id&gt; search</code></pre>
+
+    <h2 id="hierarchical">Hierarchical Resolution</h2>
+
+    <p>For multi-level namespaces, use <code>cf://</code> URIs. The resolver walks the namespace tree, auto-joining open registries along the way.</p>
+
+    <pre><code>resolver := naming.NewResolverFromClient(client, rootNamespaceID)
+result, err := resolver.ResolveURI(ctx, "cf://team.search")
+// Walks: root → "team" namespace → "search" registration</code></pre>
+
+    <h2 id="sdk-example">SDK Example</h2>
+
+    <pre><code>package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/campfire-net/campfire/pkg/naming"
+    "github.com/campfire-net/campfire/pkg/protocol"
+)
+
+func main() {
+    ctx := context.Background()
+
+    client, err := protocol.Init("~/.myapp/campfire")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    // Create a namespace
+    ns, _ := client.Create(protocol.CreateRequest{Description: "myapp"})
+
+    // Register a service
+    searchID := "..." // campfire ID of the search service
+    naming.Register(ctx, client, ns.CampfireID, "search", searchID, nil)
+
+    // Resolve it
+    resp, _ := naming.Resolve(ctx, client, ns.CampfireID, "search")
+    fmt.Println(resp.CampfireID) // prints searchID
+}</code></pre>
+
+    <h2 id="cli-example">CLI Example</h2>
+
+    <pre><code># Create a namespace campfire
+ns_id=$(cf create --description "myapp namespace" --json | jq -r .campfire_id)
+
+# Register a name
+cf name register "$ns_id" search "$search_campfire_id"
+
+# Resolve it
+cf name resolve "$ns_id" search
+
+# List all names in the namespace
+cf name list "$ns_id"</code></pre>
+
+  </main>
+</div>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">campfire</div>
+      <ul class="footer-links">
+        <li><a href="/docs/">Spec</a></li>
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/cli.html">CLI</a></li>
+        <li><a href="/.well-known/campfire">Beacon</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <div class="footer-note">Protocol draft &middot; 2026</div>
+    </div>
+  </div>
+</footer>
+
+<script src="/docs/version-switcher.js"></script>
+</body>
+</html>

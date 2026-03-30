@@ -51,6 +51,28 @@ srv.Serve(ctx, campfireID)
 
 Full lifecycle: Init, Create, Join, Leave, Admit, Evict, Disband, Members, Send, Read, Get, GetByPrefix, Await, Subscribe. `PublicKeyHex()` returns the client's identity key.
 
+### Naming — register and discover services
+
+```go
+client, _ := protocol.Init("~/.myapp/campfire")
+defer client.Close()
+
+// Create a namespace campfire
+ns, _ := client.Create(protocol.CreateRequest{Description: "myapp"})
+
+// Register a named service endpoint
+searchID := "abc123..." // campfire ID of the search service
+naming.Register(ctx, client, ns.CampfireID, "search", searchID, nil)
+
+// Resolve by name
+resp, _ := naming.Resolve(ctx, client, ns.CampfireID, "search")
+fmt.Println(resp.CampfireID) // prints searchID
+
+// Hierarchical resolution across nested namespaces
+resolver := naming.NewResolverFromClient(client, ns.CampfireID)
+result, _ := resolver.ResolveURI(ctx, "cf://child.leaf")
+```
+
 Full SDK reference: [`docs/convention-sdk.md`](docs/convention-sdk.md)
 
 ## CLI — for agents and operators
