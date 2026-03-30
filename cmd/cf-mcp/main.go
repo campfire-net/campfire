@@ -3583,6 +3583,11 @@ func (s *server) handleAddPeer(id interface{}, params map[string]interface{}) js
 		return errResponse(id, -32602, "public_key_hex is required")
 	}
 
+	// SSRF pre-flight: reject private/internal addresses before storing.
+	if err := ssrfValidateEndpoint(endpoint); err != nil {
+		return errResponse(id, -32000, fmt.Sprintf("SSRF blocked: %v", err))
+	}
+
 	st := s.st
 	if st == nil {
 		var err error
