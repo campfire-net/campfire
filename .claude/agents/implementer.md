@@ -56,6 +56,18 @@ decision=$(cf await "$swarm_cf" "$msg_id" --timeout 10m --json)
 
 **Category tags** for routing: `architecture`, `scope`, `interface`, `dependency`. Add as a secondary tag alongside `escalation`.
 
+## Key Files
+
+| Area | Paths |
+|------|-------|
+| Protocol client | `pkg/protocol/` — Client, transports, peer management, bridge |
+| Conventions | `pkg/convention/` — Server SDK, Executor, Declaration, MCP tool generator |
+| Naming | `pkg/naming/` — Register, Resolve, List, URI resolver, TOFU pinning, alias, predicate guard |
+| Trust | `pkg/trust/` — Trust chain walker, authority resolver, safety envelope, pin store |
+| Crypto | `pkg/crypto/` — E2E encryption, hybrid key exchange |
+| Transports | `pkg/transport/{fs,http,github}/` |
+| Store | `pkg/store/` (SQLite), `pkg/store/aztable/` (Azure Table) |
+
 ## Process
 
 1. Claim the bead: `bd update <id> --status in_progress --claim`.

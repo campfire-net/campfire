@@ -71,6 +71,21 @@ Not every escalation needs deep analysis:
 | Judgment call (design is silent or ambiguous) | Medium | Read code context, reason from design principles, fulfill |
 | Novel trade-off (major consequences) | Slow | Escalate to human via `--tag gate-human` |
 
+## Design Decisions Reference
+
+Key design decisions (D1-D6) that inform rulings:
+
+| Decision | Summary |
+|----------|---------|
+| D1 | Direct-read naming resolution — no RPC, no directory service process |
+| D2 | TOFU pinning for name targets — first resolution pins, re-registration required to change |
+| D3 | Namespace isolation — names scoped to their campfire, hierarchical resolution walks the tree |
+| D4 | Peering is HTTP-only — `AddPeer`/`RemovePeer` return `ErrTransportNotSupported` on filesystem |
+| D5 | Bridge is bidirectional-optional — default is source-to-dest only |
+| D6 | Convention messages carry naming data — no separate store or service for name records |
+
+When an escalation touches naming, peering, or bridging, check these decisions before ruling. They represent settled design choices from the SDK 0.13 design cycle.
+
 ## Constraints
 
 - **Read-only on code.** You read source to inform rulings. You do not edit files.

@@ -723,6 +723,65 @@ The `defer clientA.Close()` and `defer clientB.Close()` calls release the SQLite
 
 The SDK, CLI, and MCP server all speak the same protocol. A convention handler written against the SDK is callable by a CLI user and an MCP agent — they're different interfaces to the same campfire.
 
+## Naming
+
+Register and resolve named endpoints within a campfire namespace. Names are stored as convention messages — no separate service required.
+
+### Register a name
+
+```go
+naming.Register(ctx, client, campfireID, "search", targetID, nil)
+```
+
+### Resolve a name
+
+```go
+resp, _ := naming.Resolve(ctx, client, campfireID, "search")
+// resp.CampfireID is the target
+```
+
+### List all names
+
+```go
+registrations, _ := naming.List(ctx, client, campfireID)
+```
+
+### Hierarchical resolution
+
+```go
+resolver := naming.NewResolverFromClient(client, rootID)
+result, _ := resolver.ResolveURI(ctx, "cf://child.leaf")
+// Auto-joins open registries during walk
+```
+
+Resolution is direct-read — the resolver reads naming messages from the campfire store, no RPC or futures involved. This keeps resolution fast and eliminates a class of timeout/retry failure modes.
+
+See [`pkg/naming/`](../pkg/naming/) for the full API.
+
+## Peering
+
+Manage peer endpoints for P2P HTTP campfires. Peers are the delivery targets for outbound messages.
+
+```go
+client.AddPeer(campfireID, protocol.PeerInfo{Endpoint: "https://...", PublicKeyHex: "..."})
+peers, _ := client.Peers(campfireID)
+client.RemovePeer(campfireID, publicKeyHex)
+// Returns ErrTransportNotSupported on non-HTTP transports
+```
+
+## Bridging
+
+Bridge messages between two campfires. Both campfires can use different transports.
+
+```go
+err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
+    Bidirectional: true,
+    TagFilter: []string{"important"},
+})
+```
+
+`Bridge` runs a forwarding loop: messages matching `TagFilter` on the source are re-sent to the destination (with provenance hops). When `Bidirectional` is true, the reverse direction is also forwarded. The loop runs until the context is cancelled.
+
 ## See also
 
 - [`pkg/protocol/`](../pkg/protocol/) — `Client`, `SendRequest`, `ReadRequest`, `AwaitRequest`, `SubscribeRequest`, `CreateRequest`, `JoinRequest`
