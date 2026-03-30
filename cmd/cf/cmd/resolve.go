@@ -100,8 +100,13 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 		}
 	}
 
-	// Zero matches.
+	// Zero matches from local sources — try naming resolution as a last resort.
+	// This enables `cf galtrader help` to resolve "galtrader" via the naming
+	// registry without requiring an alias or cf:// URI prefix.
 	if len(matches) == 0 {
+		if id, err := tryNamingResolve(prefix, s); err == nil {
+			return id, nil
+		}
 		return "", fmt.Errorf("no campfire found matching prefix %s", prefix)
 	}
 
@@ -132,6 +137,27 @@ func searchBeaconDir(dir string, prefix string, addMatch func(string)) {
 			addMatch(id)
 		}
 	}
+}
+
+// tryNamingResolve attempts to resolve a bare name via the naming registry.
+// Returns the campfire ID if the name is registered in the root registry, or an error.
+func tryNamingResolve(name string, s store.Store) (string, error) {
+	rootID := getRootRegistryID()
+	if rootID == "" {
+		return "", fmt.Errorf("no root registry")
+	}
+
+	client, err := protocol.Init(CFHome())
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+
+	resp, err := naming.Resolve(context.Background(), client, rootID, name)
+	if err != nil {
+		return "", err
+	}
+	return resp.CampfireID, nil
 }
 
 // resolveNamingURI resolves a cf:// URI to a campfire ID using the naming protocol.
