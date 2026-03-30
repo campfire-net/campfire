@@ -102,6 +102,13 @@ func New(s store.Store, id *identity.Identity) *Client {
 	return &Client{store: s, identity: id}
 }
 
+// GetMembership returns the membership record for the given campfire ID,
+// or nil if the client is not a member. Used by naming auto-join to check
+// whether the client has already joined a campfire before attempting to join.
+func (c *Client) GetMembership(campfireID string) (*store.Membership, error) {
+	return c.store.GetMembership(campfireID)
+}
+
 // PublicKeyHex returns the hex-encoded public key of the client's identity.
 // Returns an empty string if the client has no identity (read-only).
 func (c *Client) PublicKeyHex() string {
