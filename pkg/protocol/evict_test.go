@@ -119,7 +119,7 @@ func testEvictThenSendRejected(t *testing.T) {
 	// A evicts B.
 	_, err = clientA.Evict(protocol.EvictRequest{
 		CampfireID:      campfireID,
-		MemberPubKeyHex: clientB.Identity().PublicKeyHex(),
+		MemberPubKeyHex: clientB.PublicKeyHex(),
 	})
 	if err != nil {
 		t.Fatalf("A.Evict(B): %v", err)
@@ -170,7 +170,7 @@ func testEvictRemovesFromMembers(t *testing.T) {
 	}
 	bPresent := false
 	for _, m := range members {
-		if fmt.Sprintf("%x", m.PublicKey) == clientB.Identity().PublicKeyHex() {
+		if fmt.Sprintf("%x", m.PublicKey) == clientB.PublicKeyHex() {
 			bPresent = true
 			break
 		}
@@ -182,7 +182,7 @@ func testEvictRemovesFromMembers(t *testing.T) {
 	// Evict B.
 	_, err = clientA.Evict(protocol.EvictRequest{
 		CampfireID:      campfireID,
-		MemberPubKeyHex: clientB.Identity().PublicKeyHex(),
+		MemberPubKeyHex: clientB.PublicKeyHex(),
 	})
 	if err != nil {
 		t.Fatalf("A.Evict(B): %v", err)
@@ -194,7 +194,7 @@ func testEvictRemovesFromMembers(t *testing.T) {
 		t.Fatalf("ListMembers after eviction: %v", err)
 	}
 	for _, m := range members {
-		if fmt.Sprintf("%x", m.PublicKey) == clientB.Identity().PublicKeyHex() {
+		if fmt.Sprintf("%x", m.PublicKey) == clientB.PublicKeyHex() {
 			t.Fatal("B still present in member list after eviction")
 		}
 	}
@@ -218,7 +218,7 @@ func testEvictDKGRekey(t *testing.T) {
 	endpointC := fmt.Sprintf("http://%s", addrC)
 
 	clientA := newEvictClient(t)
-	sA := clientA.Store()
+	sA := clientA.ClientStore()
 	trA := startHTTPTransport(t, addrA, sA)
 
 	transportDirA := t.TempDir()
@@ -238,7 +238,7 @@ func testEvictDKGRekey(t *testing.T) {
 
 	// B joins.
 	clientB := newEvictClient(t)
-	sB := clientB.Store()
+	sB := clientB.ClientStore()
 	trB := startHTTPTransport(t, addrB, sB)
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
@@ -251,7 +251,7 @@ func testEvictDKGRekey(t *testing.T) {
 
 	// C joins.
 	clientC := newEvictClient(t)
-	sC := clientC.Store()
+	sC := clientC.ClientStore()
 	trC := startHTTPTransport(t, addrC, sC)
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
@@ -269,7 +269,7 @@ func testEvictDKGRekey(t *testing.T) {
 	}
 	bFoundBefore := false
 	for _, p := range peersBeforeEvict {
-		if p.MemberPubkey == clientB.Identity().PublicKeyHex() {
+		if p.MemberPubkey == clientB.PublicKeyHex() {
 			bFoundBefore = true
 			break
 		}
@@ -282,7 +282,7 @@ func testEvictDKGRekey(t *testing.T) {
 	evictResult, err := clientA.Evict(protocol.EvictRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trA},
 		CampfireID:      campfireID,
-		MemberPubKeyHex: clientB.Identity().PublicKeyHex(),
+		MemberPubKeyHex: clientB.PublicKeyHex(),
 	})
 	if err != nil {
 		t.Fatalf("A.Evict(B): %v", err)
@@ -304,7 +304,7 @@ func testEvictDKGRekey(t *testing.T) {
 	// We update C's store to know about the new campfire ID.
 	// In production, C would receive a campfire:rekey message and update their store.
 	// For this test, we manually update C's store to simulate rekey propagation.
-	newShare := c_updateStoreForRekey(t, sA, sC, clientC.Identity().PublicKeyHex(), newCampfireID, transportDirA, transportDirC)
+	newShare := c_updateStoreForRekey(t, sA, sC, clientC.PublicKeyHex(), newCampfireID, transportDirA, transportDirC)
 	if newShare == nil {
 		t.Skip("C's new DKG share not found in pending — skipping A-sends-with-new-shares subtest")
 	}
@@ -444,7 +444,7 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 	endpointC2 := fmt.Sprintf("http://%s", addrC2)
 
 	clientA := newEvictClient(t)
-	sA := clientA.Store()
+	sA := clientA.ClientStore()
 	trA := startHTTPTransport(t, addrA2, sA)
 
 	transportDirA := t.TempDir()
@@ -461,7 +461,7 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 
 	// B joins and captures its old threshold share.
 	clientB := newEvictClient(t)
-	sB := clientB.Store()
+	sB := clientB.ClientStore()
 	trB := startHTTPTransport(t, addrB2, sB)
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
@@ -485,7 +485,7 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 
 	// C joins.
 	clientC := newEvictClient(t)
-	sC := clientC.Store()
+	sC := clientC.ClientStore()
 	trC := startHTTPTransport(t, addrC2, sC)
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
@@ -500,7 +500,7 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 	evictResult, err := clientA.Evict(protocol.EvictRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trA},
 		CampfireID:      campfireID,
-		MemberPubKeyHex: clientB.Identity().PublicKeyHex(),
+		MemberPubKeyHex: clientB.PublicKeyHex(),
 	})
 	if err != nil {
 		t.Fatalf("A.Evict(B): %v", err)
@@ -524,7 +524,7 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 	// We simulate this by temporarily injecting B into A's peer endpoints under the new ID.
 	sA.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 		CampfireID:    newCampfireID,
-		MemberPubkey:  clientB.Identity().PublicKeyHex(),
+		MemberPubkey:  clientB.PublicKeyHex(),
 		Endpoint:      endpointB2,
 		ParticipantID: oldBPID, // B's old participant ID
 	})
@@ -550,7 +550,7 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 	}
 
 	// Remove the injected B endpoint so it does not pollute other tests.
-	sA.DeletePeerEndpoint(newCampfireID, clientB.Identity().PublicKeyHex()) //nolint:errcheck
+	sA.DeletePeerEndpoint(newCampfireID, clientB.PublicKeyHex()) //nolint:errcheck
 }
 
 // testEvictFilesystemMemberRecordRemoved — Done condition 5.
@@ -581,7 +581,7 @@ func testEvictFilesystemMemberRecordRemoved(t *testing.T) {
 	}
 
 	// Verify B's record file exists before eviction.
-	bRecordPath := filepath.Join(campfireDir, "members", clientB.Identity().PublicKeyHex()+".cbor")
+	bRecordPath := filepath.Join(campfireDir, "members", clientB.PublicKeyHex()+".cbor")
 	if _, err := os.Stat(bRecordPath); os.IsNotExist(err) {
 		t.Fatalf("B's member record file does not exist before eviction: %s", bRecordPath)
 	}
@@ -589,7 +589,7 @@ func testEvictFilesystemMemberRecordRemoved(t *testing.T) {
 	// Evict B.
 	_, err = clientA.Evict(protocol.EvictRequest{
 		CampfireID:      campfireID,
-		MemberPubKeyHex: clientB.Identity().PublicKeyHex(),
+		MemberPubKeyHex: clientB.PublicKeyHex(),
 	})
 	if err != nil {
 		t.Fatalf("A.Evict(B): %v", err)
@@ -622,7 +622,7 @@ func testEvictSelfRejected(t *testing.T) {
 
 	_, err = clientA.Evict(protocol.EvictRequest{
 		CampfireID:      createResult.CampfireID,
-		MemberPubKeyHex: clientA.Identity().PublicKeyHex(),
+		MemberPubKeyHex: clientA.PublicKeyHex(),
 	})
 	if err == nil {
 		t.Fatal("Evict(self) should return error, got nil")

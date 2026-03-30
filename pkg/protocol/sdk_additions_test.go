@@ -39,7 +39,7 @@ func TestCreateDescription(t *testing.T) {
 	}
 
 	// Verify description is stored in membership.
-	m, err := client.Store().GetMembership(result.CampfireID)
+	m, err := client.ClientStore().GetMembership(result.CampfireID)
 	if err != nil {
 		t.Fatalf("GetMembership: %v", err)
 	}
