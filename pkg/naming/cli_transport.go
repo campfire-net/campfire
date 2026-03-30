@@ -16,6 +16,9 @@ import (
 //
 // CLITransport implements the naming.Transport interface using the local store
 // and identity for sending futures and polling for fulfillment.
+//
+// Deprecated: Use NewResolverFromClient instead. CLITransport uses futures which
+// require a server process. NewResolverFromClient uses direct-read resolution.
 type CLITransport struct {
 	Identity *identity.Identity
 	Store    store.Store

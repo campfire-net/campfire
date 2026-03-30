@@ -17,6 +17,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// NOTE: protocol.Bridge (pkg/protocol/bridge.go) re-publishes messages via
+// client.Send(), which creates new messages with the bridge's own sender and
+// signature. This CLI bridge RELAYS messages preserving the original sender and
+// signature (provenance-preserving relay via cfhttp.DeliverToAll). This
+// semantic difference is critical: relay maintains cryptographic attribution to
+// the original author, while re-publish attributes messages to the bridge
+// operator. Migrating to protocol.Bridge would break provenance verification
+// for downstream consumers. A partial migration is not safe here — all message
+// forwarding must preserve original sender/signature.
+
 var bridgeCmd = &cobra.Command{
 	Use:   "bridge [campfire-id]",
 	Short: "Relay messages bidirectionally between filesystem and HTTP transports",
