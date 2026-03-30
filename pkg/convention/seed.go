@@ -99,6 +99,52 @@ func RevokeDeclaration() *Declaration {
 	}
 }
 
+// NamingRegisterDeclaration returns the built-in "naming-register" operation
+// declaration. This seeds into every new campfire so that name registrations
+// are possible from birth.
+//
+// Signing: campfire_key (authority-bearing — only the campfire owner can register names)
+// Produces: naming:name:* tag (via pattern)
+// Rate limited: 5/day (MaxRegistrationsPerDay from pkg/naming)
+func NamingRegisterDeclaration() *Declaration {
+	return &Declaration{
+		Convention:  InfrastructureConvention,
+		Version:     infrastructureVersion,
+		Operation:   "naming-register",
+		Description: "Register a named endpoint in this campfire's namespace",
+		ProducesTags: []TagRule{
+			{Tag: "naming:name:", Cardinality: "zero_or_more", Pattern: "naming:name:*"},
+		},
+		RateLimit: &RateLimit{
+			Max:    5,
+			Per:    "campfire",
+			Window: "day",
+		},
+		Args: []ArgDescriptor{
+			{
+				Name:        "name",
+				Type:        "string",
+				Required:    true,
+				Description: "The name segment to register",
+			},
+			{
+				Name:        "campfire_id",
+				Type:        "string",
+				Required:    true,
+				Description: "The campfire ID this name resolves to",
+			},
+			{
+				Name:        "ttl",
+				Type:        "integer",
+				Required:    false,
+				Description: "Time-to-live in seconds (default 3600, max 86400)",
+			},
+		},
+		Signing:    "campfire_key",
+		SignerType: SignerCampfireKey,
+	}
+}
+
 // infrastructureSeedDeclarations returns all built-in convention-extension
 // declarations. These are pre-seeded into convention campfires so that agents
 // can use supersede and revoke operations without bootstrapping.
@@ -106,5 +152,6 @@ func infrastructureSeedDeclarations() []*Declaration {
 	return []*Declaration{
 		SupersedeDeclaration(),
 		RevokeDeclaration(),
+		NamingRegisterDeclaration(),
 	}
 }
