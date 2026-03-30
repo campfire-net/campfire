@@ -46,6 +46,19 @@ type Declaration struct {
 	// declaration is loaded, views are auto-published as campfire:view messages
 	// and registered as callable MCP tools alongside the write operations.
 	Views []ViewDeclaration `json:"views,omitempty"`
+	// Response controls how the executor handles responses for this operation.
+	// Valid values: "sync" (default), "async", "none".
+	// "sync" — caller blocks waiting for a response message.
+	// "async" — caller does not block; response arrives out-of-band.
+	// "none" — no response is expected.
+	Response string `json:"response,omitempty"`
+	// ResponseTimeoutRaw is the raw duration string from JSON (e.g. "30s").
+	// Parse populates ResponseTimeout from this field.
+	ResponseTimeoutRaw string `json:"response_timeout,omitempty"`
+	// ResponseTimeout is the maximum time to wait for a sync response.
+	// Populated by Parse from ResponseTimeoutRaw.
+	// Defaults to 30s when Response is "sync" and no value is specified.
+	ResponseTimeout time.Duration `json:"-"`
 	// Source metadata (populated during Parse, not from JSON payload)
 	MessageID  string     `json:"-"`
 	SignerKey  string     `json:"-"`
@@ -208,6 +221,23 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*De
 	}
 	if decl.Signing == "" {
 		return nil, nil, fmt.Errorf("missing required field: signing")
+	}
+
+	// Check 2b: Response field validation and defaults.
+	validResponseValues := map[string]bool{"sync": true, "async": true, "none": true}
+	if decl.Response == "" {
+		decl.Response = "sync"
+	} else if !validResponseValues[decl.Response] {
+		return nil, nil, fmt.Errorf("invalid response value %q: must be one of \"sync\", \"async\", \"none\"", decl.Response)
+	}
+	if decl.ResponseTimeoutRaw != "" {
+		d, err := time.ParseDuration(decl.ResponseTimeoutRaw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid response_timeout %q: %w", decl.ResponseTimeoutRaw, err)
+		}
+		decl.ResponseTimeout = d
+	} else {
+		decl.ResponseTimeout = 30 * time.Second
 	}
 
 	// Check 3: Arg type validation.

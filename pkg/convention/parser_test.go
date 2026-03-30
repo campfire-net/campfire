@@ -474,3 +474,164 @@ func mustJSON(v any) []byte {
 	}
 	return b
 }
+
+// --- Response field tests (campfire-agent-zns) ---
+
+// basePayload returns a minimal valid declaration payload with optional extra fields.
+func basePayload(extra map[string]any) []byte {
+	m := map[string]any{
+		"convention": "c", "version": "1", "operation": "op", "signing": "member_key",
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	return mustJSON(m)
+}
+
+// TestParse_ResponseDefaultSync verifies that a declaration with no response field
+// defaults to Response="sync" and ResponseTimeout=30s (backward compatible).
+func TestParse_ResponseDefaultSync(t *testing.T) {
+	decl, result, err := Parse(tags(ConventionOperationTag), basePayload(nil), testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid, got warnings: %v", result.Warnings)
+	}
+	if decl.Response != "sync" {
+		t.Errorf("Response = %q, want %q", decl.Response, "sync")
+	}
+	if decl.ResponseTimeout != 30*time.Second {
+		t.Errorf("ResponseTimeout = %v, want 30s", decl.ResponseTimeout)
+	}
+}
+
+// TestParse_ResponseAsync verifies that response="async" parses correctly with an
+// explicit timeout of 60s.
+func TestParse_ResponseAsync(t *testing.T) {
+	payload := basePayload(map[string]any{
+		"response":         "async",
+		"response_timeout": "60s",
+	})
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid, got warnings: %v", result.Warnings)
+	}
+	if decl.Response != "async" {
+		t.Errorf("Response = %q, want %q", decl.Response, "async")
+	}
+	if decl.ResponseTimeout != 60*time.Second {
+		t.Errorf("ResponseTimeout = %v, want 60s", decl.ResponseTimeout)
+	}
+}
+
+// TestParse_ResponseNone verifies that response="none" parses correctly.
+func TestParse_ResponseNone(t *testing.T) {
+	payload := basePayload(map[string]any{"response": "none"})
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decl.Response != "none" {
+		t.Errorf("Response = %q, want %q", decl.Response, "none")
+	}
+}
+
+// TestParse_ResponseSync verifies that response="sync" with explicit timeout parses.
+func TestParse_ResponseSync(t *testing.T) {
+	payload := basePayload(map[string]any{
+		"response":         "sync",
+		"response_timeout": "5s",
+	})
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decl.Response != "sync" {
+		t.Errorf("Response = %q, want %q", decl.Response, "sync")
+	}
+	if decl.ResponseTimeout != 5*time.Second {
+		t.Errorf("ResponseTimeout = %v, want 5s", decl.ResponseTimeout)
+	}
+}
+
+// TestParse_ResponseInvalid verifies that an unknown response value returns an error.
+func TestParse_ResponseInvalid(t *testing.T) {
+	payload := basePayload(map[string]any{"response": "invalid"})
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err == nil {
+		t.Fatal("expected error for invalid response value")
+	}
+}
+
+// TestParse_ResponseTimeoutDurationStrings verifies that various duration formats parse.
+func TestParse_ResponseTimeoutDurationStrings(t *testing.T) {
+	cases := []struct {
+		input string
+		want  time.Duration
+	}{
+		{"5s", 5 * time.Second},
+		{"1m", 1 * time.Minute},
+		{"2m30s", 2*time.Minute + 30*time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			payload := basePayload(map[string]any{"response_timeout": tc.input})
+			decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", tc.input, err)
+			}
+			if decl.ResponseTimeout != tc.want {
+				t.Errorf("ResponseTimeout = %v, want %v", decl.ResponseTimeout, tc.want)
+			}
+		})
+	}
+}
+
+// TestParse_ResponseRoundTrip verifies the JSON round-trip:
+// {"response":"async","response_timeout":"60s"} parses to the correct Go values.
+func TestParse_ResponseRoundTrip(t *testing.T) {
+	raw := []byte(`{
+		"convention": "test-conv",
+		"version": "0.1",
+		"operation": "do-thing",
+		"signing": "member_key",
+		"response": "async",
+		"response_timeout": "60s"
+	}`)
+	decl, result, err := Parse(tags(ConventionOperationTag), raw, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid, got warnings: %v", result.Warnings)
+	}
+	if decl.Response != "async" {
+		t.Errorf("Response = %q, want %q", decl.Response, "async")
+	}
+	if decl.ResponseTimeout != 60*time.Second {
+		t.Errorf("ResponseTimeout = %v, want 60s", decl.ResponseTimeout)
+	}
+}
+
+// TestParse_ExistingSocialPostBackwardCompat verifies the existing social post
+// declaration still parses with sync defaults (no response field = backward compat).
+func TestParse_ExistingSocialPostBackwardCompat(t *testing.T) {
+	decl, result, err := Parse(tags(ConventionOperationTag), socialPostPayload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid, got warnings: %v", result.Warnings)
+	}
+	// Must default to sync + 30s — no response field in socialPostPayload.
+	if decl.Response != "sync" {
+		t.Errorf("Response = %q, want %q (backward compat default)", decl.Response, "sync")
+	}
+	if decl.ResponseTimeout != 30*time.Second {
+		t.Errorf("ResponseTimeout = %v, want 30s (backward compat default)", decl.ResponseTimeout)
+	}
+}
