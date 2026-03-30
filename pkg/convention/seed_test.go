@@ -72,11 +72,11 @@ func TestPromoteDeclaration_IsUnderSizeLimit(t *testing.T) {
 }
 
 // TestInfrastructureSeedDeclarations verifies that the seed set contains
-// supersede and revoke declarations.
+// supersede, revoke, and naming-register declarations.
 func TestInfrastructureSeedDeclarations(t *testing.T) {
 	decls := infrastructureSeedDeclarations()
-	if len(decls) != 2 {
-		t.Fatalf("expected 2 seed declarations, got %d", len(decls))
+	if len(decls) != 3 {
+		t.Fatalf("expected 3 seed declarations, got %d", len(decls))
 	}
 
 	ops := make(map[string]*Declaration)
@@ -89,6 +89,35 @@ func TestInfrastructureSeedDeclarations(t *testing.T) {
 	}
 	if _, ok := ops["revoke"]; !ok {
 		t.Error("expected 'revoke' operation in seed declarations")
+	}
+
+	nr, ok := ops["naming-register"]
+	if !ok {
+		t.Fatal("expected 'naming-register' operation in seed declarations")
+	}
+	if nr.Signing != "campfire_key" {
+		t.Errorf("naming-register signing: want %q, got %q", "campfire_key", nr.Signing)
+	}
+	if nr.SignerType != SignerCampfireKey {
+		t.Errorf("naming-register signer type: want %q, got %q", SignerCampfireKey, nr.SignerType)
+	}
+	if len(nr.ProducesTags) != 1 {
+		t.Fatalf("naming-register produces_tags: want 1, got %d", len(nr.ProducesTags))
+	}
+	if nr.ProducesTags[0].Pattern != "naming:name:*" {
+		t.Errorf("naming-register produces_tags[0].pattern: want %q, got %q", "naming:name:*", nr.ProducesTags[0].Pattern)
+	}
+	if nr.ProducesTags[0].Cardinality != "zero_or_more" {
+		t.Errorf("naming-register produces_tags[0].cardinality: want %q, got %q", "zero_or_more", nr.ProducesTags[0].Cardinality)
+	}
+	if nr.RateLimit == nil {
+		t.Fatal("naming-register rate_limit: expected non-nil")
+	}
+	if nr.RateLimit.Max != 5 {
+		t.Errorf("naming-register rate_limit.max: want 5, got %d", nr.RateLimit.Max)
+	}
+	if nr.RateLimit.Window != "day" {
+		t.Errorf("naming-register rate_limit.window: want %q, got %q", "day", nr.RateLimit.Window)
 	}
 }
 
