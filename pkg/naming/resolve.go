@@ -118,6 +118,13 @@ type Resolver struct {
 	transport Transport
 	rootID    string // root registry campfire ID
 
+	// AutoJoinFunc is called before reading from a campfire during the
+	// hierarchical walk. If non-nil, it is invoked with each campfire ID
+	// the resolver needs to read from (except the root, which the caller
+	// must already have joined). If the function returns ErrInviteOnly,
+	// the resolver propagates it. Other errors are wrapped and returned.
+	AutoJoinFunc func(campfireID string) error
+
 	mu              sync.RWMutex
 	cache           map[string]*cacheEntry  // key: "parentID/name"
 	pins            map[string]string       // key: full dotted name, value: pinned campfire ID (TOFU)
@@ -232,7 +239,14 @@ func (r *Resolver) resolveSegment(ctx context.Context, parentID, name string) (s
 		return entry.CampfireID, nil
 	}
 
-	// Cache miss or expired — resolve via transport
+	// Auto-join if needed before reading.
+	if r.AutoJoinFunc != nil {
+		if err := r.AutoJoinFunc(parentID); err != nil {
+			return "", fmt.Errorf("auto-join campfire %s: %w", parentID[:12], err)
+		}
+	}
+
+	// Cache miss or expired — resolve via transport (direct-read)
 	resp, err := r.transport.Resolve(ctx, parentID, name)
 	if err != nil {
 		// If we have a stale cache entry and the transport fails, invalidate it

@@ -4,71 +4,146 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/protocol"
 )
 
 // clientTransport implements the naming.Transport interface using a
-// protocol.Client. It wraps client.Read() for ListAPI and
-// client.Send()+client.Await() for Resolve/ListChildren/Invoke.
+// protocol.Client. Resolve and ListChildren use direct-read (reading tagged
+// registration messages) — no futures, no server process needed. ListAPI also
+// uses direct-read. Only Invoke still uses futures (it is RPC, not data
+// lookup).
 type clientTransport struct {
 	client *protocol.Client
 }
 
+// ResolverClientOptions configures the resolver created by NewResolverFromClient.
+type ResolverClientOptions struct {
+	// BeaconDir overrides the default beacon directory for auto-join discovery.
+	// If empty, beacon.DefaultBeaconDir() is used.
+	BeaconDir string
+}
+
 // NewResolverFromClient creates a Resolver backed by a protocol.Client.
-// All naming futures are sent via client.Send() and awaited via client.Await().
+// Resolve and ListChildren use direct-read via client.Read().
 // ListAPI reads naming:api messages via client.Read().
-func NewResolverFromClient(client *protocol.Client, rootID string) *Resolver {
-	return NewResolver(&clientTransport{client: client}, rootID)
+// Invoke uses client.Send()+client.Await() for RPC.
+//
+// Auto-join is enabled: when the resolver walks the name hierarchy and
+// encounters a campfire it hasn't joined, it will attempt to join open
+// registries automatically. Invite-only registries return ErrInviteOnly.
+func NewResolverFromClient(client *protocol.Client, rootID string, opts ...ResolverClientOptions) *Resolver {
+	ct := &clientTransport{client: client}
+	r := NewResolver(ct, rootID)
+
+	beaconDir := ""
+	if len(opts) > 0 {
+		beaconDir = opts[0].BeaconDir
+	}
+
+	r.AutoJoinFunc = func(campfireID string) error {
+		return autoJoinViaClient(client, campfireID, beaconDir)
+	}
+	return r
 }
 
-// Resolve sends a naming:resolve future and awaits fulfillment.
+// Resolve reads the campfire directly for name registration messages.
+// No futures, no server process — the campfire IS the nameserver.
 func (t *clientTransport) Resolve(ctx context.Context, campfireID string, name string) (*ResolveResponse, error) {
-	payload, err := json.Marshal(&ResolveRequest{Name: name})
-	if err != nil {
-		return nil, err
-	}
-
-	msgID, err := t.sendFuture(ctx, campfireID, payload, []string{"naming:resolve"})
-	if err != nil {
-		return nil, fmt.Errorf("sending resolve future: %w", err)
-	}
-
-	fulfillment, err := t.awaitFulfillment(ctx, campfireID, msgID)
-	if err != nil {
-		return nil, fmt.Errorf("awaiting resolve fulfillment: %w", err)
-	}
-
-	var resp ResolveResponse
-	if err := json.Unmarshal(fulfillment, &resp); err != nil {
-		return nil, fmt.Errorf("parsing resolve response: %w", err)
-	}
-	return &resp, nil
+	return Resolve(ctx, t.client, campfireID, name)
 }
 
-// ListChildren sends a naming:resolve-list future and awaits fulfillment.
+// ListChildren reads all name registrations from the campfire via direct-read
+// and filters by prefix. No futures needed.
 func (t *clientTransport) ListChildren(ctx context.Context, campfireID string, prefix string) (*ListResponse, error) {
-	payload, err := json.Marshal(&ListRequest{Prefix: prefix})
+	regs, err := List(ctx, t.client, campfireID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing registrations: %w", err)
 	}
 
-	msgID, err := t.sendFuture(ctx, campfireID, payload, []string{"naming:resolve-list"})
+	var entries []ListEntry
+	for _, reg := range regs {
+		if prefix == "" || strings.HasPrefix(reg.Name, prefix) {
+			entries = append(entries, ListEntry{
+				Name: reg.Name,
+			})
+		}
+	}
+	return &ListResponse{Names: entries}, nil
+}
+
+// ErrInviteOnly is returned when auto-join encounters an invite-only campfire.
+var ErrInviteOnly = fmt.Errorf("campfire is invite-only; cannot auto-join")
+
+// autoJoinViaClient attempts to ensure the client is a member of the given
+// campfire. If already a member, this is a no-op. If not a member, it
+// discovers the campfire via beacon scan and joins if the join protocol is open.
+// Returns ErrInviteOnly for invite-only campfires.
+func autoJoinViaClient(client *protocol.Client, campfireID string, beaconDirOverride string) error {
+	m, err := client.GetMembership(campfireID)
 	if err != nil {
-		return nil, fmt.Errorf("sending list future: %w", err)
+		return fmt.Errorf("checking membership: %w", err)
+	}
+	if m != nil {
+		return nil // already a member
 	}
 
-	fulfillment, err := t.awaitFulfillment(ctx, campfireID, msgID)
+	// Scan beacons to discover transport info for the campfire.
+	beaconDir := beaconDirOverride
+	if beaconDir == "" {
+		beaconDir = beacon.DefaultBeaconDir()
+	}
+	beacons, err := beacon.Scan(beaconDir)
 	if err != nil {
-		return nil, fmt.Errorf("awaiting list fulfillment: %w", err)
+		return fmt.Errorf("scanning beacons: %w", err)
 	}
 
-	var resp ListResponse
-	if err := json.Unmarshal(fulfillment, &resp); err != nil {
-		return nil, fmt.Errorf("parsing list response: %w", err)
+	for _, b := range beacons {
+		if b.CampfireIDHex() != campfireID {
+			continue
+		}
+
+		// Found the beacon. Check join protocol.
+		if b.JoinProtocol == "invite-only" {
+			return ErrInviteOnly
+		}
+
+		// Build join request from beacon transport config.
+		transport, err := transportFromBeacon(b)
+		if err != nil {
+			return fmt.Errorf("building transport from beacon: %w", err)
+		}
+		_, err = client.Join(protocol.JoinRequest{
+			CampfireID: campfireID,
+			Transport:  transport,
+		})
+		if err != nil {
+			if strings.Contains(err.Error(), "invite-only") {
+				return ErrInviteOnly
+			}
+			return fmt.Errorf("auto-join: %w", err)
+		}
+		return nil
 	}
-	return &resp, nil
+
+	return fmt.Errorf("no beacon found for campfire %s", campfireID[:12])
+}
+
+// transportFromBeacon converts a beacon's transport config to a protocol.Transport.
+func transportFromBeacon(b beacon.Beacon) (protocol.Transport, error) {
+	switch b.Transport.Protocol {
+	case "filesystem":
+		dir := b.Transport.Config["dir"]
+		if dir == "" {
+			return nil, fmt.Errorf("filesystem beacon missing dir config")
+		}
+		return &protocol.FilesystemTransport{Dir: dir}, nil
+	default:
+		return nil, fmt.Errorf("unsupported beacon transport protocol: %s", b.Transport.Protocol)
+	}
 }
 
 // ListAPI reads naming:api messages from the given campfire via client.Read().
