@@ -311,9 +311,11 @@ func (c *Client) joinP2PHTTP(campfireID string, t *P2PHTTPTransport) (*JoinResul
 		rec := store.MessageRecord{
 			CampfireID: campfireID,
 			ID:         decl.ID,
+			Sender:     decl.Sender,
 			Payload:    decl.Payload,
 			Tags:       decl.Tags,
 			Timestamp:  ts,
+			Signature:  decl.Signature,
 		}
 		c.store.AddMessage(rec) //nolint:errcheck
 	}

@@ -41,6 +41,7 @@ func TestJoin(t *testing.T) {
 	t.Run("InviteOnlyAccept", testJoinInviteOnlyAccept)
 	t.Run("ConventionSync", testJoinConventionSync)
 	t.Run("TrustComparison", testJoinTrustComparison)
+	t.Run("ConventionSyncSenderPreserved", testJoinConventionSyncSenderPreserved)
 }
 
 // newJoinClient creates a fresh protocol.Client with a new identity and store.
@@ -343,6 +344,92 @@ func testJoinTrustComparison(t *testing.T) {
 	}
 	for _, want := range wants {
 		assertContainsPayload(t, result.Messages, want, "B.Read pre-existing messages")
+	}
+}
+
+// testJoinConventionSyncSenderPreserved: A creates a campfire and publishes a convention
+// declaration via P2P HTTP. B joins via P2P HTTP. The stored declaration in B's store must
+// have Sender == A's public key — not empty. Empty Sender would be treated as campfire-operator
+// trust (trust escalation, campfire-agent-z2v).
+// Done condition 7.
+func testJoinConventionSyncSenderPreserved(t *testing.T) {
+	t.Helper()
+
+	base := portBaseJoin()
+	addrA := fmt.Sprintf("127.0.0.1:%d", base+10)
+	addrB := fmt.Sprintf("127.0.0.1:%d", base+11)
+	endpointA := fmt.Sprintf("http://%s", addrA)
+	endpointB := fmt.Sprintf("http://%s", addrB)
+
+	transportDirA := t.TempDir()
+	transportDirB := t.TempDir()
+	beaconDir := t.TempDir()
+
+	// Client A: creator with running HTTP transport.
+	clientA := newJoinClient(t)
+	sA := clientA.ClientStore()
+	trA := cfhttp.New(addrA, sA)
+	if err := trA.Start(); err != nil {
+		t.Fatalf("start transport A: %v", err)
+	}
+	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	createResult, err := clientA.Create(protocol.CreateRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trA, MyEndpoint: endpointA, Dir: transportDirA},
+		BeaconDir:      beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	campfireID := createResult.CampfireID
+
+	// A publishes a convention:operation declaration.
+	declPayload := []byte(`{"convention":"test-sender-conv","version":"0.1","operation":"emit","description":"Sender preservation test","signing":"member_key"}`)
+	_, err = clientA.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    declPayload,
+		Tags:       []string{convention.ConventionOperationTag},
+	})
+	if err != nil {
+		t.Fatalf("A.Send(convention): %v", err)
+	}
+
+	// Client B: joiner with running HTTP transport.
+	clientB := newJoinClient(t)
+	sB := clientB.ClientStore()
+	trB := cfhttp.New(addrB, sB)
+	if err := trB.Start(); err != nil {
+		t.Fatalf("start transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	_, err = clientB.Join(protocol.JoinRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
+		CampfireID:     campfireID,
+	})
+	if err != nil {
+		t.Fatalf("B.Join: %v", err)
+	}
+
+	// B's store must contain the declaration with Sender == A's public key (not empty).
+	msgs, err := clientB.ClientStore().ListMessages(campfireID, 0, store.MessageFilter{
+		Tags: []string{convention.ConventionOperationTag},
+	})
+	if err != nil {
+		t.Fatalf("B.Store.ListMessages: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("B's store has no convention:operation messages after P2P HTTP join")
+	}
+	for _, m := range msgs {
+		if m.Sender == "" {
+			t.Errorf("convention declaration stored with empty Sender — trust escalation bug: msg ID %s", m.ID)
+		}
+		if m.Sender != clientA.PublicKeyHex() {
+			t.Errorf("convention declaration Sender = %q; want A's pubkey %q", m.Sender, clientA.PublicKeyHex())
+		}
 	}
 }
 
