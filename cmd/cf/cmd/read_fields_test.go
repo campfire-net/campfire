@@ -8,23 +8,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
-// helper to build a minimal MessageRecord for field projection tests.
-func makeFieldsTestRecord(id, cfID, sender, instance, payload string, tags []string, timestamp int64) store.MessageRecord {
-	return store.MessageRecord{
-		ID:          id,
-		CampfireID:  cfID,
-		Sender:      sender,
-		Instance:    instance,
-		Payload:     []byte(payload),
-		Tags:        tags,
-		Antecedents: nil,
-		Timestamp:   timestamp,
-		Signature:   []byte("sig"),
-		Provenance:  nil,
-		ReceivedAt:  timestamp + 1000,
+// helper to build a minimal protocol.Message for field projection tests.
+func makeFieldsTestRecord(id, cfID, sender, instance, payload string, tags []string, timestamp int64) protocol.Message {
+	return protocol.Message{
+		ID:         id,
+		CampfireID: cfID,
+		Sender:     sender,
+		Instance:   instance,
+		Payload:    []byte(payload),
+		Tags:       tags,
+		Timestamp:  timestamp,
+		Signature:  []byte("sig"),
 	}
 }
 
@@ -95,13 +93,22 @@ func TestProjectMessage_SelectedFields(t *testing.T) {
 		[]string{"status"},
 		1000000000,
 	)
-	s.AddMessage(rec) //nolint:errcheck
+	s.AddMessage(store.MessageRecord{
+		ID:         rec.ID,
+		CampfireID: rec.CampfireID,
+		Sender:     rec.Sender,
+		Instance:   rec.Instance,
+		Payload:    rec.Payload,
+		Tags:       rec.Tags,
+		Timestamp:  rec.Timestamp,
+		Signature:  rec.Signature,
+	}) //nolint:errcheck
 	s.Close()
 
 	// Capture stdout.
 	origStdout := captureStdout(t, func() {
 		fields, _ := parseFieldSet("id,sender,payload")
-		msgs := []store.MessageRecord{rec}
+		msgs := []protocol.Message{rec}
 		printMessagesWithFields(msgs, nil, fields)
 	})
 
@@ -135,7 +142,7 @@ func TestProjectMessage_DefaultAllFields(t *testing.T) {
 	)
 
 	out := captureStdout(t, func() {
-		printMessagesWithFields([]store.MessageRecord{rec}, nil, nil)
+		printMessagesWithFields([]protocol.Message{rec}, nil, nil)
 	})
 
 	if !strings.Contains(out, "tags:") {
@@ -163,7 +170,7 @@ func TestProjectMessageJSON_SelectedFields(t *testing.T) {
 
 	var buf bytes.Buffer
 	fields, _ := parseFieldSet("id,sender,payload")
-	err := encodeMessagesJSONWithFields([]store.MessageRecord{rec}, fields, &buf)
+	err := encodeMessagesJSONWithFields([]protocol.Message{rec}, fields, &buf)
 	if err != nil {
 		t.Fatalf("encodeMessagesJSONWithFields error: %v", err)
 	}
@@ -209,7 +216,7 @@ func TestProjectMessageJSON_DefaultAllFields(t *testing.T) {
 	)
 
 	var buf bytes.Buffer
-	err := encodeMessagesJSONWithFields([]store.MessageRecord{rec}, nil, &buf)
+	err := encodeMessagesJSONWithFields([]protocol.Message{rec}, nil, &buf)
 	if err != nil {
 		t.Fatalf("encodeMessagesJSONWithFields error: %v", err)
 	}

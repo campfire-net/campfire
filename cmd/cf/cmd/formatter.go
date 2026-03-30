@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
@@ -86,7 +87,7 @@ func printSingleMessage(w io.Writer, cfShort, ts, senderDisplay string, tags, an
 }
 
 // extractMessageFields returns the typed tags and antecedents from a MessageRecord.
-func extractMessageFields(m store.MessageRecord) (tags []string, antecedents []string) {
+func extractMessageFields(m protocol.Message) (tags []string, antecedents []string) {
 	return m.Tags, m.Antecedents
 }
 
@@ -94,7 +95,7 @@ func extractMessageFields(m store.MessageRecord) (tags []string, antecedents []s
 // only the requested fields. When fields is nil, all fields are printed using the
 // original output format (backward compatible). When fields is non-nil, only the
 // requested fields are included.
-func printMessagesWithFields(allMessages []store.MessageRecord, s store.Store, fields map[string]bool) {
+func printMessagesWithFields(allMessages []protocol.Message, s store.Store, fields map[string]bool) {
 	if len(allMessages) == 0 {
 		return
 	}
@@ -216,13 +217,13 @@ func printMessagesWithFields(allMessages []store.MessageRecord, s store.Store, f
 
 // printMessages prints message records in the standard human-readable format.
 // It is a backward-compatible wrapper around printMessagesWithFields with no field projection.
-func printMessages(allMessages []store.MessageRecord, s store.Store) {
+func printMessages(allMessages []protocol.Message, s store.Store) {
 	printMessagesWithFields(allMessages, s, nil)
 }
 
 // encodeMessagesJSONWithFields encodes messages to JSON on w, including only the
 // fields specified in the fields set. When fields is nil, all fields are included.
-func encodeMessagesJSONWithFields(allMessages []store.MessageRecord, fields map[string]bool, w io.Writer) error {
+func encodeMessagesJSONWithFields(allMessages []protocol.Message, fields map[string]bool, w io.Writer) error {
 	all := fields == nil
 
 	var out []map[string]interface{}

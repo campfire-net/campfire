@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -71,7 +70,7 @@ Example:
 
 		// Run Await in a goroutine so we can also watch the stop signal.
 		type awaitResult struct {
-			msg *store.MessageRecord
+			msg *protocol.Message
 			err error
 		}
 		resultCh := make(chan awaitResult, 1)
@@ -105,7 +104,7 @@ Example:
 }
 
 // outputFulfillment prints the fulfilling message and returns nil.
-func outputFulfillment(msg store.MessageRecord) error {
+func outputFulfillment(msg protocol.Message) error {
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

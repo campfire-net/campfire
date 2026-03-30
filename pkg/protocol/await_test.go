@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
 )
 
 // TestClientAwait_FulfillmentAlreadyPresent verifies that Await returns
@@ -59,7 +58,7 @@ func TestClientAwait_FulfillmentArrivesLater(t *testing.T) {
 
 	// Launch Await in a goroutine with a short poll interval.
 	type result struct {
-		msg *store.MessageRecord
+		msg *protocol.Message
 		err error
 	}
 	ch := make(chan result, 1)

@@ -56,7 +56,7 @@ type ReadRequest struct {
 // ReadResult is the return value from a Read operation.
 type ReadResult struct {
 	// Messages are the messages matching the ReadRequest, ordered by timestamp.
-	Messages []store.MessageRecord
+	Messages []Message
 
 	// MaxTimestamp is the highest timestamp seen across all messages in the
 	// campfire for the query window (pre-filter). Use this to advance a cursor
@@ -124,8 +124,13 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 		}
 	}
 
+	out := make([]Message, len(msgs))
+	for i, r := range msgs {
+		out[i] = MessageFromRecord(r)
+	}
+
 	return &ReadResult{
-		Messages:     msgs,
+		Messages:     out,
 		MaxTimestamp: maxTS,
 	}, nil
 }

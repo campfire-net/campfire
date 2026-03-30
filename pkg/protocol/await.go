@@ -42,10 +42,10 @@ type AwaitRequest struct {
 // without a separate sync step. This mirrors the behaviour of findFulfillment()
 // in cmd/cf/cmd/await.go.
 //
-// Returns the fulfilling MessageRecord on success. Returns ErrAwaitTimeout if
+// Returns the fulfilling Message on success. Returns ErrAwaitTimeout if
 // the deadline expires before a fulfillment is found. Returns a wrapped error
 // for any store or sync failure encountered during the poll loop.
-func (c *Client) Await(req AwaitRequest) (*store.MessageRecord, error) {
+func (c *Client) Await(req AwaitRequest) (*Message, error) {
 	if req.CampfireID == "" {
 		return nil, fmt.Errorf("protocol.Client.Await: CampfireID is required")
 	}
@@ -72,10 +72,11 @@ func (c *Client) Await(req AwaitRequest) (*store.MessageRecord, error) {
 		// Non-fatal: the store may have messages from a previous sync.
 		_ = err
 	}
-	if msg, err := c.findFulfillment(req.CampfireID, req.TargetMsgID); err != nil {
+	if rec, err := c.findFulfillment(req.CampfireID, req.TargetMsgID); err != nil {
 		return nil, fmt.Errorf("protocol.Client.Await: initial fulfillment check: %w", err)
-	} else if msg != nil {
-		return msg, nil
+	} else if rec != nil {
+		msg := MessageFromRecord(*rec)
+		return &msg, nil
 	}
 
 	// Poll loop.
@@ -90,10 +91,11 @@ func (c *Client) Await(req AwaitRequest) (*store.MessageRecord, error) {
 			// Non-fatal: keep polling.
 			_ = err
 		}
-		if msg, err := c.findFulfillment(req.CampfireID, req.TargetMsgID); err != nil {
+		if rec, err := c.findFulfillment(req.CampfireID, req.TargetMsgID); err != nil {
 			return nil, fmt.Errorf("protocol.Client.Await: fulfillment check: %w", err)
-		} else if msg != nil {
-			return msg, nil
+		} else if rec != nil {
+			msg := MessageFromRecord(*rec)
+			return &msg, nil
 		}
 	}
 }

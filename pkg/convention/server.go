@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
 )
 
 // Request holds a parsed incoming convention operation request.
@@ -155,7 +154,7 @@ func (s *Server) Serve(ctx context.Context, campfireID string) error {
 
 // dispatch parses one message and calls the registered handler, then sends the
 // response if any.
-func (s *Server) dispatch(ctx context.Context, campfireID string, msg store.MessageRecord) {
+func (s *Server) dispatch(ctx context.Context, campfireID string, msg protocol.Message) {
 	handler, ok := s.handlers[s.decl.Operation]
 	if !ok {
 		// No handler registered for this operation — skip silently.

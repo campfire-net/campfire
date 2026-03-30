@@ -113,7 +113,7 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.
 		}
 
 		// Read new messages since last cursor via protocol.Client (includes sync).
-		var newMessages []store.MessageRecord
+		var newMessages []protocol.Message
 		for _, e := range entries {
 			result, err := client.Read(protocol.ReadRequest{
 				CampfireID:       e.id,
@@ -157,7 +157,7 @@ func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *iden
 	client := protocol.New(s, agentID)
 
 	preCursors := map[string]int64{}
-	var allMessages []store.MessageRecord
+	var allMessages []protocol.Message
 	for _, cfID := range campfireIDs {
 		var afterTS int64
 		if !all {
@@ -305,7 +305,7 @@ func runPull(idsArg string, fieldSet map[string]bool) error {
 	defer s.Close()
 
 	ids := strings.Split(idsArg, ",")
-	var messages []store.MessageRecord
+	var messages []protocol.Message
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" {
@@ -318,7 +318,7 @@ func runPull(idsArg string, fieldSet map[string]bool) error {
 		if msg == nil {
 			return fmt.Errorf("message not found: %s", id)
 		}
-		messages = append(messages, *msg)
+		messages = append(messages, protocol.MessageFromRecord(*msg))
 	}
 
 	if jsonOutput {
