@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -12,6 +13,8 @@ import (
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/naming"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
@@ -254,4 +257,83 @@ func TestResolveCampfireID_Ambiguous(t *testing.T) {
 		t.Fatal("empty error message")
 	}
 	t.Log("ambiguous error:", err)
+}
+
+func TestResolveCampfireID_NamingViaProjectRoot(t *testing.T) {
+	// Set up an isolated cf home for this test.
+	cfHomeDir := t.TempDir()
+	origCFHome := os.Getenv("CF_HOME")
+	os.Setenv("CF_HOME", cfHomeDir)
+	defer os.Setenv("CF_HOME", origCFHome)
+
+	// Isolate beacons.
+	emptyBeaconDir := t.TempDir()
+	origBeaconDir := os.Getenv("CF_BEACON_DIR")
+	os.Setenv("CF_BEACON_DIR", emptyBeaconDir)
+	defer os.Setenv("CF_BEACON_DIR", origBeaconDir)
+
+	// Create a protocol client (this is the "sysop" who owns the root).
+	client, err := protocol.Init(cfHomeDir)
+	if err != nil {
+		t.Fatalf("protocol.Init: %v", err)
+	}
+	defer client.Close()
+
+	// Create a root campfire.
+	transportDir := t.TempDir()
+	rootResult, err := client.Create(protocol.CreateRequest{
+		Description:  "test-root",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating root campfire: %v", err)
+	}
+	rootID := rootResult.CampfireID
+
+	// Create a target campfire (what "galtrader" resolves to).
+	targetResult, err := client.Create(protocol.CreateRequest{
+		Description:  "galtrader-api",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating target campfire: %v", err)
+	}
+	targetID := targetResult.CampfireID
+
+	// Register "galtrader" in the root.
+	_, err = naming.Register(context.Background(), client, rootID, "galtrader", targetID, nil)
+	if err != nil {
+		t.Fatalf("naming.Register: %v", err)
+	}
+
+	// Set up a project directory with .campfire/root pointing to our root.
+	projectDir := t.TempDir()
+	cfDir := filepath.Join(projectDir, ".campfire")
+	if err := os.MkdirAll(cfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfDir, "root"), []byte(rootID), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change to the project directory so ProjectRoot() finds .campfire/root.
+	origDir, _ := os.Getwd()
+	os.Chdir(projectDir)
+	defer os.Chdir(origDir)
+
+	// Now resolve "galtrader" — should find it via project root naming.
+	// The store passed to resolveCampfireID is for prefix/membership search (will find nothing).
+	// The naming resolution goes through protocol.Init(CFHome()) internally, which opens
+	// the same store since CF_HOME points to cfHomeDir.
+	s, _ := makeTestStore(t, nil)
+	defer s.Close()
+	got, err := resolveCampfireID("galtrader", s)
+	if err != nil {
+		t.Fatalf("resolveCampfireID(\"galtrader\"): %v", err)
+	}
+	if got != targetID {
+		t.Errorf("got %s, want %s", got, targetID)
+	}
 }

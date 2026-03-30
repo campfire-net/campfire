@@ -139,14 +139,28 @@ func searchBeaconDir(dir string, prefix string, addMatch func(string)) {
 	}
 }
 
-// tryNamingResolve attempts to resolve a bare name via the naming registry.
-// Returns the campfire ID if the name is registered in the root registry, or an error.
+// tryNamingResolve attempts to resolve a bare name via naming registries.
+// Searches: project root (.campfire/root walk-up), then CF_ROOT_REGISTRY env var.
 func tryNamingResolve(name string, s store.Store) (string, error) {
-	rootID := getRootRegistryID()
-	if rootID == "" {
-		return "", fmt.Errorf("no root registry")
+	// Try project root first — walk up from pwd.
+	if rootID, _, ok := ProjectRoot(); ok {
+		if id, err := resolveNameInRoot(rootID, name); err == nil {
+			return id, nil
+		}
 	}
 
+	// Fall back to configured root registry.
+	if rootID := getRootRegistryID(); rootID != "" {
+		if id, err := resolveNameInRoot(rootID, name); err == nil {
+			return id, nil
+		}
+	}
+
+	return "", fmt.Errorf("name %q not found in any reachable root", name)
+}
+
+// resolveNameInRoot tries to resolve a name in the given root campfire.
+func resolveNameInRoot(rootID, name string) (string, error) {
 	client, err := protocol.Init(CFHome())
 	if err != nil {
 		return "", err
