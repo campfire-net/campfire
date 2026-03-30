@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/store"
@@ -607,8 +608,105 @@ func TestGenerateTool_DescriptionTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateTool: %v", err)
 	}
-	if len(tool.Description) > 80 {
-		t.Errorf("Description length = %d, want <= 80", len(tool.Description))
+	if len(tool.Description) > maxToolDescriptionLen {
+		t.Errorf("Description length = %d, want <= %d", len(tool.Description), maxToolDescriptionLen)
+	}
+}
+
+// TestGenerateTool_ResponseSuffix_Sync verifies that a sync declaration appends
+// " Returns response directly." to the tool description.
+func TestGenerateTool_ResponseSuffix_Sync(t *testing.T) {
+	payload := mustJSON(map[string]any{
+		"convention":  "test-conv",
+		"version":     "0.1",
+		"operation":   "ask",
+		"description": "Ask a question",
+		"antecedents": "none",
+		"signing":     "member_key",
+		"response":    "sync",
+	})
+	decl := parseDeclForTest(t, payload)
+	if !decl.ResponseExplicit {
+		t.Fatal("expected ResponseExplicit=true for explicit response field")
+	}
+	tool, err := GenerateTool(decl, "c1")
+	if err != nil {
+		t.Fatalf("GenerateTool: %v", err)
+	}
+	if !strings.HasSuffix(tool.Description, " Returns response directly.") {
+		t.Errorf("description should end with sync suffix, got: %q", tool.Description)
+	}
+	if len(tool.Description) > maxToolDescriptionLen {
+		t.Errorf("description exceeds max: len=%d", len(tool.Description))
+	}
+}
+
+// TestGenerateTool_ResponseSuffix_Async verifies that an async declaration appends
+// " Returns message ID." to the tool description.
+func TestGenerateTool_ResponseSuffix_Async(t *testing.T) {
+	payload := mustJSON(map[string]any{
+		"convention":  "test-conv",
+		"version":     "0.1",
+		"operation":   "notify",
+		"description": "Send a notification",
+		"antecedents": "none",
+		"signing":     "member_key",
+		"response":    "async",
+	})
+	decl := parseDeclForTest(t, payload)
+	tool, err := GenerateTool(decl, "c1")
+	if err != nil {
+		t.Fatalf("GenerateTool: %v", err)
+	}
+	if !strings.HasSuffix(tool.Description, " Returns message ID.") {
+		t.Errorf("description should end with async suffix, got: %q", tool.Description)
+	}
+}
+
+// TestGenerateTool_ResponseSuffix_None verifies that a none declaration does not
+// append any suffix to the tool description.
+func TestGenerateTool_ResponseSuffix_None(t *testing.T) {
+	payload := mustJSON(map[string]any{
+		"convention":  "test-conv",
+		"version":     "0.1",
+		"operation":   "broadcast",
+		"description": "Send a broadcast",
+		"antecedents": "none",
+		"signing":     "member_key",
+		"response":    "none",
+	})
+	decl := parseDeclForTest(t, payload)
+	tool, err := GenerateTool(decl, "c1")
+	if err != nil {
+		t.Fatalf("GenerateTool: %v", err)
+	}
+	if strings.Contains(tool.Description, "Returns") {
+		t.Errorf("expected no suffix for none response, got: %q", tool.Description)
+	}
+}
+
+// TestGenerateTool_ResponseSuffix_Legacy verifies that a declaration without an
+// explicit response field (ResponseExplicit=false) does not append any suffix.
+func TestGenerateTool_ResponseSuffix_Legacy(t *testing.T) {
+	payload := mustJSON(map[string]any{
+		"convention":  "test-conv",
+		"version":     "0.1",
+		"operation":   "post",
+		"description": "Post something",
+		"antecedents": "none",
+		"signing":     "member_key",
+		// no "response" field — legacy
+	})
+	decl := parseDeclForTest(t, payload)
+	if decl.ResponseExplicit {
+		t.Fatal("expected ResponseExplicit=false for missing response field")
+	}
+	tool, err := GenerateTool(decl, "c1")
+	if err != nil {
+		t.Fatalf("GenerateTool: %v", err)
+	}
+	if strings.Contains(tool.Description, "Returns") {
+		t.Errorf("expected no suffix for legacy declaration, got: %q", tool.Description)
 	}
 }
 

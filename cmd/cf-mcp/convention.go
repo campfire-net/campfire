@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	ioPkg "io"
 	"log"
@@ -764,15 +765,78 @@ func (s *server) handleConventionTool(rpcID interface{}, entry *conventionToolEn
 	ctx, cancel := context.WithTimeout(context.Background(), conventionToolTimeout)
 	defer cancel()
 
-	if _, err := executor.Execute(ctx, entry.decl, entry.campfireID, args); err != nil {
-		return errResponse(rpcID, -32000, fmt.Sprintf("convention operation failed: %v", err))
+	execResult, execErr := executor.Execute(ctx, entry.decl, entry.campfireID, args)
+
+	// Timeout path for sync-explicit declarations.
+	if errors.Is(execErr, convention.ErrResponseTimeout) {
+		waitedSec := 30
+		if entry.decl.ResponseTimeout > 0 {
+			waitedSec = int(entry.decl.ResponseTimeout.Seconds())
+		}
+		result := map[string]interface{}{
+			"status":     "timeout",
+			"message_id": "",
+			"guide":      fmt.Sprintf("Server did not respond within %ds. Retry the operation or use campfire_read to check for a late response.", waitedSec),
+		}
+		if execResult != nil && execResult.MessageID != "" {
+			result["message_id"] = execResult.MessageID
+		}
+		return s.envelopedResponse(rpcID, entry.campfireID, result)
 	}
 
-	result := map[string]string{
-		"status":      "ok",
-		"campfire_id": entry.campfireID,
-		"operation":   entry.decl.Operation,
-		"convention":  entry.decl.Convention,
+	if execErr != nil {
+		return errResponse(rpcID, -32000, fmt.Sprintf("convention operation failed: %v", execErr))
+	}
+
+	messageID := ""
+	if execResult != nil {
+		messageID = execResult.MessageID
+	}
+
+	// Legacy (ResponseExplicit=false): preserve existing "ok" behavior.
+	// Keep campfire_id, operation, convention fields for backward compat with existing tests/clients.
+	if !entry.decl.ResponseExplicit {
+		result := map[string]interface{}{
+			"status":      "ok",
+			"campfire_id": entry.campfireID,
+			"operation":   entry.decl.Operation,
+			"convention":  entry.decl.Convention,
+			"guide":       "Broadcast sent. No response expected.",
+			"message_id":  messageID,
+		}
+		return s.envelopedResponse(rpcID, entry.campfireID, result)
+	}
+
+	var result map[string]interface{}
+	switch entry.decl.Response {
+	case "sync":
+		var respVal interface{}
+		if execResult != nil && len(execResult.Response) > 0 {
+			var parsed interface{}
+			if err := json.Unmarshal(execResult.Response, &parsed); err == nil {
+				respVal = parsed
+			} else {
+				respVal = string(execResult.Response)
+			}
+		}
+		result = map[string]interface{}{
+			"status":     "ok",
+			"response":   respVal,
+			"message_id": messageID,
+			"guide":      "Response received. Parse the response field for results.",
+		}
+	case "async":
+		result = map[string]interface{}{
+			"status":     "dispatched",
+			"message_id": messageID,
+			"guide":      "Operation dispatched. Response will appear as a message with tag fulfills. Use campfire_read to check for it.",
+		}
+	default: // "none" or empty
+		result = map[string]interface{}{
+			"status":     "ok",
+			"message_id": messageID,
+			"guide":      "Broadcast sent. No response expected.",
+		}
 	}
 	return s.envelopedResponse(rpcID, entry.campfireID, result)
 }

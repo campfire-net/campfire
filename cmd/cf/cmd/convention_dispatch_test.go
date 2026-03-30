@@ -1,12 +1,16 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	campfire "github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
@@ -363,3 +367,216 @@ func TestListConventionOperations_EmptyCampfire(t *testing.T) {
 		t.Errorf("expected 0 decls for campfire with no declarations, got %d", len(decls))
 	}
 }
+
+// captureDispatchStdout redirects os.Stdout, runs f, then returns captured output.
+func captureDispatchStdout(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	f()
+	w.Close()
+	os.Stdout = old
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	r.Close()
+	return buf.String()
+}
+
+// TestFormatConventionResult_SyncJSON verifies --json output for a sync response.
+func TestFormatConventionResult_SyncJSON(t *testing.T) {
+	decl := &convention.Declaration{
+		Convention:      "test",
+		Operation:       "ping",
+		Response:        "sync",
+		ResponseExplicit: true,
+	}
+	result := &convention.ExecuteResult{
+		MessageID: "msg-abc",
+		Response:  []byte(`{"pong":true}`),
+		Elapsed:   847 * time.Millisecond,
+	}
+
+	out := captureDispatchStdout(t, func() {
+		if err := formatConventionResult(result, nil, "ping", "campfire1234567890", decl, true, decl); err != nil {
+			t.Errorf("formatConventionResult: %v", err)
+		}
+	})
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &parsed); err != nil {
+		t.Fatalf("output is not valid JSON: %v (got: %q)", err, out)
+	}
+	if parsed["message_id"] != "msg-abc" {
+		t.Errorf("message_id = %v, want msg-abc", parsed["message_id"])
+	}
+	if parsed["elapsed_ms"] != float64(847) {
+		t.Errorf("elapsed_ms = %v, want 847", parsed["elapsed_ms"])
+	}
+	resp, ok := parsed["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("response field not a map: %T", parsed["response"])
+	}
+	if resp["pong"] != true {
+		t.Errorf("response.pong = %v, want true", resp["pong"])
+	}
+}
+
+// TestFormatConventionResult_SyncHuman verifies human-readable output for a sync response.
+func TestFormatConventionResult_SyncHuman(t *testing.T) {
+	decl := &convention.Declaration{
+		Convention:      "test",
+		Operation:       "ping",
+		Response:        "sync",
+		ResponseExplicit: true,
+	}
+	result := &convention.ExecuteResult{
+		MessageID: "msg-xyz",
+		Response:  []byte(`hello from server`),
+	}
+
+	out := captureDispatchStdout(t, func() {
+		if err := formatConventionResult(result, nil, "ping", "campfire1234567890", decl, false, decl); err != nil {
+			t.Errorf("formatConventionResult: %v", err)
+		}
+	})
+	if !strings.Contains(out, "hello from server") {
+		t.Errorf("expected response text in output, got: %q", out)
+	}
+}
+
+// TestFormatConventionResult_TimeoutJSON verifies --json output for a sync timeout.
+func TestFormatConventionResult_TimeoutJSON(t *testing.T) {
+	decl := &convention.Declaration{
+		Convention:      "test",
+		Operation:       "slow",
+		Response:        "sync",
+		ResponseExplicit: true,
+	}
+	result := &convention.ExecuteResult{
+		Elapsed: 30 * time.Second,
+	}
+
+	// Capture stderr for the warning and stdout for the JSON.
+	var stderrBuf bytes.Buffer
+	oldStderr := os.Stderr
+	rErr, wErr, _ := os.Pipe()
+	os.Stderr = wErr
+
+	out := captureDispatchStdout(t, func() {
+		if err := formatConventionResult(result, convention.ErrResponseTimeout, "slow", "campfire1234567890", decl, true, decl); err != nil {
+			t.Errorf("formatConventionResult: %v", err)
+		}
+	})
+	wErr.Close()
+	os.Stderr = oldStderr
+	io.Copy(&stderrBuf, rErr)
+	rErr.Close()
+
+	// Stderr should contain warning.
+	if !strings.Contains(stderrBuf.String(), "timed out") {
+		t.Errorf("expected 'timed out' in stderr, got: %q", stderrBuf.String())
+	}
+
+	// Stdout should contain JSON with status=timeout.
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &parsed); err != nil {
+		t.Fatalf("output is not valid JSON: %v (got: %q)", err, out)
+	}
+	if parsed["status"] != "timeout" {
+		t.Errorf("status = %v, want timeout", parsed["status"])
+	}
+	if parsed["waited_ms"] != float64(30000) {
+		t.Errorf("waited_ms = %v, want 30000", parsed["waited_ms"])
+	}
+}
+
+// TestFormatConventionResult_AsyncJSON verifies --json output for an async dispatch.
+func TestFormatConventionResult_AsyncJSON(t *testing.T) {
+	decl := &convention.Declaration{
+		Convention:      "test",
+		Operation:       "notify",
+		Response:        "async",
+		ResponseExplicit: true,
+	}
+	result := &convention.ExecuteResult{
+		MessageID: "msg-async-123",
+	}
+
+	out := captureDispatchStdout(t, func() {
+		if err := formatConventionResult(result, nil, "notify", "campfire1234567890", decl, true, decl); err != nil {
+			t.Errorf("formatConventionResult: %v", err)
+		}
+	})
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &parsed); err != nil {
+		t.Fatalf("output is not valid JSON: %v (got: %q)", err, out)
+	}
+	if parsed["message_id"] != "msg-async-123" {
+		t.Errorf("message_id = %v, want msg-async-123", parsed["message_id"])
+	}
+	if parsed["status"] != "dispatched" {
+		t.Errorf("status = %v, want dispatched", parsed["status"])
+	}
+}
+
+// TestFormatConventionResult_Legacy verifies legacy behavior (ResponseExplicit=false).
+func TestFormatConventionResult_Legacy(t *testing.T) {
+	decl := &convention.Declaration{
+		Convention:      "test",
+		Operation:       "post",
+		Response:        "sync",
+		ResponseExplicit: false, // legacy — no explicit response declared
+	}
+	result := &convention.ExecuteResult{
+		MessageID: "msg-legacy",
+	}
+
+	out := captureDispatchStdout(t, func() {
+		if err := formatConventionResult(result, nil, "post", "campfire1234567890", decl, false, decl); err != nil {
+			t.Errorf("formatConventionResult: %v", err)
+		}
+	})
+	if !strings.Contains(out, "ok — operation") {
+		t.Errorf("expected legacy 'ok — operation' output, got: %q", out)
+	}
+}
+
+// TestCLIDispatch_NoWaitFlag verifies --no-wait flag causes the declaration to
+// dispatch without waiting (ResponseExplicit cleared).
+func TestCLIDispatch_NoWaitFlag(t *testing.T) {
+	// Build a sync-explicit declaration JSON.
+	syncDecl := func() []byte {
+		d := map[string]any{
+			"convention":  "test-conv",
+			"version":     "0.1",
+			"operation":   "ping",
+			"description": "Sync ping",
+			"produces_tags": []map[string]any{
+				{"tag": "test:ping", "cardinality": "exactly_one"},
+			},
+			"args":     []map[string]any{},
+			"signing":  "member_key",
+			"response": "sync", // explicit sync
+		}
+		b, _ := json.Marshal(d)
+		return b
+	}()
+
+	campfireID, cleanup := setupDispatchEnv(t, syncDecl)
+	defer cleanup()
+
+	// --no-wait should prevent waiting, so dispatch succeeds even with no server.
+	err := dispatchConventionOp(context.Background(), campfireID[:12], "ping", []string{"--no-wait"})
+	if err != nil {
+		t.Fatalf("dispatch with --no-wait failed: %v", err)
+	}
+}
+
+// suppress unused import warnings at compile time.
+var _ = fmt.Sprintf
+var _ = time.Second

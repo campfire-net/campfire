@@ -11,7 +11,9 @@ import (
 
 // maxToolDescriptionLen is the maximum number of characters included in the
 // MCP tool description field. Longer descriptions are truncated.
-const maxToolDescriptionLen = 80
+// The limit is set high enough to accommodate the response-semantics suffix
+// appended by GenerateTool (up to ~32 chars).
+const maxToolDescriptionLen = 120
 
 // MCPToolInfo describes a tool for the MCP protocol.
 type MCPToolInfo struct {
@@ -36,10 +38,29 @@ func GenerateTool(decl *Declaration, campfireID string) (*MCPToolInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	desc := decl.Description
-	if len(desc) > maxToolDescriptionLen {
-		desc = desc[:maxToolDescriptionLen]
+	// Append response semantics suffix based on declaration response mode.
+	// Only for explicitly declared response modes (ResponseExplicit=true).
+	var suffix string
+	if decl.ResponseExplicit {
+		switch decl.Response {
+		case "sync":
+			suffix = " Returns response directly."
+		case "async":
+			suffix = " Returns message ID."
+		}
 	}
+
+	desc := decl.Description
+	// Truncate base description to make room for suffix, then append.
+	maxBase := maxToolDescriptionLen - len(suffix)
+	if maxBase < 0 {
+		maxBase = 0
+	}
+	if len(desc) > maxBase {
+		desc = desc[:maxBase]
+	}
+	desc = desc + suffix
+
 	return &MCPToolInfo{
 		Name:        decl.Operation,
 		Description: desc,

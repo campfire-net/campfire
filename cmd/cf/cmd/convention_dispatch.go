@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/convention"
@@ -123,7 +126,13 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 	}
 
 	// Build flag set and arg lookup from declaration args.
+	// --no-wait and --wait-timeout are convention-specific flags (not cobra persistent flags).
 	flags := pflag.NewFlagSet("op", pflag.ContinueOnError)
+	flags.Bool("no-wait", false, "Send the message and return immediately without waiting for a response.")
+	flags.Duration("wait-timeout", 0, "Override the declaration response_timeout (e.g. 10s, 1m).")
+	// jsonOutput is checked via the root persistent --json flag; we parse it here for output formatting.
+	flags.Bool("json", false, "Output result as JSON.")
+
 	argByName := make(map[string]convention.ArgDescriptor, len(matched.Args))
 	for _, arg := range matched.Args {
 		argByName[arg.Name] = arg
@@ -155,10 +164,17 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 		return fmt.Errorf("parsing flags: %w", err)
 	}
 
+	// Extract convention-specific meta-flags before building the args map.
+	noWait, _ := flags.GetBool("no-wait")
+	waitTimeout, _ := flags.GetDuration("wait-timeout")
+	jsonOutput, _ := flags.GetBool("json")
+
 	// Build args map from changed flags only, expanding enum short forms.
+	// Skip the meta-flags: they are not convention args.
+	metaFlags := map[string]bool{"no-wait": true, "wait-timeout": true, "json": true}
 	args := make(map[string]any)
 	flags.VisitAll(func(f *pflag.Flag) {
-		if !f.Changed {
+		if !f.Changed || metaFlags[f.Name] {
 			return
 		}
 		switch f.Value.Type() {
@@ -206,13 +222,119 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 		}
 	})
 
+	// Apply --wait-timeout override: override ResponseTimeout on a copy of the declaration.
+	execDecl := matched
+	if waitTimeout > 0 {
+		declCopy := *matched
+		declCopy.ResponseTimeout = waitTimeout
+		execDecl = &declCopy
+	}
+
+	// Apply --no-wait: override to async/none path by clearing ResponseExplicit.
+	if noWait {
+		declCopy := *execDecl
+		declCopy.ResponseExplicit = false
+		execDecl = &declCopy
+	}
+
 	client := protocol.New(s, agentID)
 	executor := convention.NewExecutor(client, agentID.PublicKeyHex())
 
-	if _, err := executor.Execute(ctx, matched, campfireID, args); err != nil {
-		return fmt.Errorf("convention operation failed: %w", err)
+	result, err := executor.Execute(ctx, execDecl, campfireID, args)
+	return formatConventionResult(result, err, operationName, campfireID, execDecl, jsonOutput, matched)
+}
+
+// formatConventionResult formats and prints the result of a convention Execute call.
+// matched is the original declaration (before --no-wait/--wait-timeout overrides).
+func formatConventionResult(result *convention.ExecuteResult, execErr error, operationName, campfireID string, execDecl *convention.Declaration, jsonOutput bool, matched *convention.Declaration) error {
+	shortID := campfireID
+	if len(shortID) > shortIDLen {
+		shortID = shortID[:shortIDLen]
 	}
 
-	fmt.Printf("ok — operation %q dispatched to campfire %s\n", operationName, campfireID[:shortIDLen])
+	// Timeout path for sync-explicit declarations.
+	if errors.Is(execErr, convention.ErrResponseTimeout) {
+		waitedMs := int64(0)
+		if result != nil {
+			waitedMs = result.Elapsed.Milliseconds()
+		}
+		fmt.Fprintf(os.Stderr, "warning: convention %q response timed out after %dms\n", operationName, waitedMs)
+		if jsonOutput {
+			msgID := ""
+			if result != nil {
+				msgID = result.MessageID
+			}
+			out, _ := json.Marshal(map[string]any{
+				"message_id": msgID,
+				"status":     "timeout",
+				"waited_ms":  waitedMs,
+			})
+			fmt.Println(string(out))
+		}
+		return nil
+	}
+
+	if execErr != nil {
+		return fmt.Errorf("convention operation failed: %w", execErr)
+	}
+
+	if result == nil {
+		fmt.Printf("ok — operation %q dispatched to campfire %s\n", operationName, shortID)
+		return nil
+	}
+
+	// Legacy (ResponseExplicit=false): preserve existing "ok — operation dispatched" behavior.
+	if !matched.ResponseExplicit {
+		fmt.Printf("ok — operation %q dispatched to campfire %s\n", operationName, shortID)
+		return nil
+	}
+
+	switch matched.Response {
+	case "sync":
+		if jsonOutput {
+			// Parse response as JSON if possible; otherwise use raw string.
+			var respVal any
+			if len(result.Response) > 0 {
+				var parsed any
+				if err := json.Unmarshal(result.Response, &parsed); err == nil {
+					respVal = parsed
+				} else {
+					respVal = string(result.Response)
+				}
+			}
+			out, _ := json.Marshal(map[string]any{
+				"message_id": result.MessageID,
+				"response":   respVal,
+				"elapsed_ms": result.Elapsed.Milliseconds(),
+			})
+			fmt.Println(string(out))
+		} else {
+			if len(result.Response) > 0 {
+				fmt.Println(string(result.Response))
+			} else {
+				fmt.Printf("ok — operation %q dispatched to campfire %s\n", operationName, shortID)
+			}
+		}
+	case "async":
+		if jsonOutput {
+			out, _ := json.Marshal(map[string]any{
+				"message_id": result.MessageID,
+				"status":     "dispatched",
+			})
+			fmt.Println(string(out))
+		} else {
+			fmt.Printf("dispatched — message_id: %s\n", result.MessageID)
+		}
+	default: // "none" or empty
+		if jsonOutput {
+			out, _ := json.Marshal(map[string]any{
+				"message_id": result.MessageID,
+				"status":     "ok",
+			})
+			fmt.Println(string(out))
+		} else {
+			fmt.Printf("ok — operation %q dispatched to campfire %s\n", operationName, shortID)
+		}
+	}
 	return nil
 }
