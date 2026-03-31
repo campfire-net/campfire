@@ -83,9 +83,10 @@ func recenterTestEnv(t *testing.T) (cfHome string, centerID string) {
 	return cfHome, centerID
 }
 
-// setupCenterCampfire creates a center campfire and makes the given identity
+// setupCenterForRecentering creates a center campfire and makes the given identity
 // a member of it. Returns the center campfire ID.
-func setupCenterCampfire(t *testing.T, cfHome string) string {
+// Named differently from setupCenterCampfire in context_key_test.go to avoid collision.
+func setupCenterForRecentering(t *testing.T, cfHome string) string {
 	t.Helper()
 
 	transportDir := t.TempDir()
@@ -134,7 +135,7 @@ func TestRecenteringPromptsOnce(t *testing.T) {
 	}
 
 	// Phase 1: bootstrap — create identity, store, and center campfire.
-	centerID := setupCenterCampfire(t, cfHome)
+	centerID := setupCenterForRecentering(t, cfHome)
 
 	// Track authorize calls.
 	callCount := 0
@@ -196,7 +197,7 @@ func TestRecenteringTwoSigClaim(t *testing.T) {
 		t.Fatalf("creating cfHome: %v", err)
 	}
 
-	centerID := setupCenterCampfire(t, cfHome)
+	centerID := setupCenterForRecentering(t, cfHome)
 
 	authorizeFn := func(description string) (bool, error) {
 		return true, nil
@@ -263,7 +264,7 @@ func TestRecenteringDescriptionReadable(t *testing.T) {
 		t.Fatalf("creating cfHome: %v", err)
 	}
 
-	_ = setupCenterCampfire(t, cfHome)
+	_ = setupCenterForRecentering(t, cfHome)
 
 	var capturedDesc string
 	authorizeFn := func(description string) (bool, error) {
@@ -300,7 +301,7 @@ func TestRecenteringDenied(t *testing.T) {
 		t.Fatalf("creating cfHome: %v", err)
 	}
 
-	centerID := setupCenterCampfire(t, cfHome)
+	centerID := setupCenterForRecentering(t, cfHome)
 
 	authorizeFn := func(description string) (bool, error) {
 		return false, nil // deny
@@ -352,7 +353,7 @@ func TestRecenteringAlreadyLinked(t *testing.T) {
 		t.Fatalf("creating cfHome: %v", err)
 	}
 
-	centerID := setupCenterCampfire(t, cfHome)
+	centerID := setupCenterForRecentering(t, cfHome)
 
 	// Phase 1: first Init with authorization — posts the claim.
 	firstCallCount := 0
