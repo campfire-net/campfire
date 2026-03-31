@@ -349,6 +349,58 @@ func TestInheritAgentConfig_PartialParentFiles(t *testing.T) {
 	}
 }
 
+// TestInitFrom_NonExistentPath verifies that --from with a non-existent path returns an error.
+func TestInitFrom_NonExistentPath(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+
+	nonExistent := filepath.Join(t.TempDir(), "does-not-exist")
+
+	initCmd.Flags().Set("force", "false")    //nolint:errcheck
+	initCmd.Flags().Set("name", "worker-x")  //nolint:errcheck
+	initCmd.Flags().Set("session", "false")  //nolint:errcheck
+	initCmd.Flags().Set("from", nonExistent) //nolint:errcheck
+	defer initCmd.Flags().Set("from", "")    //nolint:errcheck
+	defer initCmd.Flags().Set("name", "")    //nolint:errcheck
+	rootCmd.SetArgs([]string{"init", "--name", "worker-x", "--from", nonExistent})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected error for non-existent --from path, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("expected 'does not exist' in error, got: %v", err)
+	}
+}
+
+// TestInitFrom_FilePath verifies that --from with a file path (not a directory) returns an error.
+func TestInitFrom_FilePath(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+
+	// Create a file (not a directory) to use as --from
+	f, err := os.CreateTemp(t.TempDir(), "notadir-*.json")
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	f.Close()
+	filePath := f.Name()
+
+	initCmd.Flags().Set("force", "false")   //nolint:errcheck
+	initCmd.Flags().Set("name", "worker-y") //nolint:errcheck
+	initCmd.Flags().Set("session", "false") //nolint:errcheck
+	initCmd.Flags().Set("from", filePath)   //nolint:errcheck
+	defer initCmd.Flags().Set("from", "")   //nolint:errcheck
+	defer initCmd.Flags().Set("name", "")   //nolint:errcheck
+	rootCmd.SetArgs([]string{"init", "--name", "worker-y", "--from", filePath})
+	err = rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected error for file --from path, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("expected 'not a directory' in error, got: %v", err)
+	}
+}
+
 // TestInitNamed_WithFromFlag verifies the end-to-end path: cf init --name <agent> --from <parent>
 // creates an agent with inherited config. We call inheritAgentConfig directly to avoid
 // cobra global-state issues with named agent paths, but verify the full function contract.
