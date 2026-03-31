@@ -394,6 +394,26 @@ func TestResolveByName_FallbackNoPolicy(t *testing.T) {
 	}
 }
 
+// TestResolveByName_MalformedPolicy verifies that a malformed join-policy.json
+// causes resolveByName to return an error rather than silently fall back to
+// legacy behavior — so the operator learns their config is broken.
+func TestResolveByName_MalformedPolicy(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+
+	// Write malformed JSON to join-policy.json.
+	policyPath := filepath.Join(cfHomeDir, "join-policy.json")
+	if err := os.WriteFile(policyPath, []byte(`{bad json`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveByName("somename", nil)
+	if err == nil {
+		t.Fatal("expected error on malformed join-policy.json, got nil")
+	}
+}
+
 func TestResolveCampfireID_NamingViaProjectRoot(t *testing.T) {
 	// Set up an isolated cf home for this test.
 	cfHomeDir := t.TempDir()
