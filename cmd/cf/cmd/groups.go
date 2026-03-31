@@ -23,6 +23,7 @@ func assignCommandGroups() {
 		"member":   groupCampfire,
 		"members":  groupCampfire,
 		"alias":    groupCampfire,
+		"name":     groupCampfire,
 		"root":     groupCampfire,
 		"trust":    groupCampfire,
 		"ls":       groupCampfire,
