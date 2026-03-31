@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -843,5 +844,39 @@ func TestAutoJoin_AlreadyMemberNoRejoin(t *testing.T) {
 	m, err := resolverStore.GetMembership(targetID)
 	if err != nil || m == nil {
 		t.Errorf("membership lost after re-resolution of already-member campfire")
+	}
+}
+
+// TestConsultTimeout verifies that consultTimeout reads CF_CONSULT_TIMEOUT and
+// falls back to 10s when the variable is absent or malformed.
+func TestConsultTimeout(t *testing.T) {
+	cases := []struct {
+		name    string
+		envVal  string
+		want    time.Duration
+	}{
+		{"default when unset", "", 10 * time.Second},
+		{"valid duration 30s", "30s", 30 * time.Second},
+		{"valid duration 2m", "2m", 2 * time.Minute},
+		{"valid duration 500ms", "500ms", 500 * time.Millisecond},
+		{"invalid string falls back", "notaduration", 10 * time.Second},
+		{"zero value falls back", "0s", 10 * time.Second},
+		{"negative value falls back", "-5s", 10 * time.Second},
+		{"empty string falls back", "", 10 * time.Second},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.envVal == "" {
+				t.Setenv("CF_CONSULT_TIMEOUT", "")
+			} else {
+				t.Setenv("CF_CONSULT_TIMEOUT", tc.envVal)
+			}
+			got := consultTimeout()
+			if got != tc.want {
+				t.Errorf("consultTimeout() = %v, want %v (CF_CONSULT_TIMEOUT=%q)", got, tc.want, tc.envVal)
+			}
+		})
 	}
 }

@@ -267,8 +267,21 @@ func resolveByNameFallback(name string, s store.Store) (string, error) {
 	return "", fmt.Errorf("name %q not found in any reachable root", name)
 }
 
+// consultTimeout returns the timeout for consultRootsForName.
+// It reads CF_CONSULT_TIMEOUT (a Go duration string, e.g. "30s", "2m") and falls
+// back to 10s for backwards compatibility.
+func consultTimeout() time.Duration {
+	if raw := os.Getenv("CF_CONSULT_TIMEOUT"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 10 * time.Second
+}
+
 // consultRootsForName sends a join-root-query future to the consult campfire
-// and waits up to 10 seconds for the agent to respond with a list of root IDs.
+// and waits for the agent to respond with a list of root IDs. The timeout is
+// controlled by the CF_CONSULT_TIMEOUT environment variable (default: 10s).
 func consultRootsForName(name string, jp *naming.JoinPolicy) ([]string, error) {
 	client, err := protocol.Init(CFHome())
 	if err != nil {
@@ -297,7 +310,7 @@ func consultRootsForName(name string, jp *naming.JoinPolicy) ([]string, error) {
 	resp, err := client.Await(protocol.AwaitRequest{
 		CampfireID:  jp.ConsultCampfire,
 		TargetMsgID: msg.ID,
-		Timeout:     10 * time.Second,
+		Timeout:     consultTimeout(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("awaiting consult response: %w", err)
