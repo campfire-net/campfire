@@ -11,6 +11,8 @@ package protocol
 import (
 	"context"
 	"sync"
+
+	"github.com/campfire-net/campfire/pkg/campfire"
 )
 
 // BridgeOptions configures the bridge behavior.
@@ -89,11 +91,14 @@ func Bridge(ctx context.Context, source, dest *Client, campfireID string, opts B
 					continue // already seen — skip to prevent loops
 				}
 
-				// Forward the message.
+				// Forward the message with blind-relay role so IsBridged() returns true.
+				// This marks the forwarded message as having passed through a bridge
+				// transport, per Operator Provenance Convention v0.1 §4.2 (Level 2).
 				sent, err := to.Send(SendRequest{
-					CampfireID: campfireID,
-					Payload:    msg.Payload,
-					Tags:       msg.Tags,
+					CampfireID:   campfireID,
+					Payload:      msg.Payload,
+					Tags:         msg.Tags,
+					RoleOverride: campfire.RoleBlindRelay,
 				})
 				if err != nil {
 					return err

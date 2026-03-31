@@ -73,6 +73,13 @@ type SendRequest struct {
 	// If empty, the caller is responsible for injecting a token via the
 	// environment (GITHUB_TOKEN) before calling Send.
 	GitHubToken string
+
+	// RoleOverride, when non-empty, overrides the membership role recorded in the
+	// provenance hop. Used by Bridge() to force "blind-relay" hops regardless of
+	// the sender's actual membership role. This makes IsBridged() return true for
+	// messages forwarded by a bridge. If empty, the sender's stored membership role
+	// is used (the default and correct behavior for non-bridge sends).
+	RoleOverride string
 }
 
 // CoSigner is a peer endpoint used during FROST threshold signing.
@@ -177,11 +184,15 @@ func (c *Client) sendFilesystem(req SendRequest, m *store.Membership) (*message.
 	}
 
 	cf := state.ToCampfire(members)
+	hopRole := campfire.EffectiveRole(m.Role)
+	if req.RoleOverride != "" {
+		hopRole = req.RoleOverride
+	}
 	if err := msg.AddHop(
 		state.PrivateKey, state.PublicKey,
 		cf.MembershipHash(), len(members),
 		state.JoinProtocol, state.ReceptionRequirements,
-		campfire.EffectiveRole(m.Role),
+		hopRole,
 	); err != nil {
 		return nil, fmt.Errorf("adding provenance hop: %w", err)
 	}
