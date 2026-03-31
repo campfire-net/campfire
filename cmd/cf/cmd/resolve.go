@@ -42,7 +42,7 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 			aliases := naming.NewAliasStore(CFHome())
 			return aliases.Get(parsed.Alias)
 		default:
-			return resolveNamingURI(prefix, s)
+			return resolveNamingURI(prefix)
 		}
 	}
 
@@ -55,7 +55,7 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 
 	// Dot-separated name shorthand: aietf.social.lobby → cf://aietf.social.lobby
 	if strings.Contains(prefix, ".") && naming.LooksLikeName(prefix) {
-		return resolveNamingURI("cf://"+prefix, s)
+		return resolveNamingURI("cf://" + prefix)
 	}
 
 	// Local alias: check bare names before prefix search.
@@ -336,9 +336,8 @@ func resolveNameInRoot(rootID, name string) (string, error) {
 
 // resolveNamingURI resolves a cf:// URI to a campfire ID using the naming protocol.
 // Uses NewResolverFromClient (direct-read) instead of the deprecated CLITransport.
-func resolveNamingURI(uri string, s store.Store) (string, error) {
-	_ = s // store is unused — protocol.Init opens its own store
-
+// protocol.Init opens its own store internally, so no store parameter is needed.
+func resolveNamingURI(uri string) (string, error) {
 	client, err := protocol.Init(CFHome())
 	if err != nil {
 		return "", fmt.Errorf("initializing protocol client for name resolution: %w", err)
