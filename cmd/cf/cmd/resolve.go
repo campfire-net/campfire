@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,16 @@ import (
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
+
+// isValidCampfireID reports whether id is a valid campfire ID: exactly 64
+// hex characters encoding a 32-byte Ed25519 public key.
+func isValidCampfireID(id string) bool {
+	if len(id) != 64 {
+		return false
+	}
+	b, err := hex.DecodeString(id)
+	return err == nil && len(b) == 32
+}
 
 // resolveCampfireID resolves a prefix, full ID, tilde-alias, or cf:// URI to a full 64-char hex campfire ID.
 // It searches cf:// URIs first, then local aliases, then the membership table and beacon directories.
@@ -303,7 +314,13 @@ func consultRootsForName(name string, jp *naming.JoinPolicy) ([]string, error) {
 }
 
 // resolveNameInRoot tries to resolve a name in the given root campfire.
+// It validates rootID before use to prevent malformed or malicious IDs
+// (e.g. from untrusted consult agent responses) from reaching the protocol layer.
 func resolveNameInRoot(rootID, name string) (string, error) {
+	if !isValidCampfireID(rootID) {
+		return "", fmt.Errorf("invalid root campfire ID %q: must be 64 hex characters", rootID)
+	}
+
 	client, err := protocol.Init(CFHome())
 	if err != nil {
 		return "", err
