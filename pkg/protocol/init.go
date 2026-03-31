@@ -61,6 +61,12 @@ func Init(configDir string, optFuncs ...Option) (*Client, error) {
 
 	c := New(s, id)
 	c.opts = opts
+	c.configDir = configDir
+
+	// Recentering slide-in: detect existing center via walk-up, optionally
+	// prompt once, post two-signature claim. Non-fatal — Init always succeeds.
+	_ = c.maybeRecenter(configDir)
+
 	return c, nil
 }
 
