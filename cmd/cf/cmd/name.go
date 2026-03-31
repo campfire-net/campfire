@@ -157,26 +157,28 @@ var nameLookupCmd = &cobra.Command{
 			}
 		}
 
-		// Step 3: Try naming resolve via operator root.
-		if root, err := naming.LoadOperatorRoot(CFHome()); err == nil && root != nil {
+		// Steps 3 and 4 both need a protocol client — init once and share it.
+		operatorRoot, _ := naming.LoadOperatorRoot(CFHome())
+		registryRootID := getRootRegistryID()
+		if operatorRoot != nil || registryRootID != "" {
 			client, err := protocol.Init(CFHome())
 			if err == nil {
 				defer client.Close()
-				if resp, err := naming.Resolve(context.Background(), client, root.CampfireID, name); err == nil {
-					fmt.Fprintf(out, "Resolved %q via naming in root %s → %s\n", name, root.CampfireID[:shortIDLen], resp.CampfireID)
-					return nil
-				}
-			}
-		}
 
-		// Step 4: Try public root registry (CF_ROOT_REGISTRY).
-		if rootID := getRootRegistryID(); rootID != "" {
-			client, err := protocol.Init(CFHome())
-			if err == nil {
-				defer client.Close()
-				if resp, err := naming.Resolve(context.Background(), client, rootID, name); err == nil {
-					fmt.Fprintf(out, "Resolved %q via naming in root-registry %s → %s\n", name, rootID[:shortIDLen], resp.CampfireID)
-					return nil
+				// Step 3: Try naming resolve via operator root.
+				if operatorRoot != nil {
+					if resp, err := naming.Resolve(context.Background(), client, operatorRoot.CampfireID, name); err == nil {
+						fmt.Fprintf(out, "Resolved %q via naming in root %s → %s\n", name, operatorRoot.CampfireID[:shortIDLen], resp.CampfireID)
+						return nil
+					}
+				}
+
+				// Step 4: Try public root registry (CF_ROOT_REGISTRY).
+				if registryRootID != "" {
+					if resp, err := naming.Resolve(context.Background(), client, registryRootID, name); err == nil {
+						fmt.Fprintf(out, "Resolved %q via naming in root-registry %s → %s\n", name, registryRootID[:shortIDLen], resp.CampfireID)
+						return nil
+					}
 				}
 			}
 		}
