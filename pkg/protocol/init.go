@@ -21,8 +21,18 @@ const identityFilename = "identity.json"
 //   - The SQLite store is opened (or created) at configDir/store.db.
 //   - All schema migrations are applied automatically by store.Open.
 //
+// Optional configuration is supplied via functional options:
+//   - WithAuthorizeFunc(fn) — registers a hook called when authorization is required.
+//   - WithRemote(url)       — configures a remote HTTP transport endpoint.
+//   - WithWalkUp(false)     — disables parent-directory walk-up for center discovery.
+//
 // The caller is responsible for calling Close on the returned *Client when done.
-func Init(configDir string) (*Client, error) {
+func Init(configDir string, optFuncs ...Option) (*Client, error) {
+	opts := defaultOptions()
+	for _, fn := range optFuncs {
+		fn(&opts)
+	}
+
 	idPath := filepath.Join(configDir, identityFilename)
 
 	var id *identity.Identity
@@ -49,7 +59,9 @@ func Init(configDir string) (*Client, error) {
 		return nil, fmt.Errorf("protocol.Init: opening store: %w", err)
 	}
 
-	return New(s, id), nil
+	c := New(s, id)
+	c.opts = opts
+	return c, nil
 }
 
 // Close releases resources held by the Client (currently the underlying store).

@@ -94,6 +94,7 @@ type CoSigner struct {
 type Client struct {
 	store    store.Store
 	identity *identity.Identity
+	opts     options
 }
 
 // New creates a Client wrapping the given store.
