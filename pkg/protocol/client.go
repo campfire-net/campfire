@@ -108,7 +108,7 @@ type Client struct {
 // New creates a Client wrapping the given store.
 // identity may be nil for read-only clients that do not need to sign messages.
 func New(s store.Store, id *identity.Identity) *Client {
-	return &Client{store: s, identity: id}
+	return &Client{store: s, identity: id, opts: defaultOptions()}
 }
 
 // GetMembership returns the membership record for the given campfire ID,

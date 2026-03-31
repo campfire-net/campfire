@@ -6,7 +6,7 @@ package protocol_test
 //   1. Init(cfHome)                         — zero options, backward-compatible
 //   2. Init(cfHome, WithAuthorizeFunc(fn))  — fn called on authorization demand
 //   3. Init(cfHome, WithRemote(url))        — remote URL stored
-//   4. Init(cfHome, WithWalkUp(false))      — walk-up disabled
+//   4. Init(cfHome, WithNoWalkUp())         — walk-up disabled
 
 import (
 	"testing"
@@ -19,7 +19,7 @@ func TestInitOptions(t *testing.T) {
 	t.Run("ZeroOptions", testInitZeroOptions)
 	t.Run("WithAuthorizeFunc", testInitWithAuthorizeFunc)
 	t.Run("WithRemote", testInitWithRemote)
-	t.Run("WithWalkUpFalse", testInitWithWalkUpFalse)
+	t.Run("WithNoWalkUp", testInitWithNoWalkUp)
 }
 
 // testInitZeroOptions verifies Init(cfHome) with no options returns a non-nil
@@ -131,18 +131,18 @@ func testInitWithRemote(t *testing.T) {
 	}
 }
 
-// testInitWithWalkUpFalse verifies that WithWalkUp(false) disables walk-up.
-func testInitWithWalkUpFalse(t *testing.T) {
+// testInitWithNoWalkUp verifies that WithNoWalkUp() disables walk-up.
+func testInitWithNoWalkUp(t *testing.T) {
 	t.Helper()
 	configDir := t.TempDir()
 
-	client, err := protocol.Init(configDir, protocol.WithWalkUp(false))
+	client, err := protocol.Init(configDir, protocol.WithNoWalkUp())
 	if err != nil {
-		t.Fatalf("Init(WithWalkUp(false)): %v", err)
+		t.Fatalf("Init(WithNoWalkUp()): %v", err)
 	}
 	t.Cleanup(func() { client.Close() })
 
 	if client.WalkUpEnabled() {
-		t.Error("WalkUpEnabled() = true after WithWalkUp(false)")
+		t.Error("WalkUpEnabled() = true after WithNoWalkUp()")
 	}
 }

@@ -45,12 +45,11 @@ func WithRemote(url string) Option {
 	}
 }
 
-// WithWalkUp controls whether Init walks up parent directories looking for
-// an existing center campfire to link to. Pass false to disable walk-up
-// (useful in agents and containers where the directory tree is unpredictable).
-// Default is true.
-func WithWalkUp(enabled bool) Option {
+// WithNoWalkUp disables parent-directory walk-up for center campfire discovery.
+// Useful in agents and containers where the directory tree is unpredictable.
+// Walk-up is enabled by default.
+func WithNoWalkUp() Option {
 	return func(o *options) {
-		o.walkUp = enabled
+		o.walkUp = false
 	}
 }

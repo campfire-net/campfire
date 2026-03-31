@@ -112,7 +112,7 @@ func (c *Client) maybeIssueContextKeyDelegation(configDir string) error {
 
 	// Persist delegation cert (hex-encoded 64-byte signature).
 	certHex := hex.EncodeToString(sig)
-	if err := os.WriteFile(delegationCertPath, []byte(certHex), 0644); err != nil {
+	if err := os.WriteFile(delegationCertPath, []byte(certHex), 0600); err != nil {
 		os.Remove(contextKeyIdentPath)
 		os.Remove(contextKeyPubPath)
 		return fmt.Errorf("context key delegation: writing delegation.cert: %w", err)

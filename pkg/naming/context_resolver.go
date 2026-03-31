@@ -3,8 +3,12 @@ package naming
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// campfireIDRe matches a valid campfire ID: exactly 64 lowercase hex characters.
+var campfireIDRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // ContextResolution holds the naming context discovered by walking up the
 // filesystem from a starting directory.
@@ -39,6 +43,9 @@ func ResolveContext(startDir string) (*ContextResolution, error) {
 	}
 
 	res := &ContextResolution{}
+	// seen deduplicates campfire IDs across directories: if the same ID appears
+	// in both an inner and an outer .campfire/root, it is included only once
+	// (at the innermost position, since we walk deepest-first).
 	seen := map[string]bool{}
 
 	dir := resolved
@@ -49,7 +56,7 @@ func ResolveContext(startDir string) (*ContextResolution, error) {
 		rootData, err := os.ReadFile(filepath.Join(campfireDir, "root"))
 		if err == nil {
 			id := strings.TrimSpace(string(rootData))
-			if id != "" && !seen[id] {
+			if campfireIDRe.MatchString(id) && !seen[id] {
 				seen[id] = true
 				res.NamingRoots = append(res.NamingRoots, id)
 			}
@@ -60,7 +67,7 @@ func ResolveContext(startDir string) (*ContextResolution, error) {
 			centerData, err := os.ReadFile(filepath.Join(campfireDir, "center"))
 			if err == nil {
 				id := strings.TrimSpace(string(centerData))
-				if id != "" {
+				if campfireIDRe.MatchString(id) {
 					res.CenterCampfireID = id
 				}
 			}

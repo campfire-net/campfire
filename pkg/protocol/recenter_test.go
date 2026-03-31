@@ -393,7 +393,7 @@ func TestRecenteringAlreadyLinked(t *testing.T) {
 	}
 
 	// Verify: the delegation cert message exists and references our key.
-	c3, err := protocol.Init(cfHome, protocol.WithWalkUp(false))
+	c3, err := protocol.Init(cfHome, protocol.WithNoWalkUp())
 	if err != nil {
 		t.Fatalf("verification Init: %v", err)
 	}

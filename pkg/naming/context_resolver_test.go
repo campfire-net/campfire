@@ -132,6 +132,30 @@ func TestResolveContextEmpty(t *testing.T) {
 	}
 }
 
+// TestResolveContextNearestCenterWins verifies that when .campfire/center exists
+// in both an inner and an outer directory, the innermost (nearest) center wins.
+func TestResolveContextNearestCenterWins(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "child", "project")
+	if err := os.MkdirAll(inner, 0700); err != nil {
+		t.Fatalf("creating inner dir: %v", err)
+	}
+
+	outerCenter := "aaaa1111" + "aaaa1111" + "aaaa1111" + "aaaa1111" + "aaaa1111" + "aaaa1111" + "aaaa1111" + "aaaa1111"
+	innerCenter := "bbbb2222" + "bbbb2222" + "bbbb2222" + "bbbb2222" + "bbbb2222" + "bbbb2222" + "bbbb2222" + "bbbb2222"
+
+	writeCenterFile(t, outer, outerCenter)
+	writeCenterFile(t, inner, innerCenter)
+
+	res, err := ResolveContext(inner)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.CenterCampfireID != innerCenter {
+		t.Errorf("expected inner center %q to win, got %q", innerCenter, res.CenterCampfireID)
+	}
+}
+
 // TestResolveContextSymlink verifies that ResolveContext handles symlinked
 // directories without entering an infinite loop.
 func TestResolveContextSymlink(t *testing.T) {
