@@ -141,6 +141,58 @@ func searchBeaconDir(dir string, prefix string, addMatch func(string)) {
 	}
 }
 
+// autoJoinIfOpen auto-joins campfireID if the agent is not yet a member and the
+// campfire advertises an open join protocol via a local beacon. It is best-effort:
+// errors are silently swallowed so that name resolution always succeeds even when
+// the join fails (e.g. transport not reachable, invite-only campfire).
+//
+// The store s may be nil, in which case the membership check is skipped and the
+// join is attempted unconditionally (rare: s is nil only in fallback paths that
+// do not hold an open store handle).
+func autoJoinIfOpen(campfireID string, s store.Store) error {
+	// Already a member? Skip.
+	if s != nil {
+		if m, _ := s.GetMembership(campfireID); m != nil {
+			return nil
+		}
+	}
+
+	// Load identity — required to write a member record.
+	agentID, err := loadIdentity()
+	if err != nil {
+		return fmt.Errorf("loading identity for auto-join: %w", err)
+	}
+
+	// Delegate to the filesystem auto-join helper (join.go).
+	// autoJoinRootCampfire checks join protocol, reads transport state, and
+	// only joins open campfires — invite-only are silently skipped.
+	if s != nil {
+		return autoJoinRootCampfire(campfireID, agentID, s)
+	}
+
+	// s is nil: open a fresh store handle for the join, then close it.
+	freshStore, err := openStore()
+	if err != nil {
+		return fmt.Errorf("opening store for auto-join: %w", err)
+	}
+	defer freshStore.Close()
+	return autoJoinRootCampfire(campfireID, agentID, freshStore)
+}
+
+// resolveNameInRootWithAutoJoin resolves a name in rootID and, on success,
+// attempts to auto-join the resolved campfire if it is open-protocol and the
+// agent is not yet a member. The join is best-effort — resolution succeeds
+// even if the join fails.
+func resolveNameInRootWithAutoJoin(rootID, name string, s store.Store) (string, error) {
+	id, err := resolveNameInRoot(rootID, name)
+	if err != nil {
+		return "", err
+	}
+	// Best-effort auto-join: ignore errors so resolution still succeeds.
+	_ = autoJoinIfOpen(id, s)
+	return id, nil
+}
+
 // resolveByName attempts to resolve a bare name via naming registries.
 // If a join policy is configured, it uses consult-based root selection.
 // Otherwise falls back to: project root (.campfire/root walk-up), then CF_ROOT_REGISTRY env var.
@@ -153,7 +205,7 @@ func resolveByName(name string, s store.Store) (string, error) {
 
 	if jp == nil {
 		// No policy configured — use legacy walk-up + CF_ROOT_REGISTRY fallback.
-		return resolveByNameFallback(name)
+		return resolveByNameFallback(name, s)
 	}
 
 	// Policy configured — use consult-based root selection.
@@ -161,11 +213,11 @@ func resolveByName(name string, s store.Store) (string, error) {
 		// fs-walk: discover roots via filesystem walk-up from cwd.
 		cwd, err := os.Getwd()
 		if err != nil {
-			return resolveByNameFallback(name)
+			return resolveByNameFallback(name, s)
 		}
 		roots := naming.FSWalkRoots(cwd, jp.JoinRoot)
 		for _, rootID := range roots {
-			if id, err := resolveNameInRoot(rootID, name); err == nil {
+			if id, err := resolveNameInRootWithAutoJoin(rootID, name, s); err == nil {
 				return id, nil
 			}
 		}
@@ -176,10 +228,10 @@ func resolveByName(name string, s store.Store) (string, error) {
 	roots, err := consultRootsForName(name, jp)
 	if err != nil {
 		// Consult failed — fall back to legacy behavior.
-		return resolveByNameFallback(name)
+		return resolveByNameFallback(name, s)
 	}
 	for _, rootID := range roots {
-		if id, err := resolveNameInRoot(rootID, name); err == nil {
+		if id, err := resolveNameInRootWithAutoJoin(rootID, name, s); err == nil {
 			return id, nil
 		}
 	}
@@ -187,17 +239,17 @@ func resolveByName(name string, s store.Store) (string, error) {
 }
 
 // resolveByNameFallback is the legacy resolution path: project root walk-up then CF_ROOT_REGISTRY.
-func resolveByNameFallback(name string) (string, error) {
+func resolveByNameFallback(name string, s store.Store) (string, error) {
 	// Try project root first — walk up from pwd.
 	if rootID, _, ok := ProjectRoot(); ok {
-		if id, err := resolveNameInRoot(rootID, name); err == nil {
+		if id, err := resolveNameInRootWithAutoJoin(rootID, name, s); err == nil {
 			return id, nil
 		}
 	}
 
 	// Fall back to configured root registry.
 	if rootID := getRootRegistryID(); rootID != "" {
-		if id, err := resolveNameInRoot(rootID, name); err == nil {
+		if id, err := resolveNameInRootWithAutoJoin(rootID, name, s); err == nil {
 			return id, nil
 		}
 	}

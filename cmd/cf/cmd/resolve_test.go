@@ -472,3 +472,283 @@ func TestResolveCampfireID_NamingViaProjectRoot(t *testing.T) {
 		t.Errorf("got %s, want %s", got, targetID)
 	}
 }
+
+// setupAutoJoinEnv creates isolated CF_HOME dirs for a creator and a resolver,
+// a shared beacon dir, and wires CF_HOME/CF_BEACON_DIR env vars to the resolver.
+// Returns (creatorCFHome, resolverCFHome, beaconDir).
+func setupAutoJoinEnv(t *testing.T) (creatorHome, resolverHome, beaconDir string) {
+	t.Helper()
+	creatorHome = t.TempDir()
+	resolverHome = t.TempDir()
+	beaconDir = t.TempDir()
+
+	// Wire resolver env vars.
+	t.Setenv("CF_HOME", resolverHome)
+	t.Setenv("CF_BEACON_DIR", beaconDir)
+	// Clear CF_ROOT_REGISTRY so fallback doesn't pick up a stray env.
+	t.Setenv("CF_ROOT_REGISTRY", "")
+
+	// Generate and save a resolver identity.
+	resolverID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating resolver identity: %v", err)
+	}
+	if err := resolverID.Save(filepath.Join(resolverHome, "identity.json")); err != nil {
+		t.Fatalf("saving resolver identity: %v", err)
+	}
+
+	return creatorHome, resolverHome, beaconDir
+}
+
+// TestAutoJoin_OpenCampfireJoinedOnResolution verifies that resolving a name
+// pointing to an open-protocol campfire the agent has not joined causes the
+// agent to auto-join after resolution.
+func TestAutoJoin_OpenCampfireJoinedOnResolution(t *testing.T) {
+	creatorHome, resolverHome, beaconDir := setupAutoJoinEnv(t)
+
+	// --- Creator: create root and target campfires, register the name. ---
+	transportDir := t.TempDir()
+	creatorClient, err := protocol.Init(creatorHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (creator): %v", err)
+	}
+	defer creatorClient.Close()
+
+	rootResult, err := creatorClient.Create(protocol.CreateRequest{
+		Description:  "auto-join-root",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+		BeaconDir:    beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("creating root: %v", err)
+	}
+	rootID := rootResult.CampfireID
+
+	targetResult, err := creatorClient.Create(protocol.CreateRequest{
+		Description:  "auto-join-target",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+		BeaconDir:    beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("creating target: %v", err)
+	}
+	targetID := targetResult.CampfireID
+
+	// Register "myservice" → targetID in the root.
+	if _, err := naming.Register(context.Background(), creatorClient, rootID, "myservice", targetID, nil); err != nil {
+		t.Fatalf("naming.Register: %v", err)
+	}
+
+	// --- Resolver: open the resolver store and resolve the name. ---
+	resolverStore, err := store.Open(store.StorePath(resolverHome))
+	if err != nil {
+		t.Fatalf("opening resolver store: %v", err)
+	}
+	defer resolverStore.Close()
+
+	// Pre-join the resolver to the root so its protocol client can read naming messages.
+	// (The auto-join under test is for the *target* campfire, not the root.)
+	// TransportDir is the campfire-specific subdir: transportDir/rootID.
+	rootTransportDir := filepath.Join(transportDir, rootID)
+	if err := resolverStore.AddMembership(store.Membership{
+		CampfireID:    rootID,
+		TransportDir:  rootTransportDir,
+		JoinProtocol:  "open",
+		Role:          "member",
+		JoinedAt:      1,
+		TransportType: "filesystem",
+	}); err != nil {
+		t.Fatalf("pre-joining resolver to root: %v", err)
+	}
+
+	// Before resolution: resolver is not a member of the target.
+	if m, _ := resolverStore.GetMembership(targetID); m != nil {
+		t.Fatal("resolver should not be a member of target before resolution")
+	}
+
+	// Set CF_ROOT_REGISTRY so resolveByNameFallback finds the root.
+	t.Setenv("CF_ROOT_REGISTRY", rootID)
+
+	got, err := resolveByName("myservice", resolverStore)
+	if err != nil {
+		t.Fatalf("resolveByName: %v", err)
+	}
+	if got != targetID {
+		t.Errorf("resolved to %s, want %s", got, targetID)
+	}
+
+	// After resolution: resolver should now be a member of the target.
+	m, err := resolverStore.GetMembership(targetID)
+	if err != nil {
+		t.Fatalf("GetMembership: %v", err)
+	}
+	if m == nil {
+		t.Errorf("resolver was not auto-joined to open campfire %s after name resolution", targetID[:12])
+	}
+}
+
+// TestAutoJoin_InviteOnlyCampfireNotJoined verifies that resolving a name
+// pointing to an invite-only campfire does NOT auto-join the resolver, but
+// name resolution itself still succeeds.
+func TestAutoJoin_InviteOnlyCampfireNotJoined(t *testing.T) {
+	creatorHome, resolverHome, beaconDir := setupAutoJoinEnv(t)
+
+	transportDir := t.TempDir()
+	creatorClient, err := protocol.Init(creatorHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (creator): %v", err)
+	}
+	defer creatorClient.Close()
+
+	rootResult, err := creatorClient.Create(protocol.CreateRequest{
+		Description:  "invite-only-root",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+		BeaconDir:    beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("creating root: %v", err)
+	}
+	rootID := rootResult.CampfireID
+
+	// Create an invite-only target.
+	targetResult, err := creatorClient.Create(protocol.CreateRequest{
+		Description:  "invite-only-target",
+		JoinProtocol: "invite-only",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+		BeaconDir:    beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("creating invite-only target: %v", err)
+	}
+	targetID := targetResult.CampfireID
+
+	// Register "private" → targetID in the root.
+	if _, err := naming.Register(context.Background(), creatorClient, rootID, "private", targetID, nil); err != nil {
+		t.Fatalf("naming.Register: %v", err)
+	}
+
+	// Resolver store: pre-join root so naming messages are readable.
+	// TransportDir is the campfire-specific subdir: transportDir/rootID.
+	resolverStore, err := store.Open(store.StorePath(resolverHome))
+	if err != nil {
+		t.Fatalf("opening resolver store: %v", err)
+	}
+	defer resolverStore.Close()
+
+	rootTransportDirInvite := filepath.Join(transportDir, rootID)
+	if err := resolverStore.AddMembership(store.Membership{
+		CampfireID:    rootID,
+		TransportDir:  rootTransportDirInvite,
+		JoinProtocol:  "open",
+		Role:          "member",
+		JoinedAt:      1,
+		TransportType: "filesystem",
+	}); err != nil {
+		t.Fatalf("pre-joining resolver to root: %v", err)
+	}
+
+	t.Setenv("CF_ROOT_REGISTRY", rootID)
+
+	// Resolution should succeed even though auto-join will be silently skipped.
+	got, err := resolveByName("private", resolverStore)
+	if err != nil {
+		t.Fatalf("resolveByName: %v", err)
+	}
+	if got != targetID {
+		t.Errorf("resolved to %s, want %s", got, targetID)
+	}
+
+	// Resolver must NOT be a member of the invite-only target.
+	m, _ := resolverStore.GetMembership(targetID)
+	if m != nil {
+		t.Errorf("resolver was unexpectedly auto-joined to invite-only campfire %s", targetID[:12])
+	}
+}
+
+// TestAutoJoin_AlreadyMemberNoRejoin verifies that resolving a name when the
+// resolver is already a member does not cause an error or a duplicate membership.
+func TestAutoJoin_AlreadyMemberNoRejoin(t *testing.T) {
+	creatorHome, resolverHome, beaconDir := setupAutoJoinEnv(t)
+
+	transportDir := t.TempDir()
+	creatorClient, err := protocol.Init(creatorHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (creator): %v", err)
+	}
+	defer creatorClient.Close()
+
+	rootResult, err := creatorClient.Create(protocol.CreateRequest{
+		Description:  "already-member-root",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+		BeaconDir:    beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("creating root: %v", err)
+	}
+	rootID := rootResult.CampfireID
+
+	targetResult, err := creatorClient.Create(protocol.CreateRequest{
+		Description:  "already-member-target",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+		BeaconDir:    beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("creating target: %v", err)
+	}
+	targetID := targetResult.CampfireID
+
+	if _, err := naming.Register(context.Background(), creatorClient, rootID, "existing", targetID, nil); err != nil {
+		t.Fatalf("naming.Register: %v", err)
+	}
+
+	// Pre-populate resolver store: joined to root and already a member of target.
+	// TransportDir is the campfire-specific subdir: transportDir/campfireID.
+	resolverStore, err := store.Open(store.StorePath(resolverHome))
+	if err != nil {
+		t.Fatalf("opening resolver store: %v", err)
+	}
+	defer resolverStore.Close()
+
+	if err := resolverStore.AddMembership(store.Membership{
+		CampfireID:    rootID,
+		TransportDir:  filepath.Join(transportDir, rootID),
+		JoinProtocol:  "open",
+		Role:          "member",
+		JoinedAt:      1,
+		TransportType: "filesystem",
+	}); err != nil {
+		t.Fatalf("pre-joining resolver to root: %v", err)
+	}
+	if err := resolverStore.AddMembership(store.Membership{
+		CampfireID:    targetID,
+		TransportDir:  filepath.Join(transportDir, targetID),
+		JoinProtocol:  "open",
+		Role:          "member",
+		JoinedAt:      2,
+		TransportType: "filesystem",
+	}); err != nil {
+		t.Fatalf("pre-adding target membership: %v", err)
+	}
+
+	t.Setenv("CF_ROOT_REGISTRY", rootID)
+
+	// Resolve — should succeed without error and without blowing up on duplicate join.
+	got, err := resolveByName("existing", resolverStore)
+	if err != nil {
+		t.Fatalf("resolveByName: %v", err)
+	}
+	if got != targetID {
+		t.Errorf("resolved to %s, want %s", got, targetID)
+	}
+
+	// Membership should still be present.
+	m, err := resolverStore.GetMembership(targetID)
+	if err != nil || m == nil {
+		t.Errorf("membership lost after re-resolution of already-member campfire")
+	}
+}
