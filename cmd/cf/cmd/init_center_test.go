@@ -238,7 +238,7 @@ func TestInitRemoteFlag(t *testing.T) {
 	if getErr != nil {
 		t.Fatalf("getting center membership: %v", getErr)
 	}
-	if m.TransportType != "http" {
-		t.Errorf("center transport type = %q, want 'http'", m.TransportType)
+	if m.TransportType != "p2p-http" {
+		t.Errorf("center transport type = %q, want 'p2p-http'", m.TransportType)
 	}
 }

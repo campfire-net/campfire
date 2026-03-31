@@ -215,7 +215,15 @@ Location: %s
 `, agentID.PublicKeyHex(), identityType, cfHome)
 
 		if centerID != "" {
-			fmt.Printf("\nCreated center campfire [%s]. To use a remote: cf init --remote <url>\n", centerTransport)
+			displayTransport := centerTransport
+			if displayTransport == "p2p-http" {
+				displayTransport = "http"
+			}
+			hint := ""
+			if centerTransport != "p2p-http" {
+				hint = " To use a remote: cf init --remote <url>"
+			}
+			fmt.Printf("\nCreated center campfire [%s].%s\n", displayTransport, hint)
 		}
 
 		fmt.Printf(`
@@ -465,8 +473,10 @@ func createCenterCampfire(cfHome string, agentID *identity.Identity, remoteURL s
 		}
 		transportDir = transport.CampfireDir(centerCF.PublicKeyHex())
 	} else {
-		// HTTP transport: store the remote URL as the transport dir
-		transportLabel = "http"
+		// HTTP transport: store the remote URL as the transport dir.
+		// TransportType must be "p2p-http" for transport.ResolveType() to
+		// recognize it; "http" is only used for the human-readable output label.
+		transportLabel = "p2p-http"
 		transportDir = remoteURL
 	}
 
