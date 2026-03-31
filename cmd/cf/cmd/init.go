@@ -27,11 +27,15 @@ var initCmd = &cobra.Command{
 
 Named identities live at ~/.campfire/agents/<name>/. Session identities print
 the CF_HOME path on line 1 and the display name on line 2. The caller sets
-CF_HOME to the printed path for subsequent commands.`,
+CF_HOME to the printed path for subsequent commands.
+
+When --name is set, the new agent inherits join-policy.json, operator-root.json,
+and aliases.json from the parent CF_HOME (or --from path if specified).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		forceInit, _ := cmd.Flags().GetBool("force")
 		initName, _ := cmd.Flags().GetString("name")
 		initSession, _ := cmd.Flags().GetBool("session")
+		initFrom, _ := cmd.Flags().GetString("from")
 		// Session identity: temp dir, print path + display name, done.
 		if initSession {
 			tmpDir, err := os.MkdirTemp("", "cf-session-")
@@ -45,6 +49,17 @@ CF_HOME to the printed path for subsequent commands.`,
 			identityPath := filepath.Join(tmpDir, "identity.json")
 			if err := agentID.Save(identityPath); err != nil {
 				return fmt.Errorf("saving identity: %w", err)
+			}
+			// Inherit join-policy and operator-root from parent CF_HOME (silently skip if missing).
+			// aliases.json is NOT copied — sessions are short-lived and don't need command sugar.
+			parentHome := CFHome()
+			for _, fname := range []string{"join-policy.json", "operator-root.json"} {
+				src := filepath.Join(parentHome, fname)
+				data, readErr := os.ReadFile(src)
+				if readErr != nil {
+					continue // missing is fine
+				}
+				_ = os.WriteFile(filepath.Join(tmpDir, fname), data, 0600)
 			}
 			writeContext(tmpDir)
 			hexKey := agentID.PublicKeyHex()
@@ -111,6 +126,17 @@ CF_HOME to the printed path for subsequent commands.`,
 			fmt.Fprintf(os.Stderr, "warning: could not create home campfire: %v\n", err)
 		}
 
+		// Named agent: inherit config files from parent CF_HOME.
+		if initName != "" {
+			parentHome := initFrom
+			if parentHome == "" {
+				parentHome = CFHome()
+			}
+			if err := inheritAgentConfig(parentHome, cfHome, initName); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not inherit config: %v\n", err)
+			}
+		}
+
 		if jsonOutput {
 			out := map[string]any{
 				"status":     "created",
@@ -140,6 +166,41 @@ Next: cf discover    find campfires
 `, agentID.PublicKeyHex(), identityType, cfHome)
 		return nil
 	},
+}
+
+// inheritAgentConfig copies join-policy.json, operator-root.json, and aliases.json
+// from parentHome to agentHome, then writes meta.json with name, parent_cf_home, and created_at.
+// Missing source files are silently skipped.
+func inheritAgentConfig(parentHome, agentHome, name string) error {
+	for _, filename := range []string{"join-policy.json", "operator-root.json", "aliases.json"} {
+		src := filepath.Join(parentHome, filename)
+		data, err := os.ReadFile(src)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // silently skip missing files
+			}
+			return fmt.Errorf("reading %s: %w", filename, err)
+		}
+		dst := filepath.Join(agentHome, filename)
+		if err := os.WriteFile(dst, data, 0600); err != nil {
+			return fmt.Errorf("writing %s: %w", filename, err)
+		}
+	}
+
+	// Write meta.json
+	meta := map[string]any{
+		"name":           name,
+		"parent_cf_home": parentHome,
+		"created_at":     time.Now().Unix(),
+	}
+	metaData, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling meta: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentHome, "meta.json"), metaData, 0600); err != nil {
+		return fmt.Errorf("writing meta.json: %w", err)
+	}
+	return nil
 }
 
 // createAndSeedHomeCampfire creates a home campfire for the agent, seeds it
@@ -303,5 +364,6 @@ func init() {
 	initCmd.Flags().Bool("force", false, "overwrite existing identity")
 	initCmd.Flags().String("name", "", "persistent agent name (survives across sessions)")
 	initCmd.Flags().Bool("session", false, "create a temporary identity in a unique temp dir")
+	initCmd.Flags().String("from", "", "inherit config from this CF_HOME path (only valid with --name)")
 	rootCmd.AddCommand(initCmd)
 }
