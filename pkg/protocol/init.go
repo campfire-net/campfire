@@ -61,6 +61,12 @@ func Init(configDir string, optFuncs ...Option) (*Client, error) {
 
 	c := New(s, id)
 	c.opts = opts
+
+	// Issue context key delegation if a center campfire is found in the walk-up path.
+	// Best-effort: errors are ignored so Init() never fails solely because delegation
+	// is unavailable (e.g. center campfire not yet in store).
+	c.maybeIssueContextKeyDelegation(configDir) //nolint:errcheck
+
 	return c, nil
 }
 
