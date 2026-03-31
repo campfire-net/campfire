@@ -199,8 +199,7 @@ func resolveNameInRootWithAutoJoin(rootID, name string, s store.Store) (string, 
 func resolveByName(name string, s store.Store) (string, error) {
 	jp, err := naming.LoadJoinPolicy(CFHome())
 	if err != nil {
-		// Policy file exists but is malformed — fall back to legacy behavior.
-		jp = nil
+		return "", fmt.Errorf("join policy: %w", err)
 	}
 
 	if jp == nil {
