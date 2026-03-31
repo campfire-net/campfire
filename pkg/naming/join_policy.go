@@ -2,7 +2,9 @@ package naming
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,7 +32,7 @@ var joinPolicyHexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 func LoadJoinPolicy(cfHome string) (*JoinPolicy, error) {
 	path := filepath.Join(cfHome, joinPolicyFile)
 	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
