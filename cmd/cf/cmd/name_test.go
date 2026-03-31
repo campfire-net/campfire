@@ -203,3 +203,51 @@ func TestNameLookupNotFound(t *testing.T) {
 		t.Errorf("expected 'not found' in output, got: %s", out.String())
 	}
 }
+
+// TestNameResolveRootPublicWithoutRegistry verifies that --public flag without
+// CF_ROOT_REGISTRY set returns a clear error from nameResolveRoot.
+func TestNameResolveRootPublicWithoutRegistry(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CF_HOME", dir)
+	t.Cleanup(func() { cfHome = "" })
+	cfHome = ""
+
+	// Ensure CF_ROOT_REGISTRY is not set.
+	t.Setenv("CF_ROOT_REGISTRY", "")
+
+	if err := nameListCmd.Flags().Set("public", "true"); err != nil {
+		t.Fatalf("setting --public flag: %v", err)
+	}
+	t.Cleanup(func() { nameListCmd.Flags().Set("public", "false") }) //nolint:errcheck
+
+	err := nameListCmd.RunE(nameListCmd, []string{})
+	if err == nil {
+		t.Fatal("expected error when --public is set and CF_ROOT_REGISTRY is not set, got nil")
+	}
+	if !strings.Contains(err.Error(), "CF_ROOT_REGISTRY") {
+		t.Errorf("expected error to mention CF_ROOT_REGISTRY, got: %v", err)
+	}
+}
+
+// TestNameResolveRootNoOperatorRoot verifies that when no operator root is configured
+// and --public/--root flags are not set, nameResolveRoot returns a useful error.
+func TestNameResolveRootNoOperatorRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CF_HOME", dir)
+	t.Cleanup(func() { cfHome = "" })
+	cfHome = ""
+
+	// Ensure CF_ROOT_REGISTRY is not set.
+	t.Setenv("CF_ROOT_REGISTRY", "")
+
+	// No operator-root.json created — no operator root configured.
+	// No --public or --root flags set.
+
+	err := nameListCmd.RunE(nameListCmd, []string{})
+	if err == nil {
+		t.Fatal("expected error when no operator root configured, got nil")
+	}
+	if !strings.Contains(err.Error(), "no operator root configured") {
+		t.Errorf("expected 'no operator root configured' in error, got: %v", err)
+	}
+}
