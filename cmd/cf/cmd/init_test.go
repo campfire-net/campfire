@@ -401,6 +401,33 @@ func TestInitFrom_FilePath(t *testing.T) {
 	}
 }
 
+// TestInitFrom_WithoutName verifies that --from without --name returns a clear error
+// rather than silently ignoring the --from flag.
+func TestInitFrom_WithoutName(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+
+	// Create a valid directory to use as --from (path validation passes, name validation should catch it)
+	fromDir := t.TempDir()
+
+	initCmd.Flags().Set("force", "false")   //nolint:errcheck
+	initCmd.Flags().Set("name", "")         //nolint:errcheck
+	initCmd.Flags().Set("session", "false") //nolint:errcheck
+	initCmd.Flags().Set("from", fromDir)    //nolint:errcheck
+	defer initCmd.Flags().Set("from", "")   //nolint:errcheck
+	rootCmd.SetArgs([]string{"init", "--from", fromDir})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --from is set without --name, got nil")
+	}
+	if !strings.Contains(err.Error(), "--name") {
+		t.Errorf("expected error to mention --name, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--from") {
+		t.Errorf("expected error to mention --from, got: %v", err)
+	}
+}
+
 // TestInitNamed_WithFromFlag verifies the end-to-end path: cf init --name <agent> --from <parent>
 // creates an agent with inherited config. We call inheritAgentConfig directly to avoid
 // cobra global-state issues with named agent paths, but verify the full function contract.

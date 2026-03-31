@@ -30,7 +30,8 @@ the CF_HOME path on line 1 and the display name on line 2. The caller sets
 CF_HOME to the printed path for subsequent commands.
 
 When --name is set, the new agent inherits join-policy.json, operator-root.json,
-and aliases.json from the parent CF_HOME (or --from path if specified).`,
+and aliases.json from the parent CF_HOME (or --from path if specified).
+The --from flag requires --name — config inheritance only applies to named agents.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		forceInit, _ := cmd.Flags().GetBool("force")
 		initName, _ := cmd.Flags().GetString("name")
@@ -84,6 +85,14 @@ and aliases.json from the parent CF_HOME (or --from path if specified).`,
 			if !info.IsDir() {
 				return fmt.Errorf("cf init --from: path is not a directory: %s", initFrom)
 			}
+		}
+
+		// --from without --name is a user error: --from only makes sense when
+		// creating a named agent that will inherit the config. Without --name,
+		// there is no agent home to inherit into, so the flag would be silently
+		// ignored. Return a clear error so the user knows what to do.
+		if initFrom != "" && initName == "" {
+			return fmt.Errorf("cf init --from requires --name: use --name <agent-name> to specify the agent that will inherit config from %s", initFrom)
 		}
 
 		// Named identity: persistent agent
@@ -379,6 +388,6 @@ func init() {
 	initCmd.Flags().Bool("force", false, "overwrite existing identity")
 	initCmd.Flags().String("name", "", "persistent agent name (survives across sessions)")
 	initCmd.Flags().Bool("session", false, "create a temporary identity in a unique temp dir")
-	initCmd.Flags().String("from", "", "inherit config from this CF_HOME path (only valid with --name)")
+	initCmd.Flags().String("from", "", "inherit config from this CF_HOME path (requires --name)")
 	rootCmd.AddCommand(initCmd)
 }
