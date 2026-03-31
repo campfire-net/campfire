@@ -136,8 +136,20 @@ The --from flag requires --name — config inheritance only applies to named age
 			return fmt.Errorf("generating identity: %w", err)
 		}
 
-		if err := agentID.Save(identityPath); err != nil {
-			return fmt.Errorf("saving identity: %w", err)
+		// Resolve passphrase: env var first, then interactive prompt.
+		passphrase, passphraseErr := resolvePassphrase()
+		if passphraseErr != nil {
+			return fmt.Errorf("reading passphrase: %w", passphraseErr)
+		}
+
+		if len(passphrase) > 0 {
+			if err := agentID.SaveWrapped(identityPath, passphrase); err != nil {
+				return fmt.Errorf("saving identity: %w", err)
+			}
+		} else {
+			if err := agentID.Save(identityPath); err != nil {
+				return fmt.Errorf("saving identity: %w", err)
+			}
 		}
 
 		// Write CONTEXT.md alongside the identity
@@ -148,6 +160,20 @@ The --from flag requires --name — config inheritance only applies to named age
 		if err != nil {
 			// Non-fatal: home campfire creation failure should not block init.
 			fmt.Fprintf(os.Stderr, "warning: could not create home campfire: %v\n", err)
+		}
+
+		// Create center campfire (fs by default, http if --remote is set).
+		remoteURL, _ := cmd.Flags().GetString("remote")
+		centerID, centerTransport, centerErr := createCenterCampfire(cfHome, agentID, remoteURL)
+		if centerErr != nil {
+			// Non-fatal: center campfire creation failure should not block init.
+			fmt.Fprintf(os.Stderr, "warning: could not create center campfire: %v\n", centerErr)
+		} else {
+			// Write .campfire/center file.
+			centerPath := filepath.Join(cfHome, "center")
+			if err := os.WriteFile(centerPath, []byte(centerID), 0600); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write center file: %v\n", err)
+			}
 		}
 
 		// Named agent: inherit config files from parent CF_HOME.
@@ -170,6 +196,9 @@ The --from flag requires --name — config inheritance only applies to named age
 			if homeCampfireID != "" {
 				out["home_campfire_id"] = homeCampfireID
 			}
+			if centerID != "" {
+				out["center_campfire_id"] = centerID
+			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			return enc.Encode(out)
@@ -183,11 +212,17 @@ The --from flag requires --name — config inheritance only applies to named age
 		fmt.Printf(`Identity created: %s
 Type: %s
 Location: %s
+`, agentID.PublicKeyHex(), identityType, cfHome)
 
+		if centerID != "" {
+			fmt.Printf("\nCreated center campfire [%s]. To use a remote: cf init --remote <url>\n", centerTransport)
+		}
+
+		fmt.Printf(`
 Next: cf discover    find campfires
       cf create      start one
       cf join <id>   join one
-`, agentID.PublicKeyHex(), identityType, cfHome)
+`)
 		return nil
 	},
 }
@@ -389,5 +424,77 @@ func init() {
 	initCmd.Flags().String("name", "", "persistent agent name (survives across sessions)")
 	initCmd.Flags().Bool("session", false, "create a temporary identity in a unique temp dir")
 	initCmd.Flags().String("from", "", "inherit config from this CF_HOME path (requires --name)")
+	initCmd.Flags().String("remote", "", "URL of remote campfire relay for center campfire (default: filesystem)")
 	rootCmd.AddCommand(initCmd)
+}
+
+// resolvePassphrase returns the passphrase for wrapping the identity key.
+// It reads CF_PASSPHRASE env var first. If not set, it prompts interactively.
+// Returns nil (no passphrase) if neither source provides one.
+func resolvePassphrase() ([]byte, error) {
+	if env := os.Getenv("CF_PASSPHRASE"); env != "" {
+		return []byte(env), nil
+	}
+	return promptPassphrase()
+}
+
+// createCenterCampfire creates the operator's center campfire.
+// Uses filesystem transport by default; uses HTTP transport if remoteURL is non-empty.
+// Returns the campfire ID hex, the transport label ("fs" or "http"), and any error.
+func createCenterCampfire(cfHome string, agentID *identity.Identity, remoteURL string) (string, string, error) {
+	// Create campfire keypair (open join protocol, no requirements, threshold=1).
+	centerCF, err := campfire.New("open", nil, 1)
+	if err != nil {
+		return "", "", fmt.Errorf("creating center campfire: %w", err)
+	}
+
+	transportLabel := "fs"
+	transportDir := ""
+
+	if remoteURL == "" {
+		// Filesystem transport
+		transport := fs.New(fs.DefaultBaseDir())
+		if err := transport.Init(centerCF); err != nil {
+			return "", "", fmt.Errorf("initializing fs transport: %w", err)
+		}
+		if err := transport.WriteMember(centerCF.PublicKeyHex(), campfire.MemberRecord{
+			PublicKey: agentID.PublicKey,
+			JoinedAt:  time.Now().UnixNano(),
+		}); err != nil {
+			return "", "", fmt.Errorf("writing member record: %w", err)
+		}
+		transportDir = transport.CampfireDir(centerCF.PublicKeyHex())
+	} else {
+		// HTTP transport: store the remote URL as the transport dir
+		transportLabel = "http"
+		transportDir = remoteURL
+	}
+
+	// Open store and record membership
+	s, err := store.Open(store.StorePath(cfHome))
+	if err != nil {
+		return "", "", fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	if err := s.AddMembership(store.Membership{
+		CampfireID:    centerCF.PublicKeyHex(),
+		TransportDir:  transportDir,
+		JoinProtocol:  centerCF.JoinProtocol,
+		Role:          store.PeerRoleCreator,
+		JoinedAt:      store.NowNano(),
+		Threshold:     centerCF.Threshold,
+		Description:   "center campfire",
+		TransportType: transportLabel,
+	}); err != nil {
+		return "", "", fmt.Errorf("recording membership: %w", err)
+	}
+
+	// Set "center" alias
+	aliases := naming.NewAliasStore(cfHome)
+	if err := aliases.Set("center", centerCF.PublicKeyHex()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not set center alias: %v\n", err)
+	}
+
+	return centerCF.PublicKeyHex(), transportLabel, nil
 }

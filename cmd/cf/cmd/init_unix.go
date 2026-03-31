@@ -7,11 +7,41 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"golang.org/x/term"
 )
 
 // isOwnedByRoot returns true if the given syscall.Stat_t indicates UID 0.
 func isOwnedByRoot(st *syscall.Stat_t) bool {
 	return st.Uid == 0
+}
+
+// promptPassphrase reads a passphrase from the terminal without echoing it.
+// Returns nil if stdin is not a terminal (non-interactive mode) — caller
+// should treat nil as "no passphrase" and fall back to plaintext save.
+func promptPassphrase() ([]byte, error) {
+	if !term.IsTerminal(int(syscall.Stdin)) {
+		return nil, nil
+	}
+	fmt.Fprint(os.Stderr, "Enter passphrase (leave empty to skip): ")
+	passphrase, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return nil, fmt.Errorf("reading passphrase: %w", err)
+	}
+	if len(passphrase) == 0 {
+		return nil, nil
+	}
+	fmt.Fprint(os.Stderr, "Confirm passphrase: ")
+	confirm, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return nil, fmt.Errorf("reading passphrase confirmation: %w", err)
+	}
+	if string(passphrase) != string(confirm) {
+		return nil, fmt.Errorf("passphrases do not match")
+	}
+	return passphrase, nil
 }
 
 // checkCampfireDirOwnership checks if ~/.campfire/ exists and is root-owned.

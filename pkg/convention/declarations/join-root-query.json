@@ -1,0 +1,37 @@
+{
+  "convention": "join-root-selection",
+  "version": "0.1",
+  "operation": "join-root-query",
+  "description": "Query a consult agent for the ordered list of naming roots to search when resolving a human-readable campfire name. Sent as a future by the resolver; the consult agent fulfills it with join-root-result. The join_root field seeds the consult with the operator's configured default root — implementations MAY use it as a fallback, prepend it, or ignore it.",
+  "signing": "member_key",
+  "antecedents": "none",
+  "response": "sync",
+  "response_timeout": "10s",
+  "args": [
+    {
+      "name": "name",
+      "type": "string",
+      "required": true,
+      "max_length": 253,
+      "pattern": "^[a-z0-9][a-z0-9.-]{0,251}[a-z0-9]$",
+      "description": "The human-readable name being resolved (e.g. \"galtrader\" or \"aietf.social.lobby\")"
+    },
+    {
+      "name": "join_root",
+      "type": "campfire",
+      "required": false,
+      "description": "The operator's configured default join root. The consult agent may use this as a seed or fallback when building the root list."
+    }
+  ],
+  "produces_tags": [
+    {
+      "tag": "join-root-selection:query",
+      "cardinality": "exactly_one"
+    }
+  ],
+  "rate_limit": {
+    "max": 60,
+    "per": "sender",
+    "window": "1m"
+  }
+}
