@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
@@ -17,6 +18,78 @@ import (
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
+
+// TestIsValidCampfireID verifies the campfire ID validator rejects malformed IDs.
+func TestIsValidCampfireID(t *testing.T) {
+	// Generate a real valid ID for the positive case.
+	id, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	validID := id.PublicKeyHex()
+
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"valid 64-char hex", validID, true},
+		{"too short", validID[:32], false},
+		{"too long", validID + "00", false},
+		{"empty string", "", false},
+		{"non-hex chars", strings.Repeat("g", 64), false},
+		{"path traversal attempt", "../../../etc/passwd" + strings.Repeat("a", 64-19), false},
+		{"null bytes embedded", validID[:32] + "\x00" + validID[33:], false},
+		{"uppercase hex", strings.ToUpper(validID), true},
+		{"mixed whitespace", validID[:63] + " ", false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := isValidCampfireID(tc.input)
+			if got != tc.want {
+				t.Errorf("isValidCampfireID(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveNameInRoot_RejectsInvalidRootID verifies that resolveNameInRoot
+// returns an error immediately when given a malformed root ID, without
+// attempting any network or protocol operations. This guards against
+// malformed or malicious IDs sourced from untrusted consult agent responses.
+func TestResolveNameInRoot_RejectsInvalidRootID(t *testing.T) {
+	// Use an isolated CF_HOME so protocol.Init doesn't touch the real identity.
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+
+	malformedIDs := []struct {
+		label string
+		id    string
+	}{
+		{"empty", ""},
+		{"short", "short"},
+		{"63 hex chars", strings.Repeat("a", 63)},
+		{"65 hex chars", strings.Repeat("a", 65)},
+		{"64 non-hex chars", strings.Repeat("z", 64)},
+		{"path traversal", "../../../etc/passwd" + strings.Repeat("a", 45)},
+	}
+
+	for _, tc := range malformedIDs {
+		tc := tc
+		t.Run(tc.label, func(t *testing.T) {
+			_, err := resolveNameInRoot(tc.id, "somename")
+			if err == nil {
+				t.Errorf("resolveNameInRoot(%q, ...) expected error for malformed root ID, got nil", tc.id)
+				return
+			}
+			if !strings.Contains(err.Error(), "invalid root campfire ID") {
+				t.Errorf("error %q does not mention 'invalid root campfire ID'", err.Error())
+			}
+		})
+	}
+}
 
 // makeTestStore creates a temporary store with the given campfire IDs as memberships.
 func makeTestStore(t *testing.T, campfireIDs []string) (store.Store, string) {
