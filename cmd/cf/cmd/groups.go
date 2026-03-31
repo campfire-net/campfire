@@ -24,8 +24,9 @@ func assignCommandGroups() {
 		"members":  groupCampfire,
 		"alias":    groupCampfire,
 		"name":     groupCampfire,
-		"root":     groupCampfire,
-		"trust":    groupCampfire,
+		"root":        groupCampfire,
+		"join-policy": groupCampfire,
+		"trust":        groupCampfire,
 		"ls":       groupCampfire,
 
 		// Messages — reading, writing, and querying messages.
