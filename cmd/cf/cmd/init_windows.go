@@ -7,3 +7,9 @@ package cmd
 func checkCampfireDirOwnership() error {
 	return nil
 }
+
+// promptPassphrase is not supported on Windows (no terminal passphrase prompt).
+// Returns nil — caller falls back to plaintext identity save.
+func promptPassphrase() ([]byte, error) {
+	return nil, nil
+}

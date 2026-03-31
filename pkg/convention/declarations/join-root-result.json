@@ -1,0 +1,27 @@
+{
+  "convention": "join-root-selection",
+  "version": "0.1",
+  "operation": "join-root-result",
+  "description": "Fulfill a join-root-query with an ordered list of naming root campfire IDs to search. The resolver tries each root in order and stops at the first hit. An empty roots list means the consult agent found no applicable roots; the resolver falls back to its configured fallback path. Max 16 roots per response — the resolver enforces this and ignores extras.",
+  "signing": "member_key",
+  "antecedents": "exactly_one(target)",
+  "args": [
+    {
+      "name": "roots",
+      "type": "json",
+      "required": true,
+      "description": "Ordered array of campfire IDs (strings) to try as naming roots. First element is highest priority. Example: [\"<id1>\", \"<id2>\"]"
+    }
+  ],
+  "produces_tags": [
+    {
+      "tag": "join-root-selection:result",
+      "cardinality": "exactly_one"
+    }
+  ],
+  "rate_limit": {
+    "max": 60,
+    "per": "sender",
+    "window": "1m"
+  }
+}
