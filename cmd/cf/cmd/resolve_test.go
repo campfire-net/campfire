@@ -259,6 +259,141 @@ func TestResolveCampfireID_Ambiguous(t *testing.T) {
 	t.Log("ambiguous error:", err)
 }
 
+// TestResolveByName_FSWalkPath verifies that resolveByName uses FSWalkRoots when
+// join-policy.json sets consult_campfire to "fs-walk".
+func TestResolveByName_FSWalkPath(t *testing.T) {
+	// Isolated cf home.
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+
+	// Build the protocol client from cfHomeDir.
+	client, err := protocol.Init(cfHomeDir)
+	if err != nil {
+		t.Fatalf("protocol.Init: %v", err)
+	}
+	defer client.Close()
+
+	// Create a root campfire and a target campfire.
+	transportDir := t.TempDir()
+	rootResult, err := client.Create(protocol.CreateRequest{
+		Description:  "fswalk-root",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating root: %v", err)
+	}
+	rootID := rootResult.CampfireID
+
+	targetResult, err := client.Create(protocol.CreateRequest{
+		Description:  "fswalk-target",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating target: %v", err)
+	}
+	targetID := targetResult.CampfireID
+
+	// Register "mygame" in the root.
+	_, err = naming.Register(context.Background(), client, rootID, "mygame", targetID, nil)
+	if err != nil {
+		t.Fatalf("naming.Register: %v", err)
+	}
+
+	// Write join-policy.json pointing to "fs-walk".
+	if err := naming.SaveJoinPolicy(cfHomeDir, &naming.JoinPolicy{
+		JoinPolicy:      "consult",
+		ConsultCampfire: naming.FSWalkSentinel,
+		JoinRoot:        rootID,
+	}); err != nil {
+		t.Fatalf("SaveJoinPolicy: %v", err)
+	}
+
+	// Create a project directory with a .campfire/root pointing to our root.
+	projectDir := t.TempDir()
+	campfireDir := filepath.Join(projectDir, ".campfire")
+	if err := os.MkdirAll(campfireDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(campfireDir, "root"), []byte(rootID), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change into the project dir so FSWalkRoots finds .campfire/root.
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origDir)
+
+	// resolveByName should find "mygame" via fs-walk path.
+	got, err := resolveByName("mygame", nil)
+	if err != nil {
+		t.Fatalf("resolveByName(\"mygame\"): %v", err)
+	}
+	if got != targetID {
+		t.Errorf("got %s, want %s", got, targetID)
+	}
+}
+
+// TestResolveByName_FallbackNoPolicy verifies that when no join-policy.json exists,
+// resolveByName falls back to the legacy ProjectRoot + CF_ROOT_REGISTRY path.
+func TestResolveByName_FallbackNoPolicy(t *testing.T) {
+	// Isolated cf home — no join-policy.json.
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+
+	// Build the protocol client.
+	client, err := protocol.Init(cfHomeDir)
+	if err != nil {
+		t.Fatalf("protocol.Init: %v", err)
+	}
+	defer client.Close()
+
+	// Create a root campfire and a target campfire.
+	transportDir := t.TempDir()
+	rootResult, err := client.Create(protocol.CreateRequest{
+		Description:  "fallback-root",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating root: %v", err)
+	}
+	rootID := rootResult.CampfireID
+
+	targetResult, err := client.Create(protocol.CreateRequest{
+		Description:  "fallback-target",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating target: %v", err)
+	}
+	targetID := targetResult.CampfireID
+
+	// Register "myapp" in the root.
+	_, err = naming.Register(context.Background(), client, rootID, "myapp", targetID, nil)
+	if err != nil {
+		t.Fatalf("naming.Register: %v", err)
+	}
+
+	// Set CF_ROOT_REGISTRY so the fallback finds our root.
+	t.Setenv("CF_ROOT_REGISTRY", rootID)
+
+	// resolveByName with no join policy should fall back to CF_ROOT_REGISTRY.
+	got, err := resolveByName("myapp", nil)
+	if err != nil {
+		t.Fatalf("resolveByName(\"myapp\"): %v", err)
+	}
+	if got != targetID {
+		t.Errorf("got %s, want %s", got, targetID)
+	}
+}
+
 func TestResolveCampfireID_NamingViaProjectRoot(t *testing.T) {
 	// Set up an isolated cf home for this test.
 	cfHomeDir := t.TempDir()

@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/naming"
@@ -104,7 +106,7 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 	// This enables `cf galtrader help` to resolve "galtrader" via the naming
 	// registry without requiring an alias or cf:// URI prefix.
 	if len(matches) == 0 {
-		if id, err := tryNamingResolve(prefix, s); err == nil {
+		if id, err := resolveByName(prefix, s); err == nil {
 			return id, nil
 		}
 		return "", fmt.Errorf("no campfire found matching prefix %s", prefix)
@@ -139,9 +141,53 @@ func searchBeaconDir(dir string, prefix string, addMatch func(string)) {
 	}
 }
 
-// tryNamingResolve attempts to resolve a bare name via naming registries.
-// Searches: project root (.campfire/root walk-up), then CF_ROOT_REGISTRY env var.
-func tryNamingResolve(name string, s store.Store) (string, error) {
+// resolveByName attempts to resolve a bare name via naming registries.
+// If a join policy is configured, it uses consult-based root selection.
+// Otherwise falls back to: project root (.campfire/root walk-up), then CF_ROOT_REGISTRY env var.
+func resolveByName(name string, s store.Store) (string, error) {
+	jp, err := naming.LoadJoinPolicy(CFHome())
+	if err != nil {
+		// Policy file exists but is malformed — fall back to legacy behavior.
+		jp = nil
+	}
+
+	if jp == nil {
+		// No policy configured — use legacy walk-up + CF_ROOT_REGISTRY fallback.
+		return resolveByNameFallback(name)
+	}
+
+	// Policy configured — use consult-based root selection.
+	if jp.ConsultCampfire == naming.FSWalkSentinel {
+		// fs-walk: discover roots via filesystem walk-up from cwd.
+		cwd, err := os.Getwd()
+		if err != nil {
+			return resolveByNameFallback(name)
+		}
+		roots := naming.FSWalkRoots(cwd, jp.JoinRoot)
+		for _, rootID := range roots {
+			if id, err := resolveNameInRoot(rootID, name); err == nil {
+				return id, nil
+			}
+		}
+		return "", fmt.Errorf("name %q not found in any reachable root", name)
+	}
+
+	// Real consult campfire — send a join-root-query future and await the response.
+	roots, err := consultRootsForName(name, jp)
+	if err != nil {
+		// Consult failed — fall back to legacy behavior.
+		return resolveByNameFallback(name)
+	}
+	for _, rootID := range roots {
+		if id, err := resolveNameInRoot(rootID, name); err == nil {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("name %q not found in any reachable root", name)
+}
+
+// resolveByNameFallback is the legacy resolution path: project root walk-up then CF_ROOT_REGISTRY.
+func resolveByNameFallback(name string) (string, error) {
 	// Try project root first — walk up from pwd.
 	if rootID, _, ok := ProjectRoot(); ok {
 		if id, err := resolveNameInRoot(rootID, name); err == nil {
@@ -157,6 +203,52 @@ func tryNamingResolve(name string, s store.Store) (string, error) {
 	}
 
 	return "", fmt.Errorf("name %q not found in any reachable root", name)
+}
+
+// consultRootsForName sends a join-root-query future to the consult campfire
+// and waits up to 10 seconds for the agent to respond with a list of root IDs.
+func consultRootsForName(name string, jp *naming.JoinPolicy) ([]string, error) {
+	client, err := protocol.Init(CFHome())
+	if err != nil {
+		return nil, fmt.Errorf("init protocol client for consult: %w", err)
+	}
+	defer client.Close()
+
+	type queryPayload struct {
+		Name     string `json:"name"`
+		JoinRoot string `json:"join_root"`
+	}
+	queryJSON, err := json.Marshal(queryPayload{Name: name, JoinRoot: jp.JoinRoot})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling consult query: %w", err)
+	}
+
+	msg, err := client.Send(protocol.SendRequest{
+		CampfireID: jp.ConsultCampfire,
+		Payload:    queryJSON,
+		Tags:       []string{"join-root-selection:query", "future"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sending consult query: %w", err)
+	}
+
+	resp, err := client.Await(protocol.AwaitRequest{
+		CampfireID:  jp.ConsultCampfire,
+		TargetMsgID: msg.ID,
+		Timeout:     10 * time.Second,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("awaiting consult response: %w", err)
+	}
+
+	type responsePayload struct {
+		Roots []string `json:"roots"`
+	}
+	var rp responsePayload
+	if err := json.Unmarshal(resp.Payload, &rp); err != nil {
+		return nil, fmt.Errorf("parsing consult response: %w", err)
+	}
+	return rp.Roots, nil
 }
 
 // resolveNameInRoot tries to resolve a name in the given root campfire.
