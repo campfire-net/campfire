@@ -99,9 +99,10 @@ type CoSigner struct {
 // Client is NOT safe for concurrent use from multiple goroutines without external
 // synchronization. Each goroutine should use its own Client.
 type Client struct {
-	store    store.Store
-	identity *identity.Identity
-	opts     options
+	store     store.Store
+	identity  *identity.Identity
+	opts      options
+	configDir string // set by Init(); empty when using New() directly
 }
 
 // New creates a Client wrapping the given store.
