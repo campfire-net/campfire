@@ -847,6 +847,382 @@ func TestAutoJoin_AlreadyMemberNoRejoin(t *testing.T) {
 	}
 }
 
+// setupConsultCampfire creates a consult campfire using the creator client,
+// joins the caller to it (so consultRootsForName can send queries), and returns
+// the consult campfire ID and the shared transport base dir.
+//
+// CF_HOME must already be set to callerHome before calling this.
+func setupConsultCampfire(t *testing.T, creatorHome, callerHome string) (consultID, transportDir string) {
+	t.Helper()
+
+	transportDir = t.TempDir()
+
+	// Creator: create the consult campfire.
+	creatorClient, err := protocol.Init(creatorHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (creator): %v", err)
+	}
+	t.Cleanup(func() { creatorClient.Close() })
+
+	result, err := creatorClient.Create(protocol.CreateRequest{
+		Description:  "test-consult-campfire",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating consult campfire: %v", err)
+	}
+	consultID = result.CampfireID
+
+	// Caller: join the consult campfire so consultRootsForName can send.
+	callerClient, err := protocol.Init(callerHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (caller): %v", err)
+	}
+	t.Cleanup(func() { callerClient.Close() })
+
+	// createFilesystemCampfire uses fs.New (base-dir mode), writing state to
+	// transportDir/consultID/. joinFilesystem uses ForDir (path-rooted mode), so
+	// we must pass the campfire-specific subdirectory here.
+	campfireDir := filepath.Join(transportDir, consultID)
+	if _, err := callerClient.Join(protocol.JoinRequest{
+		CampfireID: consultID,
+		Transport:  protocol.FilesystemTransport{Dir: campfireDir},
+	}); err != nil {
+		t.Fatalf("caller joining consult campfire: %v", err)
+	}
+
+	return consultID, transportDir
+}
+
+// spawnResponder launches a goroutine that polls consultID for a "future" message
+// with a "join-root-selection" tag prefix. When found, it sends a fulfilling
+// response containing roots. Used by consult-path tests to simulate a naming agent.
+func spawnResponder(respClient *protocol.Client, consultID string, roots []string) {
+	go func() {
+		type responsePayload struct {
+			Roots []string `json:"roots"`
+		}
+
+		var queryMsgID string
+		for i := 0; i < 60; i++ {
+			time.Sleep(200 * time.Millisecond)
+			result, err := respClient.Read(protocol.ReadRequest{
+				CampfireID:  consultID,
+				Tags:        []string{"future"},
+				TagPrefixes: []string{"join-root-selection"},
+			})
+			if err != nil {
+				continue
+			}
+			for _, msg := range result.Messages {
+				for _, tag := range msg.Tags {
+					if tag == "future" {
+						queryMsgID = msg.ID
+						break
+					}
+				}
+				if queryMsgID != "" {
+					break
+				}
+			}
+			if queryMsgID != "" {
+				break
+			}
+		}
+		if queryMsgID == "" {
+			return // query never arrived; the test will fail via its own timeout
+		}
+
+		payload, _ := json.Marshal(responsePayload{Roots: roots})
+		_, _ = respClient.Send(protocol.SendRequest{
+			CampfireID:  consultID,
+			Payload:     payload,
+			Tags:        []string{"fulfills"},
+			Antecedents: []string{queryMsgID},
+		})
+	}()
+}
+
+// TestConsultRootsForName_ReturnsRootsFromResponder verifies that
+// consultRootsForName sends a join-root-selection:query future to a real local
+// campfire (filesystem transport) and correctly parses the roots returned by a
+// concurrent responder goroutine.
+//
+// Test setup:
+//  1. creatorHome creates and owns the consult campfire.
+//  2. callerHome (= CF_HOME) joins the consult campfire.
+//  3. A responder goroutine (using the creator's client) polls for the query
+//     and posts a fulfilling response with a known root ID.
+//  4. consultRootsForName must return exactly that root ID.
+func TestConsultRootsForName_ReturnsRootsFromResponder(t *testing.T) {
+	creatorHome := t.TempDir()
+	callerHome := t.TempDir()
+
+	// CF_HOME controls which identity/store consultRootsForName uses internally.
+	t.Setenv("CF_HOME", callerHome)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+	t.Setenv("CF_CONSULT_TIMEOUT", "10s")
+
+	consultID, _ := setupConsultCampfire(t, creatorHome, callerHome)
+
+	// Generate a valid root campfire ID for the responder to return.
+	rootID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating root identity: %v", err)
+	}
+	expectedRoot := rootID.PublicKeyHex()
+
+	// Creator's client acts as the naming agent / responder.
+	respClient, err := protocol.Init(creatorHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (responder): %v", err)
+	}
+	defer respClient.Close()
+
+	spawnResponder(respClient, consultID, []string{expectedRoot})
+
+	jp := &naming.JoinPolicy{
+		JoinPolicy:      "consult",
+		ConsultCampfire: consultID,
+		JoinRoot:        expectedRoot,
+	}
+
+	roots, err := consultRootsForName("myservice", jp)
+	if err != nil {
+		t.Fatalf("consultRootsForName: %v", err)
+	}
+	if len(roots) != 1 || roots[0] != expectedRoot {
+		t.Errorf("consultRootsForName returned %v, want [%s]", roots, expectedRoot)
+	}
+}
+
+// TestConsultRootsForName_MultipleRoots verifies that consultRootsForName
+// correctly parses and returns all roots when the responder returns more than one.
+func TestConsultRootsForName_MultipleRoots(t *testing.T) {
+	creatorHome := t.TempDir()
+	callerHome := t.TempDir()
+
+	t.Setenv("CF_HOME", callerHome)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+	t.Setenv("CF_CONSULT_TIMEOUT", "10s")
+
+	consultID, _ := setupConsultCampfire(t, creatorHome, callerHome)
+
+	// Generate two valid root IDs.
+	root1, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating root1: %v", err)
+	}
+	root2, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating root2: %v", err)
+	}
+	expectedRoots := []string{root1.PublicKeyHex(), root2.PublicKeyHex()}
+
+	respClient, err := protocol.Init(creatorHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (responder): %v", err)
+	}
+	defer respClient.Close()
+
+	spawnResponder(respClient, consultID, expectedRoots)
+
+	jp := &naming.JoinPolicy{
+		JoinPolicy:      "consult",
+		ConsultCampfire: consultID,
+		JoinRoot:        root1.PublicKeyHex(),
+	}
+
+	roots, err := consultRootsForName("anything", jp)
+	if err != nil {
+		t.Fatalf("consultRootsForName: %v", err)
+	}
+	if len(roots) != 2 {
+		t.Fatalf("consultRootsForName returned %d roots, want 2", len(roots))
+	}
+	for i, want := range expectedRoots {
+		if roots[i] != want {
+			t.Errorf("roots[%d] = %s, want %s", i, roots[i], want)
+		}
+	}
+}
+
+// TestConsultRootsForName_TimeoutWhenNoResponder verifies that consultRootsForName
+// returns an error (not a hang) when the consult campfire has no responder.
+// Exercises the timeout path in consultRootsForName.
+func TestConsultRootsForName_TimeoutWhenNoResponder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timeout test in short mode")
+	}
+
+	creatorHome := t.TempDir()
+	callerHome := t.TempDir()
+
+	t.Setenv("CF_HOME", callerHome)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+	// Very short timeout so the test finishes quickly.
+	t.Setenv("CF_CONSULT_TIMEOUT", "500ms")
+
+	consultID, _ := setupConsultCampfire(t, creatorHome, callerHome)
+
+	jp := &naming.JoinPolicy{
+		JoinPolicy:      "consult",
+		ConsultCampfire: consultID,
+		JoinRoot:        "0000000000000000000000000000000000000000000000000000000000000000",
+	}
+
+	_, err := consultRootsForName("nobody", jp)
+	if err == nil {
+		t.Fatal("consultRootsForName: expected timeout error, got nil")
+	}
+	// The error chain should mention the await timeout.
+	if !strings.Contains(err.Error(), "await") && !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("expected timeout-related error, got: %v", err)
+	}
+}
+
+// TestConsultRootsForName_NotMemberReturnsError verifies that consultRootsForName
+// returns an error when callerHome's identity has not joined the consult campfire.
+func TestConsultRootsForName_NotMemberReturnsError(t *testing.T) {
+	creatorHome := t.TempDir()
+	callerHome := t.TempDir()
+
+	// callerHome is NOT joined to the consult campfire.
+	t.Setenv("CF_HOME", callerHome)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+	t.Setenv("CF_CONSULT_TIMEOUT", "1s")
+
+	transportDir := t.TempDir()
+	creatorClient, err := protocol.Init(creatorHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (creator): %v", err)
+	}
+	defer creatorClient.Close()
+
+	result, err := creatorClient.Create(protocol.CreateRequest{
+		Description:  "non-member-consult",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating consult campfire: %v", err)
+	}
+
+	jp := &naming.JoinPolicy{
+		JoinPolicy:      "consult",
+		ConsultCampfire: result.CampfireID,
+		JoinRoot:        "0000000000000000000000000000000000000000000000000000000000000000",
+	}
+
+	_, err = consultRootsForName("unknown", jp)
+	if err == nil {
+		t.Fatal("consultRootsForName: expected error when not a member, got nil")
+	}
+}
+
+// TestResolveByName_ConsultPath verifies the full resolveByName →
+// consultRootsForName → resolveNameInRootWithAutoJoin chain using a real
+// consult campfire (filesystem transport).
+//
+// This covers the production path where join-policy.json specifies a real
+// consult campfire (not "fs-walk"), confirming:
+//   - The consult campfire receives the join-root-selection query.
+//   - Root IDs from the responder are used to resolve the name.
+//   - The correct target campfire ID is returned.
+func TestResolveByName_ConsultPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping consult path integration test in short mode")
+	}
+
+	creatorHome := t.TempDir()
+	callerHome := t.TempDir()
+
+	t.Setenv("CF_HOME", callerHome)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+	t.Setenv("CF_ROOT_REGISTRY", "")
+	t.Setenv("CF_CONSULT_TIMEOUT", "10s")
+
+	consultID, _ := setupConsultCampfire(t, creatorHome, callerHome)
+
+	// Creator: create a naming root and target campfire, register a name.
+	creatorClient, err := protocol.Init(creatorHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (creator): %v", err)
+	}
+	defer creatorClient.Close()
+
+	namingTransportDir := t.TempDir()
+	rootResult, err := creatorClient.Create(protocol.CreateRequest{
+		Description:  "consult-root",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: namingTransportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating naming root: %v", err)
+	}
+	rootID := rootResult.CampfireID
+
+	targetResult, err := creatorClient.Create(protocol.CreateRequest{
+		Description:  "consult-target",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: namingTransportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating target campfire: %v", err)
+	}
+	targetID := targetResult.CampfireID
+
+	// Register "consultapp" → targetID in the naming root.
+	if _, err := naming.Register(context.Background(), creatorClient, rootID, "consultapp", targetID, nil); err != nil {
+		t.Fatalf("naming.Register: %v", err)
+	}
+
+	// Caller: join the naming root so resolveNameInRoot can read naming records.
+	callerClient, err := protocol.Init(callerHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (caller): %v", err)
+	}
+	defer callerClient.Close()
+
+	// Must pass the campfire-specific subdir (namingTransportDir/rootID) because
+	// createFilesystemCampfire uses fs.New (base-dir mode) while joinFilesystem
+	// uses ForDir (path-rooted mode).
+	if _, err := callerClient.Join(protocol.JoinRequest{
+		CampfireID: rootID,
+		Transport:  protocol.FilesystemTransport{Dir: filepath.Join(namingTransportDir, rootID)},
+	}); err != nil {
+		t.Fatalf("caller joining naming root: %v", err)
+	}
+
+	// Write the join policy pointing to the consult campfire.
+	if err := naming.SaveJoinPolicy(callerHome, &naming.JoinPolicy{
+		JoinPolicy:      "consult",
+		ConsultCampfire: consultID,
+		JoinRoot:        rootID,
+	}); err != nil {
+		t.Fatalf("SaveJoinPolicy: %v", err)
+	}
+
+	// Responder: creator's client plays the naming agent role.
+	respClient, err := protocol.Init(creatorHome)
+	if err != nil {
+		t.Fatalf("protocol.Init (responder): %v", err)
+	}
+	defer respClient.Close()
+
+	spawnResponder(respClient, consultID, []string{rootID})
+
+	// resolveByName should route through the consult path and find "consultapp".
+	got, err := resolveByName("consultapp", nil)
+	if err != nil {
+		t.Fatalf("resolveByName(\"consultapp\"): %v", err)
+	}
+	if got != targetID {
+		t.Errorf("resolveByName returned %s, want %s", got, targetID)
+	}
+}
+
 // TestConsultTimeout verifies that consultTimeout reads CF_CONSULT_TIMEOUT and
 // falls back to 10s when the variable is absent or malformed.
 func TestConsultTimeout(t *testing.T) {
