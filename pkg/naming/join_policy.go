@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // JoinPolicy holds the operator's join policy configuration.
@@ -21,6 +22,9 @@ type JoinPolicy struct {
 
 const joinPolicyFile = "join-policy.json"
 
+// joinPolicyHexRe matches exactly 64 lowercase hex characters — the canonical campfire ID format.
+var joinPolicyHexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 // LoadJoinPolicy reads the join policy config from cfHome.
 // Returns (nil, nil) if no join policy is configured.
 func LoadJoinPolicy(cfHome string) (*JoinPolicy, error) {
@@ -35,6 +39,12 @@ func LoadJoinPolicy(cfHome string) (*JoinPolicy, error) {
 	var jp JoinPolicy
 	if err := json.Unmarshal(data, &jp); err != nil {
 		return nil, fmt.Errorf("parsing join policy: %w", err)
+	}
+	if jp.JoinRoot != "" && !joinPolicyHexRe.MatchString(jp.JoinRoot) {
+		return nil, fmt.Errorf("invalid join_root %q: must be a 64-character lowercase hex campfire ID", jp.JoinRoot)
+	}
+	if jp.ConsultCampfire != "" && jp.ConsultCampfire != FSWalkSentinel && !joinPolicyHexRe.MatchString(jp.ConsultCampfire) {
+		return nil, fmt.Errorf("invalid consult_campfire %q: must be a 64-character lowercase hex campfire ID or %q", jp.ConsultCampfire, FSWalkSentinel)
 	}
 	return &jp, nil
 }
