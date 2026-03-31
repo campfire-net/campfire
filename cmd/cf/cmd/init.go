@@ -71,6 +71,21 @@ and aliases.json from the parent CF_HOME (or --from path if specified).`,
 
 		cfHome := CFHome()
 
+		// Validate --from path early, before any work is done.
+		// This provides a clear error when the user supplies an invalid path.
+		if initFrom != "" {
+			info, err := os.Stat(initFrom)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("cf init --from: path does not exist: %s", initFrom)
+				}
+				return fmt.Errorf("cf init --from: cannot access path %s: %w", initFrom, err)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("cf init --from: path is not a directory: %s", initFrom)
+			}
+		}
+
 		// Named identity: persistent agent
 		if initName != "" {
 			home, err := os.UserHomeDir()
