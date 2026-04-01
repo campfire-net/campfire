@@ -9,11 +9,13 @@ package http_test
 //   - Observer member C attempts to relay a message signed by full member A → 403.
 //   - Direct delivery (sender == deliverer) still works → 200.
 //   - Message with forged provenance hop (invalid signature) rejected with 400.
+//   - GetPeerRole store error (DB closed) → 500 fail-closed (FED-1).
 //
-// Port block: 440-459 (handler_message_test.go)
+// Port block: 440-459, 540 (handler_message_test.go)
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,8 +23,21 @@ import (
 
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
+
+// getPeerRoleErrorStore wraps a real store but returns an error from GetPeerRole.
+// Used by TestHandleDeliver_GetPeerRoleStoreError to exercise the fail-closed path
+// in handleDeliver without closing the underlying DB (which would also break
+// checkMembership in authMiddleware, causing 403 before 500 is reachable).
+type getPeerRoleErrorStore struct {
+	store.Store
+}
+
+func (s *getPeerRoleErrorStore) GetPeerRole(campfireID, memberPubkey string) (string, error) {
+	return "", errors.New("injected GetPeerRole store error")
+}
 
 // TestRelayDeliverMemberAllowed verifies that a campfire member (B) can deliver
 // a message signed by a different campfire member (A). This is the relay case
@@ -304,5 +319,60 @@ func TestDeliverForgedProvenanceHopRejected(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		respBody, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 400 for forged provenance hop, got %d: %s", resp.StatusCode, respBody)
+	}
+}
+
+// TestHandleDeliver_GetPeerRoleStoreError verifies fail-closed behaviour (FED-1):
+// when GetPeerRole returns a store error, handleDeliver must return HTTP 500,
+// not HTTP 200 and not a silent accept.
+//
+// Setup: idA is "self" for the transport; idB is a registered member peer.
+// The transport is started with a getPeerRoleErrorStore wrapper that makes
+// ListPeerEndpoints (used by authMiddleware) succeed from the underlying store,
+// while GetPeerRole (called in handleDeliver for non-self senders) always returns
+// an injected error. Because idB != self, handleDeliver calls GetPeerRole for
+// idB → error → fail-closed HTTP 500 (handler_message.go lines ~65-69).
+func TestHandleDeliver_GetPeerRoleStoreError(t *testing.T) {
+	campfireID := "deliver-getpeerrole-store-error"
+	idA := tempIdentity(t) // self / transport identity
+	idB := tempIdentity(t) // non-self sender whose role lookup will fail
+
+	realStore := tempStore(t)
+	addMembership(t, realStore, campfireID)
+	// Register both A (self) and B so authMiddleware's ListPeerEndpoints finds B.
+	addPeerEndpoint(t, realStore, campfireID, idA.PublicKeyHex())
+	addPeerEndpoint(t, realStore, campfireID, idB.PublicKeyHex())
+
+	// Wrap: ListPeerEndpoints succeeds (from realStore), GetPeerRole always errors.
+	wrapped := &getPeerRoleErrorStore{Store: realStore}
+
+	base := portBase()
+	addr := fmt.Sprintf("127.0.0.1:%d", base+540)
+	startTransportWithSelf(t, addr, wrapped, idA)
+	ep := fmt.Sprintf("http://%s", addr)
+
+	// B signs and delivers a message (B != self → GetPeerRole is called → error → 500).
+	msg := newTestMessage(t, idB)
+	body, err := cfencoding.Marshal(msg)
+	if err != nil {
+		t.Fatalf("encoding message: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/deliver", ep, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	signTestRequest(req, idB, body)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("deliver request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 500 (fail-closed on GetPeerRole store error), got %d: %s", resp.StatusCode, respBody)
 	}
 }
