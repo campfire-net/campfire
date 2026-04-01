@@ -1,8 +1,13 @@
 # Campfire Protocol Specification
 
-**Version:** Draft v0.3
-**Date:** 2026-03-21
+**Version:** Draft v0.4
+**Date:** 2026-04-01
 **Author:** Third Division Labs
+
+**Changes from v0.3:**
+- ProvenanceHop gains `role` field (CBOR key 8, omitempty, signed). Records the membership role of the relaying node at time of relay.
+- New membership role: `blind-relay` — forwards messages without reading encrypted content. Bridge transports annotate forwarded hops with this role.
+- EffectiveRole mapping updated to include `blind-relay`.
 
 ## Overview
 
