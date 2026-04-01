@@ -65,6 +65,7 @@ type TableStore struct {
 	epochs      *aztables.Client
 	filters     *aztables.Client
 	invites     *aztables.Client
+	counters    *aztables.Client
 
 	// namespace is an optional per-session prefix applied to all PartitionKeys
 	// (except invites, which are global). When set, PK = encodeKey(namespace+"|"+id).
@@ -130,6 +131,13 @@ func NewNamespacedTableStore(connectionString, namespace string) (store.Store, e
 	return ts, nil
 }
 
+// NewRawTableStore creates a TableStore and returns the concrete *TableStore.
+// This is intended for tests and callers that need access to methods beyond
+// the store.Store interface (e.g., GetStorageCounter).
+func NewRawTableStore(connectionString string) (*TableStore, error) {
+	return newTableStore(connectionString)
+}
+
 // newTableStore is the shared constructor used by both NewTableStore and
 // NewNamespacedTableStore. It creates the service client and ensures all
 // required tables exist, returning the raw *TableStore (not the Store interface)
@@ -156,6 +164,7 @@ func newTableStore(connectionString string) (*TableStore, error) {
 		{"CampfireEpochs", &ts.epochs},
 		{"CampfireFilters", &ts.filters},
 		{"CampfireInvites", &ts.invites},
+		{storageCountersTable, &ts.counters},
 	}
 	ctx := context.Background()
 	for _, t := range tables {
@@ -332,11 +341,31 @@ func (ts *TableStore) AddMessage(m store.MessageRecord) (bool, error) {
 		return false, fmt.Errorf("aztable: AddMessage insert: %w", err)
 	}
 
-	// Invalidate superseded cache for compaction events.
+	// Increment per-campfire storage counter. This is best-effort: a counter
+	// update failure does not roll back the message insert (fail-open for metering).
+	if ts.counters != nil {
+		if counterErr := ts.incrementStorageCounter(context.Background(), m.CampfireID, int64(len(m.Payload))); counterErr != nil {
+			// Log but do not fail the write — metering is never a blocker.
+			_ = counterErr
+		}
+	}
+
+	// Invalidate superseded cache for compaction events and decrement storage counter.
 	if isCompactionEvent(m) {
 		ts.mu.Lock()
 		delete(ts.supersededCache, ts.pk(m.CampfireID))
 		ts.mu.Unlock()
+
+		// Decrement the storage counter by the bytes superseded (if provided).
+		if ts.counters != nil && len(m.Payload) > 0 {
+			var cp compactionPayload
+			if err := json.Unmarshal(m.Payload, &cp); err == nil && cp.BytesSuperseded > 0 {
+				if counterErr := ts.decrementStorageCounter(context.Background(), m.CampfireID, cp.BytesSuperseded); counterErr != nil {
+					// Best-effort: do not fail the write for a counter update failure.
+					_ = counterErr
+				}
+			}
+		}
 	}
 	return true, nil
 }
@@ -1197,7 +1226,8 @@ func (ts *TableStore) collectSupersededIDs(campfireID string) (map[string]bool, 
 }
 
 type compactionPayload struct {
-	Supersedes []string `json:"supersedes"`
+	Supersedes      []string `json:"supersedes"`
+	BytesSuperseded int64    `json:"bytes_superseded,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

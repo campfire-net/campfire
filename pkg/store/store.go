@@ -1011,6 +1011,11 @@ type CompactionPayload struct {
 	Summary        []byte   `json:"summary"`
 	Retention      string   `json:"retention"`
 	CheckpointHash string   `json:"checkpoint_hash"`
+	// BytesSuperseded is the total payload byte size of all superseded messages.
+	// The compacting client computes this as sum(len(payload)) for messages in
+	// Supersedes. The store layer uses this to decrement the storage counter.
+	// Zero means the field was not provided (older clients); no decrement is performed.
+	BytesSuperseded int64 `json:"bytes_superseded,omitempty"`
 }
 
 // unmarshalCompactionPayload decodes a CompactionPayload from the raw message payload bytes.
