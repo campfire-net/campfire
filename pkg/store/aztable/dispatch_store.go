@@ -363,6 +363,59 @@ func (s *TableDispatchStore) IncrementRedispatchCount(ctx context.Context, campf
 }
 
 // ---------------------------------------------------------------------------
+// ListUnbilledDispatches / MarkBilled
+// ---------------------------------------------------------------------------
+
+// ListUnbilledDispatches returns fulfilled dispatch records where
+// TokensConsumed > 0 and BilledAt == 0. Used by the billing sweep.
+func (s *TableDispatchStore) ListUnbilledDispatches(ctx context.Context) ([]convention.DispatchRecord, error) {
+	// OData filter: Status eq 'fulfilled' and TokensConsumed gt 0 and BilledAt eq 0
+	filter := "Status eq 'fulfilled' and TokensConsumed gt 0 and BilledAt eq 0"
+	opts := &aztables.ListEntitiesOptions{
+		Filter: strPtr(filter),
+	}
+	pager := s.dispatched.NewListEntitiesPager(opts)
+
+	var result []convention.DispatchRecord
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("aztable: DispatchStore.ListUnbilledDispatches: %w", err)
+		}
+		for _, rawBytes := range page.Entities {
+			var m map[string]any
+			if err := json.Unmarshal(rawBytes, &m); err != nil {
+				continue
+			}
+			rec := dispatchRecordFromEntity(m)
+			result = append(result, rec)
+		}
+	}
+	return result, nil
+}
+
+// MarkBilled sets BilledAt on a dispatch record to the current time.
+// No-op if the record does not exist.
+func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, messageID string) error {
+	pk := encodeKey(campfireID)
+	rk := encodeKey(messageID)
+
+	raw, err := getEntity(ctx, s.dispatched, pk, rk)
+	if err != nil {
+		return fmt.Errorf("aztable: DispatchStore.MarkBilled: get: %w", err)
+	}
+	if raw == nil {
+		// No record — nothing to update.
+		return nil
+	}
+	raw["BilledAt"] = time.Now().UnixNano()
+	if err := upsertEntity(ctx, s.dispatched, raw); err != nil {
+		return fmt.Errorf("aztable: DispatchStore.MarkBilled: upsert: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -379,6 +432,8 @@ func dispatchRecordFromEntity(m map[string]any) convention.DispatchRecord {
 		Status:          str(m, "Status"),
 		HandlerURL:      str(m, "HandlerURL"),
 		RedispatchCount: int(toInt64(m["RedispatchCount"])),
+		TokensConsumed:  toInt64(m["TokensConsumed"]),
+		BilledAt:        toInt64(m["BilledAt"]),
 	}
 }
 

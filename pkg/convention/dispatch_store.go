@@ -47,6 +47,14 @@ type DispatchStore interface {
 	// maximum re-dispatch cap.
 	IncrementRedispatchCount(ctx context.Context, campfireID, messageID string) (int, error)
 
+	// ListUnbilledDispatches returns fulfilled dispatch records where
+	// TokensConsumed > 0 and BilledAt == 0. Used by the billing sweep to find
+	// dispatches that have self-reported token consumption but haven't been billed yet.
+	ListUnbilledDispatches(ctx context.Context) ([]DispatchRecord, error)
+
+	// MarkBilled sets BilledAt on a dispatch record to the current time.
+	// No-op if the record does not exist.
+	MarkBilled(ctx context.Context, campfireID, messageID string) error
 }
 
 // DispatchRecord holds metadata about a single message dispatch.
@@ -60,6 +68,8 @@ type DispatchRecord struct {
 	Status          string // "dispatched", "fulfilled", "failed"
 	HandlerURL      string // tier 2 only
 	RedispatchCount int    // number of times the sweep has re-dispatched this message
+	TokensConsumed  int64  // LLM tokens self-reported by the handler (0 = not reported)
+	BilledAt        int64  // unix nanoseconds when billing event was emitted (0 = not yet billed)
 }
 
 // dispatchKey is the composite key used to index dispatch records.
@@ -199,6 +209,45 @@ func (s *MemoryDispatchStore) IncrementRedispatchCount(_ context.Context, campfi
 	}
 	rec.RedispatchCount++
 	return rec.RedispatchCount, nil
+}
+
+// ListUnbilledDispatches returns fulfilled dispatch records where
+// TokensConsumed > 0 and BilledAt == 0.
+func (s *MemoryDispatchStore) ListUnbilledDispatches(_ context.Context) ([]DispatchRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []DispatchRecord
+	for _, rec := range s.dispatches {
+		if rec.Status == "fulfilled" && rec.TokensConsumed > 0 && rec.BilledAt == 0 {
+			result = append(result, *rec)
+		}
+	}
+	return result, nil
+}
+
+// MarkBilled sets BilledAt on a dispatch record to the current time.
+// No-op if the record does not exist.
+func (s *MemoryDispatchStore) MarkBilled(_ context.Context, campfireID, messageID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := dispatchKey{campfireID: campfireID, messageID: messageID}
+	rec, exists := s.dispatches[k]
+	if !exists {
+		return nil
+	}
+	rec.BilledAt = time.Now().UnixNano()
+	return nil
+}
+
+// SetTokensConsumed sets the TokensConsumed field on a dispatch record.
+// This is a test helper for simulating handler-reported token usage.
+func (s *MemoryDispatchStore) SetTokensConsumed(campfireID, messageID string, tokens int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := dispatchKey{campfireID: campfireID, messageID: messageID}
+	if rec, ok := s.dispatches[k]; ok {
+		rec.TokensConsumed = tokens
+	}
 }
 
 // BackdateDispatch sets the DispatchedAt time of a dispatch record to age ago.
