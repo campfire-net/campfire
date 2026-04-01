@@ -136,9 +136,14 @@ ProvenanceHop {
   join_protocol: string                # [verified] campfire-asserted policy
   reception_requirements: [string]     # [verified] campfire-asserted policy
   timestamp: uint64                    # [verified] campfire-asserted (not sender-controlled)
+  role: string                         # [verified] membership role at time of relay (omitted when empty)
   signature: bytes                     # [verified] campfire signs (message.id + all fields above)
 }
 ```
+
+The `role` field records the membership role of the relaying node at the time of relay (e.g. `"full"`, `"writer"`, `"observer"`, `"blind-relay"`). It is included in the signed input. When empty, the field is omitted from the CBOR encoding so that hops produced by pre-role implementations verify identically.
+
+A bridge relay sets role to `"blind-relay"` on forwarded messages regardless of the bridge's actual membership role. This marks the hop as a blind relay for provenance tier computation (see **Membership Roles** below). The role annotation is per-hop, not a membership change — the bridge's membership role is unchanged.
 
 The membership hash allows verification without embedding the full member list. Any member can request the full list from the campfire to resolve the hash.
 
@@ -862,12 +867,15 @@ Membership in a campfire carries one of three roles. Implementations MUST enforc
 | `observer` | No | No | Yes |
 | `writer` | Yes | No | Yes |
 | `full` | Yes | Yes | Yes |
+| `blind-relay` | Yes (forward only) | No | No (encrypted content) |
 
 **`observer`.** Read-only membership. An observer receives all messages but cannot send. Attempting to send from an observer role returns a role enforcement error. Suitable for audit members, monitoring agents, and silent listeners.
 
 **`writer`.** Read-write membership for regular messages. A writer can send messages with any non-system tags. Attempting to send a message with any `campfire:*` tag returns a role enforcement error. Suitable for most participating members.
 
 **`full`.** Full access. A member with full role can send regular messages, sign and emit `campfire:*` system messages, change member roles, and run compaction. This is the default for backward compatibility.
+
+**`blind-relay`.** A relay member that stores and forwards messages but cannot read encrypted content. A blind relay signs provenance hops with role `"blind-relay"` (a verified field in the hop signature). Bridge transports set this role on forwarded messages via a per-hop role annotation — the bridge's membership role is unchanged, only the provenance hop is marked. Messages with at least one `blind-relay` hop in their provenance chain are considered bridged (see `IsBridged()` in the SDK). Blind-relay hops elevate the message's operator provenance to Level 2 (Contactable) for convention gate evaluation.
 
 ### EffectiveRole and Backward Compatibility
 
@@ -876,6 +884,7 @@ Implementations MUST map raw role strings to canonical values:
 - `"observer"` → `observer`
 - `"writer"` → `writer`
 - `"full"` → `full`
+- `"blind-relay"` → `blind-relay`
 - Any other value (empty string, `"member"`, `"creator"`, unknown legacy values) → `full`
 
 Existing memberships with no role field or pre-role-system role values automatically resolve to `full`, preserving backward compatibility without requiring migration.
