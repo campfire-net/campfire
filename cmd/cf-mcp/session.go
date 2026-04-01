@@ -364,6 +364,7 @@ func (s *Session) server(manager *SessionManager) *server {
 	}
 	if manager != nil {
 		srv.exposePrimitives = manager.exposePrimitives
+		srv.forgeAccounts = manager.forgeAccounts
 		if manager.router != nil {
 			srv.httpTransport = s.httpTransport
 			srv.transportRouter = manager.router
@@ -495,6 +496,10 @@ type SessionManager struct {
 	// the store for a new session. This replaces the default SQLite open.
 	// When nil, the default behaviour (store.Open on the local filesystem) is used.
 	storeFactory func(internalID string) (store.Store, error)
+
+	// forgeAccounts, when non-nil, enables Forge sub-account auto-provisioning
+	// at campfire_init. Propagated to per-request servers via Session.server().
+	forgeAccounts *forgeAccountManager
 }
 
 // NewSessionManager creates a SessionManager rooted at sessionsDir and

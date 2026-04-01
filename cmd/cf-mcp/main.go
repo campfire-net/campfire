@@ -38,6 +38,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/forge"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/protocol"
@@ -136,6 +137,8 @@ type server struct {
 	conventionTools *conventionToolMap // dynamic convention-declared tools per session
 	joinMu          sync.Mutex              // guards joinLock map
 	joinLock        map[string]*joinEntry   // per-campfireID entry; evicted when refcount drops to zero
+	forgeEmitter    *forge.ForgeEmitter     // non-nil when relay metering is enabled; async, fail-open
+	forgeAccounts   *forgeAccountManager   // non-nil when FORGE_SERVICE_KEY is set; auto-provisions Forge sub-accounts
 }
 
 func (s *server) identityPath() string {
@@ -1024,6 +1027,18 @@ func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonR
 	identityType := "session (disposable)"
 	if name != "" {
 		identityType = fmt.Sprintf("persistent agent '%s'", name)
+	}
+
+	// Auto-provision Forge sub-account for this operator (best-effort).
+	// Runs asynchronously to avoid blocking campfire_init on Forge availability.
+	if s.forgeAccounts != nil {
+		pubkeyHex := agentID.PublicKeyHex()
+		go func() {
+			ctx := context.Background()
+			if _, err := s.forgeAccounts.EnsureOperatorAccount(ctx, pubkeyHex); err != nil {
+				log.Printf("campfire_init: forge account provisioning failed for %s: %v", pubkeyHex, err)
+			}
+		}()
 	}
 
 	// Auto-provision campfire if campfire_id is provided.
@@ -2242,6 +2257,26 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 				endpoints[i] = p.Endpoint
 			}
 			cfhttp.DeliverToAll(endpoints, campfireID, msg, agentID)
+			// M7: relay metering — emit relay-bytes usage event after delivery.
+			// The emitter is async and fail-open; this never blocks the send path.
+			if s.forgeEmitter != nil {
+				// TODO(M5): replace placeholder AccountID with real Forge account lookup
+				// once the operator account store (M5) is wired into the server. For
+				// now we use the campfireID as a stable placeholder so the idempotency
+				// key is still unique per message.
+				hopCount := len(msg.Provenance) - 1 // first hop is origin (storage), not relay
+				if hopCount < 0 {
+					hopCount = 0
+				}
+				_ = hopCount // available for future per-hop metering; event is per-delivery today
+				s.forgeEmitter.Emit(forge.UsageEvent{
+					AccountID:      campfireID, // TODO(M5): replace with real Forge account ID
+					ServiceID:      "campfire-hosting",
+					UnitType:       "relay-bytes",
+					Quantity:       float64(len(msg.Payload)),
+					IdempotencyKey: campfireID + ":" + msg.ID + ":relay",
+				})
+			}
 		}
 	} else {
 		// Filesystem (and GitHub) mode: delegate to protocol.Client which handles
@@ -4405,6 +4440,18 @@ func main() {
 
 			srv.sessManager = sm
 			srv.transportRouter = router
+
+			// Wire Forge account auto-provisioning when the operator account store
+			// and Forge service key are both available.
+			if azConnStr := os.Getenv("AZURE_STORAGE_CONNECTION_STRING"); azConnStr != "" {
+				if opStore, opErr := aztable.NewOperatorAccountStore(azConnStr); opErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: operator account store init failed (%v); Forge auto-provisioning disabled\n", opErr)
+				} else {
+					if mgr := newForgeAccountManager(opStore); mgr != nil {
+						sm.forgeAccounts = mgr
+					}
+				}
+			}
 		}
 		if err := srv.serveHTTP(httpAddr); err != nil {
 			fmt.Fprintf(os.Stderr, "http server error: %v\n", err)
