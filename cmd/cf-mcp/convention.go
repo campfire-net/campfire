@@ -151,7 +151,7 @@ func fetchDeclarationURL(url string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building request for %s: %w", url, err)
 	}
-	resp, err := httpPkg.DefaultClient.Do(req)
+	resp, err := cfhttp.NewSSRFSafeClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", url, err)
 	}
