@@ -2,6 +2,7 @@ package convention_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -673,5 +674,264 @@ func TestServerSDK_PollIntervalBoundsLatency(t *testing.T) {
 	latency := receivedAt.Sub(sentAt)
 	if latency > maxLatency {
 		t.Errorf("message latency %v exceeds 3× poll interval (%v)", latency, maxLatency)
+	}
+}
+
+// TestServerSDK_HandlerErrorSendsErrorFulfillment verifies that when a handler
+// returns an error, the server posts a fulfillment message tagged "convention:error"
+// with a JSON payload containing the error text.
+func TestServerSDK_HandlerErrorSendsErrorFulfillment(t *testing.T) {
+	env := setupServerTestEnv(t)
+	decl := socialPostDecl()
+
+	srv := convention.NewServer(env.serverClient, decl).
+		WithPollInterval(50 * time.Millisecond)
+
+	srv.RegisterHandler("post", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		return nil, errors.New("processing failed: invalid input")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srv.Serve(ctx, env.campfireID) //nolint:errcheck
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	sentMsg, err := env.callerClient.Send(protocol.SendRequest{
+		CampfireID: env.campfireID,
+		Payload:    []byte(`{"text":"trigger error"}`),
+		Tags:       []string{"social:post"},
+	})
+	if err != nil {
+		t.Fatalf("caller Send: %v", err)
+	}
+
+	// Poll for error fulfillment.
+	var errorMsg *protocol.Message
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := env.callerClient.Read(protocol.ReadRequest{
+			CampfireID: env.campfireID,
+			Tags:       []string{"convention:error"},
+		})
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for i, msg := range result.Messages {
+			for _, ant := range msg.Antecedents {
+				if ant == sentMsg.ID {
+					errorMsg = &result.Messages[i]
+					break
+				}
+			}
+			if errorMsg != nil {
+				break
+			}
+		}
+		if errorMsg != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	wg.Wait()
+
+	if errorMsg == nil {
+		t.Fatal("no convention:error fulfillment found for failed handler")
+	}
+
+	// Verify both required tags are present.
+	hasFulfills := false
+	hasConventionError := false
+	for _, tag := range errorMsg.Tags {
+		if tag == "fulfills" {
+			hasFulfills = true
+		}
+		if tag == "convention:error" {
+			hasConventionError = true
+		}
+	}
+	if !hasFulfills {
+		t.Errorf("error fulfillment missing 'fulfills' tag; tags: %v", errorMsg.Tags)
+	}
+	if !hasConventionError {
+		t.Errorf("error fulfillment missing 'convention:error' tag; tags: %v", errorMsg.Tags)
+	}
+}
+
+// TestIsErrorResponse verifies that IsErrorResponse correctly identifies
+// messages tagged "convention:error" and ignores untagged messages.
+func TestIsErrorResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		tags []string
+		want bool
+	}{
+		{
+			name: "error response has convention:error tag",
+			tags: []string{"fulfills", "convention:error"},
+			want: true,
+		},
+		{
+			name: "normal fulfillment is not error response",
+			tags: []string{"fulfills"},
+			want: false,
+		},
+		{
+			name: "empty tags is not error response",
+			tags: nil,
+			want: false,
+		},
+		{
+			name: "unrelated tags is not error response",
+			tags: []string{"social:post", "echo"},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := &protocol.Message{Tags: tc.tags}
+			got := convention.IsErrorResponse(msg)
+			if got != tc.want {
+				t.Errorf("IsErrorResponse(%v) = %v, want %v", tc.tags, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseErrorResponse verifies that ParseErrorResponse extracts the error
+// string from a valid error payload and returns an error for invalid payloads.
+func TestParseErrorResponse(t *testing.T) {
+	t.Run("valid error payload", func(t *testing.T) {
+		msg := &protocol.Message{
+			Tags:    []string{"fulfills", "convention:error"},
+			Payload: []byte(`{"error":"processing failed: invalid input"}`),
+		}
+		got, err := convention.ParseErrorResponse(msg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "processing failed: invalid input" {
+			t.Errorf("ParseErrorResponse = %q, want %q", got, "processing failed: invalid input")
+		}
+	})
+
+	t.Run("invalid JSON payload returns error", func(t *testing.T) {
+		msg := &protocol.Message{
+			Tags:    []string{"convention:error"},
+			Payload: []byte(`not json`),
+		}
+		_, err := convention.ParseErrorResponse(msg)
+		if err == nil {
+			t.Error("expected error for invalid JSON, got nil")
+		}
+	})
+
+	t.Run("empty error field", func(t *testing.T) {
+		msg := &protocol.Message{
+			Tags:    []string{"convention:error"},
+			Payload: []byte(`{"error":""}`),
+		}
+		got, err := convention.ParseErrorResponse(msg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "" {
+			t.Errorf("ParseErrorResponse = %q, want empty string", got)
+		}
+	})
+}
+
+// TestServerSDK_ErrorFulfillmentRoundTrip verifies the full round-trip:
+// handler error → error fulfillment → IsErrorResponse detects it →
+// ParseErrorResponse extracts the error message.
+func TestServerSDK_ErrorFulfillmentRoundTrip(t *testing.T) {
+	env := setupServerTestEnv(t)
+	decl := socialPostDecl()
+
+	const wantErrMsg = "round-trip failure: something went wrong"
+
+	srv := convention.NewServer(env.serverClient, decl).
+		WithPollInterval(50 * time.Millisecond)
+
+	srv.RegisterHandler("post", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		return nil, errors.New(wantErrMsg)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srv.Serve(ctx, env.campfireID) //nolint:errcheck
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	sentMsg, err := env.callerClient.Send(protocol.SendRequest{
+		CampfireID: env.campfireID,
+		Payload:    []byte(`{"text":"round trip"}`),
+		Tags:       []string{"social:post"},
+	})
+	if err != nil {
+		t.Fatalf("caller Send: %v", err)
+	}
+
+	// Poll for any fulfillment of this message.
+	var errorMsg *protocol.Message
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := env.callerClient.Read(protocol.ReadRequest{
+			CampfireID: env.campfireID,
+			Tags:       []string{"fulfills"},
+		})
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for i, msg := range result.Messages {
+			for _, ant := range msg.Antecedents {
+				if ant == sentMsg.ID {
+					errorMsg = &result.Messages[i]
+					break
+				}
+			}
+			if errorMsg != nil {
+				break
+			}
+		}
+		if errorMsg != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	wg.Wait()
+
+	if errorMsg == nil {
+		t.Fatal("no fulfillment found for sent message")
+	}
+
+	// Use helpers to detect and parse.
+	if !convention.IsErrorResponse(errorMsg) {
+		t.Errorf("IsErrorResponse = false, want true; tags: %v", errorMsg.Tags)
+	}
+
+	gotErr, err := convention.ParseErrorResponse(errorMsg)
+	if err != nil {
+		t.Fatalf("ParseErrorResponse: %v", err)
+	}
+	if gotErr != wantErrMsg {
+		t.Errorf("error message = %q, want %q", gotErr, wantErrMsg)
 	}
 }

@@ -473,6 +473,166 @@ func TestIngest_ExhaustsRetries(t *testing.T) {
 	}
 }
 
+// ---- CreateSubAccount -------------------------------------------------------
+
+func TestCreateSubAccount_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/accounts" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["name"] != "tenant-org" {
+			t.Errorf("unexpected name: %v", body["name"])
+		}
+		if body["parent_account_id"] != "acct-root" {
+			t.Errorf("unexpected parent_account_id: %v", body["parent_account_id"])
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"account_id": "acct-child123",
+			"name":       "tenant-org",
+			"created_at": "2026-01-01T00:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	acct, err := c.CreateSubAccount(context.Background(), "tenant-org", "acct-root")
+	if err != nil {
+		t.Fatalf("CreateSubAccount: %v", err)
+	}
+	if acct.AccountID != "acct-child123" {
+		t.Errorf("AccountID = %q, want %q", acct.AccountID, "acct-child123")
+	}
+}
+
+func TestCreateSubAccount_4xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	_, err := c.CreateSubAccount(context.Background(), "tenant-org", "acct-root")
+	if err == nil {
+		t.Fatal("expected error on 403")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error should mention 403, got: %v", err)
+	}
+}
+
+func TestCreateSubAccount_5xxThenSuccess(t *testing.T) {
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"account_id": "acct-child-retry",
+			"name":       "retry-tenant",
+		})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	acct, err := c.CreateSubAccount(context.Background(), "retry-tenant", "acct-root")
+	if err != nil {
+		t.Fatalf("CreateSubAccount after retry: %v", err)
+	}
+	if acct.AccountID != "acct-child-retry" {
+		t.Errorf("AccountID = %q, want %q", acct.AccountID, "acct-child-retry")
+	}
+	if attempt != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempt)
+	}
+}
+
+// ---- CreditAccount ----------------------------------------------------------
+
+func TestCreditAccount_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/accounts/acct-abc/credit" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if auth := r.Header.Get("Authorization"); !strings.HasPrefix(auth, "Bearer ") {
+			t.Errorf("missing/invalid Authorization header: %q", auth)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["amount_micro"] != float64(10_000_000) {
+			t.Errorf("unexpected amount_micro: %v", body["amount_micro"])
+		}
+		if body["product"] != "campfire-signup-credit" {
+			t.Errorf("unexpected product: %v", body["product"])
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	err := c.CreditAccount(context.Background(), "acct-abc", 10_000_000, "campfire-signup-credit")
+	if err != nil {
+		t.Fatalf("CreditAccount: %v", err)
+	}
+}
+
+func TestCreditAccount_4xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "account not found"})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	err := c.CreditAccount(context.Background(), "acct-missing", 5_000_000, "campfire-signup-credit")
+	if err == nil {
+		t.Fatal("expected error on 404")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error should mention 404, got: %v", err)
+	}
+}
+
+func TestCreditAccount_5xxThenSuccess(t *testing.T) {
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	err := c.CreditAccount(context.Background(), "acct-abc", 1_000_000, "campfire-signup-credit")
+	if err != nil {
+		t.Fatalf("CreditAccount after retry: %v", err)
+	}
+	if attempt != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempt)
+	}
+}
+
+func TestCreditAccount_ExhaustsRetries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	err := c.CreditAccount(context.Background(), "acct-abc", 1_000_000, "campfire-signup-credit")
+	if err == nil {
+		t.Fatal("expected error after exhausted retries")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("error should mention 502, got: %v", err)
+	}
+}
+
 // ---- Context cancellation ---------------------------------------------------
 
 func TestIngest_ContextCancelled(t *testing.T) {

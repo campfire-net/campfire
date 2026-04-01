@@ -182,6 +182,10 @@ func (s *Server) dispatch(ctx context.Context, campfireID string, msg protocol.M
 	resp, err := handler(ctx, req)
 	if err != nil {
 		s.errFn(fmt.Errorf("convention server: handler error (msg %s): %w", msg.ID, err))
+		// Send an error fulfillment so callers using Await fail fast instead of timing out.
+		if sendErr := s.sendErrorResponse(campfireID, msg.ID, err); sendErr != nil {
+			s.errFn(fmt.Errorf("convention server: send error response (msg %s): %w", msg.ID, sendErr))
+		}
 		return
 	}
 	if resp == nil {
@@ -215,6 +219,50 @@ func (s *Server) sendResponse(campfireID, requestMsgID string, resp *Response) e
 		Antecedents: []string{requestMsgID},
 	})
 	return err
+}
+
+// sendErrorResponse sends an error fulfillment message threaded back to requestMsgID.
+// The message is tagged with both "fulfills" and "convention:error" and carries a
+// JSON payload of the form {"error": "<message>"}.
+func (s *Server) sendErrorResponse(campfireID, requestMsgID string, handlerErr error) error {
+	payload, err := json.Marshal(ErrorResponse{Error: handlerErr.Error()})
+	if err != nil {
+		return fmt.Errorf("marshal error response: %w", err)
+	}
+	_, err = s.client.Send(protocol.SendRequest{
+		CampfireID:  campfireID,
+		Payload:     payload,
+		Tags:        []string{"fulfills", "convention:error"},
+		Antecedents: []string{requestMsgID},
+	})
+	return err
+}
+
+// ErrorResponse represents a convention operation that failed.
+// It is the payload carried by messages tagged "convention:error".
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
+
+// IsErrorResponse reports whether msg is a convention error response by
+// checking for the "convention:error" tag.
+func IsErrorResponse(msg *protocol.Message) bool {
+	for _, tag := range msg.Tags {
+		if tag == "convention:error" {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseErrorResponse extracts the error message from a convention error response.
+// Returns an error if the message is not a valid error response payload.
+func ParseErrorResponse(msg *protocol.Message) (string, error) {
+	var resp ErrorResponse
+	if err := json.Unmarshal(msg.Payload, &resp); err != nil {
+		return "", fmt.Errorf("parse error response: %w", err)
+	}
+	return resp.Error, nil
 }
 
 // parseMessageArgs decodes the JSON payload of a message into a typed args map

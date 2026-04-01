@@ -13,6 +13,7 @@ import (
 type createAccountRequest struct {
 	Name             string `json:"name"`
 	SovereigntyFloor string `json:"sovereignty_floor,omitempty"`
+	ParentAccountID  string `json:"parent_account_id,omitempty"`
 }
 
 // createAccountResponse is returned by POST /v1/accounts.
@@ -71,6 +72,61 @@ func (c *Client) CreateAccount(ctx context.Context, name, _ string) (Account, er
 		var cr createAccountResponse
 		if decErr := decodeJSON(resp.Body, &cr); decErr != nil {
 			return Account{}, fmt.Errorf("forge: decode create account response: %w", decErr)
+		}
+		return Account{
+			AccountID:        cr.AccountID,
+			Name:             cr.Name,
+			SovereigntyFloor: cr.SovereigntyFloor,
+			CreatedAt:        cr.CreatedAt,
+		}, nil
+	}
+	return Account{}, lastErr
+}
+
+// CreateSubAccount creates a new Forge account as a child of parentAccountID.
+// This is used to create per-tenant accounts nested under the operator's root account.
+// The caller must have RoleAdmin or higher on the parent account.
+func (c *Client) CreateSubAccount(ctx context.Context, name, parentAccountID string) (Account, error) {
+	reqBody := createAccountRequest{Name: name, ParentAccountID: parentAccountID}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return Account{}, fmt.Errorf("forge: marshal create sub-account request: %w", err)
+	}
+
+	url := c.BaseURL + "/v1/accounts"
+
+	delays := c.retryDelays()
+	maxAttempts := len(delays) + 1
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return Account{}, fmt.Errorf("forge: %w", ctx.Err())
+			case <-waitCh(delays[attempt-1]):
+			}
+		}
+
+		resp, err := c.doRequest(ctx, http.MethodPost, url, body)
+		if err != nil {
+			lastErr = fmt.Errorf("forge: request: %w", err)
+			continue
+		}
+
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			resp.Body.Close()
+			return Account{}, fmt.Errorf("forge: server returned %d", resp.StatusCode)
+		}
+		if resp.StatusCode >= 500 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("forge: server returned %d", resp.StatusCode)
+			continue
+		}
+
+		var cr createAccountResponse
+		if decErr := decodeJSON(resp.Body, &cr); decErr != nil {
+			return Account{}, fmt.Errorf("forge: decode create sub-account response: %w", decErr)
 		}
 		return Account{
 			AccountID:        cr.AccountID,
