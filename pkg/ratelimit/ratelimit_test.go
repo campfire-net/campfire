@@ -1,7 +1,9 @@
 package ratelimit_test
 
 import (
+	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -474,6 +476,233 @@ func TestRateLimitWindowExpiryWithFakeClock(t *testing.T) {
 	// Window now full again. Next message should be rate-limited.
 	if _, err := w.AddMessage(makeRecord("fire1", 10)); !errors.Is(err, ratelimit.ErrRateLimited) {
 		t.Fatal("should be rate-limited again after refilling window")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Forge balance enforcement tests
+// ---------------------------------------------------------------------------
+
+// mockBalanceChecker is a BalanceChecker that returns a configurable balance
+// and records how many times Balance() was called.
+type mockBalanceChecker struct {
+	balance  int64        // returned balance (atomic for safe concurrent reads in tests)
+	callCount atomic.Int64 // number of Balance() calls
+	err      error        // if non-nil, returned instead of balance
+}
+
+func (m *mockBalanceChecker) Balance(_ context.Context, _ string) (int64, error) {
+	m.callCount.Add(1)
+	if m.err != nil {
+		return 0, m.err
+	}
+	return atomic.LoadInt64(&m.balance), nil
+}
+
+func (m *mockBalanceChecker) setBalance(v int64) { atomic.StoreInt64(&m.balance, v) }
+func (m *mockBalanceChecker) calls() int64       { return m.callCount.Load() }
+
+// TestBalanceCheckBlocksWriteAtZero verifies that AddMessage returns
+// ErrMonthlyCapExceeded (HTTP 402) when the cached balance is zero.
+func TestBalanceCheckBlocksWriteAtZero(t *testing.T) {
+	fake := newFakeStore()
+	checker := &mockBalanceChecker{} // balance = 0
+	w := ratelimit.New(fake, ratelimit.Config{
+		MaxMessagesPerMinute:   10000,
+		MaxMessageBytes:        1024,
+		MonthlyMessageCap:      10000,
+		ForgeAccountID:         "acct-zero",
+		BalanceChecker:         checker,
+		BalanceRefreshInterval: time.Hour, // don't auto-refresh during test
+	})
+	defer w.Stop()
+
+	// The initial sync refresh sets cachedBalance to 0 (checker returns 0).
+	// First AddMessage should be blocked.
+	_, err := w.AddMessage(makeRecord("fire1", 10))
+	if !errors.Is(err, ratelimit.ErrMonthlyCapExceeded) {
+		t.Fatalf("expected ErrMonthlyCapExceeded at zero balance, got %v", err)
+	}
+	// Inner store must NOT be reached.
+	if len(fake.addMessageCalls) != 0 {
+		t.Fatal("inner store should not be called when balance is zero")
+	}
+	// HTTP 402.
+	type coder interface{ StatusCode() int }
+	if c, ok := err.(coder); !ok || c.StatusCode() != 402 {
+		t.Fatalf("expected HTTP 402, got %v", err)
+	}
+}
+
+// TestBalanceCheckAllowsWriteWithPositiveBalance verifies that AddMessage
+// succeeds when the cached balance is positive.
+func TestBalanceCheckAllowsWriteWithPositiveBalance(t *testing.T) {
+	fake := newFakeStore()
+	checker := &mockBalanceChecker{}
+	checker.setBalance(5_000_000) // $5.00 in micro-USD
+	w := ratelimit.New(fake, ratelimit.Config{
+		MaxMessagesPerMinute:   10000,
+		MaxMessageBytes:        1024,
+		MonthlyMessageCap:      10000,
+		ForgeAccountID:         "acct-pos",
+		BalanceChecker:         checker,
+		BalanceRefreshInterval: time.Hour,
+	})
+	defer w.Stop()
+
+	ok, err := w.AddMessage(makeRecord("fire1", 10))
+	if err != nil {
+		t.Fatalf("expected success with positive balance, got %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if len(fake.addMessageCalls) != 1 {
+		t.Fatalf("expected 1 call to inner store, got %d", len(fake.addMessageCalls))
+	}
+}
+
+// TestBalanceCheckNoEnforcementWithoutForgeAccount verifies that when
+// ForgeAccountID is empty, balance enforcement is skipped entirely.
+func TestBalanceCheckNoEnforcementWithoutForgeAccount(t *testing.T) {
+	fake := newFakeStore()
+	checker := &mockBalanceChecker{} // balance = 0 — would block if enforcement active
+	w := ratelimit.New(fake, ratelimit.Config{
+		MaxMessagesPerMinute: 10000,
+		MaxMessageBytes:      1024,
+		MonthlyMessageCap:    10000,
+		// ForgeAccountID intentionally empty — no enforcement
+		BalanceChecker: checker,
+	})
+	defer w.Stop()
+
+	_, err := w.AddMessage(makeRecord("fire1", 10))
+	if err != nil {
+		t.Fatalf("expected success without Forge enforcement, got %v", err)
+	}
+	// Balance checker must never be called.
+	if checker.calls() != 0 {
+		t.Fatalf("BalanceChecker should not be called when ForgeAccountID is empty, called %d times", checker.calls())
+	}
+}
+
+// TestBalanceCheckNoEnforcementWithoutChecker verifies that when
+// BalanceChecker is nil, balance enforcement is skipped.
+func TestBalanceCheckNoEnforcementWithoutChecker(t *testing.T) {
+	fake := newFakeStore()
+	w := ratelimit.New(fake, ratelimit.Config{
+		MaxMessagesPerMinute: 10000,
+		MaxMessageBytes:      1024,
+		MonthlyMessageCap:    10000,
+		ForgeAccountID:       "acct-nochecker",
+		BalanceChecker:       nil, // no checker
+	})
+	defer w.Stop()
+
+	_, err := w.AddMessage(makeRecord("fire1", 10))
+	if err != nil {
+		t.Fatalf("expected success without BalanceChecker, got %v", err)
+	}
+}
+
+// TestBalanceRefreshErrorKeepsStaleCacheFailOpen verifies that when the
+// balance refresh returns an error, the stale cache is kept (fail-open):
+// a previously positive balance still allows writes.
+func TestBalanceRefreshErrorKeepsStaleCacheFailOpen(t *testing.T) {
+	fake := newFakeStore()
+	checker := &mockBalanceChecker{}
+	checker.setBalance(1_000_000) // $1.00 initially — positive
+
+	// Use a very short refresh interval so the cache immediately becomes stale.
+	w := ratelimit.New(fake, ratelimit.Config{
+		MaxMessagesPerMinute:   10000,
+		MaxMessageBytes:        1024,
+		MonthlyMessageCap:      10000,
+		ForgeAccountID:         "acct-stale",
+		BalanceChecker:         checker,
+		BalanceRefreshInterval: time.Millisecond, // stale immediately
+	})
+	defer w.Stop()
+
+	// First call: initial sync refresh succeeds (balance = 1_000_000), passes.
+	if _, err := w.AddMessage(makeRecord("fire1", 10)); err != nil {
+		t.Fatalf("first message should pass: %v", err)
+	}
+
+	// Now make the checker fail.
+	checker.err = errors.New("forge unavailable")
+	checker.setBalance(0) // would block if cache were updated
+
+	// Wait for background refresh to fire and fail (cache becomes stale).
+	time.Sleep(50 * time.Millisecond)
+
+	// The stale positive balance (1_000_000) should still allow writes (fail-open).
+	// The async refresh fired but failed — cache unchanged.
+	if _, err := w.AddMessage(makeRecord("fire1", 10)); err != nil {
+		t.Fatalf("fail-open: stale positive cache should allow write after refresh error, got %v", err)
+	}
+}
+
+// TestBalanceCheckSetForgeAccountEnablesEnforcement verifies that SetForgeAccount
+// can enable enforcement after construction (for post-init provisioning).
+func TestBalanceCheckSetForgeAccountEnablesEnforcement(t *testing.T) {
+	fake := newFakeStore()
+	checker := &mockBalanceChecker{} // balance = 0 — would block
+	// Create with no Forge enforcement.
+	w := ratelimit.New(fake, ratelimit.Config{
+		MaxMessagesPerMinute: 10000,
+		MaxMessageBytes:      1024,
+		MonthlyMessageCap:    10000,
+	})
+	defer w.Stop()
+
+	// Before SetForgeAccount: messages pass (no enforcement).
+	if _, err := w.AddMessage(makeRecord("fire1", 10)); err != nil {
+		t.Fatalf("before SetForgeAccount: expected pass, got %v", err)
+	}
+
+	// Enable enforcement with a zero-balance checker.
+	w.SetForgeAccount("acct-late", checker)
+
+	// Allow the sync refresh in startBalanceRefresher to complete.
+	// The refresh sets cachedBalance = 0.
+	time.Sleep(50 * time.Millisecond)
+
+	// Now messages should be blocked.
+	_, err := w.AddMessage(makeRecord("fire1", 10))
+	if !errors.Is(err, ratelimit.ErrMonthlyCapExceeded) {
+		t.Fatalf("after SetForgeAccount with zero balance: expected ErrMonthlyCapExceeded, got %v", err)
+	}
+}
+
+// TestExistingRateLimitsStillWorkWithForgeEnabled verifies that the
+// per-minute rate limit and monthly cap still fire when Forge enforcement
+// is also enabled and the balance is positive.
+func TestExistingRateLimitsStillWorkWithForgeEnabled(t *testing.T) {
+	fake := newFakeStore()
+	checker := &mockBalanceChecker{}
+	checker.setBalance(10_000_000) // $10 — plenty
+	w := ratelimit.New(fake, ratelimit.Config{
+		MaxMessagesPerMinute:   3,
+		MaxMessageBytes:        1024,
+		MonthlyMessageCap:      5,
+		ForgeAccountID:         "acct-rich",
+		BalanceChecker:         checker,
+		BalanceRefreshInterval: time.Hour,
+	})
+	defer w.Stop()
+
+	// Send 3 messages — fills per-minute window.
+	for i := 0; i < 3; i++ {
+		if _, err := w.AddMessage(makeRecord("fire1", 10)); err != nil {
+			t.Fatalf("message %d should pass: %v", i, err)
+		}
+	}
+
+	// 4th message should hit per-minute rate limit.
+	_, err := w.AddMessage(makeRecord("fire1", 10))
+	if !errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited, got %v", err)
 	}
 }
 

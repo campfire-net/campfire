@@ -337,6 +337,7 @@ type Session struct {
 	cfHome       string // filepath.Join(sessionsDir, internalID)
 	beaconDir    string
 	st           store.Store
+	rateLimiter  *ratelimit.Wrapper // non-nil; same underlying object as st, typed for SetForgeAccount
 	httpTransport *cfhttp.Transport // non-nil in hosted HTTP mode
 	router        *TransportRouter  // non-nil in hosted HTTP mode; used by Close to unregister routes
 	auditWriter     *AuditWriter      // non-nil after first campfire_init; persisted across per-request server instances
@@ -793,20 +794,23 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 	}
 	// Wrap the raw store with free-tier rate limiting (1000 msg/month by default).
 	// The wrapper implements store.Store, so it is drop-in for all operations.
-	st := ratelimit.New(rawStore, ratelimit.Config{})
+	// The rateLimiter reference is kept separately so campfire_init can call
+	// SetForgeAccount after provisioning the operator's Forge sub-account.
+	rl := ratelimit.New(rawStore, ratelimit.Config{})
 
 	sess := &Session{
 		token:        token,
 		internalID:   internalID,
 		cfHome:       cfHome,
 		beaconDir:    beaconDir,
-		st:           st,
+		st:           rl,
+		rateLimiter:  rl,
 		lastActivity: time.Now(),
 	}
 
 	// In hosted HTTP mode, create a per-session HTTP transport.
 	if m.router != nil {
-		t := cfhttp.New("", st)
+		t := cfhttp.New("", rl)
 		t.StartNoncePruner()
 		// Set the key provider once at session init so that repeated campfire
 		// creations within the same session do not overwrite it. The closure
@@ -832,9 +836,9 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 		})
 		// Load persisted peer endpoints from the store so that relay
 		// relationships survive process restarts and session expiry.
-		if memberships, err := st.ListMemberships(); err == nil {
+		if memberships, err := rl.ListMemberships(); err == nil {
 			for _, mem := range memberships {
-				if peers, perr := st.ListPeerEndpoints(mem.CampfireID); perr == nil {
+				if peers, perr := rl.ListPeerEndpoints(mem.CampfireID); perr == nil {
 					for _, pe := range peers {
 						if pe.Endpoint != "" {
 							t.AddPeer(mem.CampfireID, pe.MemberPubkey, pe.Endpoint)

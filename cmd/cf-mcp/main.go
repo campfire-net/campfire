@@ -137,8 +137,9 @@ type server struct {
 	conventionTools *conventionToolMap // dynamic convention-declared tools per session
 	joinMu          sync.Mutex              // guards joinLock map
 	joinLock        map[string]*joinEntry   // per-campfireID entry; evicted when refcount drops to zero
-	forgeEmitter    *forge.ForgeEmitter     // non-nil when relay metering is enabled; async, fail-open
-	forgeAccounts   *forgeAccountManager   // non-nil when FORGE_SERVICE_KEY is set; auto-provisions Forge sub-accounts
+	forgeEmitter         *forge.ForgeEmitter          // non-nil when relay metering is enabled; async, fail-open
+	forgeAccounts        *forgeAccountManager         // non-nil when FORGE_SERVICE_KEY is set; auto-provisions Forge sub-accounts
+	conventionDispatcher *convention.ConventionDispatcher // non-nil when convention metering is enabled (M8)
 }
 
 func (s *server) identityPath() string {
@@ -1031,12 +1032,23 @@ func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonR
 
 	// Auto-provision Forge sub-account for this operator (best-effort).
 	// Runs asynchronously to avoid blocking campfire_init on Forge availability.
+	// On success, enables Forge balance enforcement on the session's rate limiter.
 	if s.forgeAccounts != nil {
 		pubkeyHex := agentID.PublicKeyHex()
+		sess := s.sess // capture for goroutine
+		forgeAccounts := s.forgeAccounts
 		go func() {
 			ctx := context.Background()
-			if _, err := s.forgeAccounts.EnsureOperatorAccount(ctx, pubkeyHex); err != nil {
+			accountID, err := forgeAccounts.EnsureOperatorAccount(ctx, pubkeyHex)
+			if err != nil {
 				log.Printf("campfire_init: forge account provisioning failed for %s: %v", pubkeyHex, err)
+				return
+			}
+			// Wire Forge balance enforcement into the session's rate limiter.
+			// sess may be nil in stdio/non-session mode; rateLimiter is always
+			// set when a session exists.
+			if sess != nil && sess.rateLimiter != nil {
+				sess.rateLimiter.SetForgeAccount(accountID, forgeAccounts.forge)
 			}
 		}()
 	}
@@ -4381,6 +4393,10 @@ func main() {
 		cfHomeExplicit:   cfHomeExplicit,
 		exposePrimitives: exposePrimitives,
 	}
+	// M8: Wire convention metering hook on the ConventionDispatcher.
+	// wireConventionMetering is a no-op when forgeEmitter is nil (development / stdio mode).
+	// In hosted mode (Azure Functions), forgeEmitter is set before this runs.
+	srv.wireConventionMetering(srv.forgeEmitter)
 
 	// HTTP+SSE mode when --http is set, otherwise stdio.
 	if httpAddr != "" {
