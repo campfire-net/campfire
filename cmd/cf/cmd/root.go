@@ -107,12 +107,23 @@ Most agents should use convention operations instead (cf <campfire> <operation>)
 		}
 		campfireName := args[0]
 		operationName := ""
+
+		// Slash-path convention dispatch: cf <campfire>/<operation> [--flags...]
+		// This is the URI-standard syntax (cf://campfire/operation) and the
+		// form that convention proxies like `bang grid admit` emit.
+		if idx := strings.IndexByte(campfireName, '/'); idx > 0 && idx < len(campfireName)-1 {
+			operationName = campfireName[idx+1:]
+			campfireName = campfireName[:idx]
+		}
+
 		// Recover convention flags from os.Args because cobra's UnknownFlags
 		// whitelist silently consumes unknown --flags instead of passing them
 		// through in args. Find the operation name in the raw args and take
 		// everything after it.
 		var flagArgs []string
-		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+		if operationName != "" {
+			flagArgs = conventionFlagsFromRawArgs(os.Args, operationName)
+		} else if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
 			operationName = args[1]
 			flagArgs = conventionFlagsFromRawArgs(os.Args, operationName)
 		} else if len(args) > 1 {

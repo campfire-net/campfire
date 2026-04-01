@@ -65,6 +65,16 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 		return id, nil
 	}
 
+	// Single-segment bare name: grid → naming resolution.
+	// Checked after aliases (local, fast) but before prefix search.
+	triedNaming := false
+	if naming.ValidateSegment(prefix) == nil && !isHexPrefix(prefix) {
+		triedNaming = true
+		if id, err := resolveByName(prefix, s); err == nil {
+			return id, nil
+		}
+	}
+
 	// Exact match: 64 hex chars
 	if len(prefix) == 64 {
 		return prefix, nil
@@ -114,11 +124,12 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 	}
 
 	// Zero matches from local sources — try naming resolution as a last resort.
-	// This enables `cf galtrader help` to resolve "galtrader" via the naming
-	// registry without requiring an alias or cf:// URI prefix.
+	// Skip if we already tried naming above (bare single-segment name).
 	if len(matches) == 0 {
-		if id, err := resolveByName(prefix, s); err == nil {
-			return id, nil
+		if !triedNaming {
+			if id, err := resolveByName(prefix, s); err == nil {
+				return id, nil
+			}
 		}
 		return "", fmt.Errorf("no campfire found matching prefix %s", prefix)
 	}
@@ -136,6 +147,20 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 		suffix = fmt.Sprintf(", ... (%d total)", len(matches))
 	}
 	return "", fmt.Errorf("ambiguous prefix %s, matches: %s%s", prefix, strings.Join(shown, ", "), suffix)
+}
+
+// isHexPrefix returns true if s looks like a hex ID prefix (all hex chars, ≥4 long).
+// Used to avoid treating short hex prefixes like "dead" as naming lookups.
+func isHexPrefix(s string) bool {
+	if len(s) < 4 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // searchBeaconDir scans beacons in dir and calls addMatch for each matching ID.
@@ -248,9 +273,16 @@ func resolveByName(name string, s store.Store) (string, error) {
 	return "", fmt.Errorf("name %q not found in any reachable root", name)
 }
 
-// resolveByNameFallback is the legacy resolution path: project root walk-up then CF_ROOT_REGISTRY.
+// resolveByNameFallback resolves via: operator root, project root walk-up, CF_ROOT_REGISTRY.
 func resolveByNameFallback(name string, s store.Store) (string, error) {
-	// Try project root first — walk up from pwd.
+	// Operator root (cf root init) — the agent's own naming registry.
+	if opRoot, err := naming.LoadOperatorRoot(CFHome()); err == nil && opRoot != nil {
+		if id, err := resolveNameInRootWithAutoJoin(opRoot.CampfireID, name, s); err == nil {
+			return id, nil
+		}
+	}
+
+	// Project root — walk up from pwd.
 	if rootID, _, ok := ProjectRoot(); ok {
 		if id, err := resolveNameInRootWithAutoJoin(rootID, name, s); err == nil {
 			return id, nil
