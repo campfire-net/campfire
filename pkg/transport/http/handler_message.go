@@ -141,10 +141,18 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 	}
 
 	// Store in local SQLite
-	if _, err := h.store.AddMessage(store.MessageRecordFromMessage(campfireID, &msg, store.NowNano())); err != nil {
+	rec := store.MessageRecordFromMessage(campfireID, &msg, store.NowNano())
+	if _, err := h.store.AddMessage(rec); err != nil {
 		log.Printf("handleDeliver: failed to store message for campfire %s: %v", campfireID, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+
+	// Dispatch convention operations arriving via P2P deliver (T5).
+	// Mirrors the dispatch hook in handleSend so convention servers receive
+	// messages regardless of whether they arrived via MCP or HTTP peer delivery.
+	if h.transport != nil && h.transport.OnMessageDelivered != nil {
+		h.transport.OnMessageDelivered(r.Context(), campfireID, &rec)
 	}
 
 	// Process routing:beacon and routing:withdraw tags for routing table updates.

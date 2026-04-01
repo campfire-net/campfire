@@ -542,6 +542,104 @@ func TestCompactBeforeTimestampCollision(t *testing.T) {
 	}
 }
 
+// TestCompactBytesSuperseded verifies that execCompact correctly populates
+// BytesSuperseded in the CompactionPayload with the sum of payload bytes from
+// superseded messages.
+func TestCompactBytesSuperseded(t *testing.T) {
+	agentID, s, campfireID, transportBaseDir, _ := setupCompactTestEnv(t, campfire.RoleFull)
+
+	// Seed messages and track their total payload bytes.
+	msgIDs := seedMessages(t, 3, agentID, s, campfireID, transportBaseDir)
+	_ = msgIDs
+
+	// Retrieve seeded messages to sum payload bytes.
+	allMsgs, err := s.ListMessages(campfireID, 0)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var expectedBytes int64
+	for _, m := range allMsgs {
+		expectedBytes += int64(len(m.Payload))
+	}
+
+	if _, err := execCompact(campfireID, "", "bytes-test", "archive", agentID, s); err != nil {
+		t.Fatalf("execCompact: %v", err)
+	}
+
+	events, err := s.ListCompactionEvents(campfireID)
+	if err != nil {
+		t.Fatalf("ListCompactionEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d compaction events, want 1", len(events))
+	}
+
+	var payload store.CompactionPayload
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+
+	if payload.BytesSuperseded <= 0 {
+		t.Errorf("BytesSuperseded = %d, want > 0", payload.BytesSuperseded)
+	}
+	if payload.BytesSuperseded != expectedBytes {
+		t.Errorf("BytesSuperseded = %d, want %d (sum of superseded payload bytes)", payload.BytesSuperseded, expectedBytes)
+	}
+}
+
+// TestCompactBytesSupersededLegacyNoError verifies that a compaction payload
+// without BytesSuperseded (legacy, zero value) does not cause errors when
+// processed — the omitempty field is simply absent/zero and no decrement occurs.
+func TestCompactBytesSupersededLegacyNoError(t *testing.T) {
+	agentID, s, campfireID, transportBaseDir, _ := setupCompactTestEnv(t, campfire.RoleFull)
+	seedMessages(t, 2, agentID, s, campfireID, transportBaseDir)
+
+	// Manually insert a legacy compaction event without BytesSuperseded.
+	allMsgs, err := s.ListMessages(campfireID, 0)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var ids []string
+	for _, m := range allMsgs {
+		ids = append(ids, m.ID)
+	}
+
+	// Legacy payload: no bytes_superseded field.
+	legacyPayload := store.CompactionPayload{
+		Supersedes:     ids,
+		Summary:        []byte("legacy compact"),
+		Retention:      "archive",
+		CheckpointHash: "abc123",
+		// BytesSuperseded intentionally absent (zero)
+	}
+	payloadJSON, _ := json.Marshal(legacyPayload)
+
+	// Verify the marshalled form omits bytes_superseded (omitempty).
+	if strings.Contains(string(payloadJSON), "bytes_superseded") {
+		t.Errorf("legacy payload should not contain bytes_superseded field when zero, got: %s", payloadJSON)
+	}
+
+	// Adding a compaction event with zero BytesSuperseded must not error.
+	if _, err := s.AddMessage(store.MessageRecord{
+		ID:         "legacy-compact-event",
+		CampfireID: campfireID,
+		Sender:     agentID.PublicKeyHex(),
+		Payload:    payloadJSON,
+		Tags:       []string{"campfire:compact"},
+		Timestamp:  store.NowNano(),
+		ReceivedAt: store.NowNano(),
+	}); err != nil {
+		t.Fatalf("AddMessage legacy compact: %v", err)
+	}
+
+	// Reading messages after legacy compaction must not error.
+	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{RespectCompaction: true})
+	if err != nil {
+		t.Fatalf("ListMessages after legacy compact: %v", err)
+	}
+	_ = msgs
+}
+
 // TestListMessages_AllShowsEverything verifies that without compaction filtering,
 // all messages are visible including superseded ones.
 func TestListMessages_AllShowsEverything(t *testing.T) {

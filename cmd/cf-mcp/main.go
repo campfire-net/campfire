@@ -139,7 +139,8 @@ type server struct {
 	joinLock        map[string]*joinEntry   // per-campfireID entry; evicted when refcount drops to zero
 	forgeEmitter         *forge.ForgeEmitter          // non-nil when relay metering is enabled; async, fail-open
 	forgeAccounts        *forgeAccountManager         // non-nil when FORGE_SERVICE_KEY is set; auto-provisions Forge sub-accounts
-	conventionDispatcher *convention.ConventionDispatcher // non-nil when convention metering is enabled (M8)
+	conventionDispatcher     *convention.ConventionDispatcher    // non-nil when convention metering is enabled (M8)
+	conventionServerStore    aztable.ConventionServerStore       // non-nil when Azure Table Storage is available (T4)
 }
 
 func (s *server) identityPath() string {
@@ -2312,6 +2313,16 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		}
 	}
 
+	// Convention dispatch (T4): after successful write, dispatch to registered
+	// convention server handlers. Non-blocking — Dispatch spawns goroutines internally.
+	if s.conventionDispatcher != nil {
+		dispatchCtx := context.Background()
+		// Lazy-load convention server registrations for this campfire on first send.
+		s.loadConventionServersForCampfire(dispatchCtx, campfireID)
+		msgRec := store.MessageRecordFromMessage(campfireID, msg, store.NowNano())
+		s.conventionDispatcher.Dispatch(dispatchCtx, campfireID, &msgRec)
+	}
+
 	// Audit: record send action (§5.e).
 	if s.auditWriter != nil {
 		paramBytes, _ := json.Marshal(params)
@@ -4457,6 +4468,12 @@ func main() {
 			srv.sessManager = sm
 			srv.transportRouter = router
 
+			// T5: Propagate the ConventionDispatcher to the SessionManager so that
+			// per-session transports can wire the OnMessageDelivered hook for P2P delivery.
+			if srv.conventionDispatcher != nil {
+				sm.conventionDispatcher = srv.conventionDispatcher
+			}
+
 			// Wire Forge account auto-provisioning when the operator account store
 			// and Forge service key are both available.
 			if azConnStr := os.Getenv("AZURE_STORAGE_CONNECTION_STRING"); azConnStr != "" {
@@ -4466,6 +4483,16 @@ func main() {
 					if mgr := newForgeAccountManager(opStore); mgr != nil {
 						sm.forgeAccounts = mgr
 					}
+				}
+			}
+
+			// T4: Wire convention server registry when Azure Table Storage is available.
+			// This enables the ConventionDispatcher to load registered handlers per campfire.
+			if azConnStr := os.Getenv("AZURE_STORAGE_CONNECTION_STRING"); azConnStr != "" {
+				if csStore, csErr := aztable.NewConventionServerStore(azConnStr); csErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: convention server store init failed (%v); convention dispatch disabled\n", csErr)
+				} else {
+					srv.conventionServerStore = csStore
 				}
 			}
 		}

@@ -73,6 +73,50 @@ func (ts *TableStore) GetStorageCounter(ctx context.Context, campfireID string) 
 	return toInt64(raw["BytesStored"]), toInt64(raw["MessageCount"]), nil
 }
 
+// StorageCounterRecord is a single row from CampfireStorageCounters, returned
+// by ListStorageCounters for use by the hourly metering timer.
+type StorageCounterRecord struct {
+	CampfireID   string
+	BytesStored  int64
+	MessageCount int64
+}
+
+// ListStorageCounters returns all campfires that have at least one byte stored.
+// This is used by the hourly storage-emission timer to iterate over all counters
+// without knowing the campfire IDs in advance.
+func (ts *TableStore) ListStorageCounters(ctx context.Context) ([]StorageCounterRecord, error) {
+	pager := ts.counters.NewListEntitiesPager(nil)
+	var results []StorageCounterRecord
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("aztable: ListStorageCounters: %w", err)
+		}
+		for _, raw := range page.Entities {
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return nil, fmt.Errorf("aztable: ListStorageCounters unmarshal: %w", err)
+			}
+			bytes := toInt64(m["BytesStored"])
+			if bytes <= 0 {
+				continue
+			}
+			campfireID, _ := m["CampfireID"].(string)
+			if campfireID == "" {
+				// Legacy rows written before CampfireID was added: skip; they will
+				// be updated on the next increment.
+				continue
+			}
+			results = append(results, StorageCounterRecord{
+				CampfireID:   campfireID,
+				BytesStored:  bytes,
+				MessageCount: toInt64(m["MessageCount"]),
+			})
+		}
+	}
+	return results, nil
+}
+
 // incrementStorageCounter atomically increments BytesStored by deltaBytes and
 // MessageCount by 1 for the given campfireID. Uses ETag-based optimistic
 // concurrency with up to counterMaxRetries retries on conflict.
@@ -88,6 +132,7 @@ func (ts *TableStore) incrementStorageCounter(ctx context.Context, campfireID st
 			entity := map[string]any{
 				"PartitionKey": pk,
 				"RowKey":       storageCountersRowKey,
+				"CampfireID":   campfireID,
 				"BytesStored":  deltaBytes,
 				"MessageCount": int64(1),
 				"UpdatedAt":    time.Now().UnixNano(),

@@ -160,8 +160,10 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 	lastSupersededID := toSupersede[len(toSupersede)-1].ID
 
 	supersededIDs := make([]string, len(toSupersede))
+	var bytesSuperseded int64
 	for i, msg := range toSupersede {
 		supersededIDs[i] = msg.ID
+		bytesSuperseded += int64(len(msg.Payload))
 	}
 
 	checkpointHash := computeCheckpointHash(toSupersede)
@@ -176,10 +178,11 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 	}
 
 	payload := store.CompactionPayload{
-		Supersedes:     supersededIDs,
-		Summary:        summaryBytes,
-		Retention:      retention,
-		CheckpointHash: checkpointHash,
+		Supersedes:      supersededIDs,
+		Summary:         summaryBytes,
+		Retention:       retention,
+		CheckpointHash:  checkpointHash,
+		BytesSuperseded: bytesSuperseded,
 	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {

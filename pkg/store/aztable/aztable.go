@@ -726,6 +726,92 @@ func (ts *TableStore) GetPeerRole(campfireID, memberPubkey string) (string, erro
 }
 
 // ---------------------------------------------------------------------------
+// Metering helpers
+// ---------------------------------------------------------------------------
+
+// CampfirePeerCount holds the peer endpoint count for a single campfire.
+// Used by the daily peer-endpoint metering timer.
+type CampfirePeerCount struct {
+	CampfireID string
+	Count      int
+}
+
+// ListCampfirePeerCounts scans the CampfirePeerEndpoints table and returns
+// the number of peer endpoint rows per campfire. Only campfires with at least
+// one peer endpoint are included.
+func (ts *TableStore) ListCampfirePeerCounts(ctx context.Context) ([]CampfirePeerCount, error) {
+	pager := ts.peers.NewListEntitiesPager(nil)
+	counts := make(map[string]int) // campfireID → count
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("aztable: ListCampfirePeerCounts: %w", err)
+		}
+		for _, raw := range page.Entities {
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return nil, fmt.Errorf("aztable: ListCampfirePeerCounts unmarshal: %w", err)
+			}
+			cid, _ := m["CampfireID"].(string)
+			if cid != "" {
+				counts[cid]++
+			}
+		}
+	}
+	results := make([]CampfirePeerCount, 0, len(counts))
+	for cid, n := range counts {
+		results = append(results, CampfirePeerCount{CampfireID: cid, Count: n})
+	}
+	return results, nil
+}
+
+// DeleteMessage removes a single message entity from the messages table.
+// campfireID and messageID identify the entity (PK + RK). Ignores not-found.
+func (ts *TableStore) DeleteMessage(ctx context.Context, campfireID, messageID string) error {
+	return deleteEntity(ctx, ts.messages, ts.pk(campfireID), encodeKey(messageID))
+}
+
+// ListMessagesOlderThan returns all messages whose ReceivedAt timestamp is
+// before cutoff (nanoseconds). If campfireID is non-empty, only that campfire
+// is scanned; otherwise all campfires are scanned.
+// Note: this can be expensive on large deployments — use only from timer jobs.
+func (ts *TableStore) ListMessagesOlderThan(ctx context.Context, campfireID string, cutoff int64) ([]store.MessageRecord, error) {
+	var filterStr string
+	if campfireID != "" {
+		filterStr = fmt.Sprintf("PartitionKey eq '%s'", ts.pk(campfireID))
+	}
+	opts := &aztables.ListEntitiesOptions{}
+	if filterStr != "" {
+		opts.Filter = strPtr(filterStr)
+	}
+	pager := ts.messages.NewListEntitiesPager(opts)
+	var results []store.MessageRecord
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("aztable: ListMessagesOlderThan: %w", err)
+		}
+		for _, raw := range page.Entities {
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return nil, fmt.Errorf("aztable: ListMessagesOlderThan unmarshal: %w", err)
+			}
+			rec, err := messageFromEntity(m)
+			if err != nil {
+				return nil, err
+			}
+			if rec.ReceivedAt > 0 && rec.ReceivedAt < cutoff {
+				results = append(results, *rec)
+			} else if rec.ReceivedAt == 0 && rec.Timestamp < cutoff {
+				// Legacy: use Timestamp if ReceivedAt is absent.
+				results = append(results, *rec)
+			}
+		}
+	}
+	return results, nil
+}
+
+// ---------------------------------------------------------------------------
 // ThresholdStore
 // ---------------------------------------------------------------------------
 

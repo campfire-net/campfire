@@ -114,6 +114,12 @@ type Transport struct {
 	// stopNoncePruner is closed by Stop() to signal the background nonce
 	// pruner goroutine to exit cleanly.
 	stopNoncePruner chan struct{}
+
+	// OnMessageDelivered is an optional hook called by handleDeliver after a
+	// message is successfully stored. It fires for every P2P peer delivery.
+	// The caller must be safe to invoke from a goroutine (the hook runs
+	// synchronously in the deliver handler). nil is safe — checked before call.
+	OnMessageDelivered func(ctx context.Context, campfireID string, msg *store.MessageRecord)
 }
 
 // ThresholdShareProvider returns the local FROST DKG share for a campfire.
@@ -189,6 +195,15 @@ func (t *Transport) SetDeliveryModesProvider(p CampfireDeliveryModesProvider) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.deliveryModesProvider = p
+}
+
+// SetOnMessageDelivered sets the hook called after a message is stored by handleDeliver.
+// The hook is called synchronously in the deliver handler — it must not block.
+// Passing nil clears the hook.
+func (t *Transport) SetOnMessageDelivered(fn func(ctx context.Context, campfireID string, msg *store.MessageRecord)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.OnMessageDelivered = fn
 }
 
 // SelfInfo returns this node's agent public key hex and HTTP endpoint.

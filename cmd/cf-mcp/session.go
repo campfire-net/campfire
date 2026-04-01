@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
@@ -366,6 +368,7 @@ func (s *Session) server(manager *SessionManager) *server {
 	if manager != nil {
 		srv.exposePrimitives = manager.exposePrimitives
 		srv.forgeAccounts = manager.forgeAccounts
+		srv.conventionDispatcher = manager.conventionDispatcher
 		if manager.router != nil {
 			srv.httpTransport = s.httpTransport
 			srv.transportRouter = manager.router
@@ -501,6 +504,12 @@ type SessionManager struct {
 	// forgeAccounts, when non-nil, enables Forge sub-account auto-provisioning
 	// at campfire_init. Propagated to per-request servers via Session.server().
 	forgeAccounts *forgeAccountManager
+
+	// conventionDispatcher, when non-nil, dispatches convention operations that
+	// arrive via P2P peer delivery (T5). Wired on the HTTP transport via
+	// SetOnMessageDelivered so that handleDeliver calls Dispatch after storing.
+	// Propagated to per-request servers via Session.server().
+	conventionDispatcher *convention.ConventionDispatcher
 }
 
 // NewSessionManager creates a SessionManager rooted at sessionsDir and
@@ -846,6 +855,15 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 					}
 				}
 			}
+		}
+		// T5: Wire convention dispatch hook for P2P peer deliveries.
+		// When a message arrives via handleDeliver (not MCP handleSend), the
+		// OnMessageDelivered hook fires so convention servers receive the message.
+		if m.conventionDispatcher != nil {
+			d := m.conventionDispatcher // capture for closure
+			t.SetOnMessageDelivered(func(ctx context.Context, campfireID string, msg *store.MessageRecord) {
+				d.Dispatch(ctx, campfireID, msg)
+			})
 		}
 		sess.httpTransport = t
 		sess.router = m.router
