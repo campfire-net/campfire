@@ -174,21 +174,24 @@ func (s *TableDispatchStore) AdvanceCursor(ctx context.Context, serverID, campfi
 
 // MarkDispatched records that a message was dispatched to a handler.
 // Returns false if the message was already marked (insert-if-not-exists semantics).
-func (s *TableDispatchStore) MarkDispatched(ctx context.Context, campfireID, messageID, serverID string) (bool, error) {
+func (s *TableDispatchStore) MarkDispatched(ctx context.Context, campfireID, messageID, serverID, conv, operation string) (bool, error) {
 	pk := encodeKey(campfireID)
 	rk := encodeKey(messageID)
 
 	entity := map[string]any{
-		"PartitionKey":   pk,
-		"RowKey":         rk,
-		"CampfireID":     campfireID,
-		"MessageID":      messageID,
-		"ServerID":       serverID,
-		"DispatchedAt":   time.Now().UnixNano(),
-		"Status":         "dispatched",
-		"HandlerURL":     "",
-		"TokensConsumed": int64(0),
-		"BilledAt":       int64(0),
+		"PartitionKey":    pk,
+		"RowKey":          rk,
+		"CampfireID":      campfireID,
+		"MessageID":       messageID,
+		"ServerID":        serverID,
+		"Convention":      conv,
+		"Operation":       operation,
+		"DispatchedAt":    time.Now().UnixNano(),
+		"Status":          "dispatched",
+		"HandlerURL":      "",
+		"RedispatchCount": int64(0),
+		"TokensConsumed":  int64(0),
+		"BilledAt":        int64(0),
 	}
 
 	data, err := json.Marshal(entity)
@@ -317,6 +320,48 @@ func (s *TableDispatchStore) CleanupOldDispatches(ctx context.Context, maxAge ti
 	return count, nil
 }
 
+// IncrementRedispatchCount atomically increments the RedispatchCount field for a
+// dispatch record and returns the new count. Returns 0, nil if no record exists.
+func (s *TableDispatchStore) IncrementRedispatchCount(ctx context.Context, campfireID, messageID string) (int, error) {
+	pk := encodeKey(campfireID)
+	rk := encodeKey(messageID)
+
+	const maxRetries = 5
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		resp, err := s.dispatched.GetEntity(ctx, pk, rk, nil)
+		if err != nil {
+			if isNotFoundError(err) {
+				return 0, nil
+			}
+			return 0, fmt.Errorf("aztable: DispatchStore.IncrementRedispatchCount: get: %w", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(resp.Value, &m); err != nil {
+			return 0, fmt.Errorf("aztable: DispatchStore.IncrementRedispatchCount: unmarshal: %w", err)
+		}
+		current := int(toInt64(m["RedispatchCount"]))
+		newCount := current + 1
+		m["RedispatchCount"] = int64(newCount)
+		data, err := json.Marshal(m)
+		if err != nil {
+			return 0, fmt.Errorf("aztable: DispatchStore.IncrementRedispatchCount: marshal: %w", err)
+		}
+		etag := resp.ETag
+		_, updateErr := s.dispatched.UpdateEntity(ctx, data, &aztables.UpdateEntityOptions{
+			UpdateMode: aztables.UpdateModeReplace,
+			IfMatch:    &etag,
+		})
+		if updateErr == nil {
+			return newCount, nil
+		}
+		if isPreconditionFailedError(updateErr) {
+			continue
+		}
+		return 0, fmt.Errorf("aztable: DispatchStore.IncrementRedispatchCount: update: %w", updateErr)
+	}
+	return 0, fmt.Errorf("aztable: DispatchStore.IncrementRedispatchCount: too many retries on concurrency conflict")
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -325,12 +370,15 @@ func (s *TableDispatchStore) CleanupOldDispatches(ctx context.Context, maxAge ti
 func dispatchRecordFromEntity(m map[string]any) convention.DispatchRecord {
 	dispatchedAtNs := toInt64(m["DispatchedAt"])
 	return convention.DispatchRecord{
-		CampfireID:   campfireIDFromDispatchEntity(m),
-		MessageID:    messageIDFromDispatchEntity(m),
-		ServerID:     str(m, "ServerID"),
-		DispatchedAt: time.Unix(0, dispatchedAtNs),
-		Status:       str(m, "Status"),
-		HandlerURL:   str(m, "HandlerURL"),
+		CampfireID:      campfireIDFromDispatchEntity(m),
+		MessageID:       messageIDFromDispatchEntity(m),
+		ServerID:        str(m, "ServerID"),
+		Convention:      str(m, "Convention"),
+		Operation:       str(m, "Operation"),
+		DispatchedAt:    time.Unix(0, dispatchedAtNs),
+		Status:          str(m, "Status"),
+		HandlerURL:      str(m, "HandlerURL"),
+		RedispatchCount: int(toInt64(m["RedispatchCount"])),
 	}
 }
 

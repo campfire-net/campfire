@@ -20,8 +20,10 @@ type DispatchStore interface {
 	AdvanceCursor(ctx context.Context, serverID, campfireID string, newTimestamp int64) (bool, error)
 
 	// MarkDispatched records that a message was dispatched to a handler.
+	// convention and operation identify the registered handler for this message
+	// and are used by the fallback sweep to re-dispatch without re-reading the message.
 	// Returns false if the message was already marked (insert-if-not-exists semantics).
-	MarkDispatched(ctx context.Context, campfireID, messageID, serverID string) (bool, error)
+	MarkDispatched(ctx context.Context, campfireID, messageID, serverID, convention, operation string) (bool, error)
 
 	// MarkFulfilled updates the dispatch marker status to "fulfilled".
 	MarkFulfilled(ctx context.Context, campfireID, messageID string) error
@@ -39,16 +41,25 @@ type DispatchStore interface {
 
 	// CleanupOldDispatches removes fulfilled/failed entries older than maxAge.
 	CleanupOldDispatches(ctx context.Context, maxAge time.Duration) (int, error)
+
+	// IncrementRedispatchCount atomically increments the re-dispatch counter for a
+	// message and returns the new count. Used by the fallback sweep to enforce the
+	// maximum re-dispatch cap.
+	IncrementRedispatchCount(ctx context.Context, campfireID, messageID string) (int, error)
+
 }
 
 // DispatchRecord holds metadata about a single message dispatch.
 type DispatchRecord struct {
-	CampfireID   string
-	MessageID    string
-	ServerID     string
-	DispatchedAt time.Time
-	Status       string // "dispatched", "fulfilled", "failed"
-	HandlerURL   string // tier 2 only
+	CampfireID      string
+	MessageID       string
+	ServerID        string
+	Convention      string // convention name (e.g. "myconv")
+	Operation       string // operation name (e.g. "myop")
+	DispatchedAt    time.Time
+	Status          string // "dispatched", "fulfilled", "failed"
+	HandlerURL      string // tier 2 only
+	RedispatchCount int    // number of times the sweep has re-dispatched this message
 }
 
 // dispatchKey is the composite key used to index dispatch records.
@@ -103,7 +114,7 @@ func (s *MemoryDispatchStore) AdvanceCursor(_ context.Context, serverID, campfir
 
 // MarkDispatched records that a message was dispatched to a handler.
 // Returns false if the message was already marked (insert-if-not-exists semantics).
-func (s *MemoryDispatchStore) MarkDispatched(_ context.Context, campfireID, messageID, serverID string) (bool, error) {
+func (s *MemoryDispatchStore) MarkDispatched(_ context.Context, campfireID, messageID, serverID, conv, operation string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
@@ -114,6 +125,8 @@ func (s *MemoryDispatchStore) MarkDispatched(_ context.Context, campfireID, mess
 		CampfireID:   campfireID,
 		MessageID:    messageID,
 		ServerID:     serverID,
+		Convention:   conv,
+		Operation:    operation,
 		DispatchedAt: time.Now(),
 		Status:       "dispatched",
 	}
@@ -172,6 +185,31 @@ func (s *MemoryDispatchStore) ListStaleDispatches(_ context.Context, olderThan t
 		}
 	}
 	return result, nil
+}
+
+// IncrementRedispatchCount atomically increments the re-dispatch counter for a
+// message and returns the new count. Returns 0, nil if the record does not exist.
+func (s *MemoryDispatchStore) IncrementRedispatchCount(_ context.Context, campfireID, messageID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := dispatchKey{campfireID: campfireID, messageID: messageID}
+	rec, exists := s.dispatches[k]
+	if !exists {
+		return 0, nil
+	}
+	rec.RedispatchCount++
+	return rec.RedispatchCount, nil
+}
+
+// BackdateDispatch sets the DispatchedAt time of a dispatch record to age ago.
+// This is a test helper for simulating stale records without sleeping.
+func (s *MemoryDispatchStore) BackdateDispatch(campfireID, messageID string, age time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := dispatchKey{campfireID: campfireID, messageID: messageID}
+	if rec, ok := s.dispatches[k]; ok {
+		rec.DispatchedAt = time.Now().Add(-age)
+	}
 }
 
 // CleanupOldDispatches removes fulfilled/failed entries older than maxAge.

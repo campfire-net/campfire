@@ -161,7 +161,7 @@ func TestDispatchStore_MarkDispatched_InsertIfNotExists(t *testing.T) {
 	msgID := unique("msg")
 	serverID := unique("server")
 
-	inserted, err := s.MarkDispatched(ctx, cfID, msgID, serverID)
+	inserted, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "testconv", "testop")
 	if err != nil {
 		t.Fatalf("MarkDispatched first: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestDispatchStore_MarkDispatched_InsertIfNotExists(t *testing.T) {
 	}
 
 	// Second call — should be idempotent.
-	inserted2, err := s.MarkDispatched(ctx, cfID, msgID, serverID)
+	inserted2, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "testconv", "testop")
 	if err != nil {
 		t.Fatalf("MarkDispatched second: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestDispatchStore_StatusTransitions(t *testing.T) {
 		msgID := unique("msg")
 		serverID := unique("server")
 
-		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID); err != nil {
+		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "testconv", "testop"); err != nil {
 			t.Fatalf("MarkDispatched: %v", err)
 		}
 
@@ -220,7 +220,7 @@ func TestDispatchStore_StatusTransitions(t *testing.T) {
 		msgID := unique("msg")
 		serverID := unique("server")
 
-		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID); err != nil {
+		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "testconv", "testop"); err != nil {
 			t.Fatalf("MarkDispatched: %v", err)
 		}
 
@@ -293,13 +293,13 @@ func TestDispatchStore_ListStaleDispatches(t *testing.T) {
 	// Insert a stale dispatched entry by dispatching and then sleeping briefly.
 	// We set the threshold to 0 so all dispatched entries in this campfire qualify.
 	staleMsgID := unique("msg-stale")
-	if _, err := s.MarkDispatched(ctx, cfID, staleMsgID, serverID); err != nil {
+	if _, err := s.MarkDispatched(ctx, cfID, staleMsgID, serverID, "testconv", "testop"); err != nil {
 		t.Fatalf("MarkDispatched stale: %v", err)
 	}
 
 	// Insert a fulfilled entry (should NOT appear in stale list).
 	fulfilledMsgID := unique("msg-fulfilled")
-	if _, err := s.MarkDispatched(ctx, cfID, fulfilledMsgID, serverID); err != nil {
+	if _, err := s.MarkDispatched(ctx, cfID, fulfilledMsgID, serverID, "testconv", "testop"); err != nil {
 		t.Fatalf("MarkDispatched fulfilled: %v", err)
 	}
 	if err := s.MarkFulfilled(ctx, cfID, fulfilledMsgID); err != nil {
@@ -308,7 +308,7 @@ func TestDispatchStore_ListStaleDispatches(t *testing.T) {
 
 	// Insert a failed entry (should NOT appear in stale list).
 	failedMsgID := unique("msg-failed")
-	if _, err := s.MarkDispatched(ctx, cfID, failedMsgID, serverID); err != nil {
+	if _, err := s.MarkDispatched(ctx, cfID, failedMsgID, serverID, "testconv", "testop"); err != nil {
 		t.Fatalf("MarkDispatched failed: %v", err)
 	}
 	if err := s.MarkFailed(ctx, cfID, failedMsgID); err != nil {
@@ -361,7 +361,7 @@ func TestDispatchStore_CleanupOldDispatches(t *testing.T) {
 	failedMsgID := unique("msg-failed")
 
 	for _, msgID := range []string{dispatchedMsgID, fulfilledMsgID, failedMsgID} {
-		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID); err != nil {
+		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "testconv", "testop"); err != nil {
 			t.Fatalf("MarkDispatched %s: %v", msgID, err)
 		}
 	}

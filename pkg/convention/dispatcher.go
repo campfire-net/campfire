@@ -223,7 +223,7 @@ func (d *ConventionDispatcher) dispatch(
 	entry *dispatchEntry,
 ) {
 	// Deduplication: mark as dispatched (insert-if-not-exists).
-	inserted, err := d.store.MarkDispatched(ctx, campfireID, msg.ID, entry.ServerID)
+	inserted, err := d.store.MarkDispatched(ctx, campfireID, msg.ID, entry.ServerID, op.Convention, op.Operation)
 	if err != nil {
 		d.logger.Printf("convention dispatcher: MarkDispatched(%s/%s): %v", campfireID, msg.ID, err)
 		return
@@ -233,6 +233,20 @@ func (d *ConventionDispatcher) dispatch(
 		return
 	}
 
+	d.invokeHandler(ctx, campfireID, msg, op, entry)
+}
+
+// invokeHandler calls the registered handler for a message and updates the
+// dispatch store. It is called from dispatch() (after deduplication) and from
+// the fallback sweep (bypassing deduplication, which tracks attempts separately
+// via RedispatchCount). Must be called in a goroutine.
+func (d *ConventionDispatcher) invokeHandler(
+	ctx context.Context,
+	campfireID string,
+	msg *store.MessageRecord,
+	op conventionOpPayload,
+	entry *dispatchEntry,
+) {
 	status := "dispatched"
 
 	if entry.Tier == 1 {
