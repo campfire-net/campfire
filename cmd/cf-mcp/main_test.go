@@ -7,10 +7,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
+	"github.com/campfire-net/campfire/pkg/campfire"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/store"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // ---------------------------------------------------------------------------
@@ -684,6 +690,156 @@ func TestHandleInit_ValidNameSucceeds(t *testing.T) {
 	idPath := filepath.Join(srv.cfHome, "identity.json")
 	if _, err := os.Stat(idPath); err != nil {
 		t.Errorf("identity.json not found after valid init: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FED-1: HTTP path campfire:* tag role enforcement
+// ---------------------------------------------------------------------------
+
+// setupHTTPSendEnv creates a server wired with an HTTP transport and a campfire
+// whose single member has the given role. It returns the server and the campfire
+// ID so callers can drive handleSend directly.
+func setupHTTPSendEnv(t *testing.T, role string) (*server, string) {
+	t.Helper()
+
+	cfHome := t.TempDir()
+
+	// Generate and persist an identity (the "agent" that will be sending).
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	idPath := filepath.Join(cfHome, "identity.json")
+	if err := agentID.Save(idPath); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	// Create a campfire.
+	cf, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("creating campfire: %v", err)
+	}
+	campfireID := cf.PublicKeyHex()
+
+	// Write campfire state to cfHome/<campfireID>/campfire.cbor.
+	campfireDir := filepath.Join(cfHome, campfireID)
+	for _, sub := range []string{"members", "messages"} {
+		if err := os.MkdirAll(filepath.Join(campfireDir, sub), 0755); err != nil {
+			t.Fatalf("creating campfire subdir: %v", err)
+		}
+	}
+	state := cf.State()
+	stateBytes, err := cfencoding.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshaling campfire state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(campfireDir, "campfire.cbor"), stateBytes, 0644); err != nil {
+		t.Fatalf("writing campfire.cbor: %v", err)
+	}
+
+	// Write agent as a member with the given role.
+	member := campfire.MemberRecord{
+		PublicKey: agentID.PublicKey,
+		JoinedAt:  1,
+		Role:      role,
+	}
+	memberBytes, err := cfencoding.Marshal(member)
+	if err != nil {
+		t.Fatalf("marshaling member: %v", err)
+	}
+	memberPath := filepath.Join(campfireDir, "members", fmt.Sprintf("%x.cbor", agentID.PublicKey))
+	if err := os.WriteFile(memberPath, memberBytes, 0644); err != nil {
+		t.Fatalf("writing member file: %v", err)
+	}
+
+	// Set up a real store and record membership.
+	st, err := store.Open(store.StorePath(cfHome))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	if err := st.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: campfireDir,
+		JoinProtocol: "open",
+		Role:         role,
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	// Wire up cfhttp.Transport (non-nil is what triggers the HTTP path).
+	httpT := cfhttp.New("", st)
+
+	srv := &server{
+		cfHome:         cfHome,
+		cfHomeExplicit: true,
+		st:             st,
+		httpTransport:  httpT,
+	}
+
+	return srv, campfireID
+}
+
+// TestHandleSend_FED1_WriterBlockedOnCampfireTag verifies that a writer role
+// cannot send a message tagged with a campfire:* system tag.
+func TestHandleSend_FED1_WriterBlockedOnCampfireTag(t *testing.T) {
+	srv, campfireID := setupHTTPSendEnv(t, campfire.RoleWriter)
+
+	resp := srv.handleSend(float64(1), map[string]interface{}{
+		"campfire_id": campfireID,
+		"message":     "hello",
+		"tags":        []interface{}{"campfire:test"},
+	})
+
+	if resp.Error == nil {
+		t.Fatal("expected error response for writer + campfire:* tag, got success")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "writers cannot send campfire system messages") {
+		t.Errorf("unexpected error message: %q", resp.Error.Message)
+	}
+}
+
+// TestHandleSend_FED1_FullMemberAllowedCampfireTag verifies that a full member
+// can send a message tagged with campfire:* without being blocked.
+func TestHandleSend_FED1_FullMemberAllowedCampfireTag(t *testing.T) {
+	srv, campfireID := setupHTTPSendEnv(t, campfire.RoleFull)
+
+	resp := srv.handleSend(float64(1), map[string]interface{}{
+		"campfire_id": campfireID,
+		"message":     "hello",
+		"tags":        []interface{}{"campfire:test"},
+	})
+
+	// The message should be stored successfully (no role-related error).
+	if resp.Error != nil {
+		t.Fatalf("expected success for full member + campfire:* tag, got error: %s", resp.Error.Message)
+	}
+}
+
+// TestHandleSend_FED1_ObserverBlockedOnAnyMessage verifies that an observer
+// cannot send any message, regardless of tags.
+func TestHandleSend_FED1_ObserverBlockedOnAnyMessage(t *testing.T) {
+	srv, campfireID := setupHTTPSendEnv(t, campfire.RoleObserver)
+
+	resp := srv.handleSend(float64(1), map[string]interface{}{
+		"campfire_id": campfireID,
+		"message":     "hello",
+		"tags":        []interface{}{"regular-tag"},
+	})
+
+	if resp.Error == nil {
+		t.Fatal("expected error response for observer send, got success")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "observers cannot send messages") {
+		t.Errorf("unexpected error message: %q", resp.Error.Message)
 	}
 }
 
