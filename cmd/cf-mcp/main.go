@@ -2140,6 +2140,23 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		tags = append(tags, "commitment-nonce:"+commitmentNonce)
 	}
 
+	// FED-2: validate routing:beacon payload before storage to prevent beacon poisoning.
+	// Reject messages tagged routing:beacon if the payload is not valid JSON or fails
+	// inner_signature verification. This runs before NewMessage/client.Send so that
+	// malformed beacons are never written to the store or relayed.
+	for _, tag := range tags {
+		if tag == "routing:beacon" {
+			var decl beacon.BeaconDeclaration
+			if err := json.Unmarshal([]byte(payload), &decl); err != nil {
+				return errResponse(id, -32000, fmt.Sprintf("routing:beacon payload is not valid JSON: %v", err))
+			}
+			if !beacon.VerifyDeclaration(decl) {
+				return errResponse(id, -32000, "routing:beacon payload failed signature verification")
+			}
+			break
+		}
+	}
+
 	var msg *message.Message
 
 	if s.httpTransport != nil {
@@ -2170,6 +2187,18 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		}
 		if !isMember {
 			return errResponse(id, -32000, "not recognized as a member in the transport directory")
+		}
+
+		// FED-1: enforce campfire:* tag restrictions based on sender role.
+		switch campfire.EffectiveRole(m.Role) {
+		case campfire.RoleObserver:
+			return errResponse(id, -32000, "observers cannot send messages")
+		case campfire.RoleWriter:
+			for _, tag := range tags {
+				if strings.HasPrefix(tag, "campfire:") {
+					return errResponse(id, -32000, fmt.Sprintf("writers cannot send campfire system messages (tag %q)", tag))
+				}
+			}
 		}
 
 		msg, err = message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, antecedents)

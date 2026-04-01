@@ -1,11 +1,16 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"github.com/campfire-net/campfire/pkg/beacon"
 )
 
 // ---------------------------------------------------------------------------
@@ -679,5 +684,128 @@ func TestHandleInit_ValidNameSucceeds(t *testing.T) {
 	idPath := filepath.Join(srv.cfHome, "identity.json")
 	if _, err := os.Stat(idPath); err != nil {
 		t.Errorf("identity.json not found after valid init: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FED-2: routing:beacon payload validation in handleSend
+// ---------------------------------------------------------------------------
+
+// newInitializedTestServer creates a test server with a valid identity
+// (campfire_init already called). The store is opened in session mode so
+// handleSend can proceed past the identity-load step.
+func newInitializedTestServer(t *testing.T) *server {
+	t.Helper()
+	srv := newTestServer(t)
+	r := srv.handleInit(float64(1), map[string]interface{}{})
+	if r.Error != nil {
+		t.Fatalf("campfire_init failed: %+v", r.Error)
+	}
+	return srv
+}
+
+// validBeaconPayload returns a JSON-encoded, signed BeaconDeclaration for
+// use in tests that require an accepted routing:beacon message.
+func validBeaconPayload(t *testing.T) string {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating ed25519 key: %v", err)
+	}
+	decl, err := beacon.SignDeclaration(pub, priv, "http://example.com:8080", "p2p-http", "test beacon", "open")
+	if err != nil {
+		t.Fatalf("signing beacon declaration: %v", err)
+	}
+	b, err := json.Marshal(decl)
+	if err != nil {
+		t.Fatalf("marshaling beacon declaration: %v", err)
+	}
+	return string(b)
+}
+
+// TestHandleSend_BeaconInvalidJSON verifies that a routing:beacon message
+// with a payload that is not valid JSON is rejected with a -32000 error
+// before anything is stored (FED-2 — beacon poisoning prevention).
+func TestHandleSend_BeaconInvalidJSON(t *testing.T) {
+	srv := newInitializedTestServer(t)
+
+	resp := srv.handleSend(float64(1), map[string]interface{}{
+		"campfire_id": "deadbeef", // does not need to be a real campfire; validation runs first
+		"message":     "not-json-at-all",
+		"tags":        []interface{}{"routing:beacon"},
+	})
+
+	if resp.Error == nil {
+		t.Fatal("expected error response for invalid JSON beacon payload, got nil")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
+	}
+	if !contains(resp.Error.Message, "not valid JSON") {
+		t.Errorf("expected error message to mention 'not valid JSON', got: %s", resp.Error.Message)
+	}
+}
+
+// TestHandleSend_BeaconBadSignature verifies that a routing:beacon message
+// whose payload is valid JSON but fails inner_signature verification is
+// rejected with a -32000 error before anything is stored (FED-2).
+func TestHandleSend_BeaconBadSignature(t *testing.T) {
+	srv := newInitializedTestServer(t)
+
+	// Craft a syntactically valid BeaconDeclaration but with a tampered signature.
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	decl, err := beacon.SignDeclaration(pub, priv, "http://example.com", "p2p-http", "test", "open")
+	if err != nil {
+		t.Fatalf("signing declaration: %v", err)
+	}
+	// Tamper: change the endpoint so the signature no longer matches.
+	decl.Endpoint = "http://attacker.example.com/evil"
+	b, _ := json.Marshal(decl)
+
+	resp := srv.handleSend(float64(1), map[string]interface{}{
+		"campfire_id": "deadbeef",
+		"message":     string(b),
+		"tags":        []interface{}{"routing:beacon"},
+	})
+
+	if resp.Error == nil {
+		t.Fatal("expected error response for beacon with bad signature, got nil")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
+	}
+	if !contains(resp.Error.Message, "signature verification") {
+		t.Errorf("expected error message to mention 'signature verification', got: %s", resp.Error.Message)
+	}
+}
+
+// TestHandleSend_BeaconValidPayload verifies that a routing:beacon message
+// with a correctly signed payload passes the FED-2 validation layer and
+// proceeds to the membership/send layer (which will return "not a member"
+// rather than a validation error). This proves valid beacons are not spuriously
+// rejected by the new validation gate.
+func TestHandleSend_BeaconValidPayload(t *testing.T) {
+	srv := newInitializedTestServer(t)
+
+	payload := validBeaconPayload(t)
+
+	resp := srv.handleSend(float64(1), map[string]interface{}{
+		"campfire_id": fmt.Sprintf("%064x", make([]byte, 32)), // syntactically valid campfire ID
+		"message":     payload,
+		"tags":        []interface{}{"routing:beacon"},
+	})
+
+	// The beacon validation passes. The call will fail later because we are
+	// not a member of this campfire — that is the expected behaviour.
+	// It must NOT fail with a JSON or signature error.
+	if resp.Error != nil {
+		if contains(resp.Error.Message, "not valid JSON") || contains(resp.Error.Message, "signature verification") {
+			t.Fatalf("valid beacon payload was incorrectly rejected by FED-2 validation: %s", resp.Error.Message)
+		}
+		// Any other error (membership, store, etc.) is acceptable — the beacon
+		// validation passed.
 	}
 }

@@ -121,6 +121,25 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 		}
 	}
 
+	// FED-2: validate routing:beacon payload before storage to prevent beacon poisoning.
+	// A malformed or unsigned beacon must be rejected before it is stored or relayed.
+	for _, tag := range msg.Tags {
+		if tag == "routing:beacon" {
+			var decl beacon.BeaconDeclaration
+			if err := json.Unmarshal(msg.Payload, &decl); err != nil {
+				log.Printf("handleDeliver: routing:beacon payload is not valid JSON for campfire %s: %v", campfireID, err)
+				http.Error(w, "routing:beacon payload is not valid JSON", http.StatusBadRequest)
+				return
+			}
+			if !beacon.VerifyDeclaration(decl) {
+				log.Printf("handleDeliver: routing:beacon payload failed signature verification for campfire %s", campfireID)
+				http.Error(w, "routing:beacon payload failed signature verification", http.StatusBadRequest)
+				return
+			}
+			break
+		}
+	}
+
 	// Store in local SQLite
 	if _, err := h.store.AddMessage(store.MessageRecordFromMessage(campfireID, &msg, store.NowNano())); err != nil {
 		log.Printf("handleDeliver: failed to store message for campfire %s: %v", campfireID, err)
