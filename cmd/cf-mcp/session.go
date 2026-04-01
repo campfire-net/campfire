@@ -13,6 +13,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/store/aztable"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
@@ -58,6 +59,14 @@ type TokenRegistry struct {
 	mu          sync.RWMutex
 	tokens      map[string]*tokenEntry // token → entry
 	persistPath string                 // if non-empty, registry is persisted to this file
+
+	// onSave is called (outside the lock, best-effort) after any token entry is
+	// created or updated. Used to persist to a cloud backend (e.g. Azure Table
+	// Storage) in addition to the local JSON file.
+	onSave func(token string, e tokenEntry)
+	// onDelete is called (outside the lock, best-effort) after a token entry is
+	// fully removed. Used to clean up cloud backend state.
+	onDelete func(token string)
 }
 
 // tokenEntryJSON is the on-disk representation of a tokenEntry.
@@ -165,13 +174,19 @@ func (r *TokenRegistry) issue() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	r.mu.Lock()
-	r.tokens[tok] = &tokenEntry{
+	entry := &tokenEntry{
 		internalID: id,
 		issuedAt:   time.Now(),
 	}
+	r.mu.Lock()
+	r.tokens[tok] = entry
 	r.save() //nolint:errcheck // persist best-effort; mutation already applied in memory
+	onSave := r.onSave
+	entryCopy := *entry
 	r.mu.Unlock()
+	if onSave != nil {
+		onSave(tok, entryCopy) //nolint:errcheck // best-effort cloud persist
+	}
 	return tok, nil
 }
 
@@ -182,13 +197,19 @@ func (r *TokenRegistry) issueFor(internalID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	r.mu.Lock()
-	r.tokens[tok] = &tokenEntry{
+	entry := &tokenEntry{
 		internalID: internalID,
 		issuedAt:   time.Now(),
 	}
+	r.mu.Lock()
+	r.tokens[tok] = entry
 	r.save() //nolint:errcheck // persist best-effort
+	onSave := r.onSave
+	entryCopy := *entry
 	r.mu.Unlock()
+	if onSave != nil {
+		onSave(tok, entryCopy) //nolint:errcheck // best-effort cloud persist
+	}
 	return tok, nil
 }
 
@@ -230,33 +251,57 @@ func (r *TokenRegistry) lookup(token string, ttl time.Duration) (string, error) 
 
 // revoke marks a token as revoked immediately.
 func (r *TokenRegistry) revoke(token string) {
+	var onSave func(string, tokenEntry)
+	var onDelete func(string)
+	var entryCopy tokenEntry
 	r.mu.Lock()
 	if entry, ok := r.tokens[token]; ok {
 		entry.revoked = true
 		entry.gracePeriodUntil = time.Time{} // no grace period for explicit revoke
+		entryCopy = *entry
+		onSave = r.onSave
+	} else {
+		onDelete = r.onDelete
 	}
 	r.save() //nolint:errcheck // persist best-effort
 	r.mu.Unlock()
+	if onSave != nil {
+		onSave(token, entryCopy) //nolint:errcheck // best-effort cloud persist
+	} else if onDelete != nil {
+		onDelete(token) //nolint:errcheck // best-effort cloud cleanup
+	}
 }
 
 // revokeWithGrace marks a token as revoked but keeps it valid until gracePeriodUntil.
 // Used for token rotation so in-flight requests can drain.
 func (r *TokenRegistry) revokeWithGrace(token string, gracePeriodUntil time.Time) {
+	var onSave func(string, tokenEntry)
+	var entryCopy tokenEntry
 	r.mu.Lock()
 	if entry, ok := r.tokens[token]; ok {
 		entry.revoked = true
 		entry.gracePeriodUntil = gracePeriodUntil
+		entryCopy = *entry
+		onSave = r.onSave
 	}
 	r.save() //nolint:errcheck // persist best-effort
 	r.mu.Unlock()
+	if onSave != nil {
+		onSave(token, entryCopy) //nolint:errcheck // best-effort cloud persist
+	}
 }
 
 // delete removes a token entry entirely. Used after grace period expires.
 func (r *TokenRegistry) delete(token string) {
+	var onDelete func(string)
 	r.mu.Lock()
 	delete(r.tokens, token)
 	r.save() //nolint:errcheck // persist best-effort
+	onDelete = r.onDelete
 	r.mu.Unlock()
+	if onDelete != nil {
+		onDelete(token) //nolint:errcheck // best-effort cloud cleanup
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +488,13 @@ type SessionManager struct {
 	// exposePrimitives mirrors the --expose-primitives flag. When true, sessions
 	// created by this manager will include primitive tools in their tools/list.
 	exposePrimitives bool
+	// sessionStore, when non-nil, persists token registry entries and session
+	// identity key material to Azure Table Storage so they survive instance hops.
+	sessionStore *aztable.SessionStore
+	// storeFactory, when non-nil, is called with the session internalID to create
+	// the store for a new session. This replaces the default SQLite open.
+	// When nil, the default behaviour (store.Open on the local filesystem) is used.
+	storeFactory func(internalID string) (store.Store, error)
 }
 
 // NewSessionManager creates a SessionManager rooted at sessionsDir and
@@ -471,6 +523,66 @@ func NewSessionManager(sessionsDir string) *SessionManager {
 	}
 	go m.reaper()
 	return m
+}
+
+// UseSessionStore wires ss as the cloud persistence backend for token registry
+// entries and session identity key material. It:
+//  1. Loads all token entries from Table Storage into the in-memory registry
+//     so tokens created on other instances are known immediately.
+//  2. Registers onSave/onDelete hooks on the registry so future mutations are
+//     mirrored to Table Storage.
+//  3. Stores ss for use by getOrCreate (identity hydration) and
+//     SaveIdentityToCloud (post-init persistence).
+//
+// Call before accepting any requests (i.e. before serveHTTP returns).
+func (m *SessionManager) UseSessionStore(ss *aztable.SessionStore) error {
+	// Load existing token entries from cloud.
+	entries, err := ss.LoadAllTokenEntries()
+	if err != nil {
+		return fmt.Errorf("session store: load token entries: %w", err)
+	}
+	m.registry.mu.Lock()
+	for _, e := range entries {
+		m.registry.tokens[e.Token] = &tokenEntry{
+			internalID:       e.InternalID,
+			issuedAt:         e.IssuedAt,
+			revoked:          e.Revoked,
+			gracePeriodUntil: e.GracePeriodUntil,
+		}
+	}
+	// Wire up cloud persistence hooks.
+	m.registry.onSave = func(token string, e tokenEntry) {
+		rec := aztable.TokenEntryRecord{
+			Token:            token,
+			InternalID:       e.internalID,
+			IssuedAt:         e.issuedAt,
+			Revoked:          e.revoked,
+			GracePeriodUntil: e.gracePeriodUntil,
+		}
+		if saveErr := ss.SaveTokenEntry(token, rec); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: token registry cloud persist failed: %v\n", saveErr)
+		}
+	}
+	m.registry.onDelete = func(token string) {
+		if delErr := ss.DeleteTokenEntry(token); delErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: token registry cloud delete failed: %v\n", delErr)
+		}
+	}
+	m.registry.mu.Unlock()
+	m.sessionStore = ss
+	return nil
+}
+
+// SaveIdentityToCloud persists identity JSON for a session to Azure Table Storage.
+// Called from handleCampfireInit after the identity is written to the local
+// cfHome directory, so the identity survives instance hops.
+func (m *SessionManager) SaveIdentityToCloud(internalID string, identityJSON []byte) {
+	if m.sessionStore == nil {
+		return
+	}
+	if err := m.sessionStore.SaveIdentity(internalID, identityJSON); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: identity cloud persist failed for session %s: %v\n", internalID, err)
+	}
 }
 
 // checkInitRateLimit returns true if the given IP is allowed to create a new
@@ -648,7 +760,29 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 		return nil, err
 	}
 
-	rawStore, err := store.Open(store.StorePath(cfHome))
+	// If a session store is configured, hydrate identity from cloud before the
+	// session is returned. This allows campfire_init to find an existing keypair
+	// even when the request lands on a different instance than the one that
+	// originally created the session.
+	if m.sessionStore != nil {
+		identityPath := filepath.Join(cfHome, "identity.json")
+		if _, statErr := os.Stat(identityPath); os.IsNotExist(statErr) {
+			if data, ok, loadErr := m.sessionStore.LoadIdentity(internalID); loadErr == nil && ok {
+				if writeErr := os.WriteFile(identityPath, data, 0600); writeErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: write cloud identity to disk: %v\n", writeErr)
+				}
+			}
+		}
+	}
+
+	// Open the backing store: use storeFactory (aztable) when configured,
+	// otherwise fall back to local SQLite.
+	var rawStore store.Store
+	if m.storeFactory != nil {
+		rawStore, err = m.storeFactory(internalID)
+	} else {
+		rawStore, err = store.Open(store.StorePath(cfHome))
+	}
 	if err != nil {
 		return nil, err
 	}

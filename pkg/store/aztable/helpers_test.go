@@ -181,3 +181,66 @@ func TestErrorDetectors(t *testing.T) {
 		t.Error("nil error should return false for all detectors")
 	}
 }
+
+// TestPKNamespace verifies that ts.pk() applies the namespace prefix correctly.
+func TestPKNamespace(t *testing.T) {
+	ts := &TableStore{}
+
+	// No namespace: pk() == encodeKey(campfireID)
+	cfID := "abc123def456"
+	if got := ts.pk(cfID); got != encodeKey(cfID) {
+		t.Errorf("no namespace: pk(%q) = %q, want %q", cfID, got, encodeKey(cfID))
+	}
+
+	// With namespace: pk() == encodeKey(namespace+"|"+campfireID)
+	ts.namespace = "ns1"
+	want := encodeKey("ns1|" + cfID)
+	if got := ts.pk(cfID); got != want {
+		t.Errorf("with namespace: pk(%q) = %q, want %q", cfID, got, want)
+	}
+
+	// Different namespaces produce different PKs for the same campfireID.
+	ts2 := &TableStore{namespace: "ns2"}
+	if ts.pk(cfID) == ts2.pk(cfID) {
+		t.Error("different namespaces should produce different PKs")
+	}
+}
+
+// TestNsPKFilter verifies that nsPKFilter() returns the correct OData range filter.
+func TestNsPKFilter(t *testing.T) {
+	ts := &TableStore{}
+
+	// No namespace: empty filter.
+	if f := ts.nsPKFilter(); f != "" {
+		t.Errorf("no namespace: nsPKFilter() = %q, want empty", f)
+	}
+
+	// With namespace: filter must be a non-empty OData range expression.
+	ts.namespace = "sess01"
+	f := ts.nsPKFilter()
+	if f == "" {
+		t.Fatal("with namespace: nsPKFilter() returned empty string")
+	}
+	// Filter must reference PartitionKey.
+	if !contains(f, "PartitionKey") {
+		t.Errorf("nsPKFilter() = %q, missing PartitionKey", f)
+	}
+	// Lower bound must be the encoded namespace prefix.
+	lo := encodeKey("sess01|")
+	if !contains(f, lo) {
+		t.Errorf("nsPKFilter() = %q, missing lower bound %q", f, lo)
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

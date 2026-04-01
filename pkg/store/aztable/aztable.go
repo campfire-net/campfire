@@ -66,9 +66,41 @@ type TableStore struct {
 	filters     *aztables.Client
 	invites     *aztables.Client
 
+	// namespace is an optional per-session prefix applied to all PartitionKeys
+	// (except invites, which are global). When set, PK = encodeKey(namespace+"|"+id).
+	// Empty means single-agent mode (existing behaviour).
+	namespace string
+
 	// mu protects supersededCache.
 	mu              sync.RWMutex
 	supersededCache map[string]supersededCacheEntry
+}
+
+// pk returns the encoded PartitionKey for campfireID, prefixed with the
+// session namespace when one is configured. Invites use a separate key scheme
+// and must not go through pk().
+func (ts *TableStore) pk(campfireID string) string {
+	if ts.namespace == "" {
+		return encodeKey(campfireID)
+	}
+	return encodeKey(ts.namespace + "|" + campfireID)
+}
+
+// nsPKFilter returns an OData filter string that restricts a scan to entities
+// belonging to the current namespace. When namespace is empty the filter is
+// empty (no restriction — existing single-agent behaviour).
+//
+// The prefix "namespace|" encodes to "namespaceX7c" (| → x7c). The
+// exclusive upper bound increments the last nibble character ('c' → 'd').
+// This gives a tight half-open range scan without a STARTSWITH operator.
+func (ts *TableStore) nsPKFilter() string {
+	if ts.namespace == "" {
+		return ""
+	}
+	lo := encodeKey(ts.namespace+"|") // e.g. "abc123x7c"
+	// Increment the last char to get the exclusive upper bound.
+	hi := lo[:len(lo)-1] + string(lo[len(lo)-1]+1)
+	return fmt.Sprintf("PartitionKey ge '%s' and PartitionKey lt '%s'", lo, hi)
 }
 
 type supersededCacheEntry struct {
@@ -79,6 +111,30 @@ type supersededCacheEntry struct {
 // NewTableStore connects to Azure Table Storage using the given connection string
 // and ensures all required tables exist. Returns a store.Store.
 func NewTableStore(connectionString string) (store.Store, error) {
+	return newTableStore(connectionString)
+}
+
+// NewNamespacedTableStore creates a TableStore that prefixes all PartitionKeys
+// (except invites) with namespace+"|". This gives per-session isolation within
+// shared Azure Storage tables, equivalent to the per-file isolation of SQLite.
+//
+// namespace must be a non-empty string that contains only alphanumeric characters
+// and hyphens (e.g. a UUID-based internalID). Callers typically pass the session's
+// internalID.
+func NewNamespacedTableStore(connectionString, namespace string) (store.Store, error) {
+	ts, err := newTableStore(connectionString)
+	if err != nil {
+		return nil, err
+	}
+	ts.namespace = namespace
+	return ts, nil
+}
+
+// newTableStore is the shared constructor used by both NewTableStore and
+// NewNamespacedTableStore. It creates the service client and ensures all
+// required tables exist, returning the raw *TableStore (not the Store interface)
+// so the callers can set additional fields before returning.
+func newTableStore(connectionString string) (*TableStore, error) {
 	svc, err := aztables.NewServiceClientFromConnectionString(connectionString, nil)
 	if err != nil {
 		return nil, fmt.Errorf("aztable: creating service client: %w", err)
@@ -106,7 +162,6 @@ func NewTableStore(connectionString string) (store.Store, error) {
 		client := svc.NewClient(t.name)
 		_, createErr := client.CreateTable(ctx, nil)
 		if createErr != nil {
-			// Ignore "table already exists" (409 Conflict).
 			if !isTableExistsError(createErr) {
 				return nil, fmt.Errorf("aztable: ensuring table %s: %w", t.name, createErr)
 			}
@@ -134,7 +189,7 @@ func (ts *TableStore) AddMembership(m store.Membership) error {
 		enc = 1
 	}
 	entity := map[string]any{
-		"PartitionKey":  encodeKey(m.CampfireID),
+		"PartitionKey":  ts.pk(m.CampfireID),
 		"RowKey":        "membership",
 		"CampfireID":    m.CampfireID,
 		"TransportDir":  m.TransportDir,
@@ -165,12 +220,12 @@ func (ts *TableStore) UpdateMembershipRole(campfireID, role string) error {
 
 // RemoveMembership deletes a campfire membership.
 func (ts *TableStore) RemoveMembership(campfireID string) error {
-	return deleteEntity(context.Background(), ts.memberships, encodeKey(campfireID), "membership")
+	return deleteEntity(context.Background(), ts.memberships, ts.pk(campfireID), "membership")
 }
 
 // GetMembership retrieves a single membership by campfire ID.
 func (ts *TableStore) GetMembership(campfireID string) (*store.Membership, error) {
-	raw, err := getEntity(context.Background(), ts.memberships, encodeKey(campfireID), "membership")
+	raw, err := getEntity(context.Background(), ts.memberships, ts.pk(campfireID), "membership")
 	if err != nil {
 		return nil, fmt.Errorf("aztable: GetMembership: %w", err)
 	}
@@ -183,6 +238,9 @@ func (ts *TableStore) GetMembership(campfireID string) (*store.Membership, error
 // ListMemberships returns all memberships, ordered by JoinedAt.
 func (ts *TableStore) ListMemberships() ([]store.Membership, error) {
 	opts := &aztables.ListEntitiesOptions{}
+	if f := ts.nsPKFilter(); f != "" {
+		opts.Filter = strPtr(f)
+	}
 	pager := ts.memberships.NewListEntitiesPager(opts)
 	var memberships []store.Membership
 	ctx := context.Background()
@@ -241,7 +299,7 @@ func (ts *TableStore) AddMessage(m store.MessageRecord) (bool, error) {
 	}
 
 	// Check if already exists.
-	existing, err := getEntity(context.Background(), ts.messages, encodeKey(m.CampfireID), encodeKey(m.ID))
+	existing, err := getEntity(context.Background(), ts.messages, ts.pk(m.CampfireID), encodeKey(m.ID))
 	if err != nil {
 		return false, fmt.Errorf("aztable: AddMessage check existing: %w", err)
 	}
@@ -254,7 +312,7 @@ func (ts *TableStore) AddMessage(m store.MessageRecord) (bool, error) {
 	provJSON, _ := json.Marshal(m.Provenance)
 
 	entity := map[string]any{
-		"PartitionKey": encodeKey(m.CampfireID),
+		"PartitionKey": ts.pk(m.CampfireID),
 		"RowKey":       encodeKey(m.ID),
 		"MessageID":    m.ID,
 		"CampfireID":   m.CampfireID,
@@ -277,7 +335,7 @@ func (ts *TableStore) AddMessage(m store.MessageRecord) (bool, error) {
 	// Invalidate superseded cache for compaction events.
 	if isCompactionEvent(m) {
 		ts.mu.Lock()
-		delete(ts.supersededCache, m.CampfireID)
+		delete(ts.supersededCache, ts.pk(m.CampfireID))
 		ts.mu.Unlock()
 	}
 	return true, nil
@@ -286,9 +344,14 @@ func (ts *TableStore) AddMessage(m store.MessageRecord) (bool, error) {
 // HasMessage checks whether a message ID exists.
 func (ts *TableStore) HasMessage(id string) (bool, error) {
 	// We must search across all campfires since we don't know the campfire.
-	// Use ListMessages-style scan with a row key filter.
+	// Use ListMessages-style scan with a row key filter, restricted to namespace.
+	rkFilter := fmt.Sprintf("RowKey eq '%s'", encodeKey(id))
+	filterStr := rkFilter
+	if nsF := ts.nsPKFilter(); nsF != "" {
+		filterStr = nsF + " and " + rkFilter
+	}
 	opts := &aztables.ListEntitiesOptions{
-		Filter: strPtr(fmt.Sprintf("RowKey eq '%s'", encodeKey(id))),
+		Filter: strPtr(filterStr),
 	}
 	pager := ts.messages.NewListEntitiesPager(opts)
 	ctx := context.Background()
@@ -304,10 +367,15 @@ func (ts *TableStore) HasMessage(id string) (bool, error) {
 	return false, nil
 }
 
-// GetMessage retrieves a message by ID (searches across all campfires).
+// GetMessage retrieves a message by ID (searches across all campfires in the namespace).
 func (ts *TableStore) GetMessage(id string) (*store.MessageRecord, error) {
+	rkFilter := fmt.Sprintf("RowKey eq '%s'", encodeKey(id))
+	filterStr := rkFilter
+	if nsF := ts.nsPKFilter(); nsF != "" {
+		filterStr = nsF + " and " + rkFilter
+	}
 	opts := &aztables.ListEntitiesOptions{
-		Filter: strPtr(fmt.Sprintf("RowKey eq '%s'", encodeKey(id))),
+		Filter: strPtr(filterStr),
 	}
 	pager := ts.messages.NewListEntitiesPager(opts)
 	ctx := context.Background()
@@ -335,7 +403,11 @@ func (ts *TableStore) GetMessage(id string) (*store.MessageRecord, error) {
 // Returns an error if the prefix is ambiguous.
 func (ts *TableStore) GetMessageByPrefix(prefix string) (*store.MessageRecord, error) {
 	// Table Storage row keys are exact; we must scan and filter client-side.
-	pager := ts.messages.NewListEntitiesPager(nil)
+	var opts *aztables.ListEntitiesOptions
+	if nsF := ts.nsPKFilter(); nsF != "" {
+		opts = &aztables.ListEntitiesOptions{Filter: strPtr(nsF)}
+	}
+	pager := ts.messages.NewListEntitiesPager(opts)
 	ctx := context.Background()
 	var matches []*store.MessageRecord
 	for pager.More() {
@@ -378,7 +450,9 @@ func (ts *TableStore) ListMessages(campfireID string, afterTimestamp int64, filt
 
 	var filterStr string
 	if campfireID != "" {
-		filterStr = fmt.Sprintf("PartitionKey eq '%s'", encodeKey(campfireID))
+		filterStr = fmt.Sprintf("PartitionKey eq '%s'", ts.pk(campfireID))
+	} else if nsF := ts.nsPKFilter(); nsF != "" {
+		filterStr = nsF
 	}
 
 	opts := &aztables.ListEntitiesOptions{}
@@ -526,7 +600,7 @@ func (ts *TableStore) ListCompactionEvents(campfireID string) ([]store.MessageRe
 
 // GetReadCursor returns the last-read timestamp for a campfire. Returns 0 if absent.
 func (ts *TableStore) GetReadCursor(campfireID string) (int64, error) {
-	raw, err := getEntity(context.Background(), ts.cursors, encodeKey(campfireID), "cursor")
+	raw, err := getEntity(context.Background(), ts.cursors, ts.pk(campfireID), "cursor")
 	if err != nil {
 		return 0, fmt.Errorf("aztable: GetReadCursor: %w", err)
 	}
@@ -546,7 +620,7 @@ func (ts *TableStore) GetReadCursor(campfireID string) (int64, error) {
 // SetReadCursor updates the read cursor for a campfire.
 func (ts *TableStore) SetReadCursor(campfireID string, timestamp int64) error {
 	entity := map[string]any{
-		"PartitionKey": encodeKey(campfireID),
+		"PartitionKey": ts.pk(campfireID),
 		"RowKey":       "cursor",
 		"CampfireID":   campfireID,
 		"LastReadAt":   strconv.FormatInt(timestamp, 10),
@@ -565,7 +639,7 @@ func (ts *TableStore) UpsertPeerEndpoint(e store.PeerEndpoint) error {
 		role = store.PeerRoleMember
 	}
 	entity := map[string]any{
-		"PartitionKey":  encodeKey(e.CampfireID),
+		"PartitionKey":  ts.pk(e.CampfireID),
 		"RowKey":        encodeKey(e.MemberPubkey),
 		"CampfireID":    e.CampfireID,
 		"MemberPubkey":  e.MemberPubkey,
@@ -578,13 +652,13 @@ func (ts *TableStore) UpsertPeerEndpoint(e store.PeerEndpoint) error {
 
 // DeletePeerEndpoint removes a peer endpoint.
 func (ts *TableStore) DeletePeerEndpoint(campfireID, memberPubkey string) error {
-	return deleteEntity(context.Background(), ts.peers, encodeKey(campfireID), encodeKey(memberPubkey))
+	return deleteEntity(context.Background(), ts.peers, ts.pk(campfireID), encodeKey(memberPubkey))
 }
 
 // ListPeerEndpoints returns all known peer endpoints for a campfire.
 func (ts *TableStore) ListPeerEndpoints(campfireID string) ([]store.PeerEndpoint, error) {
 	opts := &aztables.ListEntitiesOptions{
-		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", encodeKey(campfireID))),
+		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", ts.pk(campfireID))),
 	}
 	pager := ts.peers.NewListEntitiesPager(opts)
 	ctx := context.Background()
@@ -608,7 +682,7 @@ func (ts *TableStore) ListPeerEndpoints(campfireID string) ([]store.PeerEndpoint
 
 // GetPeerRole returns the role of a specific member.
 func (ts *TableStore) GetPeerRole(campfireID, memberPubkey string) (string, error) {
-	raw, err := getEntity(context.Background(), ts.peers, encodeKey(campfireID), encodeKey(memberPubkey))
+	raw, err := getEntity(context.Background(), ts.peers, ts.pk(campfireID), encodeKey(memberPubkey))
 	if err != nil {
 		return "", fmt.Errorf("aztable: GetPeerRole: %w", err)
 	}
@@ -629,7 +703,7 @@ func (ts *TableStore) GetPeerRole(campfireID, memberPubkey string) (string, erro
 // UpsertThresholdShare stores or replaces FROST DKG share data.
 func (ts *TableStore) UpsertThresholdShare(share store.ThresholdShare) error {
 	entity := map[string]any{
-		"PartitionKey":  encodeKey(share.CampfireID),
+		"PartitionKey":  ts.pk(share.CampfireID),
 		"RowKey":        "share",
 		"CampfireID":    share.CampfireID,
 		"ParticipantID": int64(share.ParticipantID),
@@ -641,7 +715,7 @@ func (ts *TableStore) UpsertThresholdShare(share store.ThresholdShare) error {
 
 // GetThresholdShare retrieves FROST DKG share data. Returns nil if absent.
 func (ts *TableStore) GetThresholdShare(campfireID string) (*store.ThresholdShare, error) {
-	raw, err := getEntity(context.Background(), ts.thresholds, encodeKey(campfireID), "share")
+	raw, err := getEntity(context.Background(), ts.thresholds, ts.pk(campfireID), "share")
 	if err != nil {
 		return nil, fmt.Errorf("aztable: GetThresholdShare: %w", err)
 	}
@@ -663,7 +737,7 @@ func (ts *TableStore) GetThresholdShare(campfireID string) (*store.ThresholdShar
 func (ts *TableStore) StorePendingThresholdShare(campfireID string, participantID uint32, shareData []byte) error {
 	rk := fmt.Sprintf("%0*d", participantPadWidth, participantID)
 	entity := map[string]any{
-		"PartitionKey":  encodeKey(campfireID),
+		"PartitionKey":  ts.pk(campfireID),
 		"RowKey":        rk,
 		"CampfireID":    campfireID,
 		"ParticipantID": int64(participantID),
@@ -676,7 +750,7 @@ func (ts *TableStore) StorePendingThresholdShare(campfireID string, participantI
 // Returns (0, nil, nil) if none available.
 func (ts *TableStore) ClaimPendingThresholdShare(campfireID string) (uint32, []byte, error) {
 	opts := &aztables.ListEntitiesOptions{
-		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", encodeKey(campfireID))),
+		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", ts.pk(campfireID))),
 		Top:    int32Ptr(1),
 	}
 	pager := ts.pending.NewListEntitiesPager(opts)
@@ -696,7 +770,7 @@ func (ts *TableStore) ClaimPendingThresholdShare(campfireID string) (uint32, []b
 			shareData := getChunked(m, "ShareData")
 
 			// Delete the claimed row.
-			if delErr := deleteEntity(ctx, ts.pending, encodeKey(campfireID), rk); delErr != nil {
+			if delErr := deleteEntity(ctx, ts.pending, ts.pk(campfireID), rk); delErr != nil {
 				return 0, nil, fmt.Errorf("aztable: ClaimPendingThresholdShare delete: %w", delErr)
 			}
 			return uint32(pid), shareData, nil
@@ -713,7 +787,7 @@ func (ts *TableStore) ClaimPendingThresholdShare(campfireID string) (uint32, []b
 func (ts *TableStore) UpsertEpochSecret(secret store.EpochSecret) error {
 	rk := fmt.Sprintf("%0*d", epochPadWidth, secret.Epoch)
 	entity := map[string]any{
-		"PartitionKey": encodeKey(secret.CampfireID),
+		"PartitionKey": ts.pk(secret.CampfireID),
 		"RowKey":       rk,
 		"CampfireID":   secret.CampfireID,
 		"Epoch":        fmt.Sprintf("%d", secret.Epoch),
@@ -727,7 +801,7 @@ func (ts *TableStore) UpsertEpochSecret(secret store.EpochSecret) error {
 // GetEpochSecret retrieves the epoch secret for (campfireID, epoch). Returns nil if absent.
 func (ts *TableStore) GetEpochSecret(campfireID string, epoch uint64) (*store.EpochSecret, error) {
 	rk := fmt.Sprintf("%0*d", epochPadWidth, epoch)
-	raw, err := getEntity(context.Background(), ts.epochs, encodeKey(campfireID), rk)
+	raw, err := getEntity(context.Background(), ts.epochs, ts.pk(campfireID), rk)
 	if err != nil {
 		return nil, fmt.Errorf("aztable: GetEpochSecret: %w", err)
 	}
@@ -740,7 +814,7 @@ func (ts *TableStore) GetEpochSecret(campfireID string, epoch uint64) (*store.Ep
 // GetLatestEpochSecret returns the highest-epoch secret for campfireID. Returns nil if absent.
 func (ts *TableStore) GetLatestEpochSecret(campfireID string) (*store.EpochSecret, error) {
 	opts := &aztables.ListEntitiesOptions{
-		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", encodeKey(campfireID))),
+		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", ts.pk(campfireID))),
 	}
 	pager := ts.epochs.NewListEntitiesPager(opts)
 	ctx := context.Background()
@@ -839,8 +913,8 @@ func (ts *TableStore) UpdateCampfireID(oldID, newID string) error {
 
 	// Evict superseded cache.
 	ts.mu.Lock()
-	delete(ts.supersededCache, oldID)
-	delete(ts.supersededCache, newID)
+	delete(ts.supersededCache, ts.pk(oldID))
+	delete(ts.supersededCache, ts.pk(newID))
 	ts.mu.Unlock()
 
 	return nil
@@ -851,21 +925,21 @@ func (ts *TableStore) UpdateCampfireID(oldID, newID string) error {
 // ---------------------------------------------------------------------------
 
 func (ts *TableStore) renameMembership(ctx context.Context, oldID, newID string) error {
-	raw, err := getEntity(ctx, ts.memberships, encodeKey(oldID), "membership")
+	raw, err := getEntity(ctx, ts.memberships, ts.pk(oldID), "membership")
 	if err != nil || raw == nil {
 		return err
 	}
-	raw["PartitionKey"] = encodeKey(newID)
+	raw["PartitionKey"] = ts.pk(newID)
 	raw["CampfireID"] = newID
 	if err := upsertEntity(ctx, ts.memberships, raw); err != nil {
 		return fmt.Errorf("aztable: UpdateCampfireID copy membership: %w", err)
 	}
-	return deleteEntity(ctx, ts.memberships, encodeKey(oldID), "membership")
+	return deleteEntity(ctx, ts.memberships, ts.pk(oldID), "membership")
 }
 
 func (ts *TableStore) renameMessages(ctx context.Context, oldID, newID string) error {
 	opts := &aztables.ListEntitiesOptions{
-		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", encodeKey(oldID))),
+		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", ts.pk(oldID))),
 	}
 	pager := ts.messages.NewListEntitiesPager(opts)
 	for pager.More() {
@@ -879,12 +953,12 @@ func (ts *TableStore) renameMessages(ctx context.Context, oldID, newID string) e
 				return err
 			}
 			rk, _ := m["RowKey"].(string)
-			m["PartitionKey"] = encodeKey(newID)
+			m["PartitionKey"] = ts.pk(newID)
 			m["CampfireID"] = newID
 			if err := upsertEntity(ctx, ts.messages, m); err != nil {
 				return fmt.Errorf("aztable: UpdateCampfireID copy message: %w", err)
 			}
-			if err := deleteEntity(ctx, ts.messages, encodeKey(oldID), rk); err != nil {
+			if err := deleteEntity(ctx, ts.messages, ts.pk(oldID), rk); err != nil {
 				return fmt.Errorf("aztable: UpdateCampfireID delete old message: %w", err)
 			}
 		}
@@ -893,21 +967,21 @@ func (ts *TableStore) renameMessages(ctx context.Context, oldID, newID string) e
 }
 
 func (ts *TableStore) renameCursor(ctx context.Context, oldID, newID string) error {
-	raw, err := getEntity(ctx, ts.cursors, encodeKey(oldID), "cursor")
+	raw, err := getEntity(ctx, ts.cursors, ts.pk(oldID), "cursor")
 	if err != nil || raw == nil {
 		return err
 	}
-	raw["PartitionKey"] = encodeKey(newID)
+	raw["PartitionKey"] = ts.pk(newID)
 	raw["CampfireID"] = newID
 	if err := upsertEntity(ctx, ts.cursors, raw); err != nil {
 		return fmt.Errorf("aztable: UpdateCampfireID copy cursor: %w", err)
 	}
-	return deleteEntity(ctx, ts.cursors, encodeKey(oldID), "cursor")
+	return deleteEntity(ctx, ts.cursors, ts.pk(oldID), "cursor")
 }
 
 func (ts *TableStore) renamePeers(ctx context.Context, oldID, newID string) error {
 	opts := &aztables.ListEntitiesOptions{
-		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", encodeKey(oldID))),
+		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", ts.pk(oldID))),
 	}
 	pager := ts.peers.NewListEntitiesPager(opts)
 	for pager.More() {
@@ -921,12 +995,12 @@ func (ts *TableStore) renamePeers(ctx context.Context, oldID, newID string) erro
 				return err
 			}
 			rk, _ := m["RowKey"].(string)
-			m["PartitionKey"] = encodeKey(newID)
+			m["PartitionKey"] = ts.pk(newID)
 			m["CampfireID"] = newID
 			if err := upsertEntity(ctx, ts.peers, m); err != nil {
 				return fmt.Errorf("aztable: UpdateCampfireID copy peer: %w", err)
 			}
-			if err := deleteEntity(ctx, ts.peers, encodeKey(oldID), rk); err != nil {
+			if err := deleteEntity(ctx, ts.peers, ts.pk(oldID), rk); err != nil {
 				return fmt.Errorf("aztable: UpdateCampfireID delete old peer: %w", err)
 			}
 		}
@@ -935,21 +1009,21 @@ func (ts *TableStore) renamePeers(ctx context.Context, oldID, newID string) erro
 }
 
 func (ts *TableStore) renameThreshold(ctx context.Context, oldID, newID string) error {
-	raw, err := getEntity(ctx, ts.thresholds, encodeKey(oldID), "share")
+	raw, err := getEntity(ctx, ts.thresholds, ts.pk(oldID), "share")
 	if err != nil || raw == nil {
 		return err
 	}
-	raw["PartitionKey"] = encodeKey(newID)
+	raw["PartitionKey"] = ts.pk(newID)
 	raw["CampfireID"] = newID
 	if err := upsertEntity(ctx, ts.thresholds, raw); err != nil {
 		return fmt.Errorf("aztable: UpdateCampfireID copy threshold: %w", err)
 	}
-	return deleteEntity(ctx, ts.thresholds, encodeKey(oldID), "share")
+	return deleteEntity(ctx, ts.thresholds, ts.pk(oldID), "share")
 }
 
 func (ts *TableStore) renamePendingShares(ctx context.Context, oldID, newID string) error {
 	opts := &aztables.ListEntitiesOptions{
-		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", encodeKey(oldID))),
+		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", ts.pk(oldID))),
 	}
 	pager := ts.pending.NewListEntitiesPager(opts)
 	for pager.More() {
@@ -963,12 +1037,12 @@ func (ts *TableStore) renamePendingShares(ctx context.Context, oldID, newID stri
 				return err
 			}
 			rk, _ := m["RowKey"].(string)
-			m["PartitionKey"] = encodeKey(newID)
+			m["PartitionKey"] = ts.pk(newID)
 			m["CampfireID"] = newID
 			if err := upsertEntity(ctx, ts.pending, m); err != nil {
 				return fmt.Errorf("aztable: UpdateCampfireID copy pending share: %w", err)
 			}
-			if err := deleteEntity(ctx, ts.pending, encodeKey(oldID), rk); err != nil {
+			if err := deleteEntity(ctx, ts.pending, ts.pk(oldID), rk); err != nil {
 				return fmt.Errorf("aztable: UpdateCampfireID delete old pending share: %w", err)
 			}
 		}
@@ -978,7 +1052,7 @@ func (ts *TableStore) renamePendingShares(ctx context.Context, oldID, newID stri
 
 func (ts *TableStore) renameEpochs(ctx context.Context, oldID, newID string) error {
 	opts := &aztables.ListEntitiesOptions{
-		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", encodeKey(oldID))),
+		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", ts.pk(oldID))),
 	}
 	pager := ts.epochs.NewListEntitiesPager(opts)
 	for pager.More() {
@@ -992,12 +1066,12 @@ func (ts *TableStore) renameEpochs(ctx context.Context, oldID, newID string) err
 				return err
 			}
 			rk, _ := m["RowKey"].(string)
-			m["PartitionKey"] = encodeKey(newID)
+			m["PartitionKey"] = ts.pk(newID)
 			m["CampfireID"] = newID
 			if err := upsertEntity(ctx, ts.epochs, m); err != nil {
 				return fmt.Errorf("aztable: UpdateCampfireID copy epoch: %w", err)
 			}
-			if err := deleteEntity(ctx, ts.epochs, encodeKey(oldID), rk); err != nil {
+			if err := deleteEntity(ctx, ts.epochs, ts.pk(oldID), rk); err != nil {
 				return fmt.Errorf("aztable: UpdateCampfireID delete old epoch: %w", err)
 			}
 		}
@@ -1007,7 +1081,7 @@ func (ts *TableStore) renameEpochs(ctx context.Context, oldID, newID string) err
 
 func (ts *TableStore) renameFilters(ctx context.Context, oldID, newID string) error {
 	opts := &aztables.ListEntitiesOptions{
-		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", encodeKey(oldID))),
+		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", ts.pk(oldID))),
 	}
 	pager := ts.filters.NewListEntitiesPager(opts)
 	for pager.More() {
@@ -1021,12 +1095,12 @@ func (ts *TableStore) renameFilters(ctx context.Context, oldID, newID string) er
 				return err
 			}
 			rk, _ := m["RowKey"].(string)
-			m["PartitionKey"] = encodeKey(newID)
+			m["PartitionKey"] = ts.pk(newID)
 			m["CampfireID"] = newID
 			if err := upsertEntity(ctx, ts.filters, m); err != nil {
 				return fmt.Errorf("aztable: UpdateCampfireID copy filter: %w", err)
 			}
-			if err := deleteEntity(ctx, ts.filters, encodeKey(oldID), rk); err != nil {
+			if err := deleteEntity(ctx, ts.filters, ts.pk(oldID), rk); err != nil {
 				return fmt.Errorf("aztable: UpdateCampfireID delete old filter: %w", err)
 			}
 		}
@@ -1061,8 +1135,9 @@ func (ts *TableStore) collectSupersededIDs(campfireID string) (map[string]bool, 
 		if maxTS == 0 {
 			return nil, nil
 		}
+		cacheKey := ts.pk(campfireID)
 		ts.mu.RLock()
-		entry, ok := ts.supersededCache[campfireID]
+		entry, ok := ts.supersededCache[cacheKey]
 		ts.mu.RUnlock()
 		if ok && entry.maxCompactionTS == maxTS {
 			cp := make(map[string]bool, len(entry.superseded))
@@ -1086,8 +1161,8 @@ func (ts *TableStore) collectSupersededIDs(campfireID string) (map[string]bool, 
 			}
 		}
 		ts.mu.Lock()
-		if _, exists := ts.supersededCache[campfireID]; !exists {
-			ts.supersededCache[campfireID] = supersededCacheEntry{
+		if _, exists := ts.supersededCache[cacheKey]; !exists {
+			ts.supersededCache[cacheKey] = supersededCacheEntry{
 				maxCompactionTS: maxTS,
 				superseded:      superseded,
 			}

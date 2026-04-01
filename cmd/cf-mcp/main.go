@@ -43,6 +43,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/store/aztable"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	"github.com/google/uuid"
@@ -1011,6 +1012,12 @@ func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonR
 		}
 		if err := agentID.Save(path); err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("saving identity: %v", err))
+		}
+		// Persist identity to cloud so it survives instance hops.
+		if s.sessManager != nil && s.sess != nil {
+			if data, readErr := os.ReadFile(path); readErr == nil {
+				s.sessManager.SaveIdentityToCloud(s.sess.internalID, data)
+			}
 		}
 	}
 
@@ -4374,6 +4381,28 @@ func main() {
 				}
 			}
 			sm.externalAddr = externalAddr
+
+			// Wire Azure Table Storage backend when the connection string is
+			// set. This makes sessions durable across Azure Functions instances:
+			// tokens, identities, and campfire state all survive instance hops.
+			if azConnStr := os.Getenv("AZURE_STORAGE_CONNECTION_STRING"); azConnStr != "" {
+				ss, ssErr := aztable.NewSessionStore(azConnStr)
+				if ssErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: azure session store init failed (%v); falling back to local-only persistence\n", ssErr)
+				} else {
+					if useErr := sm.UseSessionStore(ss); useErr != nil {
+						fmt.Fprintf(os.Stderr, "warning: azure session store load failed (%v); continuing with empty registry\n", useErr)
+					}
+					// Wire per-session namespaced aztable store as the campfire
+					// data backend. Each session gets its own namespace within the
+					// shared Azure Storage tables, equivalent to SQLite isolation.
+					connStr := azConnStr // capture for closure
+					sm.storeFactory = func(internalID string) (store.Store, error) {
+						return aztable.NewNamespacedTableStore(connStr, internalID)
+					}
+				}
+			}
+
 			srv.sessManager = sm
 			srv.transportRouter = router
 		}
