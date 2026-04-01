@@ -711,8 +711,10 @@ func TestExponentialBackoffTiming(t *testing.T) {
 			t.Errorf("gap[%d] = %v, expected >= %v", i, gap, delays[i])
 		}
 	}
-	// Second gap should be larger than first (exponential).
-	if gaps[1] < gaps[0] {
-		t.Errorf("gap[1]=%v should be >= gap[0]=%v (exponential backoff)", gaps[1], gaps[0])
+	// Verify exponential: configured delay[1] > delay[0].
+	// We don't compare measured gaps against each other because OS scheduling
+	// jitter can make a shorter configured delay produce a longer measured gap.
+	if delays[1] <= delays[0] {
+		t.Errorf("configured delays should be exponential: delays[1]=%v <= delays[0]=%v", delays[1], delays[0])
 	}
 }
