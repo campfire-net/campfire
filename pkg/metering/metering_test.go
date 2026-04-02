@@ -710,6 +710,518 @@ func TestGCZeroBalance_DeleteErrorSkipsMessage(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// GarbageCollectZeroBalance edge-case tests (campfire-agent-0n3)
+// ---------------------------------------------------------------------------
+
+// cutoffAwareGCStore records the cutoff passed by GarbageCollectZeroBalance
+// and filters messages by their simulated timestamp.
+type cutoffAwareGCStore struct {
+	// messages with simulated timestamps (UnixNano)
+	timedMessages []timedOldMessage
+	deleted       []string
+	recordedCutoff int64
+}
+
+type timedOldMessage struct {
+	metering.OldMessage
+	timestampNano int64 // simulated creation time
+}
+
+func (c *cutoffAwareGCStore) ListMessagesOlderThan(_ context.Context, campfireID string, cutoff int64) ([]metering.OldMessage, error) {
+	c.recordedCutoff = cutoff
+	var out []metering.OldMessage
+	for _, m := range c.timedMessages {
+		if campfireID != "" && m.CampfireID != campfireID {
+			continue
+		}
+		// Message is "older than cutoff" if its timestamp < cutoff
+		if m.timestampNano < cutoff {
+			out = append(out, m.OldMessage)
+		}
+	}
+	return out, nil
+}
+
+func (c *cutoffAwareGCStore) DeleteMessage(_ context.Context, _, messageID string) error {
+	c.deleted = append(c.deleted, messageID)
+	return nil
+}
+
+// TestGCZeroBalance_MaxAge_ExactBoundary verifies that the cutoff computation
+// uses time.Now().Add(-maxAge).UnixNano(). We place messages well before and
+// well after the boundary to avoid flakiness from the time gap between test
+// setup and function execution. The cutoff-aware mock validates that the
+// cutoff value is in the expected range.
+func TestGCZeroBalance_MaxAge_ExactBoundary(t *testing.T) {
+	maxAge := 90 * 24 * time.Hour
+	now := time.Now()
+
+	// Message 10 seconds older than maxAge — clearly should be GC'd.
+	wellBefore := now.Add(-maxAge - 10*time.Second).UnixNano()
+	// Message 1 second older than maxAge — should be GC'd.
+	oneSecBefore := now.Add(-maxAge - time.Second).UnixNano()
+	// Message 10 seconds younger than maxAge — should NOT be GC'd.
+	wellAfter := now.Add(-maxAge + 10*time.Second).UnixNano()
+	// Message 1 second younger than maxAge — should NOT be GC'd.
+	oneSecAfter := now.Add(-maxAge + time.Second).UnixNano()
+
+	store := &cutoffAwareGCStore{
+		timedMessages: []timedOldMessage{
+			{metering.OldMessage{ID: "msg-well-before", CampfireID: "cf-edge"}, wellBefore},
+			{metering.OldMessage{ID: "msg-1s-before", CampfireID: "cf-edge"}, oneSecBefore},
+			{metering.OldMessage{ID: "msg-1s-after", CampfireID: "cf-edge"}, oneSecAfter},
+			{metering.OldMessage{ID: "msg-well-after", CampfireID: "cf-edge"}, wellAfter},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"acct-edge": 0},
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "acct-edge" },
+		maxAge,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+
+	// msg-well-before and msg-1s-before are older than cutoff → deleted.
+	// msg-1s-after and msg-well-after are younger than cutoff → kept.
+	if n != 2 {
+		t.Errorf("expected 2 deletions (before-boundary messages), got %d", n)
+	}
+	deletedSet := make(map[string]bool)
+	for _, id := range store.deleted {
+		deletedSet[id] = true
+	}
+	if !deletedSet["msg-well-before"] || !deletedSet["msg-1s-before"] {
+		t.Errorf("expected msg-well-before and msg-1s-before deleted, got %v", store.deleted)
+	}
+	if deletedSet["msg-1s-after"] || deletedSet["msg-well-after"] {
+		t.Errorf("younger-than-cutoff messages should not be deleted, got %v", store.deleted)
+	}
+
+	// Verify the cutoff is in the right ballpark (within 2 seconds of expected).
+	expectedCutoff := now.Add(-maxAge).UnixNano()
+	diff := store.recordedCutoff - expectedCutoff
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 2*int64(time.Second) {
+		t.Errorf("cutoff drift too large: recorded=%d expected≈%d diff=%d",
+			store.recordedCutoff, expectedCutoff, diff)
+	}
+}
+
+// TestGCZeroBalance_MaxAge_ZeroDuration verifies behavior with maxAge=0.
+// All messages should be considered "older than now".
+func TestGCZeroBalance_MaxAge_ZeroDuration(t *testing.T) {
+	now := time.Now()
+	store := &cutoffAwareGCStore{
+		timedMessages: []timedOldMessage{
+			// A message created 1 second ago — older than "now"
+			{metering.OldMessage{ID: "msg-recent", CampfireID: "cf-z"}, now.Add(-time.Second).UnixNano()},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"acct-z": 0},
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "acct-z" },
+		0, // maxAge = 0 means cutoff = now
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 deletion with maxAge=0, got %d", n)
+	}
+}
+
+// TestGCZeroBalance_MaxAge_VeryLarge verifies that a very large maxAge means
+// almost nothing gets garbage collected (cutoff far in the past).
+func TestGCZeroBalance_MaxAge_VeryLarge(t *testing.T) {
+	now := time.Now()
+	// 10 years maxAge — cutoff is way in the past
+	maxAge := 10 * 365 * 24 * time.Hour
+	store := &cutoffAwareGCStore{
+		timedMessages: []timedOldMessage{
+			// Message from 1 year ago — still within 10-year maxAge
+			{metering.OldMessage{ID: "msg-1yr", CampfireID: "cf-v"}, now.Add(-365 * 24 * time.Hour).UnixNano()},
+			// Message from 5 years ago — still within 10-year maxAge
+			{metering.OldMessage{ID: "msg-5yr", CampfireID: "cf-v"}, now.Add(-5 * 365 * 24 * time.Hour).UnixNano()},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"acct-v": 0},
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "acct-v" },
+		maxAge,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	// Both messages are younger than 10 years, so neither should be GC'd
+	if n != 0 {
+		t.Errorf("expected 0 deletions with 10yr maxAge, got %d", n)
+	}
+}
+
+// TestGCZeroBalance_CampfireIDFiltering verifies that messages from different
+// campfires are correctly grouped and only zero-balance campfire messages are
+// deleted — the function scans all campfires (empty campfireID to store) then
+// groups by campfireID in-memory.
+func TestGCZeroBalance_CampfireIDFiltering(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "m1", CampfireID: "cf-poor"},
+			{ID: "m2", CampfireID: "cf-poor"},
+			{ID: "m3", CampfireID: "cf-rich"},
+			{ID: "m4", CampfireID: "cf-rich"},
+			{ID: "m5", CampfireID: "cf-rich"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{
+			"acct-poor": 0,
+			"acct-rich": 100,
+		},
+	}
+	accountLookup := func(id string) string {
+		switch id {
+		case "cf-poor":
+			return "acct-poor"
+		case "cf-rich":
+			return "acct-rich"
+		default:
+			return ""
+		}
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker, accountLookup, 90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	// Only cf-poor's 2 messages should be deleted
+	if n != 2 {
+		t.Errorf("expected 2 deletions (cf-poor only), got %d", n)
+	}
+	for _, id := range store.deleted {
+		if id == "m3" || id == "m4" || id == "m5" {
+			t.Errorf("cf-rich message %s should not have been deleted", id)
+		}
+	}
+}
+
+// TestGCZeroBalance_MultipleCampfiresSameAccount verifies grouping when
+// multiple campfires share the same Forge account (and that account has zero
+// balance). All campfires under that account should be GC'd.
+func TestGCZeroBalance_MultipleCampfiresSameAccount(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "m1", CampfireID: "cf-a1"},
+			{ID: "m2", CampfireID: "cf-a2"},
+			{ID: "m3", CampfireID: "cf-a3"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"shared-acct": 0},
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "shared-acct" },
+		90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("expected 3 deletions (all campfires share zero-balance account), got %d", n)
+	}
+}
+
+// TestGCZeroBalance_AllPositiveBalance verifies that when every campfire has
+// a positive balance, nothing is deleted.
+func TestGCZeroBalance_AllPositiveBalance(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "m1", CampfireID: "cf-1"},
+			{ID: "m2", CampfireID: "cf-2"},
+			{ID: "m3", CampfireID: "cf-3"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{
+			"acct-1": 100,
+			"acct-2": 1,    // minimal positive
+			"acct-3": 999999,
+		},
+	}
+	accountLookup := func(id string) string {
+		switch id {
+		case "cf-1":
+			return "acct-1"
+		case "cf-2":
+			return "acct-2"
+		case "cf-3":
+			return "acct-3"
+		default:
+			return ""
+		}
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker, accountLookup, 90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 deletions (all positive), got %d", n)
+	}
+	if len(store.deleted) != 0 {
+		t.Errorf("expected 0 delete calls, got %d", len(store.deleted))
+	}
+}
+
+// TestGCZeroBalance_AllZeroBalance verifies that when every campfire has zero
+// balance, all messages are deleted.
+func TestGCZeroBalance_AllZeroBalance(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "m1", CampfireID: "cf-1"},
+			{ID: "m2", CampfireID: "cf-2"},
+			{ID: "m3", CampfireID: "cf-3"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{
+			"acct-1": 0,
+			"acct-2": 0,
+			"acct-3": 0,
+		},
+	}
+	accountLookup := func(id string) string {
+		switch id {
+		case "cf-1":
+			return "acct-1"
+		case "cf-2":
+			return "acct-2"
+		case "cf-3":
+			return "acct-3"
+		default:
+			return ""
+		}
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker, accountLookup, 90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("expected 3 deletions (all zero), got %d", n)
+	}
+}
+
+// TestGCZeroBalance_BalanceExactlyOne verifies that balance=1 (minimal positive)
+// is treated as positive and messages are preserved.
+func TestGCZeroBalance_BalanceExactlyOne(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "m1", CampfireID: "cf-one"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"acct-one": 1}, // 1 micro-USD
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "acct-one" },
+		90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 deletions (balance=1 is positive), got %d", n)
+	}
+}
+
+// TestGCZeroBalance_BalanceExactlyNegativeOne verifies that balance=-1 (minimal
+// negative) triggers GC.
+func TestGCZeroBalance_BalanceExactlyNegativeOne(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "m1", CampfireID: "cf-negone"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"acct-negone": -1}, // -1 micro-USD
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "acct-negone" },
+		90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 deletion (balance=-1 is negative), got %d", n)
+	}
+}
+
+// TestGCZeroBalance_MixedMappedAndUnmapped verifies that campfires without
+// account mappings are silently skipped while mapped ones are processed.
+func TestGCZeroBalance_MixedMappedAndUnmapped(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "m1", CampfireID: "cf-mapped"},
+			{ID: "m2", CampfireID: "cf-unmapped"},
+			{ID: "m3", CampfireID: "cf-mapped"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"acct-mapped": 0},
+	}
+	accountLookup := func(id string) string {
+		if id == "cf-mapped" {
+			return "acct-mapped"
+		}
+		return "" // cf-unmapped has no mapping
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker, accountLookup, 90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	// Only cf-mapped messages (m1, m3) should be deleted
+	if n != 2 {
+		t.Errorf("expected 2 deletions (cf-unmapped skipped), got %d", n)
+	}
+	for _, id := range store.deleted {
+		if id == "m2" {
+			t.Error("unmapped campfire message m2 should not have been deleted")
+		}
+	}
+}
+
+// TestGCZeroBalance_SingleMessageSingleCampfire verifies the simplest
+// non-trivial case: one campfire, one message, zero balance.
+func TestGCZeroBalance_SingleMessageSingleCampfire(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "only-msg", CampfireID: "only-cf"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"only-acct": 0},
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "only-acct" },
+		24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 deletion, got %d", n)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "only-msg" {
+		t.Errorf("expected only-msg deleted, got %v", store.deleted)
+	}
+}
+
+// TestGCZeroBalance_ManyCampfiresVariedBalances exercises the grouping logic
+// with a larger number of campfires with varied balance states.
+func TestGCZeroBalance_ManyCampfiresVariedBalances(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "m1", CampfireID: "cf-zero-a"},
+			{ID: "m2", CampfireID: "cf-zero-a"},
+			{ID: "m3", CampfireID: "cf-zero-b"},
+			{ID: "m4", CampfireID: "cf-pos-a"},
+			{ID: "m5", CampfireID: "cf-pos-b"},
+			{ID: "m6", CampfireID: "cf-neg-a"},
+			{ID: "m7", CampfireID: "cf-neg-a"},
+			{ID: "m8", CampfireID: "cf-neg-a"},
+			{ID: "m9", CampfireID: "cf-unmapped"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{
+			"acct-zero-a": 0,
+			"acct-zero-b": 0,
+			"acct-pos-a":  500,
+			"acct-pos-b":  1,
+			"acct-neg-a":  -999,
+		},
+	}
+	accountLookup := func(id string) string {
+		switch id {
+		case "cf-zero-a":
+			return "acct-zero-a"
+		case "cf-zero-b":
+			return "acct-zero-b"
+		case "cf-pos-a":
+			return "acct-pos-a"
+		case "cf-pos-b":
+			return "acct-pos-b"
+		case "cf-neg-a":
+			return "acct-neg-a"
+		default:
+			return ""
+		}
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker, accountLookup, 90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	// Deleted: m1,m2 (cf-zero-a), m3 (cf-zero-b), m6,m7,m8 (cf-neg-a) = 6
+	// Kept: m4 (cf-pos-a), m5 (cf-pos-b), m9 (cf-unmapped) = 3
+	if n != 6 {
+		t.Errorf("expected 6 deletions, got %d", n)
+	}
+
+	deletedSet := make(map[string]bool)
+	for _, id := range store.deleted {
+		deletedSet[id] = true
+	}
+	// Verify positive-balance and unmapped messages were NOT deleted
+	for _, kept := range []string{"m4", "m5", "m9"} {
+		if deletedSet[kept] {
+			t.Errorf("message %s should not have been deleted", kept)
+		}
+	}
+	// Verify zero/negative-balance messages WERE deleted
+	for _, del := range []string{"m1", "m2", "m3", "m6", "m7", "m8"} {
+		if !deletedSet[del] {
+			t.Errorf("message %s should have been deleted", del)
+		}
+	}
+}
+
 // TestGCZeroBalance_BalanceCheckErrorSkipsCampfire verifies that a balance
 // check error causes that campfire to be skipped (fail-safe), not the whole run.
 func TestGCZeroBalance_BalanceCheckErrorSkipsCampfire(t *testing.T) {
