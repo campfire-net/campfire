@@ -1039,3 +1039,263 @@ func TestDispatcher_ConcurrentDispatch_MarkDispatched_Atomicity(t *testing.T) {
 		t.Fatalf("expected final status 'fulfilled', got %q", finalStatus)
 	}
 }
+
+// ---- ErrDispatchNotFound → not_found status (campfire-agent-43r) ----
+
+// TestDispatcher_Tier1_DispatchNotFound_SkipsMeteringAndCursor verifies that when
+// MarkFulfilledCAS returns ErrDispatchNotFound (record deleted between MarkDispatched
+// and CAS), the dispatcher returns "not_found" and skips metering + cursor advancement.
+func TestDispatcher_Tier1_DispatchNotFound_SkipsMeteringAndCursor(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	serverIDHex := env.serverID.PublicKeyHex()
+
+	var mu sync.Mutex
+	var meterEvents []convention.ConventionMeterEvent
+	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
+		mu.Lock()
+		meterEvents = append(meterEvents, ev)
+		mu.Unlock()
+	}
+
+	handlerDone := make(chan struct{})
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		// Delete the dispatch record mid-handler so that MarkFulfilledCAS
+		// will return ErrDispatchNotFound.
+		ds.DeleteDispatch(env.campfireID, req.MessageID)
+		close(handlerDone)
+		return &convention.Response{Payload: map[string]any{"ok": true}}, nil
+	}, serverIDHex, "forge-acct-1")
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	msg.ID = "msg-notfound-tier1"
+	msg.Timestamp = time.Now().UnixNano()
+
+	dispatched := d.Dispatch(context.Background(), env.campfireID, msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	// Wait for handler to complete.
+	select {
+	case <-handlerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for handler")
+	}
+	// Give invokeHandler time to run metering/cursor logic.
+	time.Sleep(100 * time.Millisecond)
+
+	// Metering hook must NOT have fired.
+	mu.Lock()
+	nEvents := len(meterEvents)
+	mu.Unlock()
+	if nEvents != 0 {
+		t.Fatalf("expected 0 metering events for not_found dispatch, got %d", nEvents)
+	}
+
+	// Cursor must NOT have advanced.
+	cursor, err := ds.GetCursor(context.Background(), serverIDHex, env.campfireID)
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cursor != 0 {
+		t.Fatalf("expected cursor 0 (not advanced) for not_found dispatch, got %d", cursor)
+	}
+}
+
+// TestDispatcher_Tier1_HandlerError_DispatchNotFound_SkipsMeteringAndCursor verifies
+// that when the handler errors and MarkFailedCAS returns ErrDispatchNotFound, the
+// dispatcher returns "not_found" and skips metering + cursor advancement.
+func TestDispatcher_Tier1_HandlerError_DispatchNotFound_SkipsMeteringAndCursor(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	serverIDHex := env.serverID.PublicKeyHex()
+
+	var mu sync.Mutex
+	var meterEvents []convention.ConventionMeterEvent
+	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
+		mu.Lock()
+		meterEvents = append(meterEvents, ev)
+		mu.Unlock()
+	}
+
+	handlerDone := make(chan struct{})
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		// Delete the dispatch record mid-handler so MarkFailedCAS returns ErrDispatchNotFound.
+		ds.DeleteDispatch(env.campfireID, req.MessageID)
+		close(handlerDone)
+		return nil, fmt.Errorf("intentional handler error")
+	}, serverIDHex, "forge-acct-1")
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	msg.ID = "msg-notfound-tier1-err"
+	msg.Timestamp = time.Now().UnixNano()
+
+	dispatched := d.Dispatch(context.Background(), env.campfireID, msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	select {
+	case <-handlerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for handler")
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Metering hook must NOT have fired.
+	mu.Lock()
+	nEvents := len(meterEvents)
+	mu.Unlock()
+	if nEvents != 0 {
+		t.Fatalf("expected 0 metering events for not_found dispatch, got %d", nEvents)
+	}
+
+	// Cursor must NOT have advanced.
+	cursor, err := ds.GetCursor(context.Background(), serverIDHex, env.campfireID)
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cursor != 0 {
+		t.Fatalf("expected cursor 0 (not advanced) for not_found dispatch, got %d", cursor)
+	}
+}
+
+// TestDispatcher_Tier2_DispatchNotFound_SkipsMeteringAndCursor verifies the
+// not_found path for Tier 2 dispatchers. When MarkFulfilledCAS returns
+// ErrDispatchNotFound after a 202, metering and cursor must be skipped.
+func TestDispatcher_Tier2_DispatchNotFound_SkipsMeteringAndCursor(t *testing.T) {
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	serverIDHex := "server-notfound-tier2"
+
+	var mu sync.Mutex
+	var meterEvents []convention.ConventionMeterEvent
+	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
+		mu.Lock()
+		meterEvents = append(meterEvents, ev)
+		mu.Unlock()
+	}
+
+	requestReceived := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Delete the dispatch record before responding 202, so MarkFulfilledCAS
+		// will find no record.
+		ds.DeleteDispatch("cf-nf-t2", "msg-notfound-tier2")
+		close(requestReceived)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	d.RegisterTier2Handler("cf-nf-t2", "myconv", "myop", server.URL, nil, serverIDHex, "forge-acct-2")
+
+	msg := &store.MessageRecord{
+		ID:         "msg-notfound-tier2",
+		CampfireID: "cf-nf-t2",
+		Sender:     "aabb",
+		Payload:    []byte(`{"convention":"myconv","operation":"myop"}`),
+		Tags:       []string{"myconv:myop"},
+		Timestamp:  time.Now().UnixNano(),
+	}
+
+	dispatched := d.Dispatch(context.Background(), "cf-nf-t2", msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	select {
+	case <-requestReceived:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for HTTP handler")
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Metering hook must NOT have fired.
+	mu.Lock()
+	nEvents := len(meterEvents)
+	mu.Unlock()
+	if nEvents != 0 {
+		t.Fatalf("expected 0 metering events for not_found tier2 dispatch, got %d", nEvents)
+	}
+
+	// Cursor must NOT have advanced.
+	cursor, err := ds.GetCursor(context.Background(), serverIDHex, "cf-nf-t2")
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cursor != 0 {
+		t.Fatalf("expected cursor 0 (not advanced) for not_found tier2 dispatch, got %d", cursor)
+	}
+}
+
+// TestDispatcher_Tier2_Non202_DispatchNotFound_SkipsMeteringAndCursor verifies
+// the not_found path for Tier 2 when the HTTP handler returns non-202 and the
+// subsequent MarkFailedCAS returns ErrDispatchNotFound.
+func TestDispatcher_Tier2_Non202_DispatchNotFound_SkipsMeteringAndCursor(t *testing.T) {
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	serverIDHex := "server-notfound-tier2-fail"
+
+	var mu sync.Mutex
+	var meterEvents []convention.ConventionMeterEvent
+	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
+		mu.Lock()
+		meterEvents = append(meterEvents, ev)
+		mu.Unlock()
+	}
+
+	requestReceived := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Delete dispatch record before returning 500, so MarkFailedCAS returns ErrDispatchNotFound.
+		ds.DeleteDispatch("cf-nf-t2-fail", "msg-notfound-tier2-fail")
+		close(requestReceived)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	d.RegisterTier2Handler("cf-nf-t2-fail", "myconv", "myop", server.URL, nil, serverIDHex, "forge-acct-3")
+
+	msg := &store.MessageRecord{
+		ID:         "msg-notfound-tier2-fail",
+		CampfireID: "cf-nf-t2-fail",
+		Sender:     "aabb",
+		Payload:    []byte(`{"convention":"myconv","operation":"myop"}`),
+		Tags:       []string{"myconv:myop"},
+		Timestamp:  time.Now().UnixNano(),
+	}
+
+	dispatched := d.Dispatch(context.Background(), "cf-nf-t2-fail", msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	select {
+	case <-requestReceived:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for HTTP handler")
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Metering hook must NOT have fired.
+	mu.Lock()
+	nEvents := len(meterEvents)
+	mu.Unlock()
+	if nEvents != 0 {
+		t.Fatalf("expected 0 metering events for not_found tier2 dispatch, got %d", nEvents)
+	}
+
+	// Cursor must NOT have advanced.
+	cursor, err := ds.GetCursor(context.Background(), serverIDHex, "cf-nf-t2-fail")
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cursor != 0 {
+		t.Fatalf("expected cursor 0 (not advanced) for not_found tier2 dispatch, got %d", cursor)
+	}
+}

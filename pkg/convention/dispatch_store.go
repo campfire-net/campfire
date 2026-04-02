@@ -361,6 +361,16 @@ func (s *MemoryDispatchStore) BackdateDispatch(campfireID, messageID string, age
 	}
 }
 
+// DeleteDispatch removes a dispatch record entirely. This is a test helper
+// for simulating record-not-found conditions during CAS operations.
+func (s *MemoryDispatchStore) DeleteDispatch(campfireID, messageID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := dispatchKey{campfireID: campfireID, messageID: messageID}
+	delete(s.dispatches, k)
+	delete(s.versions, k)
+}
+
 // CleanupOldDispatches removes fulfilled/failed entries older than maxAge.
 // Returns the number of entries removed.
 func (s *MemoryDispatchStore) CleanupOldDispatches(_ context.Context, maxAge time.Duration) (int, error) {

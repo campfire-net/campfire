@@ -316,8 +316,14 @@ func (d *ConventionDispatcher) invokeHandler(
 
 	// If the handler's result was rejected by CAS (generation mismatch),
 	// status will be "stale" — skip metering and cursor advancement.
+	// If the dispatch record was not found, status will be "not_found" —
+	// also skip metering and cursor advancement (campfire-agent-43r).
 	if status == "stale" {
 		d.logger.Printf("convention dispatcher: stale handler discarded for %s/%s (gen %d superseded)", campfireID, msg.ID, gen)
+		return
+	}
+	if status == "not_found" {
+		d.logger.Printf("convention dispatcher: dispatch record not found for %s/%s, skipping metering/cursor", campfireID, msg.ID)
 		return
 	}
 
@@ -344,7 +350,7 @@ func (d *ConventionDispatcher) invokeHandler(
 // dispatchTier1 calls a registered Go handler and sends a fulfillment response.
 // The gen parameter is the RedispatchCount snapshot taken before the handler was
 // invoked; it is used for CAS-guarded status updates to prevent double-dispatch.
-// Returns the final status string ("fulfilled", "failed", or "stale").
+// Returns the final status string ("fulfilled", "failed", "stale", or "not_found").
 func (d *ConventionDispatcher) dispatchTier1(
 	ctx context.Context,
 	campfireID string,
@@ -372,6 +378,9 @@ func (d *ConventionDispatcher) dispatchTier1(
 		// Mark failed only if we still own this generation.
 		ok, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen)
 		if casErr != nil {
+			if errors.Is(casErr, ErrDispatchNotFound) {
+				return "not_found"
+			}
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 			return "failed"
 		}
@@ -388,6 +397,9 @@ func (d *ConventionDispatcher) dispatchTier1(
 	// CAS-guard the fulfillment: only proceed if no re-dispatch has occurred.
 	ok, casErr := d.store.MarkFulfilledCAS(ctx, campfireID, msg.ID, gen)
 	if casErr != nil {
+		if errors.Is(casErr, ErrDispatchNotFound) {
+			return "not_found"
+		}
 		d.logger.Printf("convention dispatcher: MarkFulfilledCAS (msg %s): %v", msg.ID, casErr)
 		return "failed"
 	}
@@ -412,7 +424,7 @@ func (d *ConventionDispatcher) dispatchTier1(
 
 // dispatchTier2 POSTs a message to a registered HTTP handler URL.
 // The gen parameter is the RedispatchCount snapshot for CAS-guarded status updates.
-// Returns the final status string ("fulfilled", "failed", or "stale").
+// Returns the final status string ("fulfilled", "failed", "stale", or "not_found").
 func (d *ConventionDispatcher) dispatchTier2(
 	ctx context.Context,
 	campfireID string,
@@ -440,6 +452,9 @@ func (d *ConventionDispatcher) dispatchTier2(
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 marshal (msg %s): %v", msg.ID, err)
 		if ok, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
+			if errors.Is(casErr, ErrDispatchNotFound) {
+				return "not_found"
+			}
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 		} else if !ok {
 			return "stale"
@@ -451,6 +466,9 @@ func (d *ConventionDispatcher) dispatchTier2(
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 build request (msg %s): %v", msg.ID, err)
 		if ok, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
+			if errors.Is(casErr, ErrDispatchNotFound) {
+				return "not_found"
+			}
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 		} else if !ok {
 			return "stale"
@@ -463,6 +481,9 @@ func (d *ConventionDispatcher) dispatchTier2(
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 POST (msg %s): %v", msg.ID, err)
 		if ok, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
+			if errors.Is(casErr, ErrDispatchNotFound) {
+				return "not_found"
+			}
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 		} else if !ok {
 			return "stale"
@@ -474,6 +495,9 @@ func (d *ConventionDispatcher) dispatchTier2(
 	if resp.StatusCode == http.StatusAccepted {
 		ok, casErr := d.store.MarkFulfilledCAS(ctx, campfireID, msg.ID, gen)
 		if casErr != nil {
+			if errors.Is(casErr, ErrDispatchNotFound) {
+				return "not_found"
+			}
 			d.logger.Printf("convention dispatcher: MarkFulfilledCAS (msg %s): %v", msg.ID, casErr)
 			return "failed"
 		}
@@ -486,6 +510,9 @@ func (d *ConventionDispatcher) dispatchTier2(
 	// Non-202 response is treated as failure.
 	d.logger.Printf("convention dispatcher: tier2 POST status %d (msg %s)", resp.StatusCode, msg.ID)
 	if ok, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
+		if errors.Is(casErr, ErrDispatchNotFound) {
+			return "not_found"
+		}
 		d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 	} else if !ok {
 		return "stale"
