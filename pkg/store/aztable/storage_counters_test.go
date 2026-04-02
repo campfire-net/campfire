@@ -11,9 +11,11 @@
 package aztable_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -346,5 +348,77 @@ func TestStorageCounter_MessageCountDecrementOnCompaction(t *testing.T) {
 	expectedMsgCount := int64(3) // 5 - 3 + 1
 	if msgCountAfter != expectedMsgCount {
 		t.Errorf("MessageCount after compact: got %d, want %d (bug: counter not decremented on compaction)", msgCountAfter, expectedMsgCount)
+	}
+}
+
+// TestStorageCounter_ClampAtZeroLogsWarning verifies that when a decrement
+// would push BytesStored or MessageCount below zero, the counter is clamped
+// at zero and an slog.Warn is emitted with the expected attributes.
+func TestStorageCounter_ClampAtZeroLogsWarning(t *testing.T) {
+	ts := newTestTableStore(t)
+	cfID := fmt.Sprintf("cf-counter-clamp-warn-%d", time.Now().UnixNano())
+
+	// Add a single small message so the counter has a known starting value.
+	payload := []byte("small")
+	now := time.Now().UnixNano()
+	msg := store.MessageRecord{
+		ID:         fmt.Sprintf("msg-clamp-%d", now),
+		CampfireID: cfID,
+		Sender:     "test-sender",
+		Payload:    payload,
+		Tags:       []string{"test"},
+		Timestamp:  now,
+		ReceivedAt: now,
+	}
+	if _, err := ts.AddMessage(msg); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	// Verify starting counters.
+	ctx := context.Background()
+	bytesBefore, msgCountBefore, err := ts.GetStorageCounter(ctx, cfID)
+	if err != nil {
+		t.Fatalf("GetStorageCounter before: %v", err)
+	}
+	if bytesBefore != int64(len(payload)) || msgCountBefore != 1 {
+		t.Fatalf("unexpected starting counters: bytes=%d, msgs=%d", bytesBefore, msgCountBefore)
+	}
+
+	// Capture slog output by installing a text handler writing to a buffer.
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(oldLogger)
+
+	// Decrement by more than exists: deltaBytes=1000 (actual=5), deltaMessages=10 (actual=1).
+	err = ts.DecrementStorageCounter(ctx, cfID, 1000, 10)
+	if err != nil {
+		t.Fatalf("DecrementStorageCounter: %v", err)
+	}
+
+	// Verify counters are clamped at zero.
+	bytesAfter, msgCountAfter, err := ts.GetStorageCounter(ctx, cfID)
+	if err != nil {
+		t.Fatalf("GetStorageCounter after: %v", err)
+	}
+	if bytesAfter != 0 {
+		t.Errorf("BytesStored after clamp: got %d, want 0", bytesAfter)
+	}
+	if msgCountAfter != 0 {
+		t.Errorf("MessageCount after clamp: got %d, want 0", msgCountAfter)
+	}
+
+	// Verify warning logs were emitted for both counters.
+	logOutput := buf.String()
+	for _, counter := range []string{"BytesStored", "MessageCount"} {
+		if !bytes.Contains([]byte(logOutput), []byte(counter)) {
+			t.Errorf("expected slog.Warn for counter %q in log output, got: %s", counter, logOutput)
+		}
+	}
+	if !bytes.Contains([]byte(logOutput), []byte("storage counter clamped at zero")) {
+		t.Errorf("expected 'storage counter clamped at zero' in log output, got: %s", logOutput)
+	}
+	if !bytes.Contains([]byte(logOutput), []byte(cfID)) {
+		t.Errorf("expected campfire_id %q in log output, got: %s", cfID, logOutput)
 	}
 }

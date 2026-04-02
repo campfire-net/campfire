@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
@@ -209,14 +210,28 @@ func (ts *TableStore) decrementStorageCounter(ctx context.Context, campfireID st
 		existing := toInt64(current["BytesStored"])
 		newBytes := existing - deltaBytes
 		if newBytes < 0 {
-			newBytes = 0 // clamp
+			slog.Warn("storage counter clamped at zero",
+				"counter", "BytesStored",
+				"campfire_id", campfireID,
+				"expected_decrement", deltaBytes,
+				"actual_value", existing,
+				"clamped_result", int64(0),
+			)
+			newBytes = 0
 		}
 		current["BytesStored"] = newBytes
 
 		existingMsgCount := toInt64(current["MessageCount"])
 		newMsgCount := existingMsgCount - deltaMessages
 		if newMsgCount < 0 {
-			newMsgCount = 0 // clamp
+			slog.Warn("storage counter clamped at zero",
+				"counter", "MessageCount",
+				"campfire_id", campfireID,
+				"expected_decrement", deltaMessages,
+				"actual_value", existingMsgCount,
+				"clamped_result", int64(0),
+			)
+			newMsgCount = 0
 		}
 		current["MessageCount"] = newMsgCount
 		current["UpdatedAt"] = time.Now().UnixNano()
