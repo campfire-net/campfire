@@ -871,8 +871,23 @@ func TestDispatchStore_MarkBilled_NoRecord(t *testing.T) {
 }
 
 // TestDispatchStore_MarkFulfilled_ConcurrentRace verifies that when two goroutines
-// race to call MarkFulfilled on the same record, exactly one succeeds and the other
+// race to update the same dispatch record, exactly one succeeds and the other
 // gets ErrConcurrentModification (ETag guard in updateDispatchStatus).
+//
+// Design:
+//
+//  1. Both goroutines write DIFFERENT status values (one "fulfilled", one
+//     "failed") so there is no ambiguity regardless of ordering: exactly one
+//     value can persist, meaning the ETag guard must have fired for the other.
+//
+//  2. A read barrier (readyWg + writeGate) guarantees both goroutines have
+//     completed their GetEntity read — capturing the same ETag — before either
+//     issues its UpdateEntity write. This maximises the race window and
+//     prevents the sequential read→write→read→write pattern that would give
+//     both goroutines fresh ETags and allow both writes to succeed.
+//
+// Together these two measures make the test deterministic against Azurite's
+// concurrency handling.
 func TestDispatchStore_MarkFulfilled_ConcurrentRace(t *testing.T) {
 	s := newTestDispatchStore(t)
 	ctx := context.Background()
@@ -885,21 +900,35 @@ func TestDispatchStore_MarkFulfilled_ConcurrentRace(t *testing.T) {
 		t.Fatalf("MarkDispatched: %v", err)
 	}
 
-	// Two goroutines race to fulfill the same record.
+	// readyWg counts down as each goroutine finishes its GetEntity read.
+	// writeGate is closed once both reads are done, releasing both writes.
+	var readyWg sync.WaitGroup
+	readyWg.Add(2)
+	writeGate := make(chan struct{})
+
+	afterRead := func() {
+		readyWg.Done()    // signal this goroutine's read is done
+		<-writeGate       // wait until both reads are done before writing
+	}
+
+	// Goroutine 0 → "fulfilled", goroutine 1 → "failed".
+	// Different status values ensure only one can be the winner.
+	statuses := []string{"fulfilled", "failed"}
+
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
-	gate := make(chan struct{})
 
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			<-gate
-			errs[idx] = s.MarkFulfilled(ctx, cfID, msgID)
+			errs[idx] = s.UpdateDispatchStatusWithBarrier(ctx, cfID, msgID, statuses[idx], afterRead)
 		}(i)
 	}
 
-	close(gate)
+	// Wait for both reads to complete, then release both writes simultaneously.
+	readyWg.Wait()
+	close(writeGate)
 	wg.Wait()
 
 	// Exactly one should succeed; the other should get ErrConcurrentModification.
@@ -922,13 +951,14 @@ func TestDispatchStore_MarkFulfilled_ConcurrentRace(t *testing.T) {
 		t.Errorf("expected exactly 1 conflict, got %d (wins=%d, conflicts=%d)", conflicts, wins, conflicts)
 	}
 
-	// Verify the record is now fulfilled.
+	// Verify the record is in a terminal state (either "fulfilled" or "failed"
+	// depending on which goroutine won the race).
 	status, err := s.GetDispatchStatus(ctx, cfID, msgID)
 	if err != nil {
 		t.Fatalf("GetDispatchStatus after race: %v", err)
 	}
-	if status != "fulfilled" {
-		t.Errorf("expected status 'fulfilled', got %q", status)
+	if status != "fulfilled" && status != "failed" {
+		t.Errorf("expected terminal status ('fulfilled' or 'failed'), got %q", status)
 	}
 }
 

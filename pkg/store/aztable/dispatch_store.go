@@ -245,11 +245,14 @@ func (s *TableDispatchStore) updateDispatchStatus(ctx context.Context, campfireI
 		IfMatch:    &etag,
 	})
 	if updateErr != nil {
-		if isNotFoundError(updateErr) || isMergeNotFoundError(updateErr) {
-			return convention.ErrDispatchNotFound
-		}
+		// Check precondition failure (412) BEFORE not-found (404): isNotFoundError
+		// uses a substring match on "404" which can false-positive on entity keys
+		// that happen to contain that digit sequence (e.g. nanosecond timestamps).
 		if isPreconditionFailedError(updateErr) {
 			return fmt.Errorf("%w: Azure ETag mismatch on %s/%s", convention.ErrConcurrentModification, campfireID, messageID)
+		}
+		if isNotFoundError(updateErr) || isMergeNotFoundError(updateErr) {
+			return convention.ErrDispatchNotFound
 		}
 		return fmt.Errorf("aztable: DispatchStore.%s: update: %w", status, updateErr)
 	}
@@ -525,11 +528,14 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 		IfMatch:    &etag,
 	})
 	if updateErr != nil {
-		if isNotFoundError(updateErr) || isMergeNotFoundError(updateErr) {
-			return nil
-		}
+		// Check precondition failure (412) BEFORE not-found (404): isNotFoundError
+		// uses a substring match on "404" which can false-positive on entity keys
+		// that happen to contain that digit sequence (e.g. nanosecond timestamps).
 		if isPreconditionFailedError(updateErr) {
 			return fmt.Errorf("%w: Azure ETag mismatch on %s/%s", convention.ErrConcurrentModification, campfireID, messageID)
+		}
+		if isNotFoundError(updateErr) || isMergeNotFoundError(updateErr) {
+			return nil
 		}
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: update: %w", updateErr)
 	}
