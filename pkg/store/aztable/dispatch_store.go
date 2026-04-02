@@ -474,22 +474,44 @@ func (s *TableDispatchStore) ListUnbilledDispatches(ctx context.Context) ([]conv
 }
 
 // MarkBilled sets BilledAt on a dispatch record to the current time.
-// No-op if the record does not exist.
-func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, messageID string) error {
+// Uses ETag-based optimistic concurrency to prevent lost updates: if the
+// record was modified since the caller read it (e.g. by a concurrent
+// IncrementRedispatchCount), returns convention.ErrConcurrentModification.
+// No-op (returns nil) if the record does not exist.
+//
+// The etag parameter from the interface is not used directly — Azure Table
+// Storage provides its own authoritative ETag via GetEntity. The guard is
+// the Azure ETag read at MarkBilled time, which detects any concurrent write.
+func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, messageID, _ string) error {
 	pk := encodeKey(campfireID)
 	rk := encodeKey(messageID)
 
-	raw, err := getEntity(ctx, s.dispatched, pk, rk)
+	resp, err := s.dispatched.GetEntity(ctx, pk, rk, nil)
 	if err != nil {
+		if isNotFoundError(err) {
+			return nil
+		}
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: get: %w", err)
 	}
-	if raw == nil {
-		// No record — nothing to update.
-		return nil
+	var m map[string]any
+	if err := json.Unmarshal(resp.Value, &m); err != nil {
+		return fmt.Errorf("aztable: DispatchStore.MarkBilled: unmarshal: %w", err)
 	}
-	raw["BilledAt"] = time.Now().UnixNano()
-	if err := upsertEntity(ctx, s.dispatched, raw); err != nil {
-		return fmt.Errorf("aztable: DispatchStore.MarkBilled: upsert: %w", err)
+	m["BilledAt"] = time.Now().UnixNano()
+	data, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("aztable: DispatchStore.MarkBilled: marshal: %w", err)
+	}
+	etag := resp.ETag
+	_, updateErr := s.dispatched.UpdateEntity(ctx, data, &aztables.UpdateEntityOptions{
+		UpdateMode: aztables.UpdateModeReplace,
+		IfMatch:    &etag,
+	})
+	if updateErr != nil {
+		if isPreconditionFailedError(updateErr) {
+			return fmt.Errorf("%w: Azure ETag mismatch on %s/%s", convention.ErrConcurrentModification, campfireID, messageID)
+		}
+		return fmt.Errorf("aztable: DispatchStore.MarkBilled: update: %w", updateErr)
 	}
 	return nil
 }
@@ -499,6 +521,7 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 // ---------------------------------------------------------------------------
 
 // dispatchRecordFromEntity converts a raw Table Storage entity map to a DispatchRecord.
+// The odata.etag field from list responses is mapped to ETag for optimistic concurrency.
 func dispatchRecordFromEntity(m map[string]any) convention.DispatchRecord {
 	dispatchedAtNs := toInt64(m["DispatchedAt"])
 	return convention.DispatchRecord{
@@ -514,6 +537,7 @@ func dispatchRecordFromEntity(m map[string]any) convention.DispatchRecord {
 		RedispatchCount: int(toInt64(m["RedispatchCount"])),
 		TokensConsumed:  toInt64(m["TokensConsumed"]),
 		BilledAt:        toInt64(m["BilledAt"]),
+		ETag:            str(m, "odata.etag"),
 	}
 }
 
