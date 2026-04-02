@@ -356,11 +356,11 @@ func (ts *TableStore) AddMessage(m store.MessageRecord) (bool, error) {
 		delete(ts.supersededCache, ts.pk(m.CampfireID))
 		ts.mu.Unlock()
 
-		// Decrement the storage counter by the bytes superseded (if provided).
+		// Decrement the storage counter by the bytes and messages superseded (if provided).
 		if ts.counters != nil && len(m.Payload) > 0 {
 			var cp compactionPayload
-			if err := json.Unmarshal(m.Payload, &cp); err == nil && cp.BytesSuperseded > 0 {
-				if counterErr := ts.decrementStorageCounter(context.Background(), m.CampfireID, cp.BytesSuperseded); counterErr != nil {
+			if err := json.Unmarshal(m.Payload, &cp); err == nil && (cp.BytesSuperseded > 0 || len(cp.Supersedes) > 0) {
+				if counterErr := ts.decrementStorageCounter(context.Background(), m.CampfireID, cp.BytesSuperseded, int64(len(cp.Supersedes))); counterErr != nil {
 					// Best-effort: do not fail the write for a counter update failure.
 					_ = counterErr
 				}

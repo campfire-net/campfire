@@ -252,12 +252,99 @@ func TestStorageCounter_CompactionDecrement(t *testing.T) {
 	// After compaction:
 	// - BytesStored was decremented by totalBytes (superseded messages)
 	// - BytesStored was incremented by len(payloadBytes) (the compaction message)
+	// - MessageCount was decremented by len(superseded) and incremented by 1 (the compaction message)
 	expectedBytes := int64(len(payloadBytes))
-	bytesStored2, _, err := ts.GetStorageCounter(ctx, cfID)
+	expectedMsgCount := int64(1) // 2 original - 2 superseded + 1 compaction message = 1
+	bytesStored2, msgCount2, err := ts.GetStorageCounter(ctx, cfID)
 	if err != nil {
 		t.Fatalf("GetStorageCounter after compact: %v", err)
 	}
 	if bytesStored2 != expectedBytes {
 		t.Errorf("BytesStored after compact: got %d, want %d", bytesStored2, expectedBytes)
+	}
+	if msgCount2 != expectedMsgCount {
+		t.Errorf("MessageCount after compact: got %d, want %d", msgCount2, expectedMsgCount)
+	}
+}
+
+// TestStorageCounter_MessageCountDecrementOnCompaction is a regression test for
+// campfire-agent-r0d: MessageCount must be decremented when messages are
+// superseded during compaction. Without the fix, MessageCount would drift
+// upward over time because it was only ever incremented.
+func TestStorageCounter_MessageCountDecrementOnCompaction(t *testing.T) {
+	ts := newTestTableStore(t)
+	cfID := fmt.Sprintf("cf-counter-msgcount-%d", time.Now().UnixNano())
+
+	// Add 5 messages.
+	now := time.Now().UnixNano()
+	msgIDs := make([]string, 5)
+	var totalBytes int64
+	for i := 0; i < 5; i++ {
+		payload := []byte(fmt.Sprintf("message-%d-payload", i))
+		totalBytes += int64(len(payload))
+		msgIDs[i] = fmt.Sprintf("msg-msgcount-%d-%d", now, i)
+		msg := store.MessageRecord{
+			ID:         msgIDs[i],
+			CampfireID: cfID,
+			Sender:     "test-sender",
+			Payload:    payload,
+			Tags:       []string{"test"},
+			Timestamp:  now + int64(i),
+			ReceivedAt: now,
+		}
+		if _, err := ts.AddMessage(msg); err != nil {
+			t.Fatalf("AddMessage[%d]: %v", i, err)
+		}
+	}
+
+	ctx := context.Background()
+	_, msgCountBefore, err := ts.GetStorageCounter(ctx, cfID)
+	if err != nil {
+		t.Fatalf("GetStorageCounter before compact: %v", err)
+	}
+	if msgCountBefore != 5 {
+		t.Fatalf("MessageCount before compact: got %d, want 5", msgCountBefore)
+	}
+
+	// Compact first 3 messages.
+	type compactPayloadShape struct {
+		Supersedes      []string `json:"supersedes"`
+		BytesSuperseded int64    `json:"bytes_superseded"`
+	}
+	supersededIDs := msgIDs[:3]
+	var supersededBytes int64
+	for i := 0; i < 3; i++ {
+		supersededBytes += int64(len(fmt.Sprintf("message-%d-payload", i)))
+	}
+	cp := compactPayloadShape{
+		Supersedes:      supersededIDs,
+		BytesSuperseded: supersededBytes,
+	}
+	payloadBytes, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatalf("marshal compact payload: %v", err)
+	}
+
+	compactMsg := store.MessageRecord{
+		ID:         fmt.Sprintf("msg-compact-msgcount-%d", now),
+		CampfireID: cfID,
+		Sender:     "test-sender",
+		Payload:    payloadBytes,
+		Tags:       []string{"campfire:compact"},
+		Timestamp:  now + 1000,
+		ReceivedAt: now,
+	}
+	if _, err := ts.AddMessage(compactMsg); err != nil {
+		t.Fatalf("AddMessage compact: %v", err)
+	}
+
+	// After compaction: 5 original - 3 superseded + 1 compaction message = 3
+	_, msgCountAfter, err := ts.GetStorageCounter(ctx, cfID)
+	if err != nil {
+		t.Fatalf("GetStorageCounter after compact: %v", err)
+	}
+	expectedMsgCount := int64(3) // 5 - 3 + 1
+	if msgCountAfter != expectedMsgCount {
+		t.Errorf("MessageCount after compact: got %d, want %d (bug: counter not decremented on compaction)", msgCountAfter, expectedMsgCount)
 	}
 }

@@ -182,11 +182,12 @@ func (ts *TableStore) incrementStorageCounter(ctx context.Context, campfireID st
 	return fmt.Errorf("aztable: incrementStorageCounter: exceeded %d retries for campfire %s", counterMaxRetries, campfireID)
 }
 
-// decrementStorageCounter atomically decrements BytesStored by deltaBytes for
-// the given campfireID. The counter is clamped at 0 (never goes negative).
-// Uses ETag-based optimistic concurrency with up to counterMaxRetries retries.
-func (ts *TableStore) decrementStorageCounter(ctx context.Context, campfireID string, deltaBytes int64) error {
-	if deltaBytes <= 0 {
+// decrementStorageCounter atomically decrements BytesStored by deltaBytes and
+// MessageCount by deltaMessages for the given campfireID. Both counters are
+// clamped at 0 (never go negative). Uses ETag-based optimistic concurrency
+// with up to counterMaxRetries retries.
+func (ts *TableStore) decrementStorageCounter(ctx context.Context, campfireID string, deltaBytes int64, deltaMessages int64) error {
+	if deltaBytes <= 0 && deltaMessages <= 0 {
 		return nil
 	}
 	pk := ts.pk(campfireID)
@@ -211,6 +212,13 @@ func (ts *TableStore) decrementStorageCounter(ctx context.Context, campfireID st
 			newBytes = 0 // clamp
 		}
 		current["BytesStored"] = newBytes
+
+		existingMsgCount := toInt64(current["MessageCount"])
+		newMsgCount := existingMsgCount - deltaMessages
+		if newMsgCount < 0 {
+			newMsgCount = 0 // clamp
+		}
+		current["MessageCount"] = newMsgCount
 		current["UpdatedAt"] = time.Now().UnixNano()
 
 		data, merr := json.Marshal(current)
