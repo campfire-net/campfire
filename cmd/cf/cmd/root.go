@@ -67,6 +67,39 @@ func init() {
 		&cobra.Group{ID: groupAdvanced, Title: "Advanced:"},
 	)
 
+	// Override the default help function so that `cf <campfire> --help` dispatches
+	// to convention help instead of showing the root cobra help text.
+	defaultHelp := rootCmd.HelpFunc()
+	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		// Only intercept at the root level. Subcommands keep default help.
+		if cmd != rootCmd || len(args) == 0 {
+			defaultHelp(cmd, args)
+			return
+		}
+		// If the first arg is a flag (e.g. bare `cf --help`), use default help.
+		if strings.HasPrefix(args[0], "-") {
+			defaultHelp(cmd, args)
+			return
+		}
+		// If the first arg is a registered subcommand, use default help.
+		candidate := args[0]
+		// Strip slash-path syntax (cf <campfire>/<op> --help).
+		if idx := strings.IndexByte(candidate, '/'); idx > 0 {
+			candidate = candidate[:idx]
+		}
+		for _, sub := range rootCmd.Commands() {
+			if sub.Name() == candidate || sub.HasAlias(candidate) {
+				defaultHelp(cmd, args)
+				return
+			}
+		}
+		// First arg is not a subcommand — treat it as a campfire name.
+		// Dispatch as `cf <campfire> help`.
+		if err := dispatchConventionOp(cmd.Context(), args[0], "help", nil); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		}
+	})
+
 	// Allow unknown flags at root level so convention dispatch can capture them.
 	rootCmd.FParseErrWhitelist = cobra.FParseErrWhitelist{UnknownFlags: true}
 	rootCmd.Args = cobra.ArbitraryArgs
