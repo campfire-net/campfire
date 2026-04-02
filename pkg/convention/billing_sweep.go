@@ -63,7 +63,7 @@ func (bs *BillingSweep) Run(ctx context.Context) (billed int, err error) {
 		}
 		bs.emitter.Emit(event)
 
-		if markErr := bs.store.MarkBilled(ctx, rec.CampfireID, rec.MessageID); markErr != nil {
+		if markErr := bs.store.MarkBilled(ctx, rec.CampfireID, rec.MessageID, rec.ETag); markErr != nil {
 			bs.logger.Printf("convention billing sweep: MarkBilled(%s/%s): %v",
 				rec.CampfireID, rec.MessageID, markErr)
 			// Continue — the idempotency key prevents double-billing on next sweep.

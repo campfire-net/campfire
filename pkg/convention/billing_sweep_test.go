@@ -3,6 +3,7 @@ package convention_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -38,8 +39,8 @@ import (
 // fakeDispatchStore wraps MemoryDispatchStore and records MarkBilled calls.
 type fakeDispatchStore struct {
 	*convention.MemoryDispatchStore
-	mu           sync.Mutex
-	billedCalls  []billedCall
+	mu          sync.Mutex
+	billedCalls []billedCall
 }
 
 type billedCall struct {
@@ -53,11 +54,11 @@ func newFakeDispatchStore() *fakeDispatchStore {
 	}
 }
 
-func (f *fakeDispatchStore) MarkBilled(ctx context.Context, campfireID, messageID string) error {
+func (f *fakeDispatchStore) MarkBilled(ctx context.Context, campfireID, messageID, etag string) error {
 	f.mu.Lock()
 	f.billedCalls = append(f.billedCalls, billedCall{campfireID, messageID})
 	f.mu.Unlock()
-	return f.MemoryDispatchStore.MarkBilled(ctx, campfireID, messageID)
+	return f.MemoryDispatchStore.MarkBilled(ctx, campfireID, messageID, etag)
 }
 
 func (f *fakeDispatchStore) billedMessages() []billedCall {
@@ -130,7 +131,12 @@ func TestBillingSweep_SkipsAlreadyBilledDispatches(t *testing.T) {
 	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "acct-server1", "myconv", "myop")
 	ds.MarkFulfilled(ctx, "cf1", "msg1")
 	ds.SetTokensConsumed("cf1", "msg1", 500)
-	ds.MarkBilled(ctx, "cf1", "msg1") // already billed
+	// Get the ETag to pass to MarkBilled.
+	unbilled, _ := ds.ListUnbilledDispatches(ctx)
+	if len(unbilled) != 1 {
+		t.Fatalf("expected 1 unbilled, got %d", len(unbilled))
+	}
+	ds.MarkBilled(ctx, "cf1", "msg1", unbilled[0].ETag) // already billed
 
 	sweep := convention.NewBillingSweep(ds, emitter, nil)
 	billed, err := sweep.Run(ctx)
@@ -291,7 +297,15 @@ func TestMemoryDispatchStore_ListUnbilledDispatches(t *testing.T) {
 	ds.MarkDispatched(ctx, "cf1", "msg-c", "srv1", "acct-srv1", "conv", "op")
 	ds.MarkFulfilled(ctx, "cf1", "msg-c")
 	ds.SetTokensConsumed("cf1", "msg-c", 200)
-	ds.MarkBilled(ctx, "cf1", "msg-c")
+	// Get ETag for msg-c to pass to MarkBilled.
+	unbilledC, _ := ds.ListUnbilledDispatches(ctx)
+	var msgCETag string
+	for _, u := range unbilledC {
+		if u.MessageID == "msg-c" {
+			msgCETag = u.ETag
+		}
+	}
+	ds.MarkBilled(ctx, "cf1", "msg-c", msgCETag)
 
 	// Dispatched (not fulfilled) with tokens — should NOT appear.
 	ds.MarkDispatched(ctx, "cf1", "msg-d", "srv1", "acct-srv1", "conv", "op")
@@ -327,8 +341,8 @@ func TestMemoryDispatchStore_MarkBilled(t *testing.T) {
 		t.Fatalf("expected 1 unbilled before MarkBilled, got %d", len(unbilled))
 	}
 
-	// Mark billed.
-	if err := ds.MarkBilled(ctx, "cf1", "msg1"); err != nil {
+	// Mark billed with the ETag from the list.
+	if err := ds.MarkBilled(ctx, "cf1", "msg1", unbilled[0].ETag); err != nil {
 		t.Fatalf("MarkBilled: %v", err)
 	}
 
@@ -343,8 +357,73 @@ func TestMemoryDispatchStore_MarkBilled(t *testing.T) {
 func TestMemoryDispatchStore_MarkBilled_NoRecord(t *testing.T) {
 	ctx := context.Background()
 	ds := convention.NewMemoryDispatchStore()
-	if err := ds.MarkBilled(ctx, "cf1", "nonexistent"); err != nil {
+	if err := ds.MarkBilled(ctx, "cf1", "nonexistent", "any-etag"); err != nil {
 		t.Fatalf("unexpected error for missing record: %v", err)
+	}
+}
+
+// TestMarkBilled_ConcurrentRedispatchReset is a regression test for the lost-update
+// bug: if IncrementRedispatchCount fires between ListUnbilledDispatches and MarkBilled,
+// MarkBilled must fail with ErrConcurrentModification rather than silently overwriting
+// the RedispatchCount with a stale value.
+func TestMarkBilled_ConcurrentRedispatchReset(t *testing.T) {
+	ctx := context.Background()
+	ds := convention.NewMemoryDispatchStore()
+
+	// Set up a fulfilled dispatch with token consumption.
+	ds.MarkDispatched(ctx, "cf1", "msg1", "srv1", "acct-srv1", "conv", "op")
+	ds.MarkFulfilled(ctx, "cf1", "msg1")
+	ds.SetTokensConsumed("cf1", "msg1", 500)
+
+	// Step 1: Read unbilled dispatches (captures ETag at this point in time).
+	unbilled, err := ds.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches: %v", err)
+	}
+	if len(unbilled) != 1 {
+		t.Fatalf("expected 1 unbilled, got %d", len(unbilled))
+	}
+	staleETag := unbilled[0].ETag
+
+	// Step 2: Concurrent re-dispatch happens — increments RedispatchCount,
+	// which changes the record's version/ETag.
+	newCount, err := ds.IncrementRedispatchCount(ctx, "cf1", "msg1")
+	if err != nil {
+		t.Fatalf("IncrementRedispatchCount: %v", err)
+	}
+	if newCount != 1 {
+		t.Fatalf("expected RedispatchCount=1 after increment, got %d", newCount)
+	}
+
+	// Step 3: MarkBilled with the stale ETag must fail.
+	err = ds.MarkBilled(ctx, "cf1", "msg1", staleETag)
+	if err == nil {
+		t.Fatal("MarkBilled with stale ETag should have failed, but succeeded (lost update bug)")
+	}
+	if !errors.Is(err, convention.ErrConcurrentModification) {
+		t.Fatalf("expected ErrConcurrentModification, got: %v", err)
+	}
+
+	// Step 4: Verify the record was NOT marked as billed (BilledAt should still be 0).
+	// Re-read to confirm the RedispatchCount was preserved.
+	stillUnbilled, err := ds.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches after failed MarkBilled: %v", err)
+	}
+	if len(stillUnbilled) != 1 {
+		t.Fatalf("expected 1 still-unbilled record, got %d", len(stillUnbilled))
+	}
+
+	// Step 5: MarkBilled with the fresh ETag should succeed.
+	freshETag := stillUnbilled[0].ETag
+	if err := ds.MarkBilled(ctx, "cf1", "msg1", freshETag); err != nil {
+		t.Fatalf("MarkBilled with fresh ETag should succeed: %v", err)
+	}
+
+	// Confirm it's now billed.
+	finalUnbilled, _ := ds.ListUnbilledDispatches(ctx)
+	if len(finalUnbilled) != 0 {
+		t.Fatalf("expected 0 unbilled after successful MarkBilled, got %d", len(finalUnbilled))
 	}
 }
 
