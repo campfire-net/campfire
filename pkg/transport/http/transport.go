@@ -115,11 +115,21 @@ type Transport struct {
 	// pruner goroutine to exit cleanly.
 	stopNoncePruner chan struct{}
 
+	// ctx is a server-lifetime context cancelled when Stop() is called.
+	// Used by handleDeliver to scope convention dispatch goroutines:
+	// they should outlive individual HTTP requests but not the server.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	// OnMessageDelivered is an optional hook called by handleDeliver after a
 	// message is successfully stored. It fires for every P2P peer delivery.
 	// The caller must be safe to invoke from a goroutine (the hook runs
 	// synchronously in the deliver handler). nil is safe — checked before call.
-	OnMessageDelivered func(ctx context.Context, campfireID string, msg *store.MessageRecord)
+	//
+	// The cancel func releases the timeout context created by handleDeliver.
+	// Implementations that spawn goroutines (e.g. ConventionDispatcher.Dispatch)
+	// must arrange for cancel to be called when the goroutine completes.
+	OnMessageDelivered func(ctx context.Context, cancel context.CancelFunc, campfireID string, msg *store.MessageRecord)
 }
 
 // ThresholdShareProvider returns the local FROST DKG share for a campfire.
@@ -140,6 +150,7 @@ const sessionPruneWindow = 5 * time.Minute
 
 // New creates a Transport listening on listenAddr, using the given store.
 func New(listenAddr string, s store.Store) *Transport {
+	ctx, cancel := context.WithCancel(context.Background())
 	t := &Transport{
 		listenAddr:          listenAddr,
 		store:               s,
@@ -150,6 +161,8 @@ func New(listenAddr string, s store.Store) *Transport {
 		signSessionCounts:   make(map[string]int),
 		rekeySessions:       make(map[string]*rekeySessionState),
 		stopNoncePruner:     make(chan struct{}),
+		ctx:                 ctx,
+		cancel:              cancel,
 		dedup:               defaultDedupTable(),
 		routingTable:        newRoutingTable(),
 		pollBroker: &PollBroker{
@@ -200,7 +213,7 @@ func (t *Transport) SetDeliveryModesProvider(p CampfireDeliveryModesProvider) {
 // SetOnMessageDelivered sets the hook called after a message is stored by handleDeliver.
 // The hook is called synchronously in the deliver handler — it must not block.
 // Passing nil clears the hook.
-func (t *Transport) SetOnMessageDelivered(fn func(ctx context.Context, campfireID string, msg *store.MessageRecord)) {
+func (t *Transport) SetOnMessageDelivered(fn func(ctx context.Context, cancel context.CancelFunc, campfireID string, msg *store.MessageRecord)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.OnMessageDelivered = fn
@@ -271,6 +284,11 @@ func (t *Transport) Start() error {
 // (up to 120s timeout) are active. A 5-second timeout ensures timely shutdown.
 // Stop also signals the background nonce pruner goroutine to exit.
 func (t *Transport) Stop() error {
+	// Cancel the server-lifetime context so in-flight dispatch goroutines
+	// (convention operations spawned by handleDeliver) are signalled to stop.
+	if t.cancel != nil {
+		t.cancel()
+	}
 	// Signal the nonce pruner goroutine to stop. Use select with default so
 	// that calling Stop() multiple times is safe.
 	select {

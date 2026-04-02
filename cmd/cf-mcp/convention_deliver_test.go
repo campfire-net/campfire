@@ -64,7 +64,10 @@ func TestConventionDeliver_DispatchFiresOnDeliverPath(t *testing.T) {
 	if tr == nil {
 		t.Fatal("transport not registered for campfire")
 	}
-	tr.SetOnMessageDelivered(func(ctx context.Context, cfID string, msg *store.MessageRecord) {
+	tr.SetOnMessageDelivered(func(ctx context.Context, cancel context.CancelFunc, cfID string, msg *store.MessageRecord) {
+		if cancel != nil {
+			defer cancel()
+		}
 		dispatchCount.Add(1)
 	})
 
@@ -224,7 +227,10 @@ func TestConventionDeliver_DispatchContextNotCancelledByRequest(t *testing.T) {
 	if tr == nil {
 		t.Fatal("transport not registered for campfire")
 	}
-	tr.SetOnMessageDelivered(func(ctx context.Context, cfID string, msg *store.MessageRecord) {
+	tr.SetOnMessageDelivered(func(ctx context.Context, cancel context.CancelFunc, cfID string, msg *store.MessageRecord) {
+		if cancel != nil {
+			defer cancel()
+		}
 		// Sleep to let the HTTP response finish and the request context cancel.
 		time.Sleep(100 * time.Millisecond)
 		resultCh <- hookResult{ctxErr: ctx.Err()}
@@ -335,12 +341,15 @@ func TestConventionDeliver_SessionManagerWiresHook(t *testing.T) {
 	// Verify the hook is callable.
 	var mu sync.Mutex
 	var invoked bool
-	sess.httpTransport.SetOnMessageDelivered(func(ctx context.Context, campfireID string, msg *store.MessageRecord) {
+	sess.httpTransport.SetOnMessageDelivered(func(ctx context.Context, cancel context.CancelFunc, campfireID string, msg *store.MessageRecord) {
+		if cancel != nil {
+			defer cancel()
+		}
 		mu.Lock()
 		invoked = true
 		mu.Unlock()
 	})
-	sess.httpTransport.OnMessageDelivered(context.Background(), "test-campfire", &store.MessageRecord{})
+	sess.httpTransport.OnMessageDelivered(context.Background(), nil, "test-campfire", &store.MessageRecord{})
 	mu.Lock()
 	called := invoked
 	mu.Unlock()

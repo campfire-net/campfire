@@ -861,8 +861,13 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 		// OnMessageDelivered hook fires so convention servers receive the message.
 		if m.conventionDispatcher != nil {
 			d := m.conventionDispatcher // capture for closure
-			t.SetOnMessageDelivered(func(ctx context.Context, campfireID string, msg *store.MessageRecord) {
-				d.Dispatch(ctx, campfireID, msg)
+			t.SetOnMessageDelivered(func(ctx context.Context, cancel context.CancelFunc, campfireID string, msg *store.MessageRecord) {
+				if !d.DispatchWithCancel(ctx, cancel, campfireID, msg) {
+					// No convention handler matched — release the timeout context immediately.
+					if cancel != nil {
+						cancel()
+					}
+				}
 			})
 		}
 		sess.httpTransport = t

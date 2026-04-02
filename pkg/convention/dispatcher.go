@@ -219,18 +219,55 @@ func (d *ConventionDispatcher) Dispatch(ctx context.Context, campfireID string, 
 	}
 
 	// Snapshot entry fields for the goroutine (entry pointer is stable after registration).
-	go d.dispatch(ctx, campfireID, msg, op, entry)
+	go d.dispatch(ctx, nil, campfireID, msg, op, entry)
+	return true
+}
+
+// DispatchWithCancel is like Dispatch but accepts a context.CancelFunc that is
+// called when the spawned goroutine completes. This allows callers that create
+// a timeout context to properly release the timer when dispatch finishes,
+// without leaking the cancel func (campfire-agent-n34).
+func (d *ConventionDispatcher) DispatchWithCancel(ctx context.Context, cancel context.CancelFunc, campfireID string, msg *store.MessageRecord) bool {
+	if !hasConventionInvocationTag(msg.Tags) {
+		return false
+	}
+
+	var op conventionOpPayload
+	if err := json.Unmarshal(msg.Payload, &op); err != nil {
+		return false
+	}
+	if op.Convention == "" || op.Operation == "" {
+		return false
+	}
+
+	d.mu.RLock()
+	entry, ok := d.registry[conventionKey{
+		CampfireID: campfireID,
+		Convention: op.Convention,
+		Operation:  op.Operation,
+	}]
+	d.mu.RUnlock()
+	if !ok {
+		return false
+	}
+
+	go d.dispatch(ctx, cancel, campfireID, msg, op, entry)
 	return true
 }
 
 // dispatch runs the actual dispatch logic for one message, in a goroutine.
+// If cancel is non-nil it is deferred so timeout contexts are released promptly.
 func (d *ConventionDispatcher) dispatch(
 	ctx context.Context,
+	cancel context.CancelFunc,
 	campfireID string,
 	msg *store.MessageRecord,
 	op conventionOpPayload,
 	entry *dispatchEntry,
 ) {
+	if cancel != nil {
+		defer cancel()
+	}
 	// Deduplication: mark as dispatched (insert-if-not-exists).
 	inserted, err := d.store.MarkDispatched(ctx, campfireID, msg.ID, entry.ServerID, entry.ForgeAccountID, op.Convention, op.Operation)
 	if err != nil {

@@ -152,12 +152,19 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 	// Dispatch convention operations arriving via P2P deliver (T5).
 	// Mirrors the dispatch hook in handleSend so convention servers receive
 	// messages regardless of whether they arrived via MCP or HTTP peer delivery.
-	// Use context.Background() instead of r.Context() because Dispatch spawns
-	// goroutines that outlive the HTTP request. A request-scoped context would
-	// be cancelled when the response is sent, prematurely terminating the
-	// dispatch goroutine and causing delivery failures (campfire-agent-0rl).
+	//
+	// Uses the server-lifetime context (transport.ctx) with a 30-second timeout
+	// instead of r.Context() or context.Background(). The request context would
+	// cancel when the HTTP response is sent, killing in-flight dispatch goroutines
+	// (campfire-agent-0rl). context.Background() is unbounded and leaks goroutines
+	// on shutdown (campfire-agent-n34). The server-lifetime context cancels on
+	// Stop(), and the timeout bounds individual dispatch operations.
+	//
+	// The cancel func is passed to the hook so it can be deferred inside the
+	// goroutine spawned by Dispatch, releasing the timeout timer promptly.
 	if h.transport != nil && h.transport.OnMessageDelivered != nil {
-		h.transport.OnMessageDelivered(context.Background(), campfireID, &rec)
+		dispatchCtx, dispatchCancel := context.WithTimeout(h.transport.ctx, 30*time.Second)
+		h.transport.OnMessageDelivered(dispatchCtx, dispatchCancel, campfireID, &rec)
 	}
 
 	// Process routing:beacon and routing:withdraw tags for routing table updates.
