@@ -901,3 +901,45 @@ func TestConventionServerStore_Deregister(t *testing.T) {
 		t.Error("expected nil after deregister, record still exists")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// MarkFulfilledCAS / MarkFailedCAS — notFound branch
+// ---------------------------------------------------------------------------
+
+// TestDispatchStore_MarkFulfilledCAS_NotFound verifies that MarkFulfilledCAS
+// returns notFound=true, updated=false, error=nil when the dispatch record
+// does not exist.
+func TestDispatchStore_MarkFulfilledCAS_NotFound(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+
+	updated, notFound, err := s.MarkFulfilledCAS(ctx, unique("cf"), unique("msg"), 0)
+	if err != nil {
+		t.Fatalf("MarkFulfilledCAS on absent record: unexpected error: %v", err)
+	}
+	if !notFound {
+		t.Error("MarkFulfilledCAS on absent record: expected notFound=true, got false")
+	}
+	if updated {
+		t.Error("MarkFulfilledCAS on absent record: expected updated=false, got true")
+	}
+}
+
+// TestDispatchStore_MarkFailedCAS_NotFound verifies that MarkFailedCAS
+// returns notFound=true, updated=false, error=nil when the dispatch record
+// does not exist.
+func TestDispatchStore_MarkFailedCAS_NotFound(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+
+	updated, notFound, err := s.MarkFailedCAS(ctx, unique("cf"), unique("msg"), 0)
+	if err != nil {
+		t.Fatalf("MarkFailedCAS on absent record: unexpected error: %v", err)
+	}
+	if !notFound {
+		t.Error("MarkFailedCAS on absent record: expected notFound=true, got false")
+	}
+	if updated {
+		t.Error("MarkFailedCAS on absent record: expected updated=false, got true")
+	}
+}
