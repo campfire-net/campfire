@@ -14,7 +14,9 @@ import (
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/threshold"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
+	bip39 "github.com/tyler-smith/go-bip39"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +28,7 @@ var initCmd = &cobra.Command{
   cf init                  persistent identity at ~/.campfire/
   cf init --session        temporary identity in a unique temp dir
   cf init --name worker-1  persistent named identity (survives across sessions)
+  cf init --durable        threshold=2 identity with cold key recovery phrase
 
 Named identities live at ~/.campfire/agents/<name>/. Session identities print
 the CF_HOME path on line 1 and the display name on line 2. The caller sets
@@ -39,6 +42,7 @@ The --from flag requires --name — config inheritance only applies to named age
 		initName, _ := cmd.Flags().GetString("name")
 		initSession, _ := cmd.Flags().GetBool("session")
 		initFrom, _ := cmd.Flags().GetString("from")
+		initDurable, _ := cmd.Flags().GetBool("durable")
 		// Session identity: temp dir, print path + display name, done.
 		if initSession {
 			tmpDir, err := os.MkdirTemp("", "cf-session-")
@@ -159,7 +163,7 @@ The --from flag requires --name — config inheritance only applies to named age
 
 		// Step 2-7: Create self-campfire with identity convention genesis message.
 		// This is an atomic 7-step operation that replaces the old home+center creation.
-		selfCampfireID, err := createSelfCampfire(cfHome, agentID)
+		selfCampfireID, coldKeyPhrase, err := createSelfCampfire(cfHome, agentID, initDurable)
 		if err != nil {
 			// Non-fatal: self-campfire creation failure should not block init.
 			fmt.Fprintf(os.Stderr, "warning: could not create identity campfire: %v\n", err)
@@ -183,6 +187,9 @@ The --from flag requires --name — config inheritance only applies to named age
 				"location":             cfHome,
 				"identity_campfire_id": selfCampfireID,
 			}
+			if coldKeyPhrase != "" {
+				out["cold_key_phrase"] = coldKeyPhrase
+			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			return enc.Encode(out)
@@ -190,6 +197,9 @@ The --from flag requires --name — config inheritance only applies to named age
 
 		if selfCampfireID != "" {
 			fmt.Printf("Your identity campfire: %s. Share it like any beacon.\n", selfCampfireID)
+		}
+		if coldKeyPhrase != "" {
+			fmt.Printf("\nRecovery phrase (write down and store offline):\n%s\n", coldKeyPhrase)
 		}
 
 		fmt.Printf(`
@@ -244,24 +254,63 @@ func inheritAgentConfig(parentHome, agentHome, name string) error {
 // agent-key-signed introduce-me operation. The "home" alias is set to the campfire ID
 // and a beacon with tag identity:v1 is published.
 //
-// Returns the campfire ID hex on success, or "" on failure.
-func createSelfCampfire(cfHome string, agentID *identity.Identity) (string, error) {
-	// Step 2: Create self-campfire keypair (invite-only, threshold=1).
-	selfCF, err := campfire.New("invite-only", nil, 1)
+// When durable is true, the campfire is created with threshold=2. A FROST DKG is run
+// locally; the agent holds share 1 and share 2 is returned as a BIP-39 recovery phrase
+// for offline cold key storage.
+//
+// Returns (campfireID, coldKeyPhrase, error). coldKeyPhrase is empty when durable is false.
+func createSelfCampfire(cfHome string, agentID *identity.Identity, durable bool) (string, string, error) {
+	// Step 2: Create self-campfire keypair (invite-only).
+	// threshold=1 for standard identity, threshold=2 for durable identity.
+	cfThreshold := uint(1)
+	if durable {
+		cfThreshold = 2
+	}
+	selfCF, err := campfire.New("invite-only", nil, cfThreshold)
 	if err != nil {
-		return "", fmt.Errorf("creating self-campfire: %w", err)
+		return "", "", fmt.Errorf("creating self-campfire: %w", err)
+	}
+
+	// For durable identity: run local FROST DKG to generate threshold key shares.
+	// The agent holds share 1; share 2 is the cold key (output as BIP-39 phrase).
+	// DKG runs before transport init — shares are independent of transport.
+	var coldKeyPhrase string
+	var agentShareData []byte // serialized share 1 for store write after membership add
+	if durable {
+		results, dkgErr := threshold.RunDKG([]uint32{1, 2}, 2)
+		if dkgErr != nil {
+			return "", "", fmt.Errorf("running DKG for durable identity: %w", dkgErr)
+		}
+		// Serialize share 1 (agent's share) for store persistence.
+		shareData1, serErr := threshold.MarshalResult(1, results[1])
+		if serErr != nil {
+			return "", "", fmt.Errorf("serializing agent threshold share: %w", serErr)
+		}
+		agentShareData = shareData1
+		// Encode share 2 secret (32 bytes) as BIP-39 24-word mnemonic for cold storage.
+		// MarshalBinary() = 2-byte party ID + 32-byte scalar; last 32 bytes = secret.
+		shareRaw2, rawErr := results[2].SecretShare.MarshalBinary()
+		if rawErr != nil {
+			return "", "", fmt.Errorf("serializing cold key share: %w", rawErr)
+		}
+		secretBytes := shareRaw2[len(shareRaw2)-32:]
+		mnemonic, mnemonicErr := bip39.NewMnemonic(secretBytes)
+		if mnemonicErr != nil {
+			return "", "", fmt.Errorf("generating BIP-39 mnemonic: %w", mnemonicErr)
+		}
+		coldKeyPhrase = mnemonic
 	}
 
 	// Step 3: Initialize transport and admit agent as member 0.
 	transport := fs.New(fs.DefaultBaseDir())
 	if err := transport.Init(selfCF); err != nil {
-		return "", fmt.Errorf("initializing transport: %w", err)
+		return "", "", fmt.Errorf("initializing transport: %w", err)
 	}
 	if err := transport.WriteMember(selfCF.PublicKeyHex(), campfire.MemberRecord{
 		PublicKey: agentID.PublicKey,
 		JoinedAt:  time.Now().UnixNano(),
 	}); err != nil {
-		return "", fmt.Errorf("writing member record: %w", err)
+		return "", "", fmt.Errorf("writing member record: %w", err)
 	}
 
 	campfireID := selfCF.PublicKeyHex()
@@ -274,7 +323,7 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity) (string, erro
 	for i, decl := range convention.IdentityDeclarations() {
 		declPayload, err := json.Marshal(decl)
 		if err != nil {
-			return "", fmt.Errorf("marshaling identity declaration %d: %w", i, err)
+			return "", "", fmt.Errorf("marshaling identity declaration %d: %w", i, err)
 		}
 		msg, err := message.NewMessage(
 			selfCF.PrivateKey,
@@ -284,10 +333,10 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity) (string, erro
 			nil,
 		)
 		if err != nil {
-			return "", fmt.Errorf("creating genesis message %d: %w", i, err)
+			return "", "", fmt.Errorf("creating genesis message %d: %w", i, err)
 		}
 		if err := transport.WriteMessage(campfireID, msg); err != nil {
-			return "", fmt.Errorf("writing genesis message %d: %w", i, err)
+			return "", "", fmt.Errorf("writing genesis message %d: %w", i, err)
 		}
 	}
 
@@ -295,13 +344,13 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity) (string, erro
 	// Payload: agent pubkey hex, display_name, home campfire IDs (self initially).
 	displayName := "agent:" + agentID.PublicKeyHex()[:6]
 	introduceMePayload := map[string]any{
-		"pubkey_hex":       agentID.PublicKeyHex(),
-		"display_name":     displayName,
+		"pubkey_hex":        agentID.PublicKeyHex(),
+		"display_name":      displayName,
 		"home_campfire_ids": []string{campfireID},
 	}
 	introduceMeBytes, err := json.Marshal(introduceMePayload)
 	if err != nil {
-		return "", fmt.Errorf("marshaling introduce-me payload: %w", err)
+		return "", "", fmt.Errorf("marshaling introduce-me payload: %w", err)
 	}
 	introduceMsg, err := message.NewMessage(
 		agentID.PrivateKey,
@@ -311,16 +360,16 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity) (string, erro
 		nil,
 	)
 	if err != nil {
-		return "", fmt.Errorf("creating introduce-me message: %w", err)
+		return "", "", fmt.Errorf("creating introduce-me message: %w", err)
 	}
 	if err := transport.WriteMessage(campfireID, introduceMsg); err != nil {
-		return "", fmt.Errorf("writing introduce-me message: %w", err)
+		return "", "", fmt.Errorf("writing introduce-me message: %w", err)
 	}
 
 	// Open store and record membership (required before any protocol.Client operations).
 	s, err := store.Open(store.StorePath(cfHome))
 	if err != nil {
-		return "", fmt.Errorf("opening store: %w", err)
+		return "", "", fmt.Errorf("opening store: %w", err)
 	}
 	defer s.Close()
 
@@ -334,7 +383,18 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity) (string, erro
 		Description:   "identity campfire",
 		TransportType: "filesystem",
 	}); err != nil {
-		return "", fmt.Errorf("recording membership: %w", err)
+		return "", "", fmt.Errorf("recording membership: %w", err)
+	}
+
+	// For durable identity: persist the agent's threshold share (participant 1).
+	if durable && len(agentShareData) > 0 {
+		if err := s.UpsertThresholdShare(store.ThresholdShare{
+			CampfireID:    campfireID,
+			ParticipantID: 1,
+			SecretShare:   agentShareData,
+		}); err != nil {
+			return "", "", fmt.Errorf("storing agent threshold share: %w", err)
+		}
 	}
 
 	// Mirror genesis messages to store for local readback.
@@ -364,15 +424,14 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity) (string, erro
 		convention.IdentityBeaconTag,
 	)
 	if err != nil {
-		return "", fmt.Errorf("creating identity:v1 beacon: %w", err)
+		return "", "", fmt.Errorf("creating identity:v1 beacon: %w", err)
 	}
 	if err := beacon.Publish(BeaconDir(), b); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not publish identity:v1 beacon: %v\n", err)
 	}
 
-	return campfireID, nil
+	return campfireID, coldKeyPhrase, nil
 }
-
 
 const campfireContext = `# Campfire Protocol
 
@@ -457,6 +516,7 @@ func init() {
 	initCmd.Flags().Bool("session", false, "create a temporary identity in a unique temp dir")
 	initCmd.Flags().String("from", "", "inherit config from this CF_HOME path (requires --name)")
 	initCmd.Flags().String("remote", "", "URL of remote campfire relay for center campfire (default: filesystem)")
+	initCmd.Flags().Bool("durable", false, "create a threshold=2 identity campfire with a cold key recovery phrase")
 	rootCmd.AddCommand(initCmd)
 }
 
