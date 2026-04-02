@@ -1,5 +1,8 @@
 ---
 model: sonnet
+disallowedTools:
+  - Edit
+  - Write
 ---
 
 # Veracity Adversary
