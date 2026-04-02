@@ -400,7 +400,12 @@ func (s *Session) Close() {
 		s.router.UnregisterSession(s.token)
 	}
 	if s.httpTransport != nil {
-		s.httpTransport.StopNoncePruner()
+		// Stop cancels the server-lifetime context (signalling in-flight dispatch
+		// goroutines to exit) and closes the nonce pruner goroutine. Stop() also
+		// calls server.Shutdown internally, which is safe here because the
+		// per-session transport is created with cfhttp.New("", ...) and never
+		// Start()ed — Shutdown on a non-started server returns nil immediately.
+		_ = s.httpTransport.Stop()
 	}
 	if s.st != nil {
 		s.st.Close()
