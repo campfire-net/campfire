@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
 	"github.com/campfire-net/campfire/pkg/convention"
 )
@@ -473,15 +474,12 @@ func (s *TableDispatchStore) ListUnbilledDispatches(ctx context.Context) ([]conv
 }
 
 // MarkBilled sets BilledAt on a dispatch record to the current time.
-// Uses ETag-based optimistic concurrency to prevent lost updates: if the
-// record was modified since the caller read it (e.g. by a concurrent
-// IncrementRedispatchCount), returns convention.ErrConcurrentModification.
+// Uses the caller-provided ETag for optimistic concurrency: the conditional
+// update uses the ETag from the caller's prior read (e.g. ListUnbilledDispatches),
+// so a concurrent modification between that read and this write is detected.
+// Returns convention.ErrConcurrentModification on ETag mismatch (412).
 // No-op (returns nil) if the record does not exist.
-//
-// The etag parameter from the interface is not used directly — Azure Table
-// Storage provides its own authoritative ETag via GetEntity. The guard is
-// the Azure ETag read at MarkBilled time, which detects any concurrent write.
-func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, messageID, _ string) error {
+func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, messageID, callerETag string) error {
 	pk := encodeKey(campfireID)
 	rk := encodeKey(messageID)
 
@@ -501,7 +499,7 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 	if err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: marshal: %w", err)
 	}
-	etag := resp.ETag
+	etag := azcore.ETag(callerETag)
 	_, updateErr := s.dispatched.UpdateEntity(ctx, data, &aztables.UpdateEntityOptions{
 		UpdateMode: aztables.UpdateModeReplace,
 		IfMatch:    &etag,
@@ -511,6 +509,25 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 			return fmt.Errorf("%w: Azure ETag mismatch on %s/%s", convention.ErrConcurrentModification, campfireID, messageID)
 		}
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: update: %w", updateErr)
+	}
+	return nil
+}
+
+// SetTokensConsumed sets the TokensConsumed field on a dispatch record.
+// This is a test helper for simulating handler-reported token usage.
+func (s *TableDispatchStore) SetTokensConsumed(ctx context.Context, campfireID, messageID string, tokens int64) error {
+	pk := encodeKey(campfireID)
+	rk := encodeKey(messageID)
+	raw, err := getEntity(ctx, s.dispatched, pk, rk)
+	if err != nil {
+		return fmt.Errorf("aztable: DispatchStore.SetTokensConsumed: get: %w", err)
+	}
+	if raw == nil {
+		return convention.ErrDispatchNotFound
+	}
+	raw["TokensConsumed"] = tokens
+	if err := upsertEntity(ctx, s.dispatched, raw); err != nil {
+		return fmt.Errorf("aztable: DispatchStore.SetTokensConsumed: upsert: %w", err)
 	}
 	return nil
 }

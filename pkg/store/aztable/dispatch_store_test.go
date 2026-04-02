@@ -297,13 +297,13 @@ func TestDispatchStore_ListStaleDispatches(t *testing.T) {
 	// Insert a stale dispatched entry by dispatching and then sleeping briefly.
 	// We set the threshold to 0 so all dispatched entries in this campfire qualify.
 	staleMsgID := unique("msg-stale")
-	if _, err := s.MarkDispatched(ctx, cfID, staleMsgID, serverID, "testconv", "testop"); err != nil {
+	if _, err := s.MarkDispatched(ctx, cfID, staleMsgID, serverID, "", "testconv", "testop"); err != nil {
 		t.Fatalf("MarkDispatched stale: %v", err)
 	}
 
 	// Insert a fulfilled entry (should NOT appear in stale list).
 	fulfilledMsgID := unique("msg-fulfilled")
-	if _, err := s.MarkDispatched(ctx, cfID, fulfilledMsgID, serverID, "testconv", "testop"); err != nil {
+	if _, err := s.MarkDispatched(ctx, cfID, fulfilledMsgID, serverID, "", "testconv", "testop"); err != nil {
 		t.Fatalf("MarkDispatched fulfilled: %v", err)
 	}
 	if err := s.MarkFulfilled(ctx, cfID, fulfilledMsgID); err != nil {
@@ -312,7 +312,7 @@ func TestDispatchStore_ListStaleDispatches(t *testing.T) {
 
 	// Insert a failed entry (should NOT appear in stale list).
 	failedMsgID := unique("msg-failed")
-	if _, err := s.MarkDispatched(ctx, cfID, failedMsgID, serverID, "testconv", "testop"); err != nil {
+	if _, err := s.MarkDispatched(ctx, cfID, failedMsgID, serverID, "", "testconv", "testop"); err != nil {
 		t.Fatalf("MarkDispatched failed: %v", err)
 	}
 	if err := s.MarkFailed(ctx, cfID, failedMsgID); err != nil {
@@ -566,6 +566,146 @@ func TestConventionServerStore_SetEnabled(t *testing.T) {
 	}
 	if !got2.Enabled {
 		t.Error("expected Enabled=true after re-enabling")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MarkBilled / ListUnbilledDispatches
+// ---------------------------------------------------------------------------
+
+// TestDispatchStore_MarkBilled_HappyPath verifies MarkBilled sets BilledAt
+// when called with a valid ETag from ListUnbilledDispatches.
+func TestDispatchStore_MarkBilled_HappyPath(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+	cfID := unique("cf")
+	msgID := unique("msg")
+	serverID := unique("server")
+
+	// Dispatch, fulfill, and set tokens so the record appears in ListUnbilledDispatches.
+	if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "", "conv", "op"); err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+	if err := s.MarkFulfilled(ctx, cfID, msgID); err != nil {
+		t.Fatalf("MarkFulfilled: %v", err)
+	}
+	if err := s.SetTokensConsumed(ctx, cfID, msgID, 100); err != nil {
+		t.Fatalf("SetTokensConsumed: %v", err)
+	}
+
+	// List unbilled — should find our record.
+	unbilled, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches: %v", err)
+	}
+	var rec *convention.DispatchRecord
+	for i := range unbilled {
+		if unbilled[i].CampfireID == cfID && unbilled[i].MessageID == msgID {
+			rec = &unbilled[i]
+			break
+		}
+	}
+	if rec == nil {
+		t.Fatal("expected record in ListUnbilledDispatches, not found")
+	}
+	if rec.ETag == "" {
+		t.Fatal("ETag from ListUnbilledDispatches is empty")
+	}
+
+	// MarkBilled with the ETag from the list.
+	if err := s.MarkBilled(ctx, cfID, msgID, rec.ETag); err != nil {
+		t.Fatalf("MarkBilled: %v", err)
+	}
+
+	// Should no longer appear in unbilled list.
+	unbilled2, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches after billing: %v", err)
+	}
+	for _, r := range unbilled2 {
+		if r.CampfireID == cfID && r.MessageID == msgID {
+			t.Error("record still appears in unbilled list after MarkBilled")
+		}
+	}
+}
+
+// TestDispatchStore_MarkBilled_StaleETag verifies that MarkBilled with a stale
+// ETag (concurrent modification) returns ErrConcurrentModification.
+func TestDispatchStore_MarkBilled_StaleETag(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+	cfID := unique("cf")
+	msgID := unique("msg")
+	serverID := unique("server")
+
+	// Dispatch, fulfill, and set tokens.
+	if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "", "conv", "op"); err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+	if err := s.MarkFulfilled(ctx, cfID, msgID); err != nil {
+		t.Fatalf("MarkFulfilled: %v", err)
+	}
+	if err := s.SetTokensConsumed(ctx, cfID, msgID, 100); err != nil {
+		t.Fatalf("SetTokensConsumed: %v", err)
+	}
+
+	// Step 1: Read the ETag.
+	unbilled, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches: %v", err)
+	}
+	var staleETag string
+	for _, r := range unbilled {
+		if r.CampfireID == cfID && r.MessageID == msgID {
+			staleETag = r.ETag
+			break
+		}
+	}
+	if staleETag == "" {
+		t.Fatal("expected record with ETag in ListUnbilledDispatches")
+	}
+
+	// Step 2: Concurrently modify the record (increment redispatch count).
+	if _, err := s.IncrementRedispatchCount(ctx, cfID, msgID); err != nil {
+		t.Fatalf("IncrementRedispatchCount: %v", err)
+	}
+
+	// Step 3: MarkBilled with the stale ETag must fail.
+	err = s.MarkBilled(ctx, cfID, msgID, staleETag)
+	if err == nil {
+		t.Fatal("MarkBilled with stale ETag should have failed, but succeeded (lost update bug)")
+	}
+	if !errors.Is(err, convention.ErrConcurrentModification) {
+		t.Fatalf("expected ErrConcurrentModification, got: %v", err)
+	}
+
+	// Step 4: Re-read with fresh ETag and MarkBilled should succeed.
+	unbilled2, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches after conflict: %v", err)
+	}
+	var freshETag string
+	for _, r := range unbilled2 {
+		if r.CampfireID == cfID && r.MessageID == msgID {
+			freshETag = r.ETag
+			break
+		}
+	}
+	if freshETag == "" {
+		t.Fatal("expected record with fresh ETag in ListUnbilledDispatches")
+	}
+	if err := s.MarkBilled(ctx, cfID, msgID, freshETag); err != nil {
+		t.Fatalf("MarkBilled with fresh ETag should succeed: %v", err)
+	}
+}
+
+// TestDispatchStore_MarkBilled_NoRecord verifies MarkBilled is a no-op for
+// a non-existent record.
+func TestDispatchStore_MarkBilled_NoRecord(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+	if err := s.MarkBilled(ctx, unique("cf"), unique("msg"), "any-etag"); err != nil {
+		t.Fatalf("unexpected error for missing record: %v", err)
 	}
 }
 
