@@ -327,6 +327,26 @@ func (f *fakeStoreForRateLimit) ApplyMembershipCommitAtomically(campfireID strin
 	return nil
 }
 
+// ProjectionStore stubs — required by store.Store interface, not exercised by blind-relay rate limit tests.
+func (f *fakeStoreForRateLimit) InsertProjectionEntry(campfireID, viewName, messageID string, indexedAt int64) error {
+	return nil
+}
+func (f *fakeStoreForRateLimit) DeleteProjectionEntries(campfireID, viewName string, messageIDs []string) error {
+	return nil
+}
+func (f *fakeStoreForRateLimit) DeleteAllProjectionEntries(campfireID, viewName string) error {
+	return nil
+}
+func (f *fakeStoreForRateLimit) ListProjectionEntries(campfireID, viewName string) ([]store.ProjectionEntry, error) {
+	return nil, nil
+}
+func (f *fakeStoreForRateLimit) GetProjectionMetadata(campfireID, viewName string) (*store.ProjectionMetadata, error) {
+	return nil, nil
+}
+func (f *fakeStoreForRateLimit) SetProjectionMetadata(campfireID, viewName string, meta store.ProjectionMetadata) error {
+	return nil
+}
+
 // TestRateLimiter_OpaquePayloads verifies that the rate limiter correctly
 // counts AddMessage calls when payloads are opaque (random bytes, as would
 // be the case for encrypted messages in blind-relay mode).
