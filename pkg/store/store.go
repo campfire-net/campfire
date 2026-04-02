@@ -201,6 +201,12 @@ CREATE TABLE IF NOT EXISTS projection_metadata (
     PRIMARY KEY (campfire_id, view_name)
 )`,
 	},
+	{
+		version:     10,
+		description: "add entity_key and timestamp columns to projection_entries for entity-key views (campfire-agent-95n)",
+		sql: `ALTER TABLE projection_entries ADD COLUMN entity_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE projection_entries ADD COLUMN msg_timestamp INTEGER NOT NULL DEFAULT 0`,
+	},
 }
 
 // runMigrations applies any unapplied migrations in schemaMigrations to db.
@@ -1816,14 +1822,76 @@ func (s *SQLiteStore) ValidateAndUseInvite(campfireID, inviteCode string) (*Invi
 // Idempotent: succeeds silently if the entry already exists.
 func (s *SQLiteStore) InsertProjectionEntry(campfireID, viewName, messageID string, indexedAt int64) error {
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO projection_entries (campfire_id, view_name, message_id, indexed_at)
-		 VALUES (?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO projection_entries (campfire_id, view_name, message_id, entity_key, msg_timestamp, indexed_at)
+		 VALUES (?, ?, ?, '', 0, ?)`,
 		campfireID, viewName, messageID, indexedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting projection entry: %w", err)
 	}
 	return nil
+}
+
+// UpsertProjectionEntry inserts or replaces an entity-key projection entry.
+// For entity-key views (entityKey != ""): if an entry for (campfire_id, view_name, entity_key)
+// already exists with an older timestamp, the new entry replaces it (latest-wins).
+// For non-entity-key views (entityKey == ""), behaves like InsertProjectionEntry.
+func (s *SQLiteStore) UpsertProjectionEntry(campfireID, viewName, messageID, entityKey string, indexedAt, timestamp int64) error {
+	if entityKey == "" {
+		return s.InsertProjectionEntry(campfireID, viewName, messageID, indexedAt)
+	}
+
+	// Entity-key: find existing entry for this entity key in this view.
+	// If the existing entry has a newer or equal timestamp, skip (idempotent).
+	// Otherwise replace with the new message (latest-wins UPSERT).
+	//
+	// We use a transaction with a conditional replace:
+	// 1. Find existing entry (if any) for this entity_key.
+	// 2. If existing.msg_timestamp >= new timestamp: no-op.
+	// 3. Otherwise: delete old entry (if any) and insert new one.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("upsert projection entry: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var existingMsgID string
+	var existingTimestamp int64
+	scanErr := tx.QueryRow(
+		`SELECT message_id, msg_timestamp FROM projection_entries
+		 WHERE campfire_id = ? AND view_name = ? AND entity_key = ?`,
+		campfireID, viewName, entityKey,
+	).Scan(&existingMsgID, &existingTimestamp)
+
+	if scanErr != nil && scanErr != sql.ErrNoRows {
+		return fmt.Errorf("upsert projection entry: query existing: %w", scanErr)
+	}
+
+	if scanErr == nil {
+		// Existing entry found.
+		if existingTimestamp >= timestamp {
+			// Existing is newer or equal — skip.
+			return tx.Commit()
+		}
+		// Delete the old entry before inserting the new one.
+		if _, err := tx.Exec(
+			`DELETE FROM projection_entries WHERE campfire_id = ? AND view_name = ? AND entity_key = ?`,
+			campfireID, viewName, entityKey,
+		); err != nil {
+			return fmt.Errorf("upsert projection entry: delete old: %w", err)
+		}
+	}
+
+	// Insert new entry.
+	if _, err := tx.Exec(
+		`INSERT OR REPLACE INTO projection_entries (campfire_id, view_name, message_id, entity_key, msg_timestamp, indexed_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		campfireID, viewName, messageID, entityKey, timestamp, indexedAt,
+	); err != nil {
+		return fmt.Errorf("upsert projection entry: insert: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 // DeleteProjectionEntries removes specific message IDs from a projection view.
@@ -1864,7 +1932,7 @@ func (s *SQLiteStore) DeleteAllProjectionEntries(campfireID, viewName string) er
 // ListProjectionEntries returns all entries for a projection view, ordered by indexed_at.
 func (s *SQLiteStore) ListProjectionEntries(campfireID, viewName string) ([]ProjectionEntry, error) {
 	rows, err := s.db.Query(
-		`SELECT campfire_id, view_name, message_id, indexed_at
+		`SELECT campfire_id, view_name, message_id, entity_key, msg_timestamp, indexed_at
 		 FROM projection_entries
 		 WHERE campfire_id = ? AND view_name = ?
 		 ORDER BY indexed_at`,
@@ -1878,7 +1946,7 @@ func (s *SQLiteStore) ListProjectionEntries(campfireID, viewName string) ([]Proj
 	var entries []ProjectionEntry
 	for rows.Next() {
 		var e ProjectionEntry
-		if err := rows.Scan(&e.CampfireID, &e.ViewName, &e.MessageID, &e.IndexedAt); err != nil {
+		if err := rows.Scan(&e.CampfireID, &e.ViewName, &e.MessageID, &e.EntityKey, &e.Timestamp, &e.IndexedAt); err != nil {
 			return nil, fmt.Errorf("scanning projection entry: %w", err)
 		}
 		entries = append(entries, e)

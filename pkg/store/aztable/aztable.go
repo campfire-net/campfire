@@ -1908,10 +1908,53 @@ func (ts *TableStore) InsertProjectionEntry(campfireID, viewName, messageID stri
 		"CampfireID":   campfireID,
 		"ViewName":     viewName,
 		"MessageID":    messageID,
+		"EntityKey":    "",
+		"MsgTimestamp": int64(0),
 		"IndexedAt":    indexedAt,
 	}
 	// Upsert to achieve idempotency.
 	return upsertEntity(context.Background(), ts.projections, entity)
+}
+
+// UpsertProjectionEntry inserts or replaces an entity-key projection entry.
+// For entity-key views (entityKey != ""): the RowKey uses entity_key so that
+// each entity has exactly one row. If a newer or equal-timestamped entry already
+// exists, the write is skipped (latest-wins).
+// For non-entity-key views (entityKey == ""), behaves like InsertProjectionEntry.
+func (ts *TableStore) UpsertProjectionEntry(campfireID, viewName, messageID, entityKey string, indexedAt, timestamp int64) error {
+	if entityKey == "" {
+		return ts.InsertProjectionEntry(campfireID, viewName, messageID, indexedAt)
+	}
+
+	// Entity-key RowKey: view_name|ek|entity_key (no timestamp — one row per entity).
+	rowKey := fmt.Sprintf("%s|ek|%s", viewName, entityKey)
+	encodedRK := encodeKey(rowKey)
+	pk := ts.pk(campfireID)
+	ctx := context.Background()
+
+	// Check if existing entry is newer.
+	existing, err := getEntity(ctx, ts.projections, pk, encodedRK)
+	if err != nil {
+		return fmt.Errorf("aztable: UpsertProjectionEntry get existing: %w", err)
+	}
+	if existing != nil {
+		existingTS := toInt64(existing["MsgTimestamp"])
+		if existingTS >= timestamp {
+			return nil // existing is newer or equal — skip
+		}
+	}
+
+	entity := map[string]any{
+		"PartitionKey": pk,
+		"RowKey":       encodedRK,
+		"CampfireID":   campfireID,
+		"ViewName":     viewName,
+		"MessageID":    messageID,
+		"EntityKey":    entityKey,
+		"MsgTimestamp": timestamp,
+		"IndexedAt":    indexedAt,
+	}
+	return upsertEntity(ctx, ts.projections, entity)
 }
 
 // DeleteProjectionEntries removes specific message IDs from a projection view.
@@ -2011,6 +2054,8 @@ func (ts *TableStore) ListProjectionEntries(campfireID, viewName string) ([]stor
 				CampfireID: str(m, "CampfireID"),
 				ViewName:   str(m, "ViewName"),
 				MessageID:  str(m, "MessageID"),
+				EntityKey:  str(m, "EntityKey"),
+				Timestamp:  toInt64(m["MsgTimestamp"]),
 				IndexedAt:  toInt64(m["IndexedAt"]),
 			})
 		}

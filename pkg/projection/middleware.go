@@ -37,6 +37,7 @@ type viewDefinition struct {
 	Predicate string `json:"predicate"`
 	Refresh   string `json:"refresh,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
+	EntityKey string `json:"entity_key,omitempty"` // dot-separated payload path for entity-key views
 }
 
 // cachedView holds a parsed and classified view definition for use in AddMessage.
@@ -45,6 +46,7 @@ type cachedView struct {
 	parsed        *predicate.Node
 	class         Class
 	predicateHash string
+	entityKey     string // mirrors def.EntityKey for fast access
 }
 
 // ProjectionMiddleware wraps a store.Store to maintain named projection views.
@@ -178,8 +180,17 @@ func (m *ProjectionMiddleware) ReadView(campfireID, name string) ([]store.Messag
 
 		ctx := buildCtx(msg, nil) // Class 1: no fulfillment index needed
 		if predicate.Eval(parsed, ctx) {
-			if err := m.base.InsertProjectionEntry(campfireID, name, msg.ID, msg.ReceivedAt); err != nil {
-				return nil, fmt.Errorf("projection: insert entry: %w", err)
+			// Extract entity key if this is an entity-key view.
+			entityKey := ""
+			if def.EntityKey != "" {
+				var ok bool
+				entityKey, ok = extractEntityKey(msg.Payload, def.EntityKey)
+				if !ok {
+					continue // skip messages missing the entity key field
+				}
+			}
+			if err := m.insertOrUpsert(campfireID, name, msg.ID, entityKey, msg.ReceivedAt, msg.Timestamp); err != nil {
+				return nil, fmt.Errorf("projection: insert/upsert entry: %w", err)
 			}
 		}
 	}
@@ -274,8 +285,16 @@ func (m *ProjectionMiddleware) AddMessage(msg store.MessageRecord) (bool, error)
 			continue // Class 3 downgraded to on-read
 		}
 		if predicate.Eval(cv.parsed, ctx) {
-			// Non-fatal if insert fails — lazy delta recovers.
-			_ = m.base.InsertProjectionEntry(msg.CampfireID, cv.def.Name, msg.ID, msg.ReceivedAt)
+			entityKey := ""
+			if cv.def.EntityKey != "" {
+				var ok bool
+				entityKey, ok = extractEntityKey(msg.Payload, cv.def.EntityKey)
+				if !ok {
+					continue // skip messages missing the entity key field
+				}
+			}
+			// Non-fatal if insert/upsert fails — lazy delta recovers.
+			_ = m.insertOrUpsert(msg.CampfireID, cv.def.Name, msg.ID, entityKey, msg.ReceivedAt, msg.Timestamp)
 		}
 	}
 
@@ -365,6 +384,7 @@ func (m *ProjectionMiddleware) getOnWriteViews(campfireID string) ([]cachedView,
 			parsed:        parsed,
 			class:         class,
 			predicateHash: hashPredicate(def.Predicate),
+			entityKey:     def.EntityKey,
 		})
 	}
 
@@ -469,6 +489,7 @@ func buildCtx(m store.MessageRecord, fulfillmentIndex map[string]bool) *predicat
 		Sender:           senderIdentity,
 		Timestamp:        m.Timestamp,
 		Payload:          payload,
+		RawPayload:       m.Payload, // for payload-size predicate
 		FulfillmentIndex: fulfillmentIndex,
 	}
 }
@@ -497,6 +518,60 @@ func hasTagPrefix(tags []string, exact string) bool {
 func hashPredicate(expr string) string {
 	h := sha256.Sum256([]byte(expr))
 	return hex.EncodeToString(h[:8])
+}
+
+// extractEntityKey extracts a string value from a message payload using a
+// dot-separated path (e.g. "payload.bead_id"). Returns ("", false) if the
+// field is missing or not a string-representable value.
+func extractEntityKey(payload []byte, path string) (string, bool) {
+	if path == "" || len(payload) == 0 {
+		return "", false
+	}
+	var root any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return "", false
+	}
+
+	// Strip leading "payload." prefix if present (mirrors predicate field syntax).
+	parts := strings.Split(path, ".")
+	if len(parts) > 0 && parts[0] == "payload" {
+		parts = parts[1:]
+	}
+
+	current := root
+	for _, part := range parts {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return "", false
+		}
+		current, ok = m[part]
+		if !ok {
+			return "", false
+		}
+	}
+
+	switch v := current.(type) {
+	case string:
+		return v, true
+	case float64:
+		return fmt.Sprintf("%g", v), true
+	case bool:
+		if v {
+			return "true", true
+		}
+		return "false", true
+	default:
+		return "", false
+	}
+}
+
+// insertOrUpsert inserts or upserts a projection entry depending on whether
+// an entity key is configured for this view.
+func (m *ProjectionMiddleware) insertOrUpsert(campfireID, viewName, messageID, entityKey string, indexedAt, timestamp int64) error {
+	if entityKey != "" {
+		return m.base.UpsertProjectionEntry(campfireID, viewName, messageID, entityKey, indexedAt, timestamp)
+	}
+	return m.base.InsertProjectionEntry(campfireID, viewName, messageID, indexedAt)
 }
 
 // --- store.Store delegation methods ---
@@ -610,6 +685,9 @@ func (m *ProjectionMiddleware) ValidateAndUseInvite(campfireID, inviteCode strin
 }
 func (m *ProjectionMiddleware) InsertProjectionEntry(campfireID, viewName, messageID string, indexedAt int64) error {
 	return m.base.InsertProjectionEntry(campfireID, viewName, messageID, indexedAt)
+}
+func (m *ProjectionMiddleware) UpsertProjectionEntry(campfireID, viewName, messageID, entityKey string, indexedAt, timestamp int64) error {
+	return m.base.UpsertProjectionEntry(campfireID, viewName, messageID, entityKey, indexedAt, timestamp)
 }
 func (m *ProjectionMiddleware) DeleteProjectionEntries(campfireID, viewName string, messageIDs []string) error {
 	return m.base.DeleteProjectionEntries(campfireID, viewName, messageIDs)

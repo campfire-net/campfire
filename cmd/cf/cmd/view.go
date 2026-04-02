@@ -9,6 +9,7 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/predicate"
+	"github.com/campfire-net/campfire/pkg/projection"
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/spf13/cobra"
@@ -22,6 +23,7 @@ type viewDefinition struct {
 	Ordering   string   `json:"ordering,omitempty"`   // "timestamp asc" (default) or "timestamp desc"
 	Limit      int      `json:"limit,omitempty"`      // 0 = no limit
 	Refresh    string   `json:"refresh,omitempty"`     // "on-read" (default), "on-write", "periodic"
+	EntityKey  string   `json:"entity_key,omitempty"` // dot-separated payload path; one result per entity
 }
 
 var viewCmd = &cobra.Command{
@@ -48,7 +50,8 @@ Example predicates (S-expression syntax):
 		viewOrdering, _ := cmd.Flags().GetString("ordering")
 		viewLimit, _ := cmd.Flags().GetInt("limit")
 		viewRefresh, _ := cmd.Flags().GetString("refresh")
-		return runViewCreate(args[0], args[1], viewPredicate, viewProjection, viewOrdering, viewRefresh, viewLimit)
+		viewEntityKey, _ := cmd.Flags().GetString("entity-key")
+		return runViewCreate(args[0], args[1], viewPredicate, viewProjection, viewOrdering, viewRefresh, viewEntityKey, viewLimit)
 	},
 }
 
@@ -76,7 +79,8 @@ func init() {
 	viewCreateCmd.Flags().String("projection", "", "comma-separated field names for output projection")
 	viewCreateCmd.Flags().String("ordering", "timestamp asc", "ordering: 'timestamp asc' or 'timestamp desc'")
 	viewCreateCmd.Flags().Int("limit", 0, "maximum number of results (0 = no limit)")
-	viewCreateCmd.Flags().String("refresh", "on-read", "refresh strategy: on-read (only supported in P1)")
+	viewCreateCmd.Flags().String("refresh", "on-read", "refresh strategy: on-read, on-write")
+	viewCreateCmd.Flags().String("entity-key", "", "dot-separated payload path for entity-key views (one result per entity, latest wins)")
 	viewCreateCmd.MarkFlagRequired("predicate") //nolint:errcheck
 
 	viewCmd.AddCommand(viewCreateCmd)
@@ -85,7 +89,7 @@ func init() {
 	rootCmd.AddCommand(viewCmd)
 }
 
-func runViewCreate(campfireIDArg, name, viewPredicate, viewProjection, viewOrdering, viewRefresh string, viewLimit int) error {
+func runViewCreate(campfireIDArg, name, viewPredicate, viewProjection, viewOrdering, viewRefresh, viewEntityKey string, viewLimit int) error {
 	agentID, s, err := requireAgentAndStore()
 	if err != nil {
 		return err
@@ -125,8 +129,8 @@ func runViewCreate(campfireIDArg, name, viewPredicate, viewProjection, viewOrder
 
 	// Validate refresh strategy.
 	refresh := strings.TrimSpace(viewRefresh)
-	if refresh != "on-read" {
-		return fmt.Errorf("unsupported refresh strategy %q: only 'on-read' is supported in P1", refresh)
+	if refresh != "on-read" && refresh != "on-write" {
+		return fmt.Errorf("unsupported refresh strategy %q: must be 'on-read' or 'on-write'", refresh)
 	}
 
 	// Build projection list.
@@ -148,6 +152,7 @@ func runViewCreate(campfireIDArg, name, viewPredicate, viewProjection, viewOrder
 		Ordering:   ordering,
 		Limit:      viewLimit,
 		Refresh:    refresh,
+		EntityKey:  strings.TrimSpace(viewEntityKey),
 	}
 	payloadBytes, err := json.Marshal(def)
 	if err != nil {
@@ -194,7 +199,10 @@ func runViewRead(campfireIDArg, name string) error {
 		return err
 	}
 
-	// Find the latest campfire:view message with this name.
+	// Wrap store with ProjectionMiddleware for lazy delta evaluation.
+	mw := projection.New(s)
+
+	// Find the latest view definition (for output options: ordering, limit, projection).
 	def, err := findLatestView(s, campfireID, name)
 	if err != nil {
 		return err
@@ -203,55 +211,20 @@ func runViewRead(campfireIDArg, name string) error {
 		return fmt.Errorf("view %q not found in campfire %s", name, campfireID[:min(12, len(campfireID))])
 	}
 
-	// Parse the predicate.
-	pred, err := predicate.Parse(def.Predicate)
+	// ReadView handles: lazy delta evaluation, predicate hash rebuild, compaction rebuild,
+	// Class 3 full-scan fallback, system message exclusion, and timestamp sort.
+	matched, err := mw.ReadView(campfireID, name)
 	if err != nil {
-		return fmt.Errorf("invalid predicate in view definition: %w", err)
+		return fmt.Errorf("reading view: %w", err)
 	}
 
-	// Load all messages (not just unread — views see everything).
-	// RespectCompaction: true so superseded messages are excluded from view results.
-	allMsgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{RespectCompaction: true})
-	if err != nil {
-		return fmt.Errorf("listing messages: %w", err)
-	}
-
-	// Build fulfillment index for has-fulfillment predicate: scan all messages
-	// for those tagged "fulfills" and index their antecedents as fulfilled.
-	fulfillmentIndex := buildFulfillmentIndex(allMsgs)
-
-	// Evaluate predicate against each message, skipping campfire:* system messages.
-	// System messages (e.g. campfire:view definitions) must not appear in view
-	// results. This is especially important for negation predicates like
-	// (not (tag "foo")) which would otherwise match system messages that lack
-	// the negated tag.
-	var matched []store.MessageRecord
-	for _, m := range allMsgs {
-		ctx := buildMessageContext(m)
-		ctx.FulfillmentIndex = fulfillmentIndex
-		isSystem := false
-		for _, tag := range ctx.Tags {
-			if strings.HasPrefix(tag, "campfire:") {
-				isSystem = true
-				break
-			}
-		}
-		if isSystem {
-			continue
-		}
-		if predicate.Eval(pred, ctx) {
-			matched = append(matched, m)
-		}
-	}
-
-	// Apply ordering.
+	// Apply ordering (middleware returns timestamp-asc; desc needs a flip).
 	ordering := strings.TrimSpace(def.Ordering)
 	if ordering == "timestamp desc" {
 		sort.Slice(matched, func(i, j int) bool {
 			return matched[i].Timestamp > matched[j].Timestamp
 		})
 	}
-	// Default "timestamp asc" is already the natural order from ListMessages.
 
 	// Apply limit.
 	if def.Limit > 0 && len(matched) > def.Limit {
@@ -436,11 +409,12 @@ func buildMessageContext(m store.MessageRecord) *predicate.MessageContext {
 		senderIdentity = m.SenderCampfireID
 	}
 	return &predicate.MessageContext{
-		MessageID: m.ID,
-		Tags:      m.Tags,
-		Sender:    senderIdentity,
-		Timestamp: m.Timestamp,
-		Payload:   payload,
+		MessageID:  m.ID,
+		Tags:       m.Tags,
+		Sender:     senderIdentity,
+		Timestamp:  m.Timestamp,
+		Payload:    payload,
+		RawPayload: m.Payload, // BUG FIX: populate for payload-size predicate (campfire-agent-gmv)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/projection"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
@@ -54,10 +55,15 @@ func Init(configDir string, optFuncs ...Option) (*Client, error) {
 	}
 
 	storePath := filepath.Join(configDir, "store.db")
-	s, err := store.Open(storePath)
+	rawStore, err := store.Open(storePath)
 	if err != nil {
 		return nil, fmt.Errorf("protocol.Init: opening store: %w", err)
 	}
+
+	// Wrap store with ProjectionMiddleware to maintain named filter projection views.
+	// The middleware intercepts AddMessage for on-write views and provides lazy
+	// delta evaluation for all views via ReadView.
+	s := projection.New(rawStore)
 
 	c := New(s, id)
 	c.opts = opts

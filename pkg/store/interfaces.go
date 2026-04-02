@@ -113,7 +113,9 @@ type ProjectionEntry struct {
 	CampfireID string
 	ViewName   string
 	MessageID  string
-	IndexedAt  int64 // Unix nanoseconds when the message was indexed into this view
+	EntityKey  string // non-empty for entity-key views; the extracted key value
+	IndexedAt  int64  // Unix nanoseconds when the message was indexed into this view
+	Timestamp  int64  // message timestamp (used for entity-key latest-wins comparison)
 }
 
 // ProjectionMetadata holds metadata for a named projection view.
@@ -131,6 +133,11 @@ type ProjectionStore interface {
 	// InsertProjectionEntry adds a message ID to a projection view.
 	// Idempotent: succeeds silently if the entry already exists.
 	InsertProjectionEntry(campfireID, viewName, messageID string, indexedAt int64) error
+	// UpsertProjectionEntry inserts or replaces an entity-key projection entry.
+	// For entity-key views: if an entry for (campfire_id, view_name, entity_key)
+	// already exists with an older timestamp, the new entry replaces it (latest wins).
+	// For non-entity-key views (entityKey == ""), behaves like InsertProjectionEntry.
+	UpsertProjectionEntry(campfireID, viewName, messageID, entityKey string, indexedAt, timestamp int64) error
 	// DeleteProjectionEntries removes specific message IDs from a projection view.
 	DeleteProjectionEntries(campfireID, viewName string, messageIDs []string) error
 	// DeleteAllProjectionEntries drops all entries for a projection view.
