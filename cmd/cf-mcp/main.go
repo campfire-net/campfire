@@ -2277,11 +2277,6 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 				// once the operator account store (M5) is wired into the server. For
 				// now we use the campfireID as a stable placeholder so the idempotency
 				// key is still unique per message.
-				hopCount := len(msg.Provenance) - 1 // first hop is origin (storage), not relay
-				if hopCount < 0 {
-					hopCount = 0
-				}
-				_ = hopCount // available for future per-hop metering; event is per-delivery today
 				s.forgeEmitter.Emit(forge.UsageEvent{
 					AccountID:      campfireID, // TODO(M5): replace with real Forge account ID
 					ServiceID:      "campfire-hosting",
