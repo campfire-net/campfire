@@ -219,6 +219,13 @@ func (t *Transport) SetOnMessageDelivered(fn func(ctx context.Context, cancel co
 	t.OnMessageDelivered = fn
 }
 
+// Context returns the server-lifetime context that is cancelled when Stop() is
+// called. Callers (e.g. the MCP handleSend path) should derive dispatch contexts
+// from this so that in-flight goroutines are cancelled on transport shutdown.
+func (t *Transport) Context() context.Context {
+	return t.ctx
+}
+
 // SelfInfo returns this node's agent public key hex and HTTP endpoint.
 func (t *Transport) SelfInfo() (pubKeyHex, endpoint string) {
 	t.mu.RLock()

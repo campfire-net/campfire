@@ -2310,12 +2310,25 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 
 	// Convention dispatch (T4): after successful write, dispatch to registered
 	// convention server handlers. Non-blocking — Dispatch spawns goroutines internally.
+	//
+	// The dispatch context is derived from the transport's server-lifetime context
+	// (cancelled when Stop() is called) with a 30s timeout, matching the handleDeliver
+	// path (handler_message.go). This ensures goroutines spawned by Dispatch are
+	// cancelled on shutdown rather than running unbounded (campfire-agent-gxc).
 	if s.conventionDispatcher != nil {
-		dispatchCtx := context.Background()
+		var parentCtx context.Context
+		if s.httpTransport != nil {
+			parentCtx = s.httpTransport.Context()
+		} else {
+			parentCtx = context.Background()
+		}
+		dispatchCtx, dispatchCancel := context.WithTimeout(parentCtx, 30*time.Second)
 		// Lazy-load convention server registrations for this campfire on first send.
 		s.loadConventionServersForCampfire(dispatchCtx, campfireID)
 		msgRec := store.MessageRecordFromMessage(campfireID, msg, store.NowNano())
-		s.conventionDispatcher.Dispatch(dispatchCtx, campfireID, &msgRec)
+		if !s.conventionDispatcher.DispatchWithCancel(dispatchCtx, dispatchCancel, campfireID, &msgRec) {
+			dispatchCancel()
+		}
 	}
 
 	// Audit: record send action (§5.e).
