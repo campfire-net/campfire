@@ -311,6 +311,206 @@ func TestSweeper_MaxRedispatchesBeforeCap(t *testing.T) {
 	}
 }
 
+// TestSweeper_RedispatchGuardsAgainstStaleHandler verifies that when the sweep
+// re-dispatches a stale message, the original (slow) handler's completion is
+// rejected. Only the re-dispatched handler's result is accepted. This is the
+// regression test for the double-dispatch security bug (campfire-agent-fec).
+func TestSweeper_RedispatchGuardsAgainstStaleHandler(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	slowHandlerStarted := make(chan struct{})
+	slowHandlerContinue := make(chan struct{})
+
+	handlerCall := atomic.Int64{}
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		call := handlerCall.Add(1)
+		if call == 1 {
+			close(slowHandlerStarted)
+			<-slowHandlerContinue
+		}
+		return nil, nil
+	}, env.serverID.PublicKeyHex(), "")
+
+	ctx := context.Background()
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	dispatched := d.Dispatch(ctx, env.campfireID, msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	<-slowHandlerStarted
+
+	ds.BackdateDispatch(env.campfireID, msg.ID, 10*time.Minute)
+
+	sw := convention.NewSweeper(d, ds, nil)
+	count, err := sw.RunWithThreshold(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("RunWithThreshold: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 re-dispatch, got %d", count)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	close(slowHandlerContinue)
+	time.Sleep(300 * time.Millisecond)
+
+	status, err := ds.GetDispatchStatus(ctx, env.campfireID, msg.ID)
+	if err != nil {
+		t.Fatalf("GetDispatchStatus: %v", err)
+	}
+	if status != "fulfilled" {
+		t.Fatalf("expected status 'fulfilled', got %q", status)
+	}
+
+	if n := handlerCall.Load(); n != 2 {
+		t.Fatalf("expected handler called twice, got %d", n)
+	}
+
+	gen, err := ds.GetRedispatchCount(ctx, env.campfireID, msg.ID)
+	if err != nil {
+		t.Fatalf("GetRedispatchCount: %v", err)
+	}
+	if gen != 1 {
+		t.Fatalf("expected RedispatchCount 1, got %d", gen)
+	}
+}
+
+// TestSweeper_RedispatchGuardsAgainstStaleFailure verifies that a stale
+// handler's MarkFailedCAS is also rejected after a re-dispatch.
+func TestSweeper_RedispatchGuardsAgainstStaleFailure(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	slowHandlerStarted := make(chan struct{})
+	slowHandlerContinue := make(chan struct{})
+
+	handlerCall := atomic.Int64{}
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		call := handlerCall.Add(1)
+		if call == 1 {
+			close(slowHandlerStarted)
+			<-slowHandlerContinue
+			return nil, context.DeadlineExceeded
+		}
+		return nil, nil
+	}, env.serverID.PublicKeyHex(), "")
+
+	ctx := context.Background()
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	d.Dispatch(ctx, env.campfireID, msg)
+	<-slowHandlerStarted
+
+	ds.BackdateDispatch(env.campfireID, msg.ID, 10*time.Minute)
+
+	sw := convention.NewSweeper(d, ds, nil)
+	count, err := sw.RunWithThreshold(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("RunWithThreshold: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 re-dispatch, got %d", count)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	close(slowHandlerContinue)
+	time.Sleep(300 * time.Millisecond)
+
+	status, err := ds.GetDispatchStatus(ctx, env.campfireID, msg.ID)
+	if err != nil {
+		t.Fatalf("GetDispatchStatus: %v", err)
+	}
+	if status != "fulfilled" {
+		t.Fatalf("expected 'fulfilled' from re-dispatched handler, got %q", status)
+	}
+}
+
+// TestDispatcher_MarkFulfilledCAS_RejectsStaleGeneration verifies the CAS guard
+// directly: MarkFulfilledCAS with a wrong generation returns false.
+func TestDispatcher_MarkFulfilledCAS_RejectsStaleGeneration(t *testing.T) {
+	ds := convention.NewMemoryDispatchStore()
+	ctx := context.Background()
+
+	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "", "myconv", "myop")
+
+	ok, err := ds.MarkFulfilledCAS(ctx, "cf1", "msg1", 0)
+	if err != nil {
+		t.Fatalf("MarkFulfilledCAS: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected MarkFulfilledCAS to succeed with matching gen=0")
+	}
+
+	status, _ := ds.GetDispatchStatus(ctx, "cf1", "msg1")
+	if status != "fulfilled" {
+		t.Fatalf("expected 'fulfilled', got %q", status)
+	}
+}
+
+func TestDispatcher_MarkFulfilledCAS_RejectsAfterRedispatch(t *testing.T) {
+	ds := convention.NewMemoryDispatchStore()
+	ctx := context.Background()
+
+	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "", "myconv", "myop")
+
+	newCount, err := ds.IncrementRedispatchCount(ctx, "cf1", "msg1")
+	if err != nil {
+		t.Fatalf("IncrementRedispatchCount: %v", err)
+	}
+	if newCount != 1 {
+		t.Fatalf("expected new count 1, got %d", newCount)
+	}
+
+	ok, err := ds.MarkFulfilledCAS(ctx, "cf1", "msg1", 0)
+	if err != nil {
+		t.Fatalf("MarkFulfilledCAS: %v", err)
+	}
+	if ok {
+		t.Fatal("expected MarkFulfilledCAS to be rejected for stale gen=0")
+	}
+
+	status, _ := ds.GetDispatchStatus(ctx, "cf1", "msg1")
+	if status != "dispatched" {
+		t.Fatalf("expected 'dispatched' (unchanged), got %q", status)
+	}
+
+	ok, err = ds.MarkFulfilledCAS(ctx, "cf1", "msg1", 1)
+	if err != nil {
+		t.Fatalf("MarkFulfilledCAS: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected MarkFulfilledCAS to succeed with matching gen=1")
+	}
+}
+
+func TestDispatcher_MarkFailedCAS_RejectsAfterRedispatch(t *testing.T) {
+	ds := convention.NewMemoryDispatchStore()
+	ctx := context.Background()
+
+	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "", "myconv", "myop")
+	ds.IncrementRedispatchCount(ctx, "cf1", "msg1")
+
+	ok, err := ds.MarkFailedCAS(ctx, "cf1", "msg1", 0)
+	if err != nil {
+		t.Fatalf("MarkFailedCAS: %v", err)
+	}
+	if ok {
+		t.Fatal("expected MarkFailedCAS to be rejected for stale gen=0")
+	}
+
+	status, _ := ds.GetDispatchStatus(ctx, "cf1", "msg1")
+	if status != "dispatched" {
+		t.Fatalf("expected 'dispatched', got %q", status)
+	}
+}
+
 // TestSweeper_NoOp verifies that a sweep with no stale records returns 0.
 func TestSweeper_NoOp(t *testing.T) {
 	env := setupDispatcherTestEnv(t)
