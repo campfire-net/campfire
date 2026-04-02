@@ -3,6 +3,7 @@ package convention
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"time"
 
@@ -84,7 +85,7 @@ func (sw *Sweeper) RunWithThreshold(ctx context.Context, staleThreshold time.Dur
 			// and will be cleaned up by CleanupOldDispatches.
 			sw.logger.Printf("convention sweep: message %s/%s exceeded max re-dispatches (%d), marking failed",
 				rec.CampfireID, rec.MessageID, MaxRedispatches)
-			if markErr := sw.store.MarkFailed(ctx, rec.CampfireID, rec.MessageID); markErr != nil {
+			if markErr := sw.store.MarkFailed(ctx, rec.CampfireID, rec.MessageID); markErr != nil && !errors.Is(markErr, ErrDispatchNotFound) {
 				sw.logger.Printf("convention sweep: MarkFailed(%s/%s): %v", rec.CampfireID, rec.MessageID, markErr)
 			}
 			continue
