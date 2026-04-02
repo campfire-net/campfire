@@ -108,6 +108,42 @@ type InviteStore interface {
 	ValidateAndUseInvite(campfireID, inviteCode string) (*InviteRecord, error)
 }
 
+// ProjectionEntry represents a single message ID indexed in a named projection view.
+type ProjectionEntry struct {
+	CampfireID string
+	ViewName   string
+	MessageID  string
+	IndexedAt  int64 // Unix nanoseconds when the message was indexed into this view
+}
+
+// ProjectionMetadata holds metadata for a named projection view.
+type ProjectionMetadata struct {
+	CampfireID       string
+	ViewName         string
+	PredicateHash    string // Hash of the predicate expression for cache invalidation
+	LastCompactionID string // Most recent compaction event processed
+	HighWaterMark    int64  // Highest message timestamp indexed
+}
+
+// ProjectionStore manages named projection views (filtered message indices).
+// Implemented by *SQLiteStore and *TableStore.
+type ProjectionStore interface {
+	// InsertProjectionEntry adds a message ID to a projection view.
+	// Idempotent: succeeds silently if the entry already exists.
+	InsertProjectionEntry(campfireID, viewName, messageID string, indexedAt int64) error
+	// DeleteProjectionEntries removes specific message IDs from a projection view.
+	DeleteProjectionEntries(campfireID, viewName string, messageIDs []string) error
+	// DeleteAllProjectionEntries drops all entries for a projection view.
+	DeleteAllProjectionEntries(campfireID, viewName string) error
+	// ListProjectionEntries returns all entries for a projection view, ordered by indexed_at.
+	ListProjectionEntries(campfireID, viewName string) ([]ProjectionEntry, error)
+	// GetProjectionMetadata retrieves metadata for a projection view.
+	// Returns nil, nil if not found.
+	GetProjectionMetadata(campfireID, viewName string) (*ProjectionMetadata, error)
+	// SetProjectionMetadata upserts metadata for a projection view.
+	SetProjectionMetadata(campfireID, viewName string, meta ProjectionMetadata) error
+}
+
 // Store is the unified interface covering all store capabilities.
 // The SQLite-backed implementation is returned by Open and NewSQLite.
 type Store interface {
@@ -117,6 +153,7 @@ type Store interface {
 	ThresholdStore
 	EpochSecretStore
 	InviteStore
+	ProjectionStore
 	UpdateCampfireID(oldID, newID string) error
 	Close() error
 }

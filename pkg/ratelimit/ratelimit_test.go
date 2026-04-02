@@ -108,6 +108,24 @@ func (f *fakeStore) ApplyMembershipCommitAtomically(campfireID string, newMember
 	return nil
 }
 
+// ProjectionStore stubs — required by store.Store interface, not exercised by rate limit tests.
+func (f *fakeStore) InsertProjectionEntry(campfireID, viewName, messageID string, indexedAt int64) error {
+	return nil
+}
+func (f *fakeStore) DeleteProjectionEntries(campfireID, viewName string, messageIDs []string) error {
+	return nil
+}
+func (f *fakeStore) DeleteAllProjectionEntries(campfireID, viewName string) error { return nil }
+func (f *fakeStore) ListProjectionEntries(campfireID, viewName string) ([]store.ProjectionEntry, error) {
+	return nil, nil
+}
+func (f *fakeStore) GetProjectionMetadata(campfireID, viewName string) (*store.ProjectionMetadata, error) {
+	return nil, nil
+}
+func (f *fakeStore) SetProjectionMetadata(campfireID, viewName string, meta store.ProjectionMetadata) error {
+	return nil
+}
+
 // --- Helpers ---
 
 func makeRecord(campfireID string, payloadSize int) store.MessageRecord {

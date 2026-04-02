@@ -179,6 +179,28 @@ var schemaMigrations = []migration{
 		description: "add sender_campfire_id column to messages for identity address (campfire-agent-eyl)",
 		sql:         "ALTER TABLE messages ADD COLUMN sender_campfire_id TEXT NOT NULL DEFAULT ''",
 	},
+	{
+		version:     9,
+		description: "create projection_entries and projection_metadata tables for named projection views",
+		sql: `CREATE TABLE IF NOT EXISTS projection_entries (
+    campfire_id TEXT NOT NULL,
+    view_name   TEXT NOT NULL,
+    message_id  TEXT NOT NULL,
+    indexed_at  INTEGER NOT NULL,
+    PRIMARY KEY (campfire_id, view_name, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_projection_ts
+    ON projection_entries(campfire_id, view_name, indexed_at);
+
+CREATE TABLE IF NOT EXISTS projection_metadata (
+    campfire_id        TEXT NOT NULL,
+    view_name          TEXT NOT NULL,
+    predicate_hash     TEXT NOT NULL,
+    last_compaction_id TEXT NOT NULL DEFAULT '',
+    high_water_mark    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (campfire_id, view_name)
+)`,
+	},
 }
 
 // runMigrations applies any unapplied migrations in schemaMigrations to db.
@@ -1788,4 +1810,114 @@ func (s *SQLiteStore) ValidateAndUseInvite(campfireID, inviteCode string) (*Invi
 	}
 	// Only remaining reason: use_count >= max_uses.
 	return nil, ErrInviteExhausted
+}
+
+// InsertProjectionEntry adds a message ID to a projection view.
+// Idempotent: succeeds silently if the entry already exists.
+func (s *SQLiteStore) InsertProjectionEntry(campfireID, viewName, messageID string, indexedAt int64) error {
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO projection_entries (campfire_id, view_name, message_id, indexed_at)
+		 VALUES (?, ?, ?, ?)`,
+		campfireID, viewName, messageID, indexedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("inserting projection entry: %w", err)
+	}
+	return nil
+}
+
+// DeleteProjectionEntries removes specific message IDs from a projection view.
+func (s *SQLiteStore) DeleteProjectionEntries(campfireID, viewName string, messageIDs []string) error {
+	if len(messageIDs) == 0 {
+		return nil
+	}
+	// Build placeholders for the IN clause.
+	placeholders := make([]string, len(messageIDs))
+	args := []interface{}{campfireID, viewName}
+	for i, msgID := range messageIDs {
+		placeholders[i] = "?"
+		args = append(args, msgID)
+	}
+	query := fmt.Sprintf(
+		`DELETE FROM projection_entries WHERE campfire_id = ? AND view_name = ? AND message_id IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	_, err := s.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("deleting projection entries: %w", err)
+	}
+	return nil
+}
+
+// DeleteAllProjectionEntries drops all entries for a projection view.
+func (s *SQLiteStore) DeleteAllProjectionEntries(campfireID, viewName string) error {
+	_, err := s.db.Exec(
+		`DELETE FROM projection_entries WHERE campfire_id = ? AND view_name = ?`,
+		campfireID, viewName,
+	)
+	if err != nil {
+		return fmt.Errorf("deleting all projection entries: %w", err)
+	}
+	return nil
+}
+
+// ListProjectionEntries returns all entries for a projection view, ordered by indexed_at.
+func (s *SQLiteStore) ListProjectionEntries(campfireID, viewName string) ([]ProjectionEntry, error) {
+	rows, err := s.db.Query(
+		`SELECT campfire_id, view_name, message_id, indexed_at
+		 FROM projection_entries
+		 WHERE campfire_id = ? AND view_name = ?
+		 ORDER BY indexed_at`,
+		campfireID, viewName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing projection entries: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []ProjectionEntry
+	for rows.Next() {
+		var e ProjectionEntry
+		if err := rows.Scan(&e.CampfireID, &e.ViewName, &e.MessageID, &e.IndexedAt); err != nil {
+			return nil, fmt.Errorf("scanning projection entry: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// GetProjectionMetadata retrieves metadata for a projection view.
+// Returns nil, nil if not found.
+func (s *SQLiteStore) GetProjectionMetadata(campfireID, viewName string) (*ProjectionMetadata, error) {
+	var meta ProjectionMetadata
+	err := s.db.QueryRow(
+		`SELECT campfire_id, view_name, predicate_hash, last_compaction_id, high_water_mark
+		 FROM projection_metadata
+		 WHERE campfire_id = ? AND view_name = ?`,
+		campfireID, viewName,
+	).Scan(&meta.CampfireID, &meta.ViewName, &meta.PredicateHash, &meta.LastCompactionID, &meta.HighWaterMark)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("getting projection metadata: %w", err)
+	}
+	return &meta, nil
+}
+
+// SetProjectionMetadata upserts metadata for a projection view.
+func (s *SQLiteStore) SetProjectionMetadata(campfireID, viewName string, meta ProjectionMetadata) error {
+	_, err := s.db.Exec(
+		`INSERT INTO projection_metadata (campfire_id, view_name, predicate_hash, last_compaction_id, high_water_mark)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(campfire_id, view_name) DO UPDATE SET
+		     predicate_hash = excluded.predicate_hash,
+		     last_compaction_id = excluded.last_compaction_id,
+		     high_water_mark = excluded.high_water_mark`,
+		campfireID, viewName, meta.PredicateHash, meta.LastCompactionID, meta.HighWaterMark,
+	)
+	if err != nil {
+		return fmt.Errorf("setting projection metadata: %w", err)
+	}
+	return nil
 }
