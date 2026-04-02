@@ -11,10 +11,12 @@ package aztable_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
 )
 
@@ -161,7 +163,7 @@ func TestDispatchStore_MarkDispatched_InsertIfNotExists(t *testing.T) {
 	msgID := unique("msg")
 	serverID := unique("server")
 
-	inserted, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "testconv", "testop")
+	inserted, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "", "testconv", "testop")
 	if err != nil {
 		t.Fatalf("MarkDispatched first: %v", err)
 	}
@@ -170,7 +172,7 @@ func TestDispatchStore_MarkDispatched_InsertIfNotExists(t *testing.T) {
 	}
 
 	// Second call — should be idempotent.
-	inserted2, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "testconv", "testop")
+	inserted2, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "", "testconv", "testop")
 	if err != nil {
 		t.Fatalf("MarkDispatched second: %v", err)
 	}
@@ -190,7 +192,7 @@ func TestDispatchStore_StatusTransitions(t *testing.T) {
 		msgID := unique("msg")
 		serverID := unique("server")
 
-		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "testconv", "testop"); err != nil {
+		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "", "testconv", "testop"); err != nil {
 			t.Fatalf("MarkDispatched: %v", err)
 		}
 
@@ -220,7 +222,7 @@ func TestDispatchStore_StatusTransitions(t *testing.T) {
 		msgID := unique("msg")
 		serverID := unique("server")
 
-		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "testconv", "testop"); err != nil {
+		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "", "testconv", "testop"); err != nil {
 			t.Fatalf("MarkDispatched: %v", err)
 		}
 
@@ -254,24 +256,26 @@ func TestDispatchStore_GetDispatchStatus_NotFound(t *testing.T) {
 }
 
 // TestDispatchStore_MarkFulfilled_NoRecord verifies that MarkFulfilled on a
-// non-existent record returns nil (matches MemoryDispatchStore behaviour).
+// non-existent record returns ErrDispatchNotFound.
 func TestDispatchStore_MarkFulfilled_NoRecord(t *testing.T) {
 	s := newTestDispatchStore(t)
 	ctx := context.Background()
 
-	if err := s.MarkFulfilled(ctx, unique("cf"), unique("msg")); err != nil {
-		t.Fatalf("MarkFulfilled on absent record: %v", err)
+	err := s.MarkFulfilled(ctx, unique("cf"), unique("msg"))
+	if !errors.Is(err, convention.ErrDispatchNotFound) {
+		t.Fatalf("MarkFulfilled on absent record: expected ErrDispatchNotFound, got %v", err)
 	}
 }
 
 // TestDispatchStore_MarkFailed_NoRecord verifies that MarkFailed on a
-// non-existent record returns nil (matches MemoryDispatchStore behaviour).
+// non-existent record returns ErrDispatchNotFound.
 func TestDispatchStore_MarkFailed_NoRecord(t *testing.T) {
 	s := newTestDispatchStore(t)
 	ctx := context.Background()
 
-	if err := s.MarkFailed(ctx, unique("cf"), unique("msg")); err != nil {
-		t.Fatalf("MarkFailed on absent record: %v", err)
+	err := s.MarkFailed(ctx, unique("cf"), unique("msg"))
+	if !errors.Is(err, convention.ErrDispatchNotFound) {
+		t.Fatalf("MarkFailed on absent record: expected ErrDispatchNotFound, got %v", err)
 	}
 }
 
@@ -361,7 +365,7 @@ func TestDispatchStore_CleanupOldDispatches(t *testing.T) {
 	failedMsgID := unique("msg-failed")
 
 	for _, msgID := range []string{dispatchedMsgID, fulfilledMsgID, failedMsgID} {
-		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "testconv", "testop"); err != nil {
+		if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "", "testconv", "testop"); err != nil {
 			t.Fatalf("MarkDispatched %s: %v", msgID, err)
 		}
 	}
