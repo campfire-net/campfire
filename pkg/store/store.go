@@ -174,6 +174,11 @@ var schemaMigrations = []migration{
 		description: "add encrypted column to campfire_memberships for downgrade prevention",
 		sql:         "ALTER TABLE campfire_memberships ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0",
 	},
+	{
+		version:     8,
+		description: "add sender_campfire_id column to messages for identity address (campfire-agent-eyl)",
+		sql:         "ALTER TABLE messages ADD COLUMN sender_campfire_id TEXT NOT NULL DEFAULT ''",
+	},
 }
 
 // runMigrations applies any unapplied migrations in schemaMigrations to db.
@@ -530,23 +535,28 @@ type MessageRecord struct {
 	// Instance is tainted (sender-asserted, not verified) metadata identifying
 	// the sender's role or instance name. Empty string for backward compatibility.
 	Instance string `json:"instance,omitempty"`
+	// SenderCampfireID is the hex-encoded self-campfire ID of the sender agent.
+	// Tainted (sender-asserted, not verified). Empty for legacy messages and
+	// ephemeral agents without a home campfire.
+	SenderCampfireID string `json:"sender_campfire_id,omitempty"`
 }
 
 // rawMessageRecord is used for scanning SQL rows where Tags, Antecedents, and
 // Provenance are stored as JSON text. scanMessageRecord converts it to a clean
 // MessageRecord at the store boundary.
 type rawMessageRecord struct {
-	ID          string
-	CampfireID  string
-	Sender      string
-	Payload     []byte
-	Tags        string
-	Antecedents string
-	Timestamp   int64
-	Signature   []byte
-	Provenance  string
-	ReceivedAt  int64
-	Instance    string
+	ID               string
+	CampfireID       string
+	Sender           string
+	Payload          []byte
+	Tags             string
+	Antecedents      string
+	Timestamp        int64
+	Signature        []byte
+	Provenance       string
+	ReceivedAt       int64
+	Instance         string
+	SenderCampfireID string
 }
 
 // toMessageRecord deserializes JSON fields from rawMessageRecord into a typed
@@ -565,17 +575,18 @@ func (r rawMessageRecord) toMessageRecord() MessageRecord {
 		provenance = []message.ProvenanceHop{}
 	}
 	return MessageRecord{
-		ID:          r.ID,
-		CampfireID:  r.CampfireID,
-		Sender:      r.Sender,
-		Payload:     r.Payload,
-		Tags:        tags,
-		Antecedents: antecedents,
-		Timestamp:   r.Timestamp,
-		Signature:   r.Signature,
-		Provenance:  provenance,
-		ReceivedAt:  r.ReceivedAt,
-		Instance:    r.Instance,
+		ID:               r.ID,
+		CampfireID:       r.CampfireID,
+		Sender:           r.Sender,
+		Payload:          r.Payload,
+		Tags:             tags,
+		Antecedents:      antecedents,
+		Timestamp:        r.Timestamp,
+		Signature:        r.Signature,
+		Provenance:       provenance,
+		ReceivedAt:       r.ReceivedAt,
+		Instance:         r.Instance,
+		SenderCampfireID: r.SenderCampfireID,
 	}
 }
 
@@ -583,7 +594,7 @@ func (r rawMessageRecord) toMessageRecord() MessageRecord {
 // JSON text columns at the store boundary.
 func scanMessageRecord(scan func(dest ...any) error) (MessageRecord, error) {
 	var r rawMessageRecord
-	if err := scan(&r.ID, &r.CampfireID, &r.Sender, &r.Payload, &r.Tags, &r.Antecedents, &r.Timestamp, &r.Signature, &r.Provenance, &r.ReceivedAt, &r.Instance); err != nil {
+	if err := scan(&r.ID, &r.CampfireID, &r.Sender, &r.Payload, &r.Tags, &r.Antecedents, &r.Timestamp, &r.Signature, &r.Provenance, &r.ReceivedAt, &r.Instance, &r.SenderCampfireID); err != nil {
 		return MessageRecord{}, err
 	}
 	return r.toMessageRecord(), nil
@@ -656,9 +667,9 @@ func (s *SQLiteStore) AddMessage(m MessageRecord) (bool, error) {
 	anteJSON, _ := json.Marshal(m.Antecedents)
 	provJSON, _ := json.Marshal(m.Provenance)
 	result, err := s.db.Exec(
-		`INSERT OR IGNORE INTO messages (id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.CampfireID, m.Sender, m.Payload, string(tagsJSON), string(anteJSON), m.Timestamp, m.Signature, string(provJSON), m.ReceivedAt, m.Instance,
+		`INSERT OR IGNORE INTO messages (id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance, sender_campfire_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.CampfireID, m.Sender, m.Payload, string(tagsJSON), string(anteJSON), m.Timestamp, m.Signature, string(provJSON), m.ReceivedAt, m.Instance, m.SenderCampfireID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("adding message: %w", err)
@@ -692,7 +703,7 @@ func (s *SQLiteStore) HasMessage(id string) (bool, error) {
 // GetMessage retrieves a single message by ID.
 func (s *SQLiteStore) GetMessage(id string) (*MessageRecord, error) {
 	row := s.db.QueryRow(
-		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
+		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance, sender_campfire_id
 		 FROM messages WHERE id = ?`, id,
 	)
 	m, err := scanMessageRecord(row.Scan)
@@ -718,7 +729,7 @@ func (s *SQLiteStore) GetMessage(id string) (*MessageRecord, error) {
 func (s *SQLiteStore) GetMessageByPrefix(prefix string) (*MessageRecord, error) {
 	escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(prefix)
 	rows, err := s.db.Query(
-		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
+		`SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance, sender_campfire_id
 		 FROM messages WHERE id LIKE ? ESCAPE '\' ORDER BY id LIMIT 2`,
 		escaped+"%",
 	)
@@ -845,7 +856,7 @@ func (s *SQLiteStore) ListMessages(campfireID string, afterTimestamp int64, filt
 		args = append(args, escapedSender)
 	}
 
-	query := `SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
+	query := `SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance, sender_campfire_id
 	          FROM messages WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY timestamp`
 
 	rows, err := s.db.Query(query, args...)
@@ -1091,7 +1102,7 @@ func (s *SQLiteStore) ListCompactionEvents(campfireID string) ([]MessageRecord, 
 		args = append(args, campfireID)
 	}
 
-	query := `SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance
+	query := `SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance, sender_campfire_id
 	          FROM messages WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY timestamp`
 
 	rows, err := s.db.Query(query, args...)
@@ -1159,7 +1170,7 @@ func (s *SQLiteStore) MaxMessageTimestamp(campfireID string, afterTS int64) (int
 // from IDs that contain '%' or '_' characters. (Security fix for workspace-kw9.)
 func (s *SQLiteStore) ListReferencingMessages(messageID string) ([]MessageRecord, error) {
 	rows, err := s.db.Query(
-		`SELECT m.id, m.campfire_id, m.sender, m.payload, m.tags, m.antecedents, m.timestamp, m.signature, m.provenance, m.received_at, m.instance
+		`SELECT m.id, m.campfire_id, m.sender, m.payload, m.tags, m.antecedents, m.timestamp, m.signature, m.provenance, m.received_at, m.instance, m.sender_campfire_id
 		 FROM messages m
 		 WHERE EXISTS (
 		     SELECT 1 FROM json_each(m.antecedents) WHERE value = ?

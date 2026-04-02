@@ -340,17 +340,18 @@ func (ts *TableStore) AddMessage(m store.MessageRecord) (bool, error) {
 	provJSON, _ := json.Marshal(m.Provenance)
 
 	entity := map[string]any{
-		"PartitionKey": ts.pk(m.CampfireID),
-		"RowKey":       encodeKey(m.ID),
-		"MessageID":    m.ID,
-		"CampfireID":   m.CampfireID,
-		"Sender":       m.Sender,
-		"Tags":         string(tagsJSON),
-		"Antecedents":  string(anteJSON),
-		"Timestamp":    m.Timestamp,
-		"Provenance":   string(provJSON),
-		"ReceivedAt":   m.ReceivedAt,
-		"Instance":     m.Instance,
+		"PartitionKey":     ts.pk(m.CampfireID),
+		"RowKey":           encodeKey(m.ID),
+		"MessageID":        m.ID,
+		"CampfireID":       m.CampfireID,
+		"Sender":           m.Sender,
+		"Tags":             string(tagsJSON),
+		"Antecedents":      string(anteJSON),
+		"Timestamp":        m.Timestamp,
+		"Provenance":       string(provJSON),
+		"ReceivedAt":       m.ReceivedAt,
+		"Instance":         m.Instance,
+		"SenderCampfireID": m.SenderCampfireID,
 	}
 	// Chunk large payload and signature.
 	setChunked(entity, "Payload", m.Payload)
@@ -1516,17 +1517,18 @@ func messageFromEntity(m map[string]any) (*store.MessageRecord, error) {
 	payload := getChunked(m, "Payload")
 	signature := getChunked(m, "Signature")
 	return &store.MessageRecord{
-		ID:          str(m, "MessageID"),
-		CampfireID:  str(m, "CampfireID"),
-		Sender:      str(m, "Sender"),
-		Payload:     payload,
-		Tags:        tags,
-		Antecedents: antecedents,
-		Timestamp:   toInt64(m["Timestamp"]),
-		Signature:   signature,
-		Provenance:  provenance,
-		ReceivedAt:  toInt64(m["ReceivedAt"]),
-		Instance:    str(m, "Instance"),
+		ID:               str(m, "MessageID"),
+		CampfireID:       str(m, "CampfireID"),
+		Sender:           str(m, "Sender"),
+		Payload:          payload,
+		Tags:             tags,
+		Antecedents:      antecedents,
+		Timestamp:        toInt64(m["Timestamp"]),
+		Signature:        signature,
+		Provenance:       provenance,
+		ReceivedAt:       toInt64(m["ReceivedAt"]),
+		Instance:         str(m, "Instance"),
+		SenderCampfireID: str(m, "SenderCampfireID"),
 	}, nil
 }
 

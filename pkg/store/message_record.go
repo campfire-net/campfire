@@ -25,17 +25,22 @@ func MessageRecordFromMessage(campfireID string, msg *message.Message, receivedA
 	if provenance == nil {
 		provenance = []message.ProvenanceHop{}
 	}
+	senderCampfireID := ""
+	if len(msg.SenderCampfireID) > 0 {
+		senderCampfireID = fmt.Sprintf("%x", msg.SenderCampfireID)
+	}
 	return MessageRecord{
-		ID:          msg.ID,
-		CampfireID:  campfireID,
-		Sender:      fmt.Sprintf("%x", msg.Sender),
-		Payload:     msg.Payload,
-		Tags:        tags,
-		Antecedents: antecedents,
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
-		Provenance:  provenance,
-		ReceivedAt:  receivedAt,
-		Instance:    msg.Instance,
+		ID:               msg.ID,
+		CampfireID:       campfireID,
+		Sender:           fmt.Sprintf("%x", msg.Sender),
+		Payload:          msg.Payload,
+		Tags:             tags,
+		Antecedents:      antecedents,
+		Timestamp:        msg.Timestamp,
+		Signature:        msg.Signature,
+		Provenance:       provenance,
+		ReceivedAt:       receivedAt,
+		Instance:         msg.Instance,
+		SenderCampfireID: senderCampfireID,
 	}
 }

@@ -24,7 +24,8 @@ var validFieldNames = map[string]bool{
 	"signature":   true,
 	"provenance":  true,
 	"instance":    true,
-	"campfire_id": true,
+	"campfire_id":         true,
+	"sender_campfire_id":  true,
 }
 
 // parseFieldSet parses a comma-separated list of field names and returns a set.
@@ -42,7 +43,7 @@ func parseFieldSet(s string) (map[string]bool, error) {
 			continue
 		}
 		if !validFieldNames[p] {
-			return nil, fmt.Errorf("unknown field %q; valid fields: id, sender, payload, tags, timestamp, antecedents, signature, provenance, instance, campfire_id", p)
+			return nil, fmt.Errorf("unknown field %q; valid fields: id, sender, payload, tags, timestamp, antecedents, signature, provenance, instance, campfire_id, sender_campfire_id", p)
 		}
 		fs[p] = true
 	}
@@ -113,7 +114,16 @@ func printMessagesWithFields(allMessages []protocol.Message, s store.Store, fiel
 			if len(senderShort) > 6 {
 				senderShort = senderShort[:6]
 			}
-			senderDisplay := "agent:" + senderShort
+			var senderDisplay string
+			if m.SenderCampfireID != "" {
+				campfireShort := m.SenderCampfireID
+				if len(campfireShort) > 12 {
+					campfireShort = campfireShort[:12]
+				}
+				senderDisplay = "@" + campfireShort + " (key: " + senderShort + ")"
+			} else {
+				senderDisplay = "agent:" + senderShort
+			}
 			if m.Instance != "" {
 				senderDisplay += " (" + m.Instance + ")"
 			}
@@ -248,6 +258,11 @@ func encodeMessagesJSONWithFields(allMessages []protocol.Message, fields map[str
 				obj["instance"] = m.Instance
 			}
 		}
+		if all || fields["sender_campfire_id"] {
+			if m.SenderCampfireID != "" {
+				obj["sender_campfire_id"] = m.SenderCampfireID
+			}
+		}
 		if all || fields["payload"] {
 			obj["payload"] = string(m.Payload)
 		}
@@ -293,7 +308,17 @@ func printNATMessages(campfireID string, msgs []message.Message, w io.Writer, s 
 		if len(senderShort) > 6 {
 			senderShort = senderShort[:6]
 		}
-		senderDisplay := "agent:" + senderShort
+		var senderDisplay string
+		if len(m.SenderCampfireID) > 0 {
+			campfireHex := fmt.Sprintf("%x", m.SenderCampfireID)
+			campfireShort := campfireHex
+			if len(campfireShort) > 12 {
+				campfireShort = campfireShort[:12]
+			}
+			senderDisplay = "@" + campfireShort + " (key: " + senderShort + ")"
+		} else {
+			senderDisplay = "agent:" + senderShort
+		}
 		if m.Instance != "" {
 			senderDisplay += " (" + m.Instance + ")"
 		}

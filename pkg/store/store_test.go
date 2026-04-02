@@ -367,6 +367,99 @@ func TestMessageInstanceFieldBackwardCompat(t *testing.T) {
 	}
 }
 
+func TestMessageSenderCampfireIDField(t *testing.T) {
+	s := testStore(t)
+
+	s.AddMembership(Membership{
+		CampfireID:   "cf1",
+		TransportDir: "/tmp/campfire/cf1",
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1000,
+	})
+
+	// Insert message with SenderCampfireID.
+	rec := MessageRecord{
+		ID:               "msg-scf-1",
+		CampfireID:       "cf1",
+		Sender:           "aabbccdd",
+		Payload:          []byte("hello"),
+		Tags:             []string{"test"},
+		Antecedents:      []string{},
+		Timestamp:        1000,
+		Signature:        []byte("sig"),
+		Provenance:       nil,
+		ReceivedAt:       2000,
+		SenderCampfireID: "deadbeef1234",
+	}
+	inserted, err := s.AddMessage(rec)
+	if err != nil {
+		t.Fatalf("AddMessage() error: %v", err)
+	}
+	if !inserted {
+		t.Fatal("message should have been inserted")
+	}
+
+	// Retrieve and verify SenderCampfireID is stored.
+	got, err := s.GetMessage("msg-scf-1")
+	if err != nil {
+		t.Fatalf("GetMessage() error: %v", err)
+	}
+	if got.SenderCampfireID != "deadbeef1234" {
+		t.Errorf("SenderCampfireID = %q, want %q", got.SenderCampfireID, "deadbeef1234")
+	}
+
+	// List messages and verify SenderCampfireID.
+	msgs, err := s.ListMessages("cf1", 0)
+	if err != nil {
+		t.Fatalf("ListMessages() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].SenderCampfireID != "deadbeef1234" {
+		t.Errorf("listed SenderCampfireID = %q, want %q", msgs[0].SenderCampfireID, "deadbeef1234")
+	}
+}
+
+func TestMessageSenderCampfireIDFieldBackwardCompat(t *testing.T) {
+	s := testStore(t)
+
+	s.AddMembership(Membership{
+		CampfireID:   "cf1",
+		TransportDir: "/tmp/campfire/cf1",
+		JoinProtocol: "open",
+		Role:         "creator",
+		JoinedAt:     1000,
+	})
+
+	// Insert message without SenderCampfireID (empty string — legacy message).
+	rec := MessageRecord{
+		ID:          "msg-no-scf",
+		CampfireID:  "cf1",
+		Sender:      "aabbcc",
+		Payload:     []byte("hello"),
+		Tags:        []string{"test"},
+		Antecedents: []string{},
+		Timestamp:   1000,
+		Signature:   []byte("sig"),
+		Provenance:  nil,
+		ReceivedAt:  2000,
+	}
+	_, err := s.AddMessage(rec)
+	if err != nil {
+		t.Fatalf("AddMessage() error: %v", err)
+	}
+
+	got, err := s.GetMessage("msg-no-scf")
+	if err != nil {
+		t.Fatalf("GetMessage() error: %v", err)
+	}
+	if got.SenderCampfireID != "" {
+		t.Errorf("SenderCampfireID = %q, want empty string for legacy message", got.SenderCampfireID)
+	}
+}
+
 func TestMembershipDescription(t *testing.T) {
 	s := testStore(t)
 
