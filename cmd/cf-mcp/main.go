@@ -2489,7 +2489,7 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 		out = append(out, jsonMsg{
 			ID:                 m.ID,
 			CampfireID:         m.CampfireID,
-			Sender:             m.Sender,
+			Sender:             m.SenderIdentity(),
 			Instance:           m.Instance,
 			Payload:            string(m.Payload),
 			Tags:               tags,
@@ -2746,10 +2746,14 @@ func findMCPFulfillment(st store.Store, campfireID, targetMsgID string) *map[str
 				if ants == nil {
 					ants = []string{}
 				}
+				senderAddr := m.Sender
+				if m.SenderCampfireID != "" {
+					senderAddr = m.SenderCampfireID
+				}
 				result := map[string]interface{}{
 					"id":          m.ID,
 					"campfire_id": m.CampfireID,
-					"sender":      m.Sender,
+					"sender":      senderAddr,
 					"instance":    m.Instance,
 					"payload":     string(m.Payload),
 					"tags":        tags,

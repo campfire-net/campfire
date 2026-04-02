@@ -53,7 +53,7 @@ func filterNATMessages(msgs []message.Message, tagFilters []string, senderFilter
 
 	var result []message.Message
 	for _, m := range msgs {
-		senderHex := fmt.Sprintf("%x", m.Sender)
+		senderHex := m.SenderIdentity()
 		if !matchesSender(senderHex, senderPrefix) {
 			continue
 		}
