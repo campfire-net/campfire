@@ -48,11 +48,11 @@ func TestSweeper_FindsStaleAndRedispatches(t *testing.T) {
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		handlerCalls.Add(1)
 		return nil, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "")
 
 	// Simulate a stale dispatch: mark the message as dispatched then backdate it.
 	ctx := context.Background()
-	ds.MarkDispatched(ctx, env.campfireID, "stale-msg", env.serverID.PublicKeyHex(), "myconv", "myop")
+	ds.MarkDispatched(ctx, env.campfireID, "stale-msg", env.serverID.PublicKeyHex(), "", "myconv", "myop")
 	ds.BackdateDispatch(env.campfireID, "stale-msg", 10*time.Minute)
 
 	sw := convention.NewSweeper(d, ds, nil)
@@ -81,11 +81,11 @@ func TestSweeper_SkipsFulfilledRecords(t *testing.T) {
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		handlerCalls.Add(1)
 		return nil, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "")
 
 	ctx := context.Background()
 	// Mark as dispatched then fulfilled.
-	ds.MarkDispatched(ctx, env.campfireID, "fulfilled-msg", env.serverID.PublicKeyHex(), "myconv", "myop")
+	ds.MarkDispatched(ctx, env.campfireID, "fulfilled-msg", env.serverID.PublicKeyHex(), "", "myconv", "myop")
 	ds.BackdateDispatch(env.campfireID, "fulfilled-msg", 10*time.Minute)
 	ds.MarkFulfilled(ctx, env.campfireID, "fulfilled-msg")
 
@@ -114,10 +114,10 @@ func TestSweeper_SkipsFailedRecords(t *testing.T) {
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		handlerCalls.Add(1)
 		return nil, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "")
 
 	ctx := context.Background()
-	ds.MarkDispatched(ctx, env.campfireID, "failed-msg", env.serverID.PublicKeyHex(), "myconv", "myop")
+	ds.MarkDispatched(ctx, env.campfireID, "failed-msg", env.serverID.PublicKeyHex(), "", "myconv", "myop")
 	ds.BackdateDispatch(env.campfireID, "failed-msg", 10*time.Minute)
 	ds.MarkFailed(ctx, env.campfireID, "failed-msg")
 
@@ -147,11 +147,11 @@ func TestSweeper_SkipsRecentDispatches(t *testing.T) {
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		handlerCalls.Add(1)
 		return nil, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "")
 
 	ctx := context.Background()
 	// Recent dispatch — DispatchedAt is now, so it's younger than SweepStaleThreshold.
-	ds.MarkDispatched(ctx, env.campfireID, "recent-msg", env.serverID.PublicKeyHex(), "myconv", "myop")
+	ds.MarkDispatched(ctx, env.campfireID, "recent-msg", env.serverID.PublicKeyHex(), "", "myconv", "myop")
 	// Do NOT backdate — it should be excluded by the threshold.
 
 	sw := convention.NewSweeper(d, ds, nil)
@@ -173,17 +173,17 @@ func TestSweeper_CleanupRemovesOldFulfilledFailed(t *testing.T) {
 
 	ctx := context.Background()
 	// Old fulfilled — should be cleaned.
-	ds.MarkDispatched(ctx, env.campfireID, "old-fulfilled", env.serverID.PublicKeyHex(), "myconv", "myop")
+	ds.MarkDispatched(ctx, env.campfireID, "old-fulfilled", env.serverID.PublicKeyHex(), "", "myconv", "myop")
 	ds.BackdateDispatch(env.campfireID, "old-fulfilled", 25*time.Hour)
 	ds.MarkFulfilled(ctx, env.campfireID, "old-fulfilled")
 
 	// Old failed — should be cleaned.
-	ds.MarkDispatched(ctx, env.campfireID, "old-failed", env.serverID.PublicKeyHex(), "myconv", "myop")
+	ds.MarkDispatched(ctx, env.campfireID, "old-failed", env.serverID.PublicKeyHex(), "", "myconv", "myop")
 	ds.BackdateDispatch(env.campfireID, "old-failed", 25*time.Hour)
 	ds.MarkFailed(ctx, env.campfireID, "old-failed")
 
 	// Recent fulfilled — should NOT be cleaned.
-	ds.MarkDispatched(ctx, env.campfireID, "recent-fulfilled", env.serverID.PublicKeyHex(), "myconv", "myop")
+	ds.MarkDispatched(ctx, env.campfireID, "recent-fulfilled", env.serverID.PublicKeyHex(), "", "myconv", "myop")
 	ds.MarkFulfilled(ctx, env.campfireID, "recent-fulfilled")
 
 	sw := convention.NewSweeper(d, ds, nil)
@@ -230,14 +230,14 @@ func TestSweeper_RedispatchCap(t *testing.T) {
 		// We return (nil, nil) which marks fulfilled — so each sweep run
 		// re-dispatches and marks fulfilled, then we re-backdate.
 		return nil, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "")
 
 	ctx := context.Background()
 	sw := convention.NewSweeper(d, ds, nil)
 
 	// Manually simulate what would happen if the handler always crashes:
 	// We pre-set RedispatchCount near the cap and run one more sweep.
-	ds.MarkDispatched(ctx, env.campfireID, "cap-msg", env.serverID.PublicKeyHex(), "myconv", "myop")
+	ds.MarkDispatched(ctx, env.campfireID, "cap-msg", env.serverID.PublicKeyHex(), "", "myconv", "myop")
 	ds.BackdateDispatch(env.campfireID, "cap-msg", 10*time.Minute)
 
 	// Increment count to MaxRedispatches so the next Run hits the cap.
@@ -278,13 +278,13 @@ func TestSweeper_MaxRedispatchesBeforeCap(t *testing.T) {
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		handlerCalls.Add(1)
 		return nil, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "")
 
 	ctx := context.Background()
 	sw := convention.NewSweeper(d, ds, nil)
 
 	// First run: count goes 0→1, re-dispatch happens.
-	ds.MarkDispatched(ctx, env.campfireID, "multi-msg", env.serverID.PublicKeyHex(), "myconv", "myop")
+	ds.MarkDispatched(ctx, env.campfireID, "multi-msg", env.serverID.PublicKeyHex(), "", "myconv", "myop")
 	ds.BackdateDispatch(env.campfireID, "multi-msg", 10*time.Minute)
 
 	count, err := sw.RunWithThreshold(ctx, 5*time.Minute)
@@ -301,7 +301,7 @@ func TestSweeper_MaxRedispatchesBeforeCap(t *testing.T) {
 	// we need to reset to dispatched for this test to work across runs).
 	// This test is checking the counter logic, not the full lifecycle.
 	// Reset: delete and re-insert with count pre-set.
-	ds.MarkDispatched(ctx, env.campfireID, "multi-msg-2", env.serverID.PublicKeyHex(), "myconv", "myop")
+	ds.MarkDispatched(ctx, env.campfireID, "multi-msg-2", env.serverID.PublicKeyHex(), "", "myconv", "myop")
 	ds.BackdateDispatch(env.campfireID, "multi-msg-2", 10*time.Minute)
 
 	// Run 2: count 0→1.

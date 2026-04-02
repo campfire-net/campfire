@@ -95,6 +95,7 @@ func TestConventionDispatch_DispatchCalledAfterAddMessage(t *testing.T) {
 			return nil, nil
 		},
 		"test-server-id",
+		"", // forgeAccountID
 	)
 
 	// Send a convention-tagged message.

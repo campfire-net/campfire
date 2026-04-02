@@ -177,6 +177,104 @@ func TestConventionDeliver_NilDispatcherSafe(t *testing.T) {
 	}
 }
 
+// TestConventionDeliver_DispatchContextNotCancelledByRequest is a regression
+// test for campfire-agent-0rl: the OnMessageDelivered hook must receive a
+// context that is NOT the request-scoped context. If it were request-scoped,
+// the context would be cancelled when the HTTP response is sent, causing
+// dispatch goroutines (spawned by Dispatch) to fail.
+//
+// Strategy: install a hook that records the ctx it received, delay briefly
+// so the HTTP round-trip completes, then verify ctx.Err() is still nil.
+func TestConventionDeliver_DispatchContextNotCancelledByRequest(t *testing.T) {
+	cfhttp.OverrideValidateJoinerEndpointForTest()
+	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
+	cfhttp.OverridePollTransportForTest(http.DefaultTransport)
+
+	srv, _, tsURL := newTestServerWithHTTPTransport(t)
+
+	// Create session and campfire.
+	initResp := mcpCall(t, tsURL, "", "campfire_init", map[string]interface{}{})
+	token := extractTokenFromInit(t, initResp)
+
+	createResp := mcpCall(t, tsURL, token, "campfire_create", map[string]interface{}{
+		"description":    "ctx cancellation regression test",
+		"delivery_modes": []string{"pull", "push"},
+	})
+	if createResp.Error != nil {
+		t.Fatalf("campfire_create failed: %v", createResp.Error.Message)
+	}
+	createText := extractResultText(t, createResp)
+	var createResult struct {
+		CampfireID string `json:"campfire_id"`
+	}
+	if err := json.Unmarshal([]byte(createText), &createResult); err != nil {
+		t.Fatalf("parsing create result: %v", err)
+	}
+	campfireID := createResult.CampfireID
+
+	// Install a hook that captures the context and signals completion after
+	// a brief sleep — long enough for the HTTP response to have been sent.
+	type hookResult struct {
+		ctxErr error
+	}
+	resultCh := make(chan hookResult, 1)
+
+	tr := srv.transportRouter.GetCampfireTransport(campfireID)
+	if tr == nil {
+		t.Fatal("transport not registered for campfire")
+	}
+	tr.SetOnMessageDelivered(func(ctx context.Context, cfID string, msg *store.MessageRecord) {
+		// Sleep to let the HTTP response finish and the request context cancel.
+		time.Sleep(100 * time.Millisecond)
+		resultCh <- hookResult{ctxErr: ctx.Err()}
+	})
+
+	// Register CLI peer.
+	cliID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating CLI identity: %v", err)
+	}
+	tr.AddPeer(campfireID, cliID.PublicKeyHex(), "")
+	st := tr.Store()
+	st.UpsertPeerEndpoint(store.PeerEndpoint{
+		CampfireID:   campfireID,
+		MemberPubkey: cliID.PublicKeyHex(),
+		Endpoint:     "",
+		Role:         store.PeerRoleMember,
+	})
+
+	sess := srv.sessManager.getSession(token)
+	if sess == nil {
+		t.Fatal("session not found for token")
+	}
+	fsT := fs.New(sess.cfHome)
+	fsT.WriteMember(campfireID, campfire.MemberRecord{
+		PublicKey: cliID.PublicKey,
+		JoinedAt:  time.Now().UnixNano(),
+	})
+
+	// Deliver a message — the HTTP round-trip completes, then we check
+	// whether the context inside the hook was cancelled.
+	msg, err := message.NewMessage(cliID.PrivateKey, cliID.PublicKey, []byte("ctx regression"), []string{"test"}, nil)
+	if err != nil {
+		t.Fatalf("creating message: %v", err)
+	}
+	if err := cfhttp.Deliver(tsURL, campfireID, msg, cliID); err != nil {
+		t.Fatalf("Deliver failed: %v", err)
+	}
+
+	// Wait for the hook to report.
+	select {
+	case res := <-resultCh:
+		if res.ctxErr != nil {
+			t.Errorf("dispatch context was cancelled after HTTP response: %v (bug: request-scoped ctx leaked into dispatch goroutine)", res.ctxErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for OnMessageDelivered hook to complete")
+	}
+}
+
 // TestConventionDeliver_SessionManagerWiresHook verifies that creating a
 // session when SessionManager.conventionDispatcher is non-nil results in
 // the transport's OnMessageDelivered hook being set (non-nil).

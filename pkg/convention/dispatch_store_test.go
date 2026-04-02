@@ -124,7 +124,7 @@ func TestMemoryDispatchStore_MarkDispatched_InsertIfNotExists(t *testing.T) {
 	ctx := context.Background()
 
 	// First call: should succeed.
-	inserted, err := store.MarkDispatched(ctx, "campfire1", "msg1", "server1", "testconv", "testop")
+	inserted, err := store.MarkDispatched(ctx, "campfire1", "msg1", "server1", "", "testconv", "testop")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestMemoryDispatchStore_MarkDispatched_InsertIfNotExists(t *testing.T) {
 	}
 
 	// Second call with same message: should return false.
-	inserted, err = store.MarkDispatched(ctx, "campfire1", "msg1", "server1", "testconv", "testop")
+	inserted, err = store.MarkDispatched(ctx, "campfire1", "msg1", "server1", "", "testconv", "testop")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestMemoryDispatchStore_MarkDispatched_InsertIfNotExists(t *testing.T) {
 	}
 
 	// Different messageID: should succeed.
-	inserted, err = store.MarkDispatched(ctx, "campfire1", "msg2", "server1", "testconv", "testop")
+	inserted, err = store.MarkDispatched(ctx, "campfire1", "msg2", "server1", "", "testconv", "testop")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,8 +155,8 @@ func TestMemoryDispatchStore_StatusTransitions(t *testing.T) {
 	store := NewMemoryDispatchStore()
 	ctx := context.Background()
 
-	store.MarkDispatched(ctx, "campfire1", "msg1", "server1", "testconv", "testop")
-	store.MarkDispatched(ctx, "campfire1", "msg2", "server1", "testconv", "testop")
+	store.MarkDispatched(ctx, "campfire1", "msg1", "server1", "", "testconv", "testop")
+	store.MarkDispatched(ctx, "campfire1", "msg2", "server1", "", "testconv", "testop")
 
 	// Initial status.
 	status, err := store.GetDispatchStatus(ctx, "campfire1", "msg1")
@@ -222,17 +222,17 @@ func TestMemoryDispatchStore_ListStaleDispatches(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert a message and immediately backdate its DispatchedAt.
-	store.MarkDispatched(ctx, "campfire1", "old-msg", "server1", "testconv", "testop")
+	store.MarkDispatched(ctx, "campfire1", "old-msg", "server1", "", "testconv", "testop")
 	store.mu.Lock()
 	k := dispatchKey{campfireID: "campfire1", messageID: "old-msg"}
 	store.dispatches[k].DispatchedAt = time.Now().Add(-2 * time.Hour)
 	store.mu.Unlock()
 
 	// Insert a recent message.
-	store.MarkDispatched(ctx, "campfire1", "new-msg", "server1", "testconv", "testop")
+	store.MarkDispatched(ctx, "campfire1", "new-msg", "server1", "", "testconv", "testop")
 
 	// Insert a fulfilled old message — should not appear as stale.
-	store.MarkDispatched(ctx, "campfire1", "old-fulfilled", "server1", "testconv", "testop")
+	store.MarkDispatched(ctx, "campfire1", "old-fulfilled", "server1", "", "testconv", "testop")
 	store.mu.Lock()
 	k2 := dispatchKey{campfireID: "campfire1", messageID: "old-fulfilled"}
 	store.dispatches[k2].DispatchedAt = time.Now().Add(-2 * time.Hour)
@@ -256,7 +256,7 @@ func TestMemoryDispatchStore_CleanupOldDispatches(t *testing.T) {
 	ctx := context.Background()
 
 	// Old fulfilled — should be cleaned.
-	store.MarkDispatched(ctx, "campfire1", "old-fulfilled", "server1", "testconv", "testop")
+	store.MarkDispatched(ctx, "campfire1", "old-fulfilled", "server1", "", "testconv", "testop")
 	store.mu.Lock()
 	k1 := dispatchKey{campfireID: "campfire1", messageID: "old-fulfilled"}
 	store.dispatches[k1].DispatchedAt = time.Now().Add(-2 * time.Hour)
@@ -264,7 +264,7 @@ func TestMemoryDispatchStore_CleanupOldDispatches(t *testing.T) {
 	store.mu.Unlock()
 
 	// Old failed — should be cleaned.
-	store.MarkDispatched(ctx, "campfire1", "old-failed", "server1", "testconv", "testop")
+	store.MarkDispatched(ctx, "campfire1", "old-failed", "server1", "", "testconv", "testop")
 	store.mu.Lock()
 	k2 := dispatchKey{campfireID: "campfire1", messageID: "old-failed"}
 	store.dispatches[k2].DispatchedAt = time.Now().Add(-2 * time.Hour)
@@ -272,14 +272,14 @@ func TestMemoryDispatchStore_CleanupOldDispatches(t *testing.T) {
 	store.mu.Unlock()
 
 	// Old dispatched — should NOT be cleaned (only fulfilled/failed are removed).
-	store.MarkDispatched(ctx, "campfire1", "old-dispatched", "server1", "testconv", "testop")
+	store.MarkDispatched(ctx, "campfire1", "old-dispatched", "server1", "", "testconv", "testop")
 	store.mu.Lock()
 	k3 := dispatchKey{campfireID: "campfire1", messageID: "old-dispatched"}
 	store.dispatches[k3].DispatchedAt = time.Now().Add(-2 * time.Hour)
 	store.mu.Unlock()
 
 	// Recent fulfilled — should NOT be cleaned.
-	store.MarkDispatched(ctx, "campfire1", "recent-fulfilled", "server1", "testconv", "testop")
+	store.MarkDispatched(ctx, "campfire1", "recent-fulfilled", "server1", "", "testconv", "testop")
 	store.mu.Lock()
 	k4 := dispatchKey{campfireID: "campfire1", messageID: "recent-fulfilled"}
 	store.dispatches[k4].Status = "fulfilled"
@@ -327,7 +327,7 @@ func TestMemoryDispatchStore_ConcurrentMarkDispatched(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			inserted, _ := store.MarkDispatched(ctx, "campfire1", "msg1", "server1", "testconv", "testop")
+			inserted, _ := store.MarkDispatched(ctx, "campfire1", "msg1", "server1", "", "testconv", "testop")
 			if inserted {
 				mu.Lock()
 				insertedCount++

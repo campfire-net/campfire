@@ -54,7 +54,7 @@ func (bs *BillingSweep) Run(ctx context.Context) (billed int, err error) {
 		idempotencyKey := rec.ServerID + ":" + rec.MessageID + ":tokens"
 
 		event := forge.UsageEvent{
-			AccountID:      rec.ServerID,
+			AccountID:      rec.ForgeAccountID,
 			ServiceID:      conventionServiceID,
 			UnitType:       "convention-op-tier2-tokens",
 			Quantity:       float64(rec.TokensConsumed),

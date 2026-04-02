@@ -37,6 +37,10 @@ type dispatchEntry struct {
 	// operations that key on (serverID, campfireID).
 	ServerID string
 
+	// ForgeAccountID is the Forge billing account for the convention server owner.
+	// Used by the billing sweep and metering hook to attribute usage to the correct customer.
+	ForgeAccountID string
+
 	// Client is the protocol.Client used by the server to post fulfillment messages.
 	Client *protocol.Client
 }
@@ -98,6 +102,7 @@ func (d *ConventionDispatcher) RegisterTier1Handler(
 	serverClient *protocol.Client,
 	handler HandlerFunc,
 	serverID string,
+	forgeAccountID string,
 ) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -106,10 +111,11 @@ func (d *ConventionDispatcher) RegisterTier1Handler(
 		Convention: conventionName,
 		Operation:  operationName,
 	}] = &dispatchEntry{
-		Tier:     1,
-		Handler:  handler,
-		ServerID: serverID,
-		Client:   serverClient,
+		Tier:           1,
+		Handler:        handler,
+		ServerID:       serverID,
+		ForgeAccountID: forgeAccountID,
+		Client:         serverClient,
 	}
 }
 
@@ -121,6 +127,7 @@ func (d *ConventionDispatcher) RegisterTier2Handler(
 	handlerURL string,
 	serverClient *protocol.Client,
 	serverID string,
+	forgeAccountID string,
 ) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -129,10 +136,11 @@ func (d *ConventionDispatcher) RegisterTier2Handler(
 		Convention: conventionName,
 		Operation:  operationName,
 	}] = &dispatchEntry{
-		Tier:       2,
-		HandlerURL: handlerURL,
-		ServerID:   serverID,
-		Client:     serverClient,
+		Tier:           2,
+		HandlerURL:     handlerURL,
+		ServerID:       serverID,
+		ForgeAccountID: forgeAccountID,
+		Client:         serverClient,
 	}
 }
 
@@ -223,7 +231,7 @@ func (d *ConventionDispatcher) dispatch(
 	entry *dispatchEntry,
 ) {
 	// Deduplication: mark as dispatched (insert-if-not-exists).
-	inserted, err := d.store.MarkDispatched(ctx, campfireID, msg.ID, entry.ServerID, op.Convention, op.Operation)
+	inserted, err := d.store.MarkDispatched(ctx, campfireID, msg.ID, entry.ServerID, entry.ForgeAccountID, op.Convention, op.Operation)
 	if err != nil {
 		d.logger.Printf("convention dispatcher: MarkDispatched(%s/%s): %v", campfireID, msg.ID, err)
 		return
@@ -258,13 +266,14 @@ func (d *ConventionDispatcher) invokeHandler(
 	// Fire metering hook.
 	if d.MeteringHook != nil {
 		d.MeteringHook(ctx, ConventionMeterEvent{
-			CampfireID: campfireID,
-			Convention: op.Convention,
-			Operation:  op.Operation,
-			Tier:       entry.Tier,
-			ServerID:   entry.ServerID,
-			MessageID:  msg.ID,
-			Status:     status,
+			CampfireID:     campfireID,
+			Convention:     op.Convention,
+			Operation:      op.Operation,
+			Tier:           entry.Tier,
+			ServerID:       entry.ServerID,
+			ForgeAccountID: entry.ForgeAccountID,
+			MessageID:      msg.ID,
+			Status:         status,
 		})
 	}
 

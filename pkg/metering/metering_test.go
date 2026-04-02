@@ -550,3 +550,199 @@ func (c *countingBalanceChecker) Balance(_ context.Context, accountID string) (i
 	}
 	return b, nil
 }
+
+// errorGCStore returns an error from ListMessagesOlderThan.
+type errorGCStore struct{}
+
+func (e *errorGCStore) ListMessagesOlderThan(_ context.Context, _ string, _ int64) ([]metering.OldMessage, error) {
+	return nil, fmt.Errorf("storage unavailable")
+}
+
+func (e *errorGCStore) DeleteMessage(_ context.Context, _, _ string) error {
+	return nil
+}
+
+// failDeleteGCStore succeeds on list but fails on specific deletes.
+type failDeleteGCStore struct {
+	messages  []metering.OldMessage
+	deleted   []string
+	failOnIDs map[string]bool // message IDs that fail to delete
+}
+
+func (f *failDeleteGCStore) ListMessagesOlderThan(_ context.Context, _ string, _ int64) ([]metering.OldMessage, error) {
+	return f.messages, nil
+}
+
+func (f *failDeleteGCStore) DeleteMessage(_ context.Context, _ string, messageID string) error {
+	if f.failOnIDs[messageID] {
+		return fmt.Errorf("delete failed for %s", messageID)
+	}
+	f.deleted = append(f.deleted, messageID)
+	return nil
+}
+
+// TestGCZeroBalance_EmptyMessageList verifies no deletions when there are no
+// old messages.
+func TestGCZeroBalance_EmptyMessageList(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"acct-any": 0},
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "acct-any" },
+		90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 deletions for empty message list, got %d", n)
+	}
+	if len(store.deleted) != 0 {
+		t.Errorf("expected 0 delete calls, got %d", len(store.deleted))
+	}
+}
+
+// TestGCZeroBalance_MixedBalances verifies that only campfires with zero or
+// negative balance have messages deleted, while positive-balance campfires are
+// left untouched.
+func TestGCZeroBalance_MixedBalances(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "msg-zero-1", CampfireID: "cf-zero"},
+			{ID: "msg-zero-2", CampfireID: "cf-zero"},
+			{ID: "msg-pos-1", CampfireID: "cf-positive"},
+			{ID: "msg-neg-1", CampfireID: "cf-negative"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{
+			"acct-zero": 0,
+			"acct-pos":  5000000,
+			"acct-neg":  -100,
+		},
+	}
+	accountLookup := func(id string) string {
+		switch id {
+		case "cf-zero":
+			return "acct-zero"
+		case "cf-positive":
+			return "acct-pos"
+		case "cf-negative":
+			return "acct-neg"
+		default:
+			return ""
+		}
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker, accountLookup, 90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	// Should delete: msg-zero-1, msg-zero-2 (zero balance), msg-neg-1 (negative balance)
+	// Should keep: msg-pos-1 (positive balance)
+	if n != 3 {
+		t.Errorf("expected 3 deletions (2 zero + 1 negative), got %d", n)
+	}
+
+	// Verify positive-balance message was NOT deleted.
+	for _, id := range store.deleted {
+		if id == "msg-pos-1" {
+			t.Error("message from positive-balance campfire should not have been deleted")
+		}
+	}
+}
+
+// TestGCZeroBalance_ListMessagesError verifies that a store error from
+// ListMessagesOlderThan propagates as an error return.
+func TestGCZeroBalance_ListMessagesError(t *testing.T) {
+	store := &errorGCStore{}
+	balChecker := &mockBalanceChecker{balances: map[string]int64{}}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "acct-x" },
+		90*24*time.Hour,
+	)
+	if err == nil {
+		t.Fatal("expected error from ListMessagesOlderThan, got nil")
+	}
+	if n != 0 {
+		t.Errorf("expected 0 deletions on error, got %d", n)
+	}
+}
+
+// TestGCZeroBalance_DeleteErrorSkipsMessage verifies that a per-message delete
+// error is logged and skipped (fail-safe), not propagated.
+func TestGCZeroBalance_DeleteErrorSkipsMessage(t *testing.T) {
+	store := &failDeleteGCStore{
+		messages: []metering.OldMessage{
+			{ID: "msg-ok", CampfireID: "cf-gc"},
+			{ID: "msg-fail", CampfireID: "cf-gc"},
+			{ID: "msg-ok2", CampfireID: "cf-gc"},
+		},
+		failOnIDs: map[string]bool{"msg-fail": true},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"acct-gc": 0},
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "acct-gc" },
+		90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance should not return error on per-message failure: %v", err)
+	}
+	// 2 out of 3 messages should succeed.
+	if n != 2 {
+		t.Errorf("expected 2 successful deletions (1 failed), got %d", n)
+	}
+	if len(store.deleted) != 2 {
+		t.Errorf("expected 2 delete calls recorded, got %d", len(store.deleted))
+	}
+}
+
+// TestGCZeroBalance_BalanceCheckErrorSkipsCampfire verifies that a balance
+// check error causes that campfire to be skipped (fail-safe), not the whole run.
+func TestGCZeroBalance_BalanceCheckErrorSkipsCampfire(t *testing.T) {
+	store := &mockGCStore{
+		messages: []metering.OldMessage{
+			{ID: "msg-err", CampfireID: "cf-err"},
+			{ID: "msg-ok", CampfireID: "cf-ok"},
+		},
+	}
+	// acct-err has no balance entry -> Balance() returns error.
+	// acct-ok has zero balance -> should be GC'd.
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"acct-ok": 0},
+	}
+	accountLookup := func(id string) string {
+		switch id {
+		case "cf-err":
+			return "acct-err"
+		case "cf-ok":
+			return "acct-ok"
+		default:
+			return ""
+		}
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker, accountLookup, 90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance should not fail on per-campfire balance error: %v", err)
+	}
+	// cf-err skipped due to balance error, cf-ok deleted.
+	if n != 1 {
+		t.Errorf("expected 1 deletion (cf-err skipped), got %d", n)
+	}
+}

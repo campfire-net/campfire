@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
@@ -151,8 +152,12 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 	// Dispatch convention operations arriving via P2P deliver (T5).
 	// Mirrors the dispatch hook in handleSend so convention servers receive
 	// messages regardless of whether they arrived via MCP or HTTP peer delivery.
+	// Use context.Background() instead of r.Context() because Dispatch spawns
+	// goroutines that outlive the HTTP request. A request-scoped context would
+	// be cancelled when the response is sent, prematurely terminating the
+	// dispatch goroutine and causing delivery failures (campfire-agent-0rl).
 	if h.transport != nil && h.transport.OnMessageDelivered != nil {
-		h.transport.OnMessageDelivered(r.Context(), campfireID, &rec)
+		h.transport.OnMessageDelivered(context.Background(), campfireID, &rec)
 	}
 
 	// Process routing:beacon and routing:withdraw tags for routing table updates.

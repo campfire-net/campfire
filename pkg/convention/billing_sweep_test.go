@@ -2,8 +2,12 @@ package convention_test
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/forge"
@@ -91,7 +95,7 @@ func TestBillingSweep_BillsUnbilledTokenDispatches(t *testing.T) {
 	defer cancel()
 
 	// Create a fulfilled dispatch with token consumption.
-	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "myconv", "myop")
+	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "acct-server1", "myconv", "myop")
 	ds.MarkFulfilled(ctx, "cf1", "msg1")
 	ds.SetTokensConsumed("cf1", "msg1", 500)
 
@@ -123,7 +127,7 @@ func TestBillingSweep_SkipsAlreadyBilledDispatches(t *testing.T) {
 	defer cancel()
 
 	// Create and bill a dispatch first.
-	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "myconv", "myop")
+	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "acct-server1", "myconv", "myop")
 	ds.MarkFulfilled(ctx, "cf1", "msg1")
 	ds.SetTokensConsumed("cf1", "msg1", 500)
 	ds.MarkBilled(ctx, "cf1", "msg1") // already billed
@@ -155,7 +159,7 @@ func TestBillingSweep_SkipsZeroTokenDispatches(t *testing.T) {
 	defer cancel()
 
 	// Fulfilled but zero tokens — flat-rate covers this.
-	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "myconv", "myop")
+	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "acct-server1", "myconv", "myop")
 	ds.MarkFulfilled(ctx, "cf1", "msg1")
 	// TokensConsumed defaults to 0, don't call SetTokensConsumed.
 
@@ -190,7 +194,7 @@ func TestBillingSweep_IdempotencyKeyFormat(t *testing.T) {
 	emitter, cancel := newTestEmitter(t)
 	defer cancel()
 
-	ds.MarkDispatched(ctx, "cf1", "msg-abc", "srv-xyz", "myconv", "myop")
+	ds.MarkDispatched(ctx, "cf1", "msg-abc", "srv-xyz", "acct-xyz", "myconv", "myop")
 	ds.MarkFulfilled(ctx, "cf1", "msg-abc")
 	ds.SetTokensConsumed("cf1", "msg-abc", 1000)
 
@@ -231,7 +235,7 @@ func TestBillingSweep_MultiplePending(t *testing.T) {
 	defer cancel()
 
 	for i, msgID := range []string{"msg1", "msg2", "msg3"} {
-		ds.MarkDispatched(ctx, "cf1", msgID, "server1", "myconv", "myop")
+		ds.MarkDispatched(ctx, "cf1", msgID, "server1", "acct-server1", "myconv", "myop")
 		ds.MarkFulfilled(ctx, "cf1", msgID)
 		ds.SetTokensConsumed("cf1", msgID, int64(100*(i+1)))
 	}
@@ -275,22 +279,22 @@ func TestMemoryDispatchStore_ListUnbilledDispatches(t *testing.T) {
 	ds := convention.NewMemoryDispatchStore()
 
 	// Fulfilled with tokens — should appear.
-	ds.MarkDispatched(ctx, "cf1", "msg-a", "srv1", "conv", "op")
+	ds.MarkDispatched(ctx, "cf1", "msg-a", "srv1", "acct-srv1", "conv", "op")
 	ds.MarkFulfilled(ctx, "cf1", "msg-a")
 	ds.SetTokensConsumed("cf1", "msg-a", 100)
 
 	// Fulfilled without tokens — should NOT appear.
-	ds.MarkDispatched(ctx, "cf1", "msg-b", "srv1", "conv", "op")
+	ds.MarkDispatched(ctx, "cf1", "msg-b", "srv1", "acct-srv1", "conv", "op")
 	ds.MarkFulfilled(ctx, "cf1", "msg-b")
 
 	// Fulfilled with tokens but already billed — should NOT appear.
-	ds.MarkDispatched(ctx, "cf1", "msg-c", "srv1", "conv", "op")
+	ds.MarkDispatched(ctx, "cf1", "msg-c", "srv1", "acct-srv1", "conv", "op")
 	ds.MarkFulfilled(ctx, "cf1", "msg-c")
 	ds.SetTokensConsumed("cf1", "msg-c", 200)
 	ds.MarkBilled(ctx, "cf1", "msg-c")
 
 	// Dispatched (not fulfilled) with tokens — should NOT appear.
-	ds.MarkDispatched(ctx, "cf1", "msg-d", "srv1", "conv", "op")
+	ds.MarkDispatched(ctx, "cf1", "msg-d", "srv1", "acct-srv1", "conv", "op")
 	ds.SetTokensConsumed("cf1", "msg-d", 300)
 
 	unbilled, err := ds.ListUnbilledDispatches(ctx)
@@ -313,7 +317,7 @@ func TestMemoryDispatchStore_MarkBilled(t *testing.T) {
 	ctx := context.Background()
 	ds := convention.NewMemoryDispatchStore()
 
-	ds.MarkDispatched(ctx, "cf1", "msg1", "srv1", "conv", "op")
+	ds.MarkDispatched(ctx, "cf1", "msg1", "srv1", "acct-srv1", "conv", "op")
 	ds.MarkFulfilled(ctx, "cf1", "msg1")
 	ds.SetTokensConsumed("cf1", "msg1", 50)
 
@@ -341,5 +345,93 @@ func TestMemoryDispatchStore_MarkBilled_NoRecord(t *testing.T) {
 	ds := convention.NewMemoryDispatchStore()
 	if err := ds.MarkBilled(ctx, "cf1", "nonexistent"); err != nil {
 		t.Fatalf("unexpected error for missing record: %v", err)
+	}
+}
+
+// TestBillingSweep_UsesForgeAccountID_NotServerID is a regression test verifying
+// that the billing sweep emits UsageEvents with AccountID set to the customer's
+// ForgeAccountID, not the convention server's own ServerID.
+//
+// Bug: BillingSweep previously used rec.ServerID as the AccountID in the emitted
+// UsageEvent, causing all convention token charges to be attributed to the
+// hosting service instead of the customer who owns the convention server.
+func TestBillingSweep_UsesForgeAccountID_NotServerID(t *testing.T) {
+	ctx := context.Background()
+
+	// Capture emitted events via a test HTTP server.
+	var mu sync.Mutex
+	var capturedAccountIDs []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage/ingest" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var event forge.UsageEvent
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Errorf("decode ingest body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		capturedAccountIDs = append(capturedAccountIDs, event.AccountID)
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"status":"created"}`))
+	}))
+	defer srv.Close()
+
+	client := &forge.Client{
+		BaseURL:     srv.URL,
+		ServiceKey:  "forge-sk-test",
+		RetryDelays: []time.Duration{}, // no retries for test speed
+	}
+	emitter := forge.NewForgeEmitter(client, 100, nil)
+	emCtx, emCancel := context.WithCancel(context.Background())
+	defer emCancel()
+	go emitter.Run(emCtx)
+
+	ds := newFakeDispatchStore()
+
+	const serverID = "server-pubkey-hex-abc123"
+	const customerForgeAccountID = "forge-acct-customer-xyz"
+
+	// Create a fulfilled dispatch with token consumption, specifying both
+	// the server's own ID and the customer's ForgeAccountID.
+	ds.MarkDispatched(ctx, "cf-billing", "msg-regression", serverID, customerForgeAccountID, "myconv", "myop")
+	ds.MarkFulfilled(ctx, "cf-billing", "msg-regression")
+	ds.SetTokensConsumed("cf-billing", "msg-regression", 750)
+
+	sweep := convention.NewBillingSweep(ds, emitter, nil)
+	billed, err := sweep.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if billed != 1 {
+		t.Fatalf("expected 1 billed, got %d", billed)
+	}
+
+	// Give the emitter time to flush to the test server.
+	// The emitter batches on a 1-second timer, so wait for that plus network time.
+	time.Sleep(2 * time.Second)
+	emCancel()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(capturedAccountIDs) != 1 {
+		t.Fatalf("expected 1 captured event, got %d", len(capturedAccountIDs))
+	}
+
+	// THE CRITICAL ASSERTION: AccountID must be the customer's ForgeAccountID,
+	// not the server's own identity.
+	if capturedAccountIDs[0] == serverID {
+		t.Fatalf("BUG: emitted AccountID is the server's own ID (%q), not the customer's ForgeAccountID (%q)",
+			serverID, customerForgeAccountID)
+	}
+	if capturedAccountIDs[0] != customerForgeAccountID {
+		t.Fatalf("emitted AccountID = %q, want customer's ForgeAccountID %q",
+			capturedAccountIDs[0], customerForgeAccountID)
 	}
 }
