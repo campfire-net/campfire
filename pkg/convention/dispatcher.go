@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -376,13 +375,13 @@ func (d *ConventionDispatcher) dispatchTier1(
 	if err != nil {
 		d.logger.Printf("convention dispatcher: handler error (msg %s): %v", msg.ID, err)
 		// Mark failed only if we still own this generation.
-		ok, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen)
+		ok, notFound, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen)
 		if casErr != nil {
-			if errors.Is(casErr, ErrDispatchNotFound) {
-				return "not_found"
-			}
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 			return "failed"
+		}
+		if notFound {
+			return "not_found"
 		}
 		if !ok {
 			return "stale"
@@ -395,13 +394,13 @@ func (d *ConventionDispatcher) dispatchTier1(
 	}
 
 	// CAS-guard the fulfillment: only proceed if no re-dispatch has occurred.
-	ok, casErr := d.store.MarkFulfilledCAS(ctx, campfireID, msg.ID, gen)
+	ok, notFound, casErr := d.store.MarkFulfilledCAS(ctx, campfireID, msg.ID, gen)
 	if casErr != nil {
-		if errors.Is(casErr, ErrDispatchNotFound) {
-			return "not_found"
-		}
 		d.logger.Printf("convention dispatcher: MarkFulfilledCAS (msg %s): %v", msg.ID, casErr)
 		return "failed"
+	}
+	if notFound {
+		return "not_found"
 	}
 	if !ok {
 		return "stale"
@@ -412,7 +411,7 @@ func (d *ConventionDispatcher) dispatchTier1(
 			d.logger.Printf("convention dispatcher: send fulfillment (msg %s): %v", msg.ID, sendErr)
 			// Revert to failed since the fulfillment message couldn't be sent.
 			// Must use CAS to avoid overwriting a newer generation's status.
-			if _, markErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); markErr != nil && !errors.Is(markErr, ErrDispatchNotFound) {
+			if _, _, markErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); markErr != nil {
 				d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, markErr)
 			}
 			return "failed"
@@ -451,11 +450,10 @@ func (d *ConventionDispatcher) dispatchTier2(
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 marshal (msg %s): %v", msg.ID, err)
-		if ok, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
-			if errors.Is(casErr, ErrDispatchNotFound) {
-				return "not_found"
-			}
+		if ok, notFound, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
+		} else if notFound {
+			return "not_found"
 		} else if !ok {
 			return "stale"
 		}
@@ -465,11 +463,10 @@ func (d *ConventionDispatcher) dispatchTier2(
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, entry.HandlerURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 build request (msg %s): %v", msg.ID, err)
-		if ok, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
-			if errors.Is(casErr, ErrDispatchNotFound) {
-				return "not_found"
-			}
+		if ok, notFound, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
+		} else if notFound {
+			return "not_found"
 		} else if !ok {
 			return "stale"
 		}
@@ -480,11 +477,10 @@ func (d *ConventionDispatcher) dispatchTier2(
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 POST (msg %s): %v", msg.ID, err)
-		if ok, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
-			if errors.Is(casErr, ErrDispatchNotFound) {
-				return "not_found"
-			}
+		if ok, notFound, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
+		} else if notFound {
+			return "not_found"
 		} else if !ok {
 			return "stale"
 		}
@@ -493,13 +489,13 @@ func (d *ConventionDispatcher) dispatchTier2(
 	resp.Body.Close()
 
 	if resp.StatusCode == http.StatusAccepted {
-		ok, casErr := d.store.MarkFulfilledCAS(ctx, campfireID, msg.ID, gen)
+		ok, notFound, casErr := d.store.MarkFulfilledCAS(ctx, campfireID, msg.ID, gen)
 		if casErr != nil {
-			if errors.Is(casErr, ErrDispatchNotFound) {
-				return "not_found"
-			}
 			d.logger.Printf("convention dispatcher: MarkFulfilledCAS (msg %s): %v", msg.ID, casErr)
 			return "failed"
+		}
+		if notFound {
+			return "not_found"
 		}
 		if !ok {
 			return "stale"
@@ -509,11 +505,10 @@ func (d *ConventionDispatcher) dispatchTier2(
 
 	// Non-202 response is treated as failure.
 	d.logger.Printf("convention dispatcher: tier2 POST status %d (msg %s)", resp.StatusCode, msg.ID)
-	if ok, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
-		if errors.Is(casErr, ErrDispatchNotFound) {
-			return "not_found"
-		}
+	if ok, notFound, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
 		d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
+	} else if notFound {
+		return "not_found"
 	} else if !ok {
 		return "stale"
 	}

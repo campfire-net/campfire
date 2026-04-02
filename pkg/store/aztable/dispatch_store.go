@@ -386,7 +386,7 @@ func (s *TableDispatchStore) GetRedispatchCount(ctx context.Context, campfireID,
 // the current RedispatchCount matches expectedGen. Uses ETag-based optimistic
 // concurrency to prevent lost updates. Returns true if the update succeeded,
 // false if the generation has changed.
-func (s *TableDispatchStore) updateDispatchStatusCAS(ctx context.Context, campfireID, messageID, status string, expectedGen int) (bool, error) {
+func (s *TableDispatchStore) updateDispatchStatusCAS(ctx context.Context, campfireID, messageID, status string, expectedGen int) (bool, bool, error) {
 	pk := encodeKey(campfireID)
 	rk := encodeKey(messageID)
 
@@ -396,22 +396,22 @@ func (s *TableDispatchStore) updateDispatchStatusCAS(ctx context.Context, campfi
 		resp, err := s.dispatched.GetEntity(ctx, pk, rk, nil)
 		if err != nil {
 			if isNotFoundError(err) {
-				return false, convention.ErrDispatchNotFound
+				return false, true, nil
 			}
-			return false, fmt.Errorf("aztable: DispatchStore.%sCAS: get: %w", status, err)
+			return false, false, fmt.Errorf("aztable: DispatchStore.%sCAS: get: %w", status, err)
 		}
 		var m map[string]any
 		if err := json.Unmarshal(resp.Value, &m); err != nil {
-			return false, fmt.Errorf("aztable: DispatchStore.%sCAS: unmarshal: %w", status, err)
+			return false, false, fmt.Errorf("aztable: DispatchStore.%sCAS: unmarshal: %w", status, err)
 		}
 		currentGen := int(toInt64(m["RedispatchCount"]))
 		if currentGen != expectedGen {
-			return false, nil
+			return false, false, nil
 		}
 		m["Status"] = status
 		data, err := json.Marshal(m)
 		if err != nil {
-			return false, fmt.Errorf("aztable: DispatchStore.%sCAS: marshal: %w", status, err)
+			return false, false, fmt.Errorf("aztable: DispatchStore.%sCAS: marshal: %w", status, err)
 		}
 		etag := resp.ETag
 		_, updateErr := s.dispatched.UpdateEntity(ctx, data, &aztables.UpdateEntityOptions{
@@ -419,25 +419,25 @@ func (s *TableDispatchStore) updateDispatchStatusCAS(ctx context.Context, campfi
 			IfMatch:    &etag,
 		})
 		if updateErr == nil {
-			return true, nil
+			return true, false, nil
 		}
 		if isPreconditionFailedError(updateErr) {
 			continue
 		}
-		return false, fmt.Errorf("aztable: DispatchStore.%sCAS: update: %w", status, updateErr)
+		return false, false, fmt.Errorf("aztable: DispatchStore.%sCAS: update: %w", status, updateErr)
 	}
-	return false, fmt.Errorf("aztable: DispatchStore.%sCAS: too many retries on concurrency conflict", status)
+	return false, false, fmt.Errorf("aztable: DispatchStore.%sCAS: too many retries on concurrency conflict", status)
 }
 
 // MarkFulfilledCAS updates the dispatch marker status to "fulfilled" only if
 // the current RedispatchCount matches expectedGen.
-func (s *TableDispatchStore) MarkFulfilledCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (bool, error) {
+func (s *TableDispatchStore) MarkFulfilledCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (bool, bool, error) {
 	return s.updateDispatchStatusCAS(ctx, campfireID, messageID, "fulfilled", expectedGen)
 }
 
 // MarkFailedCAS updates the dispatch marker status to "failed" only if
 // the current RedispatchCount matches expectedGen.
-func (s *TableDispatchStore) MarkFailedCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (bool, error) {
+func (s *TableDispatchStore) MarkFailedCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (bool, bool, error) {
 	return s.updateDispatchStatusCAS(ctx, campfireID, messageID, "failed", expectedGen)
 }
 

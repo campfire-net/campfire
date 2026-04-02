@@ -64,16 +64,17 @@ type DispatchStore interface {
 	GetRedispatchCount(ctx context.Context, campfireID, messageID string) (int, error)
 
 	// MarkFulfilledCAS updates the dispatch marker status to "fulfilled" only if
-	// the current RedispatchCount matches expectedGen. Returns true if the update
-	// succeeded, false if the generation has changed (indicating a re-dispatch
-	// occurred and the caller is a stale handler). This prevents double-dispatch:
-	// a slow original handler completing after the sweep has re-dispatched.
-	MarkFulfilledCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (bool, error)
+	// the current RedispatchCount matches expectedGen. Returns three distinct states:
+	//   (true,  false, nil) = CAS succeeded
+	//   (false, false, nil) = CAS conflict (generation mismatch, stale handler)
+	//   (false, true,  nil) = record not found
+	//   (false, false, err) = real error
+	MarkFulfilledCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (ok bool, notFound bool, err error)
 
 	// MarkFailedCAS updates the dispatch marker status to "failed" only if
-	// the current RedispatchCount matches expectedGen. Returns true if the update
-	// succeeded, false if the generation has changed. See MarkFulfilledCAS.
-	MarkFailedCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (bool, error)
+	// the current RedispatchCount matches expectedGen. See MarkFulfilledCAS for
+	// return value semantics.
+	MarkFailedCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (ok bool, notFound bool, err error)
 
 	// ListUnbilledDispatches returns fulfilled dispatch records where
 	// TokensConsumed > 0 and BilledAt == 0. Used by the billing sweep to find
@@ -266,39 +267,37 @@ func (s *MemoryDispatchStore) GetRedispatchCount(_ context.Context, campfireID, 
 }
 
 // MarkFulfilledCAS updates the dispatch marker status to "fulfilled" only if
-// the current RedispatchCount matches expectedGen. Returns false if the
-// generation has changed (stale handler) or the record does not exist.
-func (s *MemoryDispatchStore) MarkFulfilledCAS(_ context.Context, campfireID, messageID string, expectedGen int) (bool, error) {
+// the current RedispatchCount matches expectedGen.
+func (s *MemoryDispatchStore) MarkFulfilledCAS(_ context.Context, campfireID, messageID string, expectedGen int) (bool, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
 	rec, exists := s.dispatches[k]
 	if !exists {
-		return false, ErrDispatchNotFound
+		return false, true, nil
 	}
 	if rec.RedispatchCount != expectedGen {
-		return false, nil
+		return false, false, nil
 	}
 	rec.Status = "fulfilled"
-	return true, nil
+	return true, false, nil
 }
 
 // MarkFailedCAS updates the dispatch marker status to "failed" only if
-// the current RedispatchCount matches expectedGen. Returns false if the
-// generation has changed (stale handler) or the record does not exist.
-func (s *MemoryDispatchStore) MarkFailedCAS(_ context.Context, campfireID, messageID string, expectedGen int) (bool, error) {
+// the current RedispatchCount matches expectedGen.
+func (s *MemoryDispatchStore) MarkFailedCAS(_ context.Context, campfireID, messageID string, expectedGen int) (bool, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
 	rec, exists := s.dispatches[k]
 	if !exists {
-		return false, ErrDispatchNotFound
+		return false, true, nil
 	}
 	if rec.RedispatchCount != expectedGen {
-		return false, nil
+		return false, false, nil
 	}
 	rec.Status = "failed"
-	return true, nil
+	return true, false, nil
 }
 
 // ListUnbilledDispatches returns fulfilled dispatch records where

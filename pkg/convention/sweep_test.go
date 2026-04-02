@@ -440,9 +440,12 @@ func TestDispatcher_MarkFulfilledCAS_RejectsStaleGeneration(t *testing.T) {
 
 	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "", "myconv", "myop")
 
-	ok, err := ds.MarkFulfilledCAS(ctx, "cf1", "msg1", 0)
+	ok, notFound, err := ds.MarkFulfilledCAS(ctx, "cf1", "msg1", 0)
 	if err != nil {
 		t.Fatalf("MarkFulfilledCAS: %v", err)
+	}
+	if notFound {
+		t.Fatal("expected record to exist")
 	}
 	if !ok {
 		t.Fatal("expected MarkFulfilledCAS to succeed with matching gen=0")
@@ -468,9 +471,12 @@ func TestDispatcher_MarkFulfilledCAS_RejectsAfterRedispatch(t *testing.T) {
 		t.Fatalf("expected new count 1, got %d", newCount)
 	}
 
-	ok, err := ds.MarkFulfilledCAS(ctx, "cf1", "msg1", 0)
+	ok, notFound, err := ds.MarkFulfilledCAS(ctx, "cf1", "msg1", 0)
 	if err != nil {
 		t.Fatalf("MarkFulfilledCAS: %v", err)
+	}
+	if notFound {
+		t.Fatal("expected record to exist")
 	}
 	if ok {
 		t.Fatal("expected MarkFulfilledCAS to be rejected for stale gen=0")
@@ -481,9 +487,12 @@ func TestDispatcher_MarkFulfilledCAS_RejectsAfterRedispatch(t *testing.T) {
 		t.Fatalf("expected 'dispatched' (unchanged), got %q", status)
 	}
 
-	ok, err = ds.MarkFulfilledCAS(ctx, "cf1", "msg1", 1)
+	ok, notFound, err = ds.MarkFulfilledCAS(ctx, "cf1", "msg1", 1)
 	if err != nil {
 		t.Fatalf("MarkFulfilledCAS: %v", err)
+	}
+	if notFound {
+		t.Fatal("expected record to exist")
 	}
 	if !ok {
 		t.Fatal("expected MarkFulfilledCAS to succeed with matching gen=1")
@@ -497,9 +506,12 @@ func TestDispatcher_MarkFailedCAS_RejectsAfterRedispatch(t *testing.T) {
 	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "", "myconv", "myop")
 	ds.IncrementRedispatchCount(ctx, "cf1", "msg1")
 
-	ok, err := ds.MarkFailedCAS(ctx, "cf1", "msg1", 0)
+	ok, notFound, err := ds.MarkFailedCAS(ctx, "cf1", "msg1", 0)
 	if err != nil {
 		t.Fatalf("MarkFailedCAS: %v", err)
+	}
+	if notFound {
+		t.Fatal("expected record to exist")
 	}
 	if ok {
 		t.Fatal("expected MarkFailedCAS to be rejected for stale gen=0")
