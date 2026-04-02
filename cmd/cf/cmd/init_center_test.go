@@ -10,7 +10,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
-
 // captureInitWithPassphrase runs cf init with the given CF_HOME and CF_PASSPHRASE env vars.
 // Resets cobra flag state before each run.
 func captureInitWithPassphrase(t *testing.T, cfHomeDir, passphrase string) (stdout string, err error) {
@@ -46,6 +45,8 @@ func captureInitWithPassphrase(t *testing.T, cfHomeDir, passphrase string) (stdo
 }
 
 // captureInitRemote runs cf init --remote <url> with the given CF_HOME and passphrase.
+// NOTE: The --remote flag is retained for backward compatibility but no longer creates
+// a center campfire in the init flow. This test verifies the flag is accepted gracefully.
 func captureInitRemote(t *testing.T, cfHomeDir, passphrase, remoteURL string) (stdout string, err error) {
 	t.Helper()
 
@@ -78,31 +79,43 @@ func captureInitRemote(t *testing.T, cfHomeDir, passphrase, remoteURL string) (s
 	return string(buf[:n]), runErr
 }
 
-// TestInitCreatesCenter verifies that cf init creates .campfire/center with a valid campfire ID.
-func TestInitCreatesCenter(t *testing.T) {
+// TestInitCreatesIdentityCampfire verifies that cf init creates an identity campfire
+// (self-campfire with identity convention genesis message) and sets the "home" alias.
+// Replaces the old TestInitCreatesCenter test — init now creates one campfire (identity),
+// not two (home + center).
+func TestInitCreatesIdentityCampfire(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	_, err := captureInitWithPassphrase(t, tmpDir, "test-passphrase-abc")
+	out, err := captureInitWithPassphrase(t, tmpDir, "test-passphrase-abc")
 	if err != nil {
 		t.Fatalf("cf init failed: %v", err)
 	}
 
-	centerPath := filepath.Join(tmpDir, "center")
-	data, readErr := os.ReadFile(centerPath)
-	if readErr != nil {
-		t.Fatalf(".campfire/center not found: %v", readErr)
+	// Output must say "Your identity campfire: <hex_id>"
+	if !strings.Contains(out, "Your identity campfire:") {
+		t.Errorf("expected output to contain 'Your identity campfire:', got:\n%s", out)
 	}
 
-	centerID := strings.TrimSpace(string(data))
-	if len(centerID) != 64 {
-		t.Errorf("center campfire ID should be 64-char hex, got %q (len %d)", centerID, len(centerID))
+	// No more center campfire — the .campfire/center file should NOT exist.
+	centerPath := filepath.Join(tmpDir, "center")
+	if _, readErr := os.ReadFile(centerPath); readErr == nil {
+		t.Error("expected .campfire/center to NOT exist after new init; identity campfire replaces center")
 	}
-	// Must be hex only
-	for _, c := range centerID {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			t.Errorf("center campfire ID contains non-hex character %q in %q", c, centerID)
-			break
-		}
+
+	// The "home" alias must be set and point to a valid campfire ID.
+	s, openErr := store.Open(store.StorePath(tmpDir))
+	if openErr != nil {
+		t.Fatalf("opening store: %v", openErr)
+	}
+	defer s.Close()
+
+	memberships, listErr := s.ListMemberships()
+	if listErr != nil {
+		t.Fatalf("listing memberships: %v", listErr)
+	}
+	// Exactly one campfire should be created (the identity campfire).
+	if len(memberships) != 1 {
+		t.Errorf("expected 1 campfire after init, got %d", len(memberships))
 	}
 }
 
@@ -150,8 +163,8 @@ func TestInitPassphraseProtected(t *testing.T) {
 	}
 }
 
-// TestInitQuorumOne verifies that the center campfire has threshold=1 in the store.
-func TestInitQuorumOne(t *testing.T) {
+// TestInitIdentityCampfireThreshold verifies that the identity campfire has threshold=1 in the store.
+func TestInitIdentityCampfireThreshold(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	_, err := captureInitWithPassphrase(t, tmpDir, "quorum-test-passphrase")
@@ -159,31 +172,28 @@ func TestInitQuorumOne(t *testing.T) {
 		t.Fatalf("cf init failed: %v", err)
 	}
 
-	centerPath := filepath.Join(tmpDir, "center")
-	data, readErr := os.ReadFile(centerPath)
-	if readErr != nil {
-		t.Fatalf(".campfire/center not found: %v", readErr)
-	}
-	centerID := strings.TrimSpace(string(data))
-
-	// Open the store and look up the center campfire membership
+	// Open the store and find the identity campfire membership.
 	s, openErr := store.Open(store.StorePath(tmpDir))
 	if openErr != nil {
 		t.Fatalf("opening store: %v", openErr)
 	}
 	defer s.Close()
 
-	m, getErr := s.GetMembership(centerID)
-	if getErr != nil {
-		t.Fatalf("getting center membership from store: %v", getErr)
+	memberships, listErr := s.ListMemberships()
+	if listErr != nil {
+		t.Fatalf("listing memberships: %v", listErr)
+	}
+	if len(memberships) == 0 {
+		t.Fatal("no memberships recorded after cf init")
 	}
 
+	m := memberships[0]
 	if m.Threshold != 1 {
-		t.Errorf("center campfire threshold = %d, want 1", m.Threshold)
+		t.Errorf("identity campfire threshold = %d, want 1", m.Threshold)
 	}
 }
 
-// TestInitNoisyOutput verifies the output message format.
+// TestInitNoisyOutput verifies the output message format for new self-campfire init.
 func TestInitNoisyOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -192,53 +202,36 @@ func TestInitNoisyOutput(t *testing.T) {
 		t.Fatalf("cf init failed: %v", err)
 	}
 
-	if !strings.Contains(out, "Created center campfire [fs]") {
-		t.Errorf("expected output to contain 'Created center campfire [fs]', got:\n%s", out)
-	}
-
-	if !strings.Contains(out, "cf init --remote") {
-		t.Errorf("expected output to contain 'cf init --remote', got:\n%s", out)
+	// New output: "Your identity campfire: <hex_id>. Share it like any beacon."
+	if !strings.Contains(out, "Your identity campfire:") {
+		t.Errorf("expected output to contain 'Your identity campfire:', got:\n%s", out)
 	}
 }
 
-// TestInitRemoteFlag verifies that --remote <url> stores the campfire with http transport type.
+// TestInitRemoteFlag verifies that --remote <url> is accepted without error.
+// NOTE: The --remote flag no longer creates a center campfire. It is retained for
+// backward compatibility but is a no-op in the new init flow.
 func TestInitRemoteFlag(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	remoteURL := "https://mcp.getcampfire.dev"
-	out, err := captureInitRemote(t, tmpDir, "remote-test-passphrase", remoteURL)
+	_, err := captureInitRemote(t, tmpDir, "remote-test-passphrase", remoteURL)
 	if err != nil {
 		t.Fatalf("cf init --remote failed: %v", err)
 	}
 
-	// .campfire/center must be written
-	centerPath := filepath.Join(tmpDir, "center")
-	data, readErr := os.ReadFile(centerPath)
-	if readErr != nil {
-		t.Fatalf(".campfire/center not found after --remote init: %v", readErr)
-	}
-	centerID := strings.TrimSpace(string(data))
-	if len(centerID) != 64 {
-		t.Errorf("center ID should be 64-char hex, got %q", centerID)
-	}
-
-	// Output should say [http] not [fs]
-	if !strings.Contains(out, "Created center campfire [http]") {
-		t.Errorf("expected 'Created center campfire [http]', got:\n%s", out)
-	}
-
-	// Store should record http transport type
+	// Identity campfire should still be created.
 	s, openErr := store.Open(store.StorePath(tmpDir))
 	if openErr != nil {
 		t.Fatalf("opening store: %v", openErr)
 	}
 	defer s.Close()
 
-	m, getErr := s.GetMembership(centerID)
-	if getErr != nil {
-		t.Fatalf("getting center membership: %v", getErr)
+	memberships, listErr := s.ListMemberships()
+	if listErr != nil {
+		t.Fatalf("listing memberships: %v", listErr)
 	}
-	if m.TransportType != "p2p-http" {
-		t.Errorf("center transport type = %q, want 'p2p-http'", m.TransportType)
+	if len(memberships) == 0 {
+		t.Fatal("expected identity campfire to be created")
 	}
 }

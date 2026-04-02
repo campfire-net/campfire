@@ -243,8 +243,11 @@ func TestSeedCampfireFilesystem_WithSeedBeacon(t *testing.T) {
 	}
 }
 
-// TestInitCreatesSeedCampfire verifies that cf init creates a home campfire
-// with at least the promote declaration.
+// TestInitCreatesSeedCampfire verifies that cf init creates a self-campfire
+// with the identity convention genesis message (introduce-me operation).
+// This replaces the old test that checked for a promote declaration in the
+// home campfire — ymp replaced home+center with a unified self-campfire typed
+// by identity convention declarations.
 func TestInitCreatesSeedCampfire(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("CF_HOME", tmpDir)
@@ -264,12 +267,12 @@ func TestInitCreatesSeedCampfire(t *testing.T) {
 		t.Fatalf("identity.json not found: %v", err)
 	}
 
-	// Store must exist (home campfire recorded)
+	// Store must exist (self-campfire recorded)
 	if _, err := os.Stat(filepath.Join(tmpDir, "store.db")); err != nil {
 		t.Fatalf("store.db not found after init: %v", err)
 	}
 
-	// Transport directory must contain at least one campfire with a promote message
+	// Transport directory must contain exactly one campfire (the self-campfire).
 	transportDir := filepath.Join(tmpDir, "transport")
 	campfireDirs, err := os.ReadDir(transportDir)
 	if err != nil {
@@ -284,14 +287,15 @@ func TestInitCreatesSeedCampfire(t *testing.T) {
 	messagesDir := filepath.Join(firstCampfireDir, "messages")
 	msgFiles, err := os.ReadDir(messagesDir)
 	if err != nil {
-		t.Fatalf("reading messages dir in home campfire: %v", err)
+		t.Fatalf("reading messages dir in self-campfire: %v", err)
 	}
 	if len(msgFiles) == 0 {
-		t.Fatal("expected at least one message in home campfire, got none")
+		t.Fatal("expected at least one message in self-campfire, got none")
 	}
 
-	// Verify one of the messages is the promote declaration
-	var foundPromote bool
+	// Verify one of the messages is an identity convention declaration.
+	// The self-campfire is typed by identity convention genesis messages (ymp design).
+	var foundIdentityDecl bool
 	for _, mf := range msgFiles {
 		if filepath.Ext(mf.Name()) != ".cbor" {
 			continue
@@ -311,13 +315,13 @@ func TestInitCreatesSeedCampfire(t *testing.T) {
 		if err := json.Unmarshal(msg.Payload, &decl); err != nil {
 			continue
 		}
-		if decl.Convention == convention.InfrastructureConvention && decl.Operation == "promote" {
-			foundPromote = true
+		if decl.Convention == convention.IdentityConvention {
+			foundIdentityDecl = true
 			break
 		}
 	}
-	if !foundPromote {
-		t.Error("expected promote declaration in home campfire messages, not found")
+	if !foundIdentityDecl {
+		t.Error("expected identity convention declaration in self-campfire messages, not found")
 	}
 }
 
