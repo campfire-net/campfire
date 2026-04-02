@@ -32,7 +32,7 @@ func TestInitHomeCampfire_InviteOnly(t *testing.T) {
 		t.Fatalf("saving identity: %v", err)
 	}
 
-	selfCampfireID, err := createSelfCampfire(cfHomeDir, agentID)
+	selfCampfireID, _, err := createSelfCampfire(cfHomeDir, agentID, false)
 	if err != nil {
 		t.Fatalf("createSelfCampfire: %v", err)
 	}

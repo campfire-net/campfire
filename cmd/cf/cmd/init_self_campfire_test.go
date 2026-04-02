@@ -30,7 +30,7 @@ func TestCreateSelfCampfire_CreatesExactlyOneCampfire(t *testing.T) {
 		t.Fatalf("saving identity: %v", err)
 	}
 
-	selfCampfireID, err := createSelfCampfire(cfHomeDir, agentID)
+	selfCampfireID, _, err := createSelfCampfire(cfHomeDir, agentID, false)
 	if err != nil {
 		t.Fatalf("createSelfCampfire: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestCreateSelfCampfire_GenesisMessageSignedByCampfireKey(t *testing.T) {
 		t.Fatalf("saving identity: %v", err)
 	}
 
-	selfCampfireID, err := createSelfCampfire(cfHomeDir, agentID)
+	selfCampfireID, _, err := createSelfCampfire(cfHomeDir, agentID, false)
 	if err != nil {
 		t.Fatalf("createSelfCampfire: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestCreateSelfCampfire_IntroduceMeSignedByAgentKey(t *testing.T) {
 		t.Fatalf("saving identity: %v", err)
 	}
 
-	selfCampfireID, err := createSelfCampfire(cfHomeDir, agentID)
+	selfCampfireID, _, err := createSelfCampfire(cfHomeDir, agentID, false)
 	if err != nil {
 		t.Fatalf("createSelfCampfire: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestCreateSelfCampfire_HomeAliasSet(t *testing.T) {
 		t.Fatalf("saving identity: %v", err)
 	}
 
-	selfCampfireID, err := createSelfCampfire(cfHomeDir, agentID)
+	selfCampfireID, _, err := createSelfCampfire(cfHomeDir, agentID, false)
 	if err != nil {
 		t.Fatalf("createSelfCampfire: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestCreateSelfCampfire_BeaconPublished(t *testing.T) {
 		t.Fatalf("saving identity: %v", err)
 	}
 
-	selfCampfireID, err := createSelfCampfire(cfHomeDir, agentID)
+	selfCampfireID, _, err := createSelfCampfire(cfHomeDir, agentID, false)
 	if err != nil {
 		t.Fatalf("createSelfCampfire: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestCfInit_ForceReinit(t *testing.T) {
 	}
 
 	// First init.
-	firstID, err := createSelfCampfire(cfHomeDir, agentID)
+	firstID, _, err := createSelfCampfire(cfHomeDir, agentID, false)
 	if err != nil {
 		t.Fatalf("first createSelfCampfire: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestCfInit_ForceReinit(t *testing.T) {
 		t.Fatalf("saving second identity: %v", err)
 	}
 
-	secondID, err := createSelfCampfire(cfHomeDir, agentID2)
+	secondID, _, err := createSelfCampfire(cfHomeDir, agentID2, false)
 	if err != nil {
 		t.Fatalf("second createSelfCampfire: %v", err)
 	}
