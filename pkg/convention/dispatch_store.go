@@ -14,6 +14,10 @@ import (
 // RedispatchCount). The caller should re-read and retry or skip.
 var ErrConcurrentModification = errors.New("concurrent modification: record changed since read")
 
+// ErrDispatchNotFound is returned by MarkFulfilled and MarkFailed when the
+// dispatch record does not exist.
+var ErrDispatchNotFound = errors.New("dispatch record not found")
+
 // DispatchStore abstracts cursor and dispatch-marker storage for the
 // ConventionDispatcher. The aztable implementation (in cf-mcp) and an
 // in-memory implementation (for local/testing) both satisfy this interface.
@@ -185,7 +189,7 @@ func (s *MemoryDispatchStore) MarkFulfilled(_ context.Context, campfireID, messa
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
 	rec, exists := s.dispatches[k]
 	if !exists {
-		return nil
+		return ErrDispatchNotFound
 	}
 	rec.Status = "fulfilled"
 	return nil
@@ -198,7 +202,7 @@ func (s *MemoryDispatchStore) MarkFailed(_ context.Context, campfireID, messageI
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
 	rec, exists := s.dispatches[k]
 	if !exists {
-		return nil
+		return ErrDispatchNotFound
 	}
 	rec.Status = "failed"
 	return nil
@@ -270,7 +274,7 @@ func (s *MemoryDispatchStore) MarkFulfilledCAS(_ context.Context, campfireID, me
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
 	rec, exists := s.dispatches[k]
 	if !exists {
-		return false, nil
+		return false, ErrDispatchNotFound
 	}
 	if rec.RedispatchCount != expectedGen {
 		return false, nil
@@ -288,7 +292,7 @@ func (s *MemoryDispatchStore) MarkFailedCAS(_ context.Context, campfireID, messa
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
 	rec, exists := s.dispatches[k]
 	if !exists {
-		return false, nil
+		return false, ErrDispatchNotFound
 	}
 	if rec.RedispatchCount != expectedGen {
 		return false, nil

@@ -2,6 +2,7 @@ package convention
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -202,18 +203,18 @@ func TestMemoryDispatchStore_GetDispatchStatus_Missing(t *testing.T) {
 func TestMemoryDispatchStore_MarkFulfilled_NoRecord(t *testing.T) {
 	store := NewMemoryDispatchStore()
 	ctx := context.Background()
-	// Should not error when no record exists.
-	if err := store.MarkFulfilled(ctx, "campfire1", "nonexistent"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := store.MarkFulfilled(ctx, "campfire1", "nonexistent")
+	if !errors.Is(err, ErrDispatchNotFound) {
+		t.Fatalf("expected ErrDispatchNotFound, got: %v", err)
 	}
 }
 
 func TestMemoryDispatchStore_MarkFailed_NoRecord(t *testing.T) {
 	store := NewMemoryDispatchStore()
 	ctx := context.Background()
-	// Should not error when no record exists.
-	if err := store.MarkFailed(ctx, "campfire1", "nonexistent"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := store.MarkFailed(ctx, "campfire1", "nonexistent")
+	if !errors.Is(err, ErrDispatchNotFound) {
+		t.Fatalf("expected ErrDispatchNotFound, got: %v", err)
 	}
 }
 

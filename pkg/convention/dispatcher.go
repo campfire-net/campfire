@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -361,7 +362,7 @@ func (d *ConventionDispatcher) dispatchTier1(
 		if sendErr := d.sendFulfillment(campfireID, msg.ID, resp, entry.Client); sendErr != nil {
 			d.logger.Printf("convention dispatcher: send fulfillment (msg %s): %v", msg.ID, sendErr)
 			// Revert to failed since the fulfillment message couldn't be sent.
-			if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil {
+			if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil && !errors.Is(markErr, ErrDispatchNotFound) {
 				d.logger.Printf("convention dispatcher: MarkFailed (msg %s): %v", msg.ID, markErr)
 			}
 			return "failed"

@@ -220,8 +220,7 @@ func (s *TableDispatchStore) updateDispatchStatus(ctx context.Context, campfireI
 		return fmt.Errorf("aztable: DispatchStore.%s: get: %w", status, err)
 	}
 	if raw == nil {
-		// No record — nothing to update (matches MemoryDispatchStore behaviour).
-		return nil
+		return convention.ErrDispatchNotFound
 	}
 	raw["Status"] = status
 	if err := upsertEntity(ctx, s.dispatched, raw); err != nil {
@@ -396,7 +395,7 @@ func (s *TableDispatchStore) updateDispatchStatusCAS(ctx context.Context, campfi
 		resp, err := s.dispatched.GetEntity(ctx, pk, rk, nil)
 		if err != nil {
 			if isNotFoundError(err) {
-				return false, nil
+				return false, convention.ErrDispatchNotFound
 			}
 			return false, fmt.Errorf("aztable: DispatchStore.%sCAS: get: %w", status, err)
 		}
