@@ -25,6 +25,12 @@ type Message struct {
 	// NOT covered by message signature — can be set to any string.
 	// Empty string is the default for backward compatibility.
 	Instance string `cbor:"9,keyasint,omitempty" json:"instance,omitempty"`
+	// SenderCampfireID is the sender agent's self-campfire ID (identity address).
+	// Informational — NOT included in MessageSignInput. Tainted initially: verifier
+	// must check that Sender (agent pubkey) is member 0 of this self-campfire.
+	// Empty for legacy messages and ephemeral agents without a home campfire.
+	// Stored as raw bytes (32-byte Ed25519 public key of the self-campfire).
+	SenderCampfireID []byte `cbor:"10,keyasint,omitempty" json:"sender_campfire_id,omitempty"`
 }
 
 // ProvenanceHop records a campfire's relay of a message.

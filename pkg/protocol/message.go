@@ -8,7 +8,7 @@ import (
 
 // Message is the SDK-facing campfire message type.
 // Sender is the hex-encoded Ed25519 public key of the message author.
-// Tags, Antecedents, and Instance are tainted (sender-asserted) metadata.
+// Tags, Antecedents, Instance, and SenderCampfireID are tainted (sender-asserted) metadata.
 type Message struct {
 	ID          string
 	CampfireID  string
@@ -19,6 +19,10 @@ type Message struct {
 	Timestamp   int64
 	Instance    string
 	Signature   []byte
+	// SenderCampfireID is the hex-encoded self-campfire ID of the sender agent.
+	// Tainted (sender-asserted, not verified). Empty for legacy messages and
+	// ephemeral agents without a home campfire.
+	SenderCampfireID string
 	// Provenance holds the verified relay hops from the underlying message.
 	// Use IsBridged() to test for blind-relay hops.
 	Provenance []message.ProvenanceHop
@@ -54,15 +58,16 @@ func MessageFromRecord(r store.MessageRecord) Message {
 		provenance = []message.ProvenanceHop{}
 	}
 	return Message{
-		ID:          r.ID,
-		CampfireID:  r.CampfireID,
-		Sender:      r.Sender,
-		Payload:     r.Payload,
-		Tags:        tags,
-		Antecedents: antecedents,
-		Timestamp:   r.Timestamp,
-		Instance:    r.Instance,
-		Signature:   r.Signature,
-		Provenance:  provenance,
+		ID:               r.ID,
+		CampfireID:       r.CampfireID,
+		Sender:           r.Sender,
+		Payload:          r.Payload,
+		Tags:             tags,
+		Antecedents:      antecedents,
+		Timestamp:        r.Timestamp,
+		Instance:         r.Instance,
+		Signature:        r.Signature,
+		SenderCampfireID: r.SenderCampfireID,
+		Provenance:       provenance,
 	}
 }
