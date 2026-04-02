@@ -356,6 +356,49 @@ func TestHandleInit_ForgeAccountsWired(t *testing.T) {
 	}
 }
 
+// TestEnsureOperatorAccount_ConcurrentSameKey verifies that concurrent calls
+// for the same operator key result in exactly one Forge account creation and
+// exactly one signup credit — the singleflight prevents the double-credit race.
+func TestEnsureOperatorAccount_ConcurrentSameKey(t *testing.T) {
+	mock := &mockForgeServer{accountIDToReturn: "forge-acct-concurrent"}
+	store := aztable.NewMemoryOperatorAccountStore()
+	mgr, _ := newMockForgeManager(t, mock, store)
+
+	pubkey := "concurrent-test-key1"
+	const goroutines = 20
+
+	errs := make(chan error, goroutines)
+	ids := make(chan string, goroutines)
+
+	// Launch goroutines that all call EnsureOperatorAccount simultaneously.
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			id, err := mgr.EnsureOperatorAccount(context.Background(), pubkey)
+			errs <- err
+			ids <- id
+		}()
+	}
+
+	for i := 0; i < goroutines; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+		if id := <-ids; id != "forge-acct-concurrent" {
+			t.Errorf("goroutine %d: got account ID %q, want %q", i, id, "forge-acct-concurrent")
+		}
+	}
+
+	// The critical assertion: CreateSubAccount must be called exactly once,
+	// not once per goroutine.
+	if got := atomic.LoadInt32(&mock.createCalls); got != 1 {
+		t.Errorf("CreateSubAccount calls: got %d, want 1 (singleflight should deduplicate)", got)
+	}
+	// Credit must be applied exactly once.
+	if got := atomic.LoadInt32(&mock.creditCalls); got != 1 {
+		t.Errorf("CreditAccount calls: got %d, want 1 (credit must not be doubled)", got)
+	}
+}
+
 // Verify that an error in fmt.Sprintf is surfaced — just a compile-time
 // sanity check that the forge package types are accessible.
 var _ = fmt.Sprintf

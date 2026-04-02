@@ -23,6 +23,7 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/forge"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
+	"golang.org/x/sync/singleflight"
 )
 
 // signupCreditMicroUSD is the one-time signup credit amount in micro-USD.
@@ -48,6 +49,7 @@ type forgeAccountManager struct {
 	forge           *forge.Client
 	store           OperatorAccountStore
 	parentAccountID string // Forge parent account ID for sub-account nesting
+	ensureGroup     singleflight.Group // dedup concurrent EnsureOperatorAccount calls per key
 }
 
 // newForgeAccountManager creates a forgeAccountManager from environment variables.
@@ -88,6 +90,21 @@ func newForgeAccountManager(store OperatorAccountStore) *forgeAccountManager {
 // The caller should cache the returned account ID in the session to avoid a DB
 // round-trip on every request.
 func (m *forgeAccountManager) EnsureOperatorAccount(ctx context.Context, pubkeyHex string) (string, error) {
+	// singleflight deduplicates concurrent calls for the same operator key,
+	// preventing the double-create / double-credit race when two requests
+	// arrive before either has persisted the mapping.
+	v, err, _ := m.ensureGroup.Do(pubkeyHex, func() (interface{}, error) {
+		return m.ensureOperatorAccountOnce(ctx, pubkeyHex)
+	})
+	if err != nil {
+		return "", err
+	}
+	return v.(string), nil
+}
+
+// ensureOperatorAccountOnce is the actual implementation, called at most once
+// per key concurrently thanks to singleflight in EnsureOperatorAccount.
+func (m *forgeAccountManager) ensureOperatorAccountOnce(ctx context.Context, pubkeyHex string) (string, error) {
 	// 1. Check for existing mapping.
 	existing, err := m.store.GetOperatorAccount(ctx, pubkeyHex)
 	if err != nil {
