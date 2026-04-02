@@ -32,7 +32,8 @@ type ConventionServerRecord struct {
 	Tier        int32  // 1 = inline Go handler, 2 = HTTP POST (Function URL)
 	HandlerURL  string // Tier 2 only: Azure Function URL
 	Declaration string // Full convention declaration JSON
-	CustomerID  string // Customer identifier for billing
+	CustomerID     string // Customer identifier for billing
+	ForgeAccountID string // Forge billing account for this server's owner
 	CreatedAt   time.Time
 	Enabled     bool // Allows disabling without deletion
 }
@@ -99,6 +100,7 @@ func (s *tableConventionServerStore) RegisterConventionServer(ctx context.Contex
 		"HandlerURL":   rec.HandlerURL,
 		"Declaration":  rec.Declaration,
 		"CustomerID":   rec.CustomerID,
+		"ForgeAccountID": rec.ForgeAccountID,
 		"CreatedAt":    rec.CreatedAt.UnixNano(),
 		"Enabled":      enabledInt,
 	}
@@ -191,7 +193,8 @@ func conventionServerFromEntity(m map[string]any) *ConventionServerRecord {
 		Tier:        tier,
 		HandlerURL:  str(m, "HandlerURL"),
 		Declaration: str(m, "Declaration"),
-		CustomerID:  str(m, "CustomerID"),
+		CustomerID:     str(m, "CustomerID"),
+		ForgeAccountID: str(m, "ForgeAccountID"),
 		CreatedAt:   time.Unix(0, createdAtNs),
 		Enabled:     enabledInt != 0,
 	}

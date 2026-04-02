@@ -174,7 +174,8 @@ func TestDispatcher_TagMatching_NoConventionTag(t *testing.T) {
 	d.RegisterTier1Handler("cf1", "myconv", "myop", nil, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		called = true
 		return nil, nil
-	}, "server1")
+	}, "server1", "",
+	)
 
 	msg := &store.MessageRecord{
 		ID:        "no-tag-msg",
@@ -202,7 +203,8 @@ func TestDispatcher_TagMatching_WrongConvention(t *testing.T) {
 
 	d.RegisterTier1Handler("cf1", "myconv", "myop", nil, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		return nil, nil
-	}, "server1")
+	}, "server1", "",
+	)
 
 	// Message is for a different convention.
 	msg := &store.MessageRecord{
@@ -228,7 +230,8 @@ func TestDispatcher_TagMatching_ConventionOperationDeclarationTag_Ignored(t *tes
 
 	d.RegisterTier1Handler("cf1", "convention", "operation", nil, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		return nil, nil
-	}, "server1")
+	}, "server1", "",
+	)
 
 	msg := &store.MessageRecord{
 		ID:        "decl-tag-msg",
@@ -277,7 +280,8 @@ func TestDispatcher_Tier1_HandlerCalled(t *testing.T) {
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		handlerCalled.Store(true)
 		return &convention.Response{Payload: map[string]any{"ok": true}}, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "",
+	)
 
 	msg := makeConventionMsg(t, env, "myconv", "myop", map[string]any{"key": "value"})
 	dispatched := d.Dispatch(context.Background(), env.campfireID, msg)
@@ -315,7 +319,8 @@ func TestDispatcher_Tier1_FulfillmentPosted(t *testing.T) {
 
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		return &convention.Response{Payload: map[string]any{"result": "done"}}, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "",
+	)
 
 	msgRecord := &store.MessageRecord{
 		ID:         sentMsg.ID,
@@ -376,7 +381,8 @@ func TestDispatcher_Tier1_HandlerError_SendsErrorFulfillment(t *testing.T) {
 
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		return nil, context.DeadlineExceeded
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "",
+	)
 
 	msgRecord := &store.MessageRecord{
 		ID:         sentMsg.ID,
@@ -417,7 +423,8 @@ func TestDispatcher_Deduplication_SameMessageDispatchedOnce(t *testing.T) {
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		callCount.Add(1)
 		return nil, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "",
+	)
 
 	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
 
@@ -442,7 +449,8 @@ func TestDispatcher_Deduplication_ConcurrentDispatch(t *testing.T) {
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		callCount.Add(1)
 		return nil, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "",
+	)
 
 	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
 
@@ -475,7 +483,8 @@ func TestDispatcher_CursorAdvanced_AfterDispatch(t *testing.T) {
 
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		return nil, nil
-	}, serverIDHex)
+	}, serverIDHex, "",
+	)
 
 	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
 	msg.Timestamp = ts
@@ -510,7 +519,8 @@ func TestDispatcher_MeteringHook_FiredAfterDispatch(t *testing.T) {
 
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		return nil, nil
-	}, env.serverID.PublicKeyHex())
+	}, env.serverID.PublicKeyHex(), "",
+	)
 
 	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
 	d.Dispatch(context.Background(), env.campfireID, msg)
@@ -557,12 +567,14 @@ func TestDispatcher_Registration_MultipleCampfires(t *testing.T) {
 	d.RegisterTier1Handler("cf-alpha", "testconv", "testop", nil, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		calledForCF1.Store(true)
 		return nil, nil
-	}, "server-alpha")
+	}, "server-alpha", "",
+	)
 
 	d.RegisterTier1Handler("cf-beta", "testconv", "testop", nil, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		calledForCF2.Store(true)
 		return nil, nil
-	}, "server-beta")
+	}, "server-beta", "",
+	)
 
 	msg := &store.MessageRecord{
 		ID:        "msg-alpha",
@@ -608,12 +620,14 @@ func TestDispatcher_Registration_Replace(t *testing.T) {
 	d.RegisterTier1Handler("cf1", "myconv", "myop", nil, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		firstCalled.Store(true)
 		return nil, nil
-	}, "server1")
+	}, "server1", "",
+	)
 
 	d.RegisterTier1Handler("cf1", "myconv", "myop", nil, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		secondCalled.Store(true)
 		return nil, nil
-	}, "server1")
+	}, "server1", "",
+	)
 
 	msg := &store.MessageRecord{
 		ID:        "msg-replace",
@@ -659,7 +673,7 @@ func TestDispatcher_Tier2_HTTPPostMadeWithCorrectBody(t *testing.T) {
 	ds := convention.NewMemoryDispatchStore()
 	d := convention.NewConventionDispatcher(ds, nil)
 
-	d.RegisterTier2Handler("cf1", "myconv", "myop", server.URL, nil, "server1")
+	d.RegisterTier2Handler("cf1", "myconv", "myop", server.URL, nil, "server1", "")
 
 	msg := &store.MessageRecord{
 		ID:        "msg-tier2",
@@ -706,7 +720,7 @@ func TestDispatcher_Tier2_202_MarkedFulfilled(t *testing.T) {
 
 	ds := convention.NewMemoryDispatchStore()
 	d := convention.NewConventionDispatcher(ds, nil)
-	d.RegisterTier2Handler("cf1", "myconv", "myop", server.URL, nil, "server1")
+	d.RegisterTier2Handler("cf1", "myconv", "myop", server.URL, nil, "server1", "")
 
 	msg := &store.MessageRecord{
 		ID:        "msg-t2-ok",
@@ -731,7 +745,7 @@ func TestDispatcher_Tier2_Non202_MarkedFailed(t *testing.T) {
 
 	ds := convention.NewMemoryDispatchStore()
 	d := convention.NewConventionDispatcher(ds, nil)
-	d.RegisterTier2Handler("cf1", "myconv", "myop", server.URL, nil, "server1")
+	d.RegisterTier2Handler("cf1", "myconv", "myop", server.URL, nil, "server1", "")
 
 	msg := &store.MessageRecord{
 		ID:        "msg-t2-err",
@@ -765,7 +779,7 @@ func TestDispatcher_Tier2_MeteringHook(t *testing.T) {
 		mu.Unlock()
 	}
 
-	d.RegisterTier2Handler("cf1", "myconv", "myop", server.URL, nil, "server1")
+	d.RegisterTier2Handler("cf1", "myconv", "myop", server.URL, nil, "server1", "")
 
 	msg := &store.MessageRecord{
 		ID:        "msg-t2-meter",

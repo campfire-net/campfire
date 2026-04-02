@@ -174,7 +174,7 @@ func (s *TableDispatchStore) AdvanceCursor(ctx context.Context, serverID, campfi
 
 // MarkDispatched records that a message was dispatched to a handler.
 // Returns false if the message was already marked (insert-if-not-exists semantics).
-func (s *TableDispatchStore) MarkDispatched(ctx context.Context, campfireID, messageID, serverID, conv, operation string) (bool, error) {
+func (s *TableDispatchStore) MarkDispatched(ctx context.Context, campfireID, messageID, serverID, forgeAccountID, conv, operation string) (bool, error) {
 	pk := encodeKey(campfireID)
 	rk := encodeKey(messageID)
 
@@ -184,6 +184,7 @@ func (s *TableDispatchStore) MarkDispatched(ctx context.Context, campfireID, mes
 		"CampfireID":      campfireID,
 		"MessageID":       messageID,
 		"ServerID":        serverID,
+		"ForgeAccountID":  forgeAccountID,
 		"Convention":      conv,
 		"Operation":       operation,
 		"DispatchedAt":    time.Now().UnixNano(),
@@ -426,6 +427,7 @@ func dispatchRecordFromEntity(m map[string]any) convention.DispatchRecord {
 		CampfireID:      campfireIDFromDispatchEntity(m),
 		MessageID:       messageIDFromDispatchEntity(m),
 		ServerID:        str(m, "ServerID"),
+		ForgeAccountID:  str(m, "ForgeAccountID"),
 		Convention:      str(m, "Convention"),
 		Operation:       str(m, "Operation"),
 		DispatchedAt:    time.Unix(0, dispatchedAtNs),

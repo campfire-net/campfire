@@ -23,7 +23,7 @@ type DispatchStore interface {
 	// convention and operation identify the registered handler for this message
 	// and are used by the fallback sweep to re-dispatch without re-reading the message.
 	// Returns false if the message was already marked (insert-if-not-exists semantics).
-	MarkDispatched(ctx context.Context, campfireID, messageID, serverID, convention, operation string) (bool, error)
+	MarkDispatched(ctx context.Context, campfireID, messageID, serverID, forgeAccountID, convention, operation string) (bool, error)
 
 	// MarkFulfilled updates the dispatch marker status to "fulfilled".
 	MarkFulfilled(ctx context.Context, campfireID, messageID string) error
@@ -62,6 +62,7 @@ type DispatchRecord struct {
 	CampfireID      string
 	MessageID       string
 	ServerID        string
+	ForgeAccountID  string // Forge account that owns this convention server (for billing)
 	Convention      string // convention name (e.g. "myconv")
 	Operation       string // operation name (e.g. "myop")
 	DispatchedAt    time.Time
@@ -124,7 +125,7 @@ func (s *MemoryDispatchStore) AdvanceCursor(_ context.Context, serverID, campfir
 
 // MarkDispatched records that a message was dispatched to a handler.
 // Returns false if the message was already marked (insert-if-not-exists semantics).
-func (s *MemoryDispatchStore) MarkDispatched(_ context.Context, campfireID, messageID, serverID, conv, operation string) (bool, error) {
+func (s *MemoryDispatchStore) MarkDispatched(_ context.Context, campfireID, messageID, serverID, forgeAccountID, conv, operation string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
@@ -132,13 +133,14 @@ func (s *MemoryDispatchStore) MarkDispatched(_ context.Context, campfireID, mess
 		return false, nil
 	}
 	s.dispatches[k] = &DispatchRecord{
-		CampfireID:   campfireID,
-		MessageID:    messageID,
-		ServerID:     serverID,
-		Convention:   conv,
-		Operation:    operation,
-		DispatchedAt: time.Now(),
-		Status:       "dispatched",
+		CampfireID:     campfireID,
+		MessageID:      messageID,
+		ServerID:       serverID,
+		ForgeAccountID: forgeAccountID,
+		Convention:     conv,
+		Operation:      operation,
+		DispatchedAt:   time.Now(),
+		Status:         "dispatched",
 	}
 	return true, nil
 }
