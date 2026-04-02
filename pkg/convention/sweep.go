@@ -85,8 +85,17 @@ func (sw *Sweeper) RunWithThreshold(ctx context.Context, staleThreshold time.Dur
 			// and will be cleaned up by CleanupOldDispatches.
 			sw.logger.Printf("convention sweep: message %s/%s exceeded max re-dispatches (%d), marking failed",
 				rec.CampfireID, rec.MessageID, MaxRedispatches)
-			if markErr := sw.store.MarkFailed(ctx, rec.CampfireID, rec.MessageID); markErr != nil && !errors.Is(markErr, ErrDispatchNotFound) {
-				sw.logger.Printf("convention sweep: MarkFailed(%s/%s): %v", rec.CampfireID, rec.MessageID, markErr)
+			if markErr := sw.store.MarkFailed(ctx, rec.CampfireID, rec.MessageID); markErr != nil {
+				switch {
+				case errors.Is(markErr, ErrDispatchNotFound):
+					// Record already gone — benign race, nothing to do.
+				case errors.Is(markErr, ErrConcurrentModification):
+					// A handler completed (MarkFulfilled) concurrently — the better
+					// outcome. Log at info level and continue.
+					sw.logger.Printf("convention sweep: MarkFailed(%s/%s) lost race to handler (record already updated)", rec.CampfireID, rec.MessageID)
+				default:
+					sw.logger.Printf("convention sweep: MarkFailed(%s/%s): %v", rec.CampfireID, rec.MessageID, markErr)
+				}
 			}
 			continue
 		}

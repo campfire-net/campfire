@@ -1,13 +1,31 @@
 package convention_test
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/convention"
 )
+
+// concurrentModStore wraps MemoryDispatchStore and injects ErrConcurrentModification
+// from MarkFailed to simulate a handler completing concurrently while the sweep
+// tries to mark a record as failed.
+type concurrentModStore struct {
+	*convention.MemoryDispatchStore
+	markFailedErr error
+}
+
+func (s *concurrentModStore) MarkFailed(ctx context.Context, campfireID, messageID string) error {
+	if s.markFailedErr != nil {
+		return s.markFailedErr
+	}
+	return s.MemoryDispatchStore.MarkFailed(ctx, campfireID, messageID)
+}
 
 // setupSweepEnv creates a dispatcher+store pair and registers a handler for
 // (campfireID, "myconv", "myop"). Returns the env, dispatcher, store, and sweeper.
@@ -540,4 +558,54 @@ func TestSweeper_NoOp(t *testing.T) {
 		t.Fatalf("expected 0 re-dispatches for empty store, got %d", count)
 	}
 	_ = env
+}
+
+// TestSweeper_MarkFailed_ErrConcurrentModification verifies that when MarkFailed
+// races with a handler's MarkFulfilled and returns ErrConcurrentModification, the
+// sweep treats it as a benign race: logs at info level (not error), and continues
+// without aborting the sweep.
+func TestSweeper_MarkFailed_ErrConcurrentModification(t *testing.T) {
+	ctx := context.Background()
+
+	// Build a store that will return ErrConcurrentModification from MarkFailed.
+	inner := convention.NewMemoryDispatchStore()
+	stub := &concurrentModStore{
+		MemoryDispatchStore: inner,
+		markFailedErr:       convention.ErrConcurrentModification,
+	}
+
+	// Create a stale dispatch record that has already hit the re-dispatch cap.
+	// IncrementRedispatchCount is called by the sweep before MarkFailed, so we
+	// pre-populate RedispatchCount to MaxRedispatches so the next increment
+	// returns MaxRedispatches+1, triggering the MarkFailed path.
+	inner.MarkDispatched(ctx, "cf1", "msg1", "server1", "", "myconv", "myop")
+	for i := 0; i < convention.MaxRedispatches; i++ {
+		inner.IncrementRedispatchCount(ctx, "cf1", "msg1")
+	}
+	inner.BackdateDispatch("cf1", "msg1", 10*time.Minute)
+
+	// Capture log output to assert on message content.
+	var logBuf bytes.Buffer
+	logger := log.New(&logBuf, "", 0)
+
+	d := convention.NewConventionDispatcher(inner, nil)
+	sw := convention.NewSweeper(d, stub, logger)
+
+	_, err := sw.RunWithThreshold(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("RunWithThreshold returned unexpected error: %v", err)
+	}
+
+	logged := logBuf.String()
+
+	// Must log the benign race message (info level).
+	if !strings.Contains(logged, "lost race to handler") {
+		t.Errorf("expected info-level race message in log, got: %q", logged)
+	}
+
+	// Must NOT log the generic error message (that would indicate the error
+	// was treated as unexpected rather than benign).
+	if strings.Contains(logged, "MarkFailed(cf1/msg1): concurrent modification") {
+		t.Errorf("ErrConcurrentModification was logged as an unexpected error: %q", logged)
+	}
 }
