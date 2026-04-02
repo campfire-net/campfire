@@ -246,6 +246,50 @@ func TestEmitter_DrainAndClose(t *testing.T) {
 	}
 }
 
+// TestEmitter_DrainAndCloseWithoutPriorCancel verifies that DrainAndClose
+// works correctly even when the caller has NOT cancelled the context first.
+// This is the regression test for the bug where DrainAndClose would hang
+// until timeout if the context wasn't pre-cancelled.
+func TestEmitter_DrainAndCloseWithoutPriorCancel(t *testing.T) {
+	var count int32
+	srv := newIngestServer(t, &count)
+	defer srv.Close()
+
+	client := newTestClient(srv)
+	emitter := forge.NewForgeEmitter(client, 100, nil)
+
+	// Do NOT cancel this context — that's the whole point of the test.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // cleanup only
+
+	go emitter.Run(ctx)
+
+	// Emit events.
+	for i := range 5 {
+		emitter.Emit(makeEvent("evt-nocancel-" + string(rune('0'+i))))
+	}
+
+	// Give Run a moment to start processing.
+	time.Sleep(50 * time.Millisecond)
+
+	// Call DrainAndClose WITHOUT cancelling ctx first.
+	// Before the fix, this would block for the full 3-second timeout.
+	start := time.Now()
+	emitter.DrainAndClose(3 * time.Second)
+	elapsed := time.Since(start)
+
+	// DrainAndClose should complete quickly (well under the 3s timeout)
+	// because it now cancels the context internally.
+	if elapsed > 2*time.Second {
+		t.Fatalf("DrainAndClose blocked for %v — likely did not cancel context internally", elapsed)
+	}
+
+	got := atomic.LoadInt32(&count)
+	if got != 5 {
+		t.Errorf("expected 5 ingest calls after drain, got %d", got)
+	}
+}
+
 // TestEmitter_ContextCancellationExitsRun verifies Run exits when ctx is cancelled.
 func TestEmitter_ContextCancellationExitsRun(t *testing.T) {
 	var count int32
