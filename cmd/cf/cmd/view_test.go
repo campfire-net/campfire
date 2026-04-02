@@ -71,7 +71,7 @@ func TestViewCreate_StoresViewMessage(t *testing.T) {
 	defer s.Close()
 	_ = agentID
 
-	err := runViewCreate(campfireID, "standing-memories", `(tag "memory:standing")`, "", "timestamp asc", "on-read", 0)
+	err := runViewCreate(campfireID, "standing-memories", `(tag "memory:standing")`, "", "timestamp asc", "on-read", "", 0)
 	if err != nil {
 		t.Fatalf("runViewCreate: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestViewCreate_WriterCannotCreate(t *testing.T) {
 	_, s, campfireID := setupViewTestEnv(t, campfire.RoleWriter)
 	defer s.Close()
 
-	err := runViewCreate(campfireID, "test-view", `(tag "test")`, "", "timestamp asc", "on-read", 0)
+	err := runViewCreate(campfireID, "test-view", `(tag "test")`, "", "timestamp asc", "on-read", "", 0)
 	if err == nil {
 		t.Fatal("expected error: writer cannot create views (campfire:* system messages)")
 	}
@@ -114,7 +114,7 @@ func TestViewCreate_ObserverCannotCreate(t *testing.T) {
 	_, s, campfireID := setupViewTestEnv(t, campfire.RoleObserver)
 	defer s.Close()
 
-	err := runViewCreate(campfireID, "test-view", `(tag "test")`, "", "timestamp asc", "on-read", 0)
+	err := runViewCreate(campfireID, "test-view", `(tag "test")`, "", "timestamp asc", "on-read", "", 0)
 	if err == nil {
 		t.Fatal("expected error: observer cannot create views")
 	}
@@ -127,7 +127,7 @@ func TestViewCreate_InvalidPredicate(t *testing.T) {
 	_, s, campfireID := setupViewTestEnv(t, campfire.RoleFull)
 	defer s.Close()
 
-	err := runViewCreate(campfireID, "bad-view", `(invalid "broken`, "", "timestamp asc", "on-read", 0)
+	err := runViewCreate(campfireID, "bad-view", `(invalid "broken`, "", "timestamp asc", "on-read", "", 0)
 	if err == nil {
 		t.Fatal("expected error for invalid predicate")
 	}
@@ -137,7 +137,7 @@ func TestViewCreate_InvalidOrdering(t *testing.T) {
 	_, s, campfireID := setupViewTestEnv(t, campfire.RoleFull)
 	defer s.Close()
 
-	err := runViewCreate(campfireID, "bad-order", `(tag "test")`, "", "payload desc", "on-read", 0)
+	err := runViewCreate(campfireID, "bad-order", `(tag "test")`, "", "payload desc", "on-read", "", 0)
 	if err == nil {
 		t.Fatal("expected error for invalid ordering")
 	}
@@ -147,7 +147,8 @@ func TestViewCreate_UnsupportedRefresh(t *testing.T) {
 	_, s, campfireID := setupViewTestEnv(t, campfire.RoleFull)
 	defer s.Close()
 
-	err := runViewCreate(campfireID, "bad-refresh", `(tag "test")`, "", "timestamp asc", "on-write", 0)
+	// "periodic" is not a supported refresh strategy (only on-read and on-write are).
+	err := runViewCreate(campfireID, "bad-refresh", `(tag "test")`, "", "timestamp asc", "periodic", "", 0)
 	if err == nil {
 		t.Fatal("expected error for unsupported refresh strategy")
 	}
@@ -479,7 +480,7 @@ func TestViewCreate_WithProjection(t *testing.T) {
 	_, s, campfireID := setupViewTestEnv(t, campfire.RoleFull)
 	defer s.Close()
 
-	err := runViewCreate(campfireID, "projected-view", `(tag "test")`, "id,tags,payload", "timestamp asc", "on-read", 0)
+	err := runViewCreate(campfireID, "projected-view", `(tag "test")`, "id,tags,payload", "timestamp asc", "on-read", "", 0)
 	if err != nil {
 		t.Fatalf("runViewCreate: %v", err)
 	}

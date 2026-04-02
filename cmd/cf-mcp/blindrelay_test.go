@@ -331,6 +331,9 @@ func (f *fakeStoreForRateLimit) ApplyMembershipCommitAtomically(campfireID strin
 func (f *fakeStoreForRateLimit) InsertProjectionEntry(campfireID, viewName, messageID string, indexedAt int64) error {
 	return nil
 }
+func (f *fakeStoreForRateLimit) UpsertProjectionEntry(campfireID, viewName, messageID, entityKey string, indexedAt, timestamp int64) error {
+	return nil
+}
 func (f *fakeStoreForRateLimit) DeleteProjectionEntries(campfireID, viewName string, messageIDs []string) error {
 	return nil
 }

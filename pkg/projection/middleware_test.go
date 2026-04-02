@@ -705,3 +705,204 @@ func TestProjectionMiddleware_ImplementsStore(t *testing.T) {
 	s := openTestStore(t)
 	var _ store.Store = projection.New(s)
 }
+
+// --- Entity-key tests ---
+
+// TestReadView_EntityKey_LatestWins verifies that entity-key views return one
+// result per entity key, with the latest message by timestamp winning.
+func TestReadView_EntityKey_LatestWins(t *testing.T) {
+	s := openTestStore(t)
+	mw := projection.New(s)
+
+	// Define a view with entity-key "bead_id".
+	addViewDefEntityKey(t, s, testCampfire, "ek-view", `(tag "status-change")`, "on-read", "bead_id")
+
+	base := time.Now().UnixNano()
+
+	// Insert 3 messages: 2 for bead-1 (different timestamps), 1 for bead-2.
+	insertEKMsg := func(id, beadID string, ts int64, tags []string) {
+		payload, _ := json.Marshal(map[string]string{"bead_id": beadID})
+		m := store.MessageRecord{
+			ID:          id,
+			CampfireID:  testCampfire,
+			Sender:      "agent",
+			Tags:        tags,
+			Antecedents: []string{},
+			Provenance:  []message.ProvenanceHop{},
+			Payload:     payload,
+			Signature:   testSig,
+			Timestamp:   ts,
+			ReceivedAt:  time.Now().UnixNano(),
+		}
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage %s: %v", id, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	insertEKMsg("e1", "bead-1", base+1000, []string{"status-change"}) // older bead-1
+	insertEKMsg("e2", "bead-2", base+2000, []string{"status-change"}) // bead-2
+	insertEKMsg("e3", "bead-1", base+3000, []string{"status-change"}) // newer bead-1
+
+	results, err := mw.ReadView(testCampfire, "ek-view")
+	if err != nil {
+		t.Fatalf("ReadView: %v", err)
+	}
+
+	// Should have exactly 2 results: one per entity key.
+	if len(results) != 2 {
+		t.Errorf("expected 2 results (one per entity), got %d: %v", len(results), results)
+		return
+	}
+
+	// bead-1's latest should be e3.
+	ids := map[string]bool{}
+	for _, r := range results {
+		ids[r.ID] = true
+	}
+	if !ids["e3"] {
+		t.Errorf("expected e3 (latest bead-1) in results, got IDs: %v", ids)
+	}
+	if !ids["e2"] {
+		t.Errorf("expected e2 (bead-2) in results, got IDs: %v", ids)
+	}
+	if ids["e1"] {
+		t.Errorf("e1 (older bead-1) should be replaced by e3, not in results")
+	}
+}
+
+// TestReadView_EntityKey_MissingField verifies that messages missing the entity
+// key field are skipped (not added to the projection).
+func TestReadView_EntityKey_MissingField(t *testing.T) {
+	s := openTestStore(t)
+	mw := projection.New(s)
+
+	addViewDefEntityKey(t, s, testCampfire, "ek-skip-view", `(tag "event")`, "on-read", "bead_id")
+
+	base := time.Now().UnixNano()
+
+	// Message with bead_id.
+	payload1, _ := json.Marshal(map[string]string{"bead_id": "b1"})
+	m1 := store.MessageRecord{
+		ID: "ek-ok", CampfireID: testCampfire, Sender: "agent",
+		Tags: []string{"event"}, Antecedents: []string{}, Provenance: []message.ProvenanceHop{},
+		Payload: payload1, Signature: testSig, Timestamp: base + 1000, ReceivedAt: time.Now().UnixNano(),
+	}
+	if _, err := s.AddMessage(m1); err != nil {
+		t.Fatalf("AddMessage m1: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+
+	// Message without bead_id — should be skipped.
+	payload2, _ := json.Marshal(map[string]string{"other": "value"})
+	m2 := store.MessageRecord{
+		ID: "ek-skip", CampfireID: testCampfire, Sender: "agent",
+		Tags: []string{"event"}, Antecedents: []string{}, Provenance: []message.ProvenanceHop{},
+		Payload: payload2, Signature: testSig, Timestamp: base + 2000, ReceivedAt: time.Now().UnixNano(),
+	}
+	if _, err := s.AddMessage(m2); err != nil {
+		t.Fatalf("AddMessage m2: %v", err)
+	}
+
+	results, err := mw.ReadView(testCampfire, "ek-skip-view")
+	if err != nil {
+		t.Fatalf("ReadView: %v", err)
+	}
+
+	// Only m1 should appear (m2 lacks bead_id).
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+		return
+	}
+	if results[0].ID != "ek-ok" {
+		t.Errorf("expected ek-ok, got %s", results[0].ID)
+	}
+}
+
+// TestAddMessage_OnWriteView_EntityKey verifies eager write with entity-key upsert.
+func TestAddMessage_OnWriteView_EntityKey(t *testing.T) {
+	s := openTestStore(t)
+	mw := projection.New(s)
+
+	addViewDefEntityKey(t, s, testCampfire, "ew-ek-view", `(tag "sc")`, "on-write", "item_id")
+
+	base := time.Now().UnixNano()
+
+	insertEK := func(id, itemID string, ts int64) {
+		payload, _ := json.Marshal(map[string]string{"item_id": itemID})
+		m := store.MessageRecord{
+			ID: id, CampfireID: testCampfire, Sender: "agent",
+			Tags: []string{"sc"}, Antecedents: []string{}, Provenance: []message.ProvenanceHop{},
+			Payload: payload, Signature: testSig, Timestamp: ts, ReceivedAt: ts,
+		}
+		if _, err := mw.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage %s: %v", id, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	insertEK("ew1", "item-a", base+1000)
+	insertEK("ew2", "item-b", base+2000)
+	insertEK("ew3", "item-a", base+3000) // replaces ew1 for item-a
+
+	entries, err := s.ListProjectionEntries(testCampfire, "ew-ek-view")
+	if err != nil {
+		t.Fatalf("ListProjectionEntries: %v", err)
+	}
+
+	// Should have 2 entries: one per item (latest wins).
+	if len(entries) != 2 {
+		t.Errorf("expected 2 projection entries, got %d", len(entries))
+		return
+	}
+
+	// Find which entry is for item-a — should be ew3.
+	msgIDs := map[string]bool{}
+	for _, e := range entries {
+		msgIDs[e.MessageID] = true
+	}
+	if !msgIDs["ew3"] {
+		t.Errorf("expected ew3 (latest item-a) in entries, got: %v", msgIDs)
+	}
+	if msgIDs["ew1"] {
+		t.Errorf("ew1 (older item-a) should be replaced by ew3")
+	}
+}
+
+// addViewDefEntityKey inserts a campfire:view definition with an entity-key field.
+func addViewDefEntityKey(t *testing.T, s store.Store, campfireID, viewName, predicateExpr, refresh, entityKey string) {
+	t.Helper()
+	def := struct {
+		Name      string `json:"name"`
+		Predicate string `json:"predicate"`
+		Refresh   string `json:"refresh,omitempty"`
+		EntityKey string `json:"entity_key,omitempty"`
+	}{
+		Name:      viewName,
+		Predicate: predicateExpr,
+		Refresh:   refresh,
+		EntityKey: entityKey,
+	}
+	payload, _ := json.Marshal(def)
+	id := fmt.Sprintf("view-def-%s-%d", viewName, time.Now().UnixNano())
+	now := time.Now().UnixNano()
+	m := store.MessageRecord{
+		ID:          id,
+		CampfireID:  campfireID,
+		Sender:      "operator",
+		Tags:        []string{"campfire:view"},
+		Antecedents: []string{},
+		Provenance:  []message.ProvenanceHop{},
+		Payload:     payload,
+		Signature:   testSig,
+		Timestamp:   now,
+		ReceivedAt:  now,
+	}
+	inserted, err := s.AddMessage(m)
+	if err != nil {
+		t.Fatalf("addViewDefEntityKey %s: %v", viewName, err)
+	}
+	if !inserted {
+		t.Fatalf("addViewDefEntityKey %s: not inserted", viewName)
+	}
+}
