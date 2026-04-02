@@ -822,3 +822,220 @@ type tier2Body struct {
 	Args       map[string]any `json:"args"`
 	Tags       []string       `json:"tags"`
 }
+
+// ---- Hardening: sendFulfillment failure ----
+
+// TestDispatcher_Tier1_SendFulfillmentFailure_MeteringStillFires verifies that
+// when the handler succeeds but sendFulfillment fails (e.g. the campfire transport
+// is broken), the metering hook still fires with status "failed" and the dispatch
+// record is reverted to "failed".
+func TestDispatcher_Tier1_SendFulfillmentFailure_MeteringStillFires(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	var mu sync.Mutex
+	var events []convention.ConventionMeterEvent
+	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
+		mu.Lock()
+		events = append(events, ev)
+		mu.Unlock()
+	}
+
+	// Use a client with a broken store so Send() will fail when posting the
+	// fulfillment message. We create a store, add membership, then close it
+	// to force I/O errors on Send.
+	brokenStoreDir := t.TempDir()
+	brokenStore, err := store.Open(filepath.Join(brokenStoreDir, "broken.db"))
+	if err != nil {
+		t.Fatalf("opening broken store: %v", err)
+	}
+	// Add the membership so the client can attempt Send (it needs the campfire lookup).
+	brokenStore.AddMembership(store.Membership{
+		CampfireID:    env.campfireID,
+		TransportDir:  "/nonexistent/path/that/will/fail",
+		JoinProtocol:  "open",
+		Role:          campfire.RoleFull,
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	})
+	brokenClient := protocol.New(brokenStore, env.serverID)
+
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", brokenClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		// Handler succeeds with a response that requires fulfillment posting.
+		return &convention.Response{Payload: map[string]any{"result": "ok"}}, nil
+	}, env.serverID.PublicKeyHex(), "forge-acct-1")
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	d.Dispatch(context.Background(), env.campfireID, msg)
+	status := waitForDispatch(t, ds, env.campfireID, msg.ID, 3*time.Second)
+
+	if status != "failed" {
+		t.Fatalf("expected dispatch status 'failed' after sendFulfillment error, got %q", status)
+	}
+
+	// Metering hook must still have fired.
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	n := len(events)
+	var ev convention.ConventionMeterEvent
+	if n > 0 {
+		ev = events[0]
+	}
+	mu.Unlock()
+
+	if n != 1 {
+		t.Fatalf("expected 1 metering event even after sendFulfillment failure, got %d", n)
+	}
+	if ev.Status != "failed" {
+		t.Errorf("expected metering status 'failed', got %q", ev.Status)
+	}
+	if ev.ForgeAccountID != "forge-acct-1" {
+		t.Errorf("expected ForgeAccountID 'forge-acct-1', got %q", ev.ForgeAccountID)
+	}
+}
+
+// ---- Hardening: context cancellation during dispatch ----
+
+// TestDispatcher_ContextCancellation_CleanShutdown verifies that cancelling the
+// context mid-dispatch does not hang or panic. The handler blocks until the context
+// is cancelled, then returns an error. The dispatch should complete with "failed".
+func TestDispatcher_ContextCancellation_CleanShutdown(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	handlerStarted := make(chan struct{})
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		close(handlerStarted)
+		// Block until context is cancelled.
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, env.serverID.PublicKeyHex(), "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	dispatched := d.Dispatch(ctx, env.campfireID, msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	// Wait for the handler goroutine to start.
+	select {
+	case <-handlerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handler to start")
+	}
+
+	// Cancel the context while the handler is blocked.
+	cancel()
+
+	// The dispatch should complete with "failed" status.
+	status := waitForDispatch(t, ds, env.campfireID, msg.ID, 3*time.Second)
+	if status != "failed" {
+		t.Fatalf("expected 'failed' after context cancellation, got %q", status)
+	}
+}
+
+// TestDispatcher_DispatchWithCancel_CancelFuncCalled verifies that
+// DispatchWithCancel calls the provided cancel func after the goroutine completes,
+// preventing context/timer leaks.
+func TestDispatcher_DispatchWithCancel_CancelFuncCalled(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		return nil, nil
+	}, env.serverID.PublicKeyHex(), "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+	var cancelCalled atomic.Bool
+	wrappedCancel := func() {
+		cancelCalled.Store(true)
+		cancel()
+	}
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	msg.ID = "msg-cancel-func-test" // unique ID to avoid dedup collision
+	dispatched := d.DispatchWithCancel(ctx, wrappedCancel, env.campfireID, msg)
+	if !dispatched {
+		t.Fatal("expected DispatchWithCancel to return true")
+	}
+
+	waitForDispatch(t, ds, env.campfireID, msg.ID, 3*time.Second)
+	// Give a moment for the deferred cancel to run.
+	time.Sleep(50 * time.Millisecond)
+
+	if !cancelCalled.Load() {
+		t.Fatal("expected cancel func to be called after dispatch goroutine completed")
+	}
+}
+
+// ---- Hardening: concurrent dispatch deduplication via MarkDispatched ----
+
+// TestDispatcher_ConcurrentDispatch_MarkDispatched_Atomicity stress-tests that
+// concurrent Dispatch calls for the same message ID result in exactly one handler
+// invocation. This goes beyond TestDispatcher_Deduplication_ConcurrentDispatch by
+// verifying metering fires exactly once and the final status is correct.
+func TestDispatcher_ConcurrentDispatch_MarkDispatched_Atomicity(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	var callCount atomic.Int64
+	var mu sync.Mutex
+	var meterEvents []convention.ConventionMeterEvent
+
+	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
+		mu.Lock()
+		meterEvents = append(meterEvents, ev)
+		mu.Unlock()
+	}
+
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		callCount.Add(1)
+		// Simulate some work to widen the race window.
+		time.Sleep(10 * time.Millisecond)
+		return nil, nil
+	}, env.serverID.PublicKeyHex(), "")
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	msg.ID = "msg-concurrent-atomic" // unique ID
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			d.Dispatch(context.Background(), env.campfireID, msg)
+		}()
+	}
+	wg.Wait()
+
+	// Wait for async dispatch to finish.
+	waitForDispatch(t, ds, env.campfireID, msg.ID, 3*time.Second)
+	time.Sleep(100 * time.Millisecond)
+
+	if n := callCount.Load(); n != 1 {
+		t.Fatalf("expected handler called exactly once under 50 concurrent dispatches, got %d", n)
+	}
+
+	mu.Lock()
+	nEvents := len(meterEvents)
+	mu.Unlock()
+	if nEvents != 1 {
+		t.Fatalf("expected exactly 1 metering event, got %d", nEvents)
+	}
+
+	finalStatus, err := ds.GetDispatchStatus(context.Background(), env.campfireID, msg.ID)
+	if err != nil {
+		t.Fatalf("GetDispatchStatus: %v", err)
+	}
+	if finalStatus != "fulfilled" {
+		t.Fatalf("expected final status 'fulfilled', got %q", finalStatus)
+	}
+}
