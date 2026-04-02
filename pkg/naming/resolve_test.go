@@ -290,6 +290,34 @@ func TestClearTOFUPin(t *testing.T) {
 	}
 }
 
+// TestResolveName_TOFUHolds verifies that resolving the same name to the same
+// campfire ID multiple times succeeds (TOFU pin holds for matching IDs).
+func TestResolveName_TOFUHolds(t *testing.T) {
+	r, _ := setupTestResolver()
+	ctx := context.Background()
+
+	// First resolution — pins the value.
+	id1, err := r.ResolveName(ctx, []string{"aietf", "social", "lobby"})
+	if err != nil {
+		t.Fatalf("first resolution: %v", err)
+	}
+	if id1 != lobbyID {
+		t.Fatalf("first resolution: got %s, want %s", id1, lobbyID)
+	}
+
+	// Invalidate cache to force a re-resolve via transport.
+	r.InvalidateCache(socialID, "lobby")
+
+	// Second resolution — same campfire ID, TOFU pin must hold (no error).
+	id2, err := r.ResolveName(ctx, []string{"aietf", "social", "lobby"})
+	if err != nil {
+		t.Fatalf("second resolution (same ID): %v", err)
+	}
+	if id2 != lobbyID {
+		t.Errorf("second resolution: got %s, want %s", id2, lobbyID)
+	}
+}
+
 // Test: Cache hit avoids transport call
 func TestResolveCache(t *testing.T) {
 	r, mt := setupTestResolver()
