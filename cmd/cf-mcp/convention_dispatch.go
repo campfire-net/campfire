@@ -69,6 +69,7 @@ func (s *server) loadConventionServersForCampfire(ctx context.Context, campfireI
 				srv.HandlerURL,
 				nil, // no client needed for Tier 2 — response is async via HTTP
 				srv.ServerID,
+				"", // ForgeAccountID: not stored in convention server records yet
 			)
 		}
 	}
