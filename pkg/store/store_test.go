@@ -11,6 +11,75 @@ import (
 	"time"
 )
 
+// --- campfire-agent-say: ValidateCompactionBytes tests ---
+
+func TestValidateCompactionBytes_Consistent(t *testing.T) {
+	// Superseded messages have payloads of 10 + 20 = 30 bytes.
+	lookup := func(id string) ([]byte, error) {
+		switch id {
+		case "msg1":
+			return make([]byte, 10), nil
+		case "msg2":
+			return make([]byte, 20), nil
+		default:
+			return nil, fmt.Errorf("unknown id: %s", id)
+		}
+	}
+	err := ValidateCompactionBytes([]string{"msg1", "msg2"}, 30, lookup)
+	if err != nil {
+		t.Fatalf("expected nil error for consistent bytes, got: %v", err)
+	}
+}
+
+func TestValidateCompactionBytes_Inconsistent(t *testing.T) {
+	lookup := func(id string) ([]byte, error) {
+		switch id {
+		case "msg1":
+			return make([]byte, 10), nil
+		case "msg2":
+			return make([]byte, 20), nil
+		default:
+			return nil, fmt.Errorf("unknown id: %s", id)
+		}
+	}
+	err := ValidateCompactionBytes([]string{"msg1", "msg2"}, 999, lookup)
+	if err == nil {
+		t.Fatal("expected error for inconsistent bytes, got nil")
+	}
+	if !errors.Is(err, ErrCompactionBytesInconsistent) {
+		t.Fatalf("expected ErrCompactionBytesInconsistent, got: %v", err)
+	}
+}
+
+func TestValidateCompactionBytes_ZeroSkipped(t *testing.T) {
+	// BytesSuperseded == 0 means old client; skip validation.
+	called := false
+	lookup := func(id string) ([]byte, error) {
+		called = true
+		return nil, nil
+	}
+	err := ValidateCompactionBytes([]string{"msg1"}, 0, lookup)
+	if err != nil {
+		t.Fatalf("expected nil error for zero BytesSuperseded, got: %v", err)
+	}
+	if called {
+		t.Error("lookup should not be called when BytesSuperseded is zero")
+	}
+}
+
+func TestValidateCompactionBytes_NonzeroWithEmptySupersedes(t *testing.T) {
+	lookup := func(id string) ([]byte, error) {
+		return nil, fmt.Errorf("should not be called")
+	}
+	err := ValidateCompactionBytes(nil, 100, lookup)
+	if err == nil {
+		t.Fatal("expected error for nonzero bytes with empty Supersedes, got nil")
+	}
+	if !errors.Is(err, ErrCompactionBytesInconsistent) {
+		t.Fatalf("expected ErrCompactionBytesInconsistent, got: %v", err)
+	}
+}
+
 // --- workspace-pyw: exact tag matching ---
 
 // TestHasTag_ExactMatch verifies that HasTag matches the exact tag string.

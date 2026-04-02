@@ -21,6 +21,11 @@ import (
 // This is the downgrade-prevention sentinel error (spec §2.1).
 var ErrPlaintextInEncryptedCampfire = fmt.Errorf("plaintext payload rejected in encrypted campfire")
 
+// ErrCompactionBytesInconsistent is returned when a campfire:compact message's
+// BytesSuperseded value does not match the actual total payload bytes of the
+// superseded messages. This prevents metering drift from incorrect compaction claims.
+var ErrCompactionBytesInconsistent = fmt.Errorf("compaction BytesSuperseded inconsistent with superseded message payloads")
+
 const schema = `
 CREATE TABLE IF NOT EXISTS campfire_memberships (
     campfire_id     TEXT PRIMARY KEY,
@@ -628,6 +633,25 @@ func (s *SQLiteStore) AddMessage(m MessageRecord) (bool, error) {
 		}
 	}
 
+	// Validate compaction BytesSuperseded consistency before persisting.
+	if isCompactionEvent(m) {
+		var cp CompactionPayload
+		if err := unmarshalCompactionPayload(m.Payload, &cp); err == nil {
+			if err := ValidateCompactionBytes(cp.Supersedes, cp.BytesSuperseded, func(id string) ([]byte, error) {
+				msg, err := s.GetMessage(id)
+				if err != nil {
+					return nil, err
+				}
+				if msg == nil {
+					return nil, nil
+				}
+				return msg.Payload, nil
+			}); err != nil {
+				return false, err
+			}
+		}
+	}
+
 	tagsJSON, _ := json.Marshal(m.Tags)
 	anteJSON, _ := json.Marshal(m.Antecedents)
 	provJSON, _ := json.Marshal(m.Provenance)
@@ -1021,6 +1045,37 @@ type CompactionPayload struct {
 // unmarshalCompactionPayload decodes a CompactionPayload from the raw message payload bytes.
 func unmarshalCompactionPayload(payload []byte, out *CompactionPayload) error {
 	return json.Unmarshal(payload, out)
+}
+
+// ValidateCompactionBytes checks that a compaction payload's BytesSuperseded
+// field is consistent with the actual payload sizes of the superseded messages.
+//
+// Rules:
+//   - BytesSuperseded == 0: skip validation (backward compat with older clients).
+//   - BytesSuperseded > 0 but Supersedes is empty: reject (nonzero claim with nothing superseded).
+//   - Otherwise: sum the payload lengths of all superseded messages via lookupPayload
+//     and compare against BytesSuperseded. Reject on mismatch.
+func ValidateCompactionBytes(supersedes []string, bytesSuperseded int64, lookupPayload func(id string) ([]byte, error)) error {
+	if bytesSuperseded == 0 {
+		return nil
+	}
+	if len(supersedes) == 0 {
+		return fmt.Errorf("%w: BytesSuperseded=%d but Supersedes is empty",
+			ErrCompactionBytesInconsistent, bytesSuperseded)
+	}
+	var actual int64
+	for _, id := range supersedes {
+		payload, err := lookupPayload(id)
+		if err != nil {
+			return fmt.Errorf("ValidateCompactionBytes: looking up %s: %w", id, err)
+		}
+		actual += int64(len(payload))
+	}
+	if actual != bytesSuperseded {
+		return fmt.Errorf("%w: claimed %d bytes but actual is %d",
+			ErrCompactionBytesInconsistent, bytesSuperseded, actual)
+	}
+	return nil
 }
 
 // ListCompactionEvents returns all campfire:compact messages for a campfire.

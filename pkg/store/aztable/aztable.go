@@ -307,6 +307,25 @@ func (ts *TableStore) AddMessage(m store.MessageRecord) (bool, error) {
 		}
 	}
 
+	// Validate compaction BytesSuperseded consistency before persisting.
+	if isCompactionEvent(m) {
+		var cp compactionPayload
+		if err := json.Unmarshal(m.Payload, &cp); err == nil {
+			if err := store.ValidateCompactionBytes(cp.Supersedes, cp.BytesSuperseded, func(id string) ([]byte, error) {
+				msg, err := ts.GetMessage(id)
+				if err != nil {
+					return nil, err
+				}
+				if msg == nil {
+					return nil, nil
+				}
+				return msg.Payload, nil
+			}); err != nil {
+				return false, err
+			}
+		}
+	}
+
 	// Check if already exists.
 	existing, err := getEntity(context.Background(), ts.messages, ts.pk(m.CampfireID), encodeKey(m.ID))
 	if err != nil {
