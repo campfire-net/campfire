@@ -1658,6 +1658,18 @@ func isPreconditionFailedError(err error) bool {
 	return strings.Contains(s, "UpdateConditionNotSatisfied") || strings.Contains(s, "412")
 }
 
+// isMergeNotFoundError returns true if err is the Azurite-specific 400
+// InvalidOperation error returned when UpdateEntity (PATCH/merge) is called
+// on a non-existent entity. The real Azure Table Storage returns 404 in this
+// case (caught by isNotFoundError); Azurite returns 400 InvalidOperation.
+func isMergeNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "InvalidOperation") && strings.Contains(s, "400")
+}
+
 // NowNano returns the current time in nanoseconds (mirrors store.NowNano).
 func NowNano() int64 {
 	return time.Now().UnixNano()

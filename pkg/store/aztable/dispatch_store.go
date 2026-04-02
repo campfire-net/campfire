@@ -483,28 +483,25 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 	pk := encodeKey(campfireID)
 	rk := encodeKey(messageID)
 
-	resp, err := s.dispatched.GetEntity(ctx, pk, rk, nil)
-	if err != nil {
-		if isNotFoundError(err) {
-			return nil
-		}
-		return fmt.Errorf("aztable: DispatchStore.MarkBilled: get: %w", err)
+	// Minimal merge entity — only sets BilledAt; leaves all other fields untouched.
+	m := map[string]any{
+		"PartitionKey": pk,
+		"RowKey":       rk,
+		"BilledAt":     time.Now().UnixNano(),
 	}
-	var m map[string]any
-	if err := json.Unmarshal(resp.Value, &m); err != nil {
-		return fmt.Errorf("aztable: DispatchStore.MarkBilled: unmarshal: %w", err)
-	}
-	m["BilledAt"] = time.Now().UnixNano()
 	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: marshal: %w", err)
 	}
 	etag := azcore.ETag(callerETag)
 	_, updateErr := s.dispatched.UpdateEntity(ctx, data, &aztables.UpdateEntityOptions{
-		UpdateMode: aztables.UpdateModeReplace,
+		UpdateMode: aztables.UpdateModeMerge,
 		IfMatch:    &etag,
 	})
 	if updateErr != nil {
+		if isNotFoundError(updateErr) || isMergeNotFoundError(updateErr) {
+			return nil
+		}
 		if isPreconditionFailedError(updateErr) {
 			return fmt.Errorf("%w: Azure ETag mismatch on %s/%s", convention.ErrConcurrentModification, campfireID, messageID)
 		}
