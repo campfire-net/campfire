@@ -18,8 +18,8 @@ import (
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
 
-// TestInitHomeCampfire_InviteOnly verifies that the home campfire created by
-// createAndSeedHomeCampfire uses "invite-only" join protocol.
+// TestInitHomeCampfire_InviteOnly verifies that the identity (self-) campfire
+// created by createSelfCampfire uses "invite-only" join protocol.
 func TestInitHomeCampfire_InviteOnly(t *testing.T) {
 	cfHomeDir := t.TempDir()
 	t.Setenv("CF_HOME", cfHomeDir)
@@ -32,12 +32,12 @@ func TestInitHomeCampfire_InviteOnly(t *testing.T) {
 		t.Fatalf("saving identity: %v", err)
 	}
 
-	homeCampfireID, err := createAndSeedHomeCampfire(cfHomeDir, agentID)
+	selfCampfireID, err := createSelfCampfire(cfHomeDir, agentID)
 	if err != nil {
-		t.Fatalf("createAndSeedHomeCampfire: %v", err)
+		t.Fatalf("createSelfCampfire: %v", err)
 	}
-	if homeCampfireID == "" {
-		t.Fatal("expected non-empty home campfire ID")
+	if selfCampfireID == "" {
+		t.Fatal("expected non-empty self-campfire ID")
 	}
 
 	// Open the store and check the recorded join protocol.
@@ -47,15 +47,15 @@ func TestInitHomeCampfire_InviteOnly(t *testing.T) {
 	}
 	defer s.Close()
 
-	m, err := s.GetMembership(homeCampfireID)
+	m, err := s.GetMembership(selfCampfireID)
 	if err != nil {
 		t.Fatalf("GetMembership: %v", err)
 	}
 	if m == nil {
-		t.Fatal("membership not recorded for home campfire")
+		t.Fatal("membership not recorded for self-campfire")
 	}
 	if m.JoinProtocol != "invite-only" {
-		t.Errorf("home campfire join protocol = %q, want %q", m.JoinProtocol, "invite-only")
+		t.Errorf("self-campfire join protocol = %q, want %q", m.JoinProtocol, "invite-only")
 	}
 }
 

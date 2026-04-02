@@ -20,6 +20,7 @@ func assignCommandGroups() {
 		"disband":  groupCampfire,
 		"admit":    groupCampfire,
 		"evict":    groupCampfire,
+		"home":     groupCampfire,
 		"member":   groupCampfire,
 		"members":  groupCampfire,
 		"alias":    groupCampfire,

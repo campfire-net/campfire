@@ -9,7 +9,9 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
@@ -155,25 +157,12 @@ The --from flag requires --name — config inheritance only applies to named age
 		// Write CONTEXT.md alongside the identity
 		writeContext(cfHome)
 
-		// Create home campfire and seed it with convention declarations.
-		homeCampfireID, err := createAndSeedHomeCampfire(cfHome, agentID)
+		// Step 2-7: Create self-campfire with identity convention genesis message.
+		// This is an atomic 7-step operation that replaces the old home+center creation.
+		selfCampfireID, err := createSelfCampfire(cfHome, agentID)
 		if err != nil {
-			// Non-fatal: home campfire creation failure should not block init.
-			fmt.Fprintf(os.Stderr, "warning: could not create home campfire: %v\n", err)
-		}
-
-		// Create center campfire (fs by default, http if --remote is set).
-		remoteURL, _ := cmd.Flags().GetString("remote")
-		centerID, centerTransport, centerErr := createCenterCampfire(cfHome, agentID, remoteURL)
-		if centerErr != nil {
-			// Non-fatal: center campfire creation failure should not block init.
-			fmt.Fprintf(os.Stderr, "warning: could not create center campfire: %v\n", centerErr)
-		} else {
-			// Write .campfire/center file.
-			centerPath := filepath.Join(cfHome, "center")
-			if err := os.WriteFile(centerPath, []byte(centerID), 0600); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not write center file: %v\n", err)
-			}
+			// Non-fatal: self-campfire creation failure should not block init.
+			fmt.Fprintf(os.Stderr, "warning: could not create identity campfire: %v\n", err)
 		}
 
 		// Named agent: inherit config files from parent CF_HOME.
@@ -189,41 +178,18 @@ The --from flag requires --name — config inheritance only applies to named age
 
 		if jsonOutput {
 			out := map[string]any{
-				"status":     "created",
-				"public_key": agentID.PublicKeyHex(),
-				"location":   cfHome,
-			}
-			if homeCampfireID != "" {
-				out["home_campfire_id"] = homeCampfireID
-			}
-			if centerID != "" {
-				out["center_campfire_id"] = centerID
+				"status":               "created",
+				"public_key":           agentID.PublicKeyHex(),
+				"location":             cfHome,
+				"identity_campfire_id": selfCampfireID,
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			return enc.Encode(out)
 		}
 
-		identityType := "session (disposable)"
-		if initName != "" {
-			identityType = fmt.Sprintf("persistent agent '%s'", initName)
-		}
-
-		fmt.Printf(`Identity created: %s
-Type: %s
-Location: %s
-`, agentID.PublicKeyHex(), identityType, cfHome)
-
-		if centerID != "" {
-			displayTransport := centerTransport
-			if displayTransport == "p2p-http" {
-				displayTransport = "http"
-			}
-			hint := ""
-			if centerTransport != "p2p-http" {
-				hint = " To use a remote: cf init --remote <url>"
-			}
-			fmt.Printf("\nCreated center campfire [%s].%s\n", displayTransport, hint)
+		if selfCampfireID != "" {
+			fmt.Printf("Your identity campfire: %s. Share it like any beacon.\n", selfCampfireID)
 		}
 
 		fmt.Printf(`
@@ -270,54 +236,88 @@ func inheritAgentConfig(parentHome, agentHome, name string) error {
 	return nil
 }
 
-// createAndSeedHomeCampfire creates a home campfire for the agent, seeds it
-// with the embedded promote declaration and any seed beacon declarations,
-// publishes its beacon, and sets the "home" alias.
+// createSelfCampfire creates the agent's identity (self-) campfire using the
+// 7-step atomic protocol defined in design-identity-as-campfire.md §cf init Collapse.
+//
+// The self-campfire is typed by its genesis message (message 0): a campfire-key-signed
+// identity convention declaration tagged convention:operation. Message 1 is an
+// agent-key-signed introduce-me operation. The "home" alias is set to the campfire ID
+// and a beacon with tag identity:v1 is published.
 //
 // Returns the campfire ID hex on success, or "" on failure.
-func createAndSeedHomeCampfire(cfHome string, agentID *identity.Identity) (string, error) {
-	// Create campfire keypair (invite-only, no requirements, threshold=1).
-	// The home campfire is private by default — the owner invites members explicitly.
-	homeCF, err := campfire.New("invite-only", nil, 1)
+func createSelfCampfire(cfHome string, agentID *identity.Identity) (string, error) {
+	// Step 2: Create self-campfire keypair (invite-only, threshold=1).
+	selfCF, err := campfire.New("invite-only", nil, 1)
 	if err != nil {
-		return "", fmt.Errorf("creating home campfire: %w", err)
+		return "", fmt.Errorf("creating self-campfire: %w", err)
 	}
 
-	// Set up filesystem transport
+	// Step 3: Initialize transport and admit agent as member 0.
 	transport := fs.New(fs.DefaultBaseDir())
-	if err := transport.Init(homeCF); err != nil {
+	if err := transport.Init(selfCF); err != nil {
 		return "", fmt.Errorf("initializing transport: %w", err)
 	}
-
-	// Write agent as the only member
-	if err := transport.WriteMember(homeCF.PublicKeyHex(), campfire.MemberRecord{
+	if err := transport.WriteMember(selfCF.PublicKeyHex(), campfire.MemberRecord{
 		PublicKey: agentID.PublicKey,
 		JoinedAt:  time.Now().UnixNano(),
 	}); err != nil {
 		return "", fmt.Errorf("writing member record: %w", err)
 	}
 
-	// Build and publish beacon
-	b, err := beacon.New(
-		homeCF.PublicKey,
-		homeCF.PrivateKey,
-		homeCF.JoinProtocol,
-		homeCF.ReceptionRequirements,
-		beacon.TransportConfig{
-			Protocol: "filesystem",
-			Config:   map[string]string{"dir": transport.CampfireDir(homeCF.PublicKeyHex())},
-		},
-		"home campfire",
-	)
-	if err != nil {
-		return "", fmt.Errorf("creating beacon: %w", err)
-	}
-	if err := beacon.Publish(BeaconDir(), b); err != nil {
-		// Non-fatal: beacon publishing failure doesn't block home campfire use
-		fmt.Fprintf(os.Stderr, "warning: could not publish home campfire beacon: %v\n", err)
+	campfireID := selfCF.PublicKeyHex()
+	transportDir := transport.CampfireDir(campfireID)
+
+	// Step 4: Post identity convention declaration as message 0, signed by campfire key.
+	// This is the type assertion that makes this a self-campfire — the genesis message
+	// is signed by the campfire's own key, not the agent key.
+	// We post ALL four identity declarations so the convention is fully registered.
+	for i, decl := range convention.IdentityDeclarations() {
+		declPayload, err := json.Marshal(decl)
+		if err != nil {
+			return "", fmt.Errorf("marshaling identity declaration %d: %w", i, err)
+		}
+		msg, err := message.NewMessage(
+			selfCF.PrivateKey,
+			selfCF.PublicKey,
+			declPayload,
+			[]string{convention.ConventionOperationTag},
+			nil,
+		)
+		if err != nil {
+			return "", fmt.Errorf("creating genesis message %d: %w", i, err)
+		}
+		if err := transport.WriteMessage(campfireID, msg); err != nil {
+			return "", fmt.Errorf("writing genesis message %d: %w", i, err)
+		}
 	}
 
-	// Open store and record membership
+	// Step 5: Post introduce-me as message N (after declarations), signed by agent key.
+	// Payload: agent pubkey hex, display_name, home campfire IDs (self initially).
+	displayName := "agent:" + agentID.PublicKeyHex()[:6]
+	introduceMePayload := map[string]any{
+		"pubkey_hex":       agentID.PublicKeyHex(),
+		"display_name":     displayName,
+		"home_campfire_ids": []string{campfireID},
+	}
+	introduceMeBytes, err := json.Marshal(introduceMePayload)
+	if err != nil {
+		return "", fmt.Errorf("marshaling introduce-me payload: %w", err)
+	}
+	introduceMsg, err := message.NewMessage(
+		agentID.PrivateKey,
+		agentID.PublicKey,
+		introduceMeBytes,
+		[]string{convention.IdentityIntroductionTag},
+		nil,
+	)
+	if err != nil {
+		return "", fmt.Errorf("creating introduce-me message: %w", err)
+	}
+	if err := transport.WriteMessage(campfireID, introduceMsg); err != nil {
+		return "", fmt.Errorf("writing introduce-me message: %w", err)
+	}
+
+	// Open store and record membership (required before any protocol.Client operations).
 	s, err := store.Open(store.StorePath(cfHome))
 	if err != nil {
 		return "", fmt.Errorf("opening store: %w", err)
@@ -325,30 +325,54 @@ func createAndSeedHomeCampfire(cfHome string, agentID *identity.Identity) (strin
 	defer s.Close()
 
 	if err := s.AddMembership(store.Membership{
-		CampfireID:   homeCF.PublicKeyHex(),
-		TransportDir: transport.CampfireDir(homeCF.PublicKeyHex()),
-		JoinProtocol: homeCF.JoinProtocol,
-		Role:         store.PeerRoleCreator,
-		JoinedAt:     store.NowNano(),
-		Threshold:    homeCF.Threshold,
-		Description:  "home campfire",
+		CampfireID:    campfireID,
+		TransportDir:  transportDir,
+		JoinProtocol:  selfCF.JoinProtocol,
+		Role:          store.PeerRoleCreator,
+		JoinedAt:      store.NowNano(),
+		Threshold:     selfCF.Threshold,
+		Description:   "identity campfire",
+		TransportType: "filesystem",
 	}); err != nil {
 		return "", fmt.Errorf("recording membership: %w", err)
 	}
 
-	// Seed: post embedded promote declaration + seed beacon declarations.
-	// Must run after AddMembership so protocol.Client.Send can look up membership.
-	seedCampfireFilesystem(homeCF.PublicKeyHex(), transport.CampfireDir(homeCF.PublicKeyHex()), agentID, homeCF, "", s)
+	// Mirror genesis messages to store for local readback.
+	msgs, err := transport.ListMessages(campfireID)
+	if err == nil {
+		for _, msg := range msgs {
+			s.AddMessage(store.MessageRecordFromMessage(campfireID, &msg, store.NowNano())) //nolint:errcheck
+		}
+	}
 
-	// Set "home" alias
+	// Step 6: Set "home" alias to self-campfire ID.
 	aliases := naming.NewAliasStore(cfHome)
-	if err := aliases.Set("home", homeCF.PublicKeyHex()); err != nil {
-		// Non-fatal: alias failure doesn't block home campfire use
+	if err := aliases.Set("home", campfireID); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not set home alias: %v\n", err)
 	}
 
-	return homeCF.PublicKeyHex(), nil
+	// Step 7: Publish beacon with tag identity:v1.
+	b, err := beacon.New(
+		selfCF.PublicKey,
+		selfCF.PrivateKey,
+		selfCF.JoinProtocol,
+		selfCF.ReceptionRequirements,
+		beacon.TransportConfig{
+			Protocol: "filesystem",
+			Config:   map[string]string{"dir": transportDir},
+		},
+		convention.IdentityBeaconTag,
+	)
+	if err != nil {
+		return "", fmt.Errorf("creating identity:v1 beacon: %w", err)
+	}
+	if err := beacon.Publish(BeaconDir(), b); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not publish identity:v1 beacon: %v\n", err)
+	}
+
+	return campfireID, nil
 }
+
 
 const campfireContext = `# Campfire Protocol
 
