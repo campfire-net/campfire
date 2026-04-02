@@ -211,21 +211,47 @@ func (s *TableDispatchStore) MarkDispatched(ctx context.Context, campfireID, mes
 	return true, nil
 }
 
-// updateDispatchStatus sets the Status field of a dispatch record.
+// updateDispatchStatus sets the Status field of a dispatch record using ETag-based
+// optimistic concurrency. It reads the entity (capturing the ETag), then writes back
+// with IfMatch so a concurrent modification between the read and the write is detected.
+// Returns convention.ErrConcurrentModification on ETag mismatch (412).
+// Returns convention.ErrDispatchNotFound if the record does not exist.
 func (s *TableDispatchStore) updateDispatchStatus(ctx context.Context, campfireID, messageID, status string) error {
 	pk := encodeKey(campfireID)
 	rk := encodeKey(messageID)
 
-	raw, err := getEntity(ctx, s.dispatched, pk, rk)
+	// Read with ETag so the subsequent write can be conditional.
+	resp, err := s.dispatched.GetEntity(ctx, pk, rk, nil)
 	if err != nil {
+		if isNotFoundError(err) {
+			return convention.ErrDispatchNotFound
+		}
 		return fmt.Errorf("aztable: DispatchStore.%s: get: %w", status, err)
 	}
-	if raw == nil {
-		return convention.ErrDispatchNotFound
+
+	// Minimal merge entity — only updates Status; leaves all other fields untouched.
+	m := map[string]any{
+		"PartitionKey": pk,
+		"RowKey":       rk,
+		"Status":       status,
 	}
-	raw["Status"] = status
-	if err := upsertEntity(ctx, s.dispatched, raw); err != nil {
-		return fmt.Errorf("aztable: DispatchStore.%s: upsert: %w", status, err)
+	data, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("aztable: DispatchStore.%s: marshal: %w", status, err)
+	}
+	etag := resp.ETag
+	_, updateErr := s.dispatched.UpdateEntity(ctx, data, &aztables.UpdateEntityOptions{
+		UpdateMode: aztables.UpdateModeMerge,
+		IfMatch:    &etag,
+	})
+	if updateErr != nil {
+		if isNotFoundError(updateErr) || isMergeNotFoundError(updateErr) {
+			return convention.ErrDispatchNotFound
+		}
+		if isPreconditionFailedError(updateErr) {
+			return fmt.Errorf("%w: Azure ETag mismatch on %s/%s", convention.ErrConcurrentModification, campfireID, messageID)
+		}
+		return fmt.Errorf("aztable: DispatchStore.%s: update: %w", status, updateErr)
 	}
 	return nil
 }

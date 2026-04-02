@@ -870,6 +870,68 @@ func TestDispatchStore_MarkBilled_NoRecord(t *testing.T) {
 	}
 }
 
+// TestDispatchStore_MarkFulfilled_ConcurrentRace verifies that when two goroutines
+// race to call MarkFulfilled on the same record, exactly one succeeds and the other
+// gets ErrConcurrentModification (ETag guard in updateDispatchStatus).
+func TestDispatchStore_MarkFulfilled_ConcurrentRace(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+	cfID := unique("cf")
+	msgID := unique("msg")
+	serverID := unique("server")
+
+	// Create a dispatched record (not yet fulfilled).
+	if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "", "conv", "op"); err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+
+	// Two goroutines race to fulfill the same record.
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	gate := make(chan struct{})
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-gate
+			errs[idx] = s.MarkFulfilled(ctx, cfID, msgID)
+		}(i)
+	}
+
+	close(gate)
+	wg.Wait()
+
+	// Exactly one should succeed; the other should get ErrConcurrentModification.
+	wins := 0
+	conflicts := 0
+	for i, err := range errs {
+		if err == nil {
+			wins++
+		} else if errors.Is(err, convention.ErrConcurrentModification) {
+			conflicts++
+		} else {
+			t.Errorf("goroutine %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if wins != 1 {
+		t.Errorf("expected exactly 1 winner, got %d (wins=%d, conflicts=%d)", wins, wins, conflicts)
+	}
+	if conflicts != 1 {
+		t.Errorf("expected exactly 1 conflict, got %d (wins=%d, conflicts=%d)", conflicts, wins, conflicts)
+	}
+
+	// Verify the record is now fulfilled.
+	status, err := s.GetDispatchStatus(ctx, cfID, msgID)
+	if err != nil {
+		t.Fatalf("GetDispatchStatus after race: %v", err)
+	}
+	if status != "fulfilled" {
+		t.Errorf("expected status 'fulfilled', got %q", status)
+	}
+}
+
 // TestConventionServerStore_Deregister verifies removal of a handler record.
 func TestConventionServerStore_Deregister(t *testing.T) {
 	s := newTestConventionServerStore(t)
