@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,9 @@ type ForgeEmitter struct {
 	events  chan UsageEvent // buffered, capacity defaultBufferSize
 	done    chan struct{}   // closed when Run() exits
 	onError func(error)    // optional error callback (for logging)
+
+	mu     sync.Mutex         // guards cancel
+	cancel context.CancelFunc // set by Run; called by DrainAndClose to stop the run loop
 }
 
 // NewForgeEmitter creates an emitter. client must be non-nil.
@@ -55,6 +59,10 @@ func (e *ForgeEmitter) Emit(event UsageEvent) {
 // On error: calls onError if set, then continues (fail-open).
 // Call this in a goroutine: go emitter.Run(ctx)
 func (e *ForgeEmitter) Run(ctx context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
+	e.mu.Lock()
+	e.cancel = cancel
+	e.mu.Unlock()
 	defer close(e.done)
 
 	timer := time.NewTimer(batchTimeout)
@@ -120,13 +128,23 @@ func (e *ForgeEmitter) Run(ctx context.Context) {
 	}
 }
 
-// DrainAndClose drains remaining events from the channel (best-effort, with a
-// timeout) and waits for Run() to exit. Call on SIGTERM/shutdown.
+// DrainAndClose cancels the run-loop context (triggering a drain of any
+// buffered events), then waits for Run() to exit. Safe to call regardless of
+// whether the caller's context was already cancelled — DrainAndClose cancels
+// it internally if needed.
+//
 // The provided timeout bounds how long this call blocks waiting for Run to exit.
 func (e *ForgeEmitter) DrainAndClose(timeout time.Duration) {
+	e.mu.Lock()
+	cancel := e.cancel
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+
 	select {
 	case <-e.done:
-		// Run already exited (ctx was cancelled before DrainAndClose).
+		// Run exited and drained buffered events.
 	case <-time.After(timeout):
 	}
 }
