@@ -30,7 +30,13 @@ func filterMessages(msgs []store.MessageRecord, mf store.MessageFilter) []store.
 
 	var result []store.MessageRecord
 	for _, m := range msgs {
-		if !matchesSender(m.Sender, senderPrefix) {
+		// Prefer SenderCampfireID for filter matching when present.
+		// Falls back to Sender (agent pubkey hex) for legacy messages.
+		senderIdentity := m.Sender
+		if m.SenderCampfireID != "" {
+			senderIdentity = m.SenderCampfireID
+		}
+		if !matchesSender(senderIdentity, senderPrefix) {
 			continue
 		}
 		if (len(includeSet) > 0 || len(mf.TagPrefixes) > 0) && !matchesTagsOrPrefixes(m.Tags, includeSet, mf.TagPrefixes) {

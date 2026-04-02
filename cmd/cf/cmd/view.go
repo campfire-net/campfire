@@ -429,10 +429,16 @@ func buildMessageContext(m store.MessageRecord) *predicate.MessageContext {
 	var payload map[string]any
 	json.Unmarshal(m.Payload, &payload) //nolint:errcheck
 
+	// Prefer SenderCampfireID for predicate matching when present.
+	// Falls back to Sender (agent pubkey hex) for legacy messages.
+	senderIdentity := m.Sender
+	if m.SenderCampfireID != "" {
+		senderIdentity = m.SenderCampfireID
+	}
 	return &predicate.MessageContext{
 		MessageID: m.ID,
 		Tags:      m.Tags,
-		Sender:    m.Sender,
+		Sender:    senderIdentity,
 		Timestamp: m.Timestamp,
 		Payload:   payload,
 	}
@@ -467,10 +473,14 @@ func outputViewJSON(msgs []store.MessageRecord, projection []string) error {
 			if provenance == nil {
 				provenance = []message.ProvenanceHop{}
 			}
+			senderDisplay := m.Sender
+			if m.SenderCampfireID != "" {
+				senderDisplay = m.SenderCampfireID
+			}
 			out = append(out, jsonMsg{
 				ID:          m.ID,
 				CampfireID:  m.CampfireID,
-				Sender:      m.Sender,
+				Sender:      senderDisplay,
 				Instance:    m.Instance,
 				Payload:     string(m.Payload),
 				Tags:        tags,
@@ -503,7 +513,11 @@ func outputViewJSON(msgs []store.MessageRecord, projection []string) error {
 			entry["campfire_id"] = m.CampfireID
 		}
 		if projSet["sender"] {
-			entry["sender"] = m.Sender
+			if m.SenderCampfireID != "" {
+				entry["sender"] = m.SenderCampfireID
+			} else {
+				entry["sender"] = m.Sender
+			}
 		}
 		if projSet["instance"] {
 			entry["instance"] = m.Instance
@@ -542,7 +556,11 @@ func outputViewProjected(msgs []store.MessageRecord, projection []string) error 
 			case "id":
 				parts = append(parts, fmt.Sprintf("id=%s", m.ID))
 			case "sender":
-				short := m.Sender
+				senderIdentity := m.Sender
+				if m.SenderCampfireID != "" {
+					senderIdentity = m.SenderCampfireID
+				}
+				short := senderIdentity
 				if len(short) > 12 {
 					short = short[:12]
 				}

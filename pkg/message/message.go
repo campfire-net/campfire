@@ -203,6 +203,21 @@ func (m *Message) SenderHex() string {
 	return fmt.Sprintf("%x", m.Sender)
 }
 
+// SenderIdentity returns the best available identity string for a message.
+// When SenderCampfireID is set, it returns the hex-encoded campfire ID (the
+// agent's stable identity address). Falls back to SenderHex() for legacy
+// messages and ephemeral agents without a home campfire.
+//
+// Use SenderIdentity() for display and addressing. Use Sender (raw bytes) or
+// SenderHex() for signature verification — the signing key is always the
+// agent's Ed25519 public key, never the campfire ID.
+func (m *Message) SenderIdentity() string {
+	if len(m.SenderCampfireID) > 0 {
+		return fmt.Sprintf("%x", m.SenderCampfireID)
+	}
+	return m.SenderHex()
+}
+
 // VerifyMessageSignature verifies a message signature from stored fields.
 // senderHex is the hex-encoded public key; tags and antecedents are typed slices
 // (JSON deserialization is handled at the store boundary, not here).

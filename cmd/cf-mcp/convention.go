@@ -564,9 +564,13 @@ func (s *server) handleViewTool(id interface{}, entry *viewToolEntry, args map[s
 			} else {
 				payloadVal = string(m.Payload)
 			}
+			senderAddr := m.Sender
+			if m.SenderCampfireID != "" {
+				senderAddr = m.SenderCampfireID
+			}
 			matched = append(matched, map[string]interface{}{
 				"id":        m.ID,
-				"sender":    m.Sender,
+				"sender":    senderAddr,
 				"tags":      m.Tags,
 				"payload":   payloadVal,
 				"timestamp": m.Timestamp,

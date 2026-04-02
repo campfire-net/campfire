@@ -363,9 +363,15 @@ func (d *ConventionDispatcher) dispatchTier1(
 		args = make(map[string]any)
 	}
 
+	// Prefer SenderCampfireID (stable identity address) when present.
+	// Falls back to Sender (agent pubkey hex) for legacy messages.
+	senderIdentity := msg.Sender
+	if msg.SenderCampfireID != "" {
+		senderIdentity = msg.SenderCampfireID
+	}
 	req := &Request{
 		MessageID:  msg.ID,
-		Sender:     msg.Sender,
+		Sender:     senderIdentity,
 		CampfireID: campfireID,
 		Args:       args,
 		Tags:       msg.Tags,
@@ -437,10 +443,15 @@ func (d *ConventionDispatcher) dispatchTier2(
 		args = make(map[string]any)
 	}
 
+	// Prefer SenderCampfireID (stable identity address) when present.
+	senderIdentityT2 := msg.Sender
+	if msg.SenderCampfireID != "" {
+		senderIdentityT2 = msg.SenderCampfireID
+	}
 	body := tier2RequestBody{
 		MessageID:  msg.ID,
 		CampfireID: campfireID,
-		Sender:     msg.Sender,
+		Sender:     senderIdentityT2,
 		Convention: op.Convention,
 		Operation:  op.Operation,
 		Args:       args,

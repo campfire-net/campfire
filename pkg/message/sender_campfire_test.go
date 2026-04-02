@@ -2,6 +2,7 @@ package message_test
 
 import (
 	"crypto/ed25519"
+	"fmt"
 	"testing"
 
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
@@ -138,5 +139,50 @@ func TestSenderCampfireID_VerifiedAgainstSender(t *testing.T) {
 	// If it checked campfirePub, it would fail (different key).
 	if !msg.VerifySignature() {
 		t.Error("VerifySignature failed — must verify against Sender (agent pubkey), not SenderCampfireID")
+	}
+}
+
+// TestSenderIdentity_PrefersID verifies SenderIdentity() returns campfire ID when set.
+func TestSenderIdentity_PrefersID(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	campfirePub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating campfire key: %v", err)
+	}
+
+	msg, err := NewMessage(priv, pub, []byte("test"), []string{"tag"}, nil)
+	if err != nil {
+		t.Fatalf("NewMessage: %v", err)
+	}
+	msg.SenderCampfireID = []byte(campfirePub)
+
+	got := msg.SenderIdentity()
+	want := fmt.Sprintf("%x", campfirePub)
+	if got != want {
+		t.Errorf("SenderIdentity: got %q, want %q", got, want)
+	}
+}
+
+// TestSenderIdentity_FallsBackToPubkey verifies SenderIdentity() falls back to
+// hex pubkey when SenderCampfireID is absent.
+func TestSenderIdentity_FallsBackToPubkey(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	msg, err := NewMessage(priv, pub, []byte("test"), []string{"tag"}, nil)
+	if err != nil {
+		t.Fatalf("NewMessage: %v", err)
+	}
+	// SenderCampfireID is NOT set.
+
+	got := msg.SenderIdentity()
+	want := fmt.Sprintf("%x", pub)
+	if got != want {
+		t.Errorf("SenderIdentity: got %q, want %q", got, want)
 	}
 }
