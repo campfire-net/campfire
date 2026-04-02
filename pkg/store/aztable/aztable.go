@@ -11,6 +11,8 @@
 //   - pending_threshold_shares → CampfirePendingShares PK=campfireID RK=zero-padded-participantID
 //   - campfire_epoch_secrets   → CampfireEpochs    PK=campfireID  RK=zero-padded-epoch
 //   - filters              → CampfireFilters       PK=campfireID  RK=direction
+//   - projection_entries   → CampfireProjections   PK=campfireID  RK=viewName|zero-padded-timestamp|messageID
+//   - projection_metadata  → CampfireProjections   PK=campfireID  RK=viewName|_meta
 //
 // Table Storage property value limit is 64 KB for binary (Edm.Binary).
 // Large payloads (message body, secret share blobs) are chunked into Chunk0..ChunkN
@@ -66,6 +68,7 @@ type TableStore struct {
 	filters     *aztables.Client
 	invites     *aztables.Client
 	counters    *aztables.Client
+	projections *aztables.Client
 
 	// namespace is an optional per-session prefix applied to all PartitionKeys
 	// (except invites, which are global). When set, PK = encodeKey(namespace+"|"+id).
@@ -165,6 +168,7 @@ func newTableStore(connectionString string) (*TableStore, error) {
 		{"CampfireFilters", &ts.filters},
 		{"CampfireInvites", &ts.invites},
 		{storageCountersTable, &ts.counters},
+		{"CampfireProjections", &ts.projections},
 	}
 	ctx := context.Background()
 	for _, t := range tables {
@@ -1888,4 +1892,167 @@ func inviteFromEntity(m map[string]any) *store.InviteRecord {
 		UseCount:   int(toInt64(m["UseCount"])),
 		Label:      str(m, "Label"),
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ProjectionStore
+// ---------------------------------------------------------------------------
+
+// InsertProjectionEntry adds a message ID to a projection view.
+// Idempotent: succeeds silently if the entry already exists.
+func (ts *TableStore) InsertProjectionEntry(campfireID, viewName, messageID string, indexedAt int64) error {
+	rowKey := fmt.Sprintf("%s|%0*d|%s", viewName, epochPadWidth, indexedAt, messageID)
+	entity := map[string]any{
+		"PartitionKey": ts.pk(campfireID),
+		"RowKey":       encodeKey(rowKey),
+		"CampfireID":   campfireID,
+		"ViewName":     viewName,
+		"MessageID":    messageID,
+		"IndexedAt":    indexedAt,
+	}
+	// Upsert to achieve idempotency.
+	return upsertEntity(context.Background(), ts.projections, entity)
+}
+
+// DeleteProjectionEntries removes specific message IDs from a projection view.
+func (ts *TableStore) DeleteProjectionEntries(campfireID, viewName string, messageIDs []string) error {
+	if len(messageIDs) == 0 {
+		return nil
+	}
+	// Build a set for fast lookup.
+	toDelete := make(map[string]bool, len(messageIDs))
+	for _, id := range messageIDs {
+		toDelete[id] = true
+	}
+	// Scan all entries for this view and delete matches.
+	filter := fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s|' and RowKey lt '%s~'",
+		ts.pk(campfireID), encodeKey(viewName), encodeKey(viewName))
+	opts := &aztables.ListEntitiesOptions{Filter: &filter}
+	pager := ts.projections.NewListEntitiesPager(opts)
+	ctx := context.Background()
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("aztable: DeleteProjectionEntries list: %w", err)
+		}
+		for _, raw := range page.Entities {
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return fmt.Errorf("aztable: DeleteProjectionEntries unmarshal: %w", err)
+			}
+			messageID := str(m, "MessageID")
+			if toDelete[messageID] {
+				pk := str(m, "PartitionKey")
+				rk := str(m, "RowKey")
+				if _, delErr := ts.projections.DeleteEntity(ctx, pk, rk, nil); delErr != nil {
+					return fmt.Errorf("aztable: DeleteProjectionEntries delete: %w", delErr)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// DeleteAllProjectionEntries drops all entries for a projection view.
+func (ts *TableStore) DeleteAllProjectionEntries(campfireID, viewName string) error {
+	filter := fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s|' and RowKey lt '%s~'",
+		ts.pk(campfireID), encodeKey(viewName), encodeKey(viewName))
+	opts := &aztables.ListEntitiesOptions{Filter: &filter}
+	pager := ts.projections.NewListEntitiesPager(opts)
+	ctx := context.Background()
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("aztable: DeleteAllProjectionEntries list: %w", err)
+		}
+		for _, raw := range page.Entities {
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return fmt.Errorf("aztable: DeleteAllProjectionEntries unmarshal: %w", err)
+			}
+			pk := str(m, "PartitionKey")
+			rk := str(m, "RowKey")
+			// Skip metadata entity.
+			if strings.HasSuffix(rk, "|_meta") {
+				continue
+			}
+			if _, delErr := ts.projections.DeleteEntity(ctx, pk, rk, nil); delErr != nil {
+				return fmt.Errorf("aztable: DeleteAllProjectionEntries delete: %w", delErr)
+			}
+		}
+	}
+	return nil
+}
+
+// ListProjectionEntries returns all entries for a projection view, ordered by indexed_at.
+func (ts *TableStore) ListProjectionEntries(campfireID, viewName string) ([]store.ProjectionEntry, error) {
+	filter := fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s|' and RowKey lt '%s~'",
+		ts.pk(campfireID), encodeKey(viewName), encodeKey(viewName))
+	opts := &aztables.ListEntitiesOptions{Filter: &filter}
+	pager := ts.projections.NewListEntitiesPager(opts)
+	var entries []store.ProjectionEntry
+	ctx := context.Background()
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("aztable: ListProjectionEntries: %w", err)
+		}
+		for _, raw := range page.Entities {
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return nil, fmt.Errorf("aztable: ListProjectionEntries unmarshal: %w", err)
+			}
+			rk := str(m, "RowKey")
+			// Skip metadata entity.
+			if strings.HasSuffix(rk, "|_meta") {
+				continue
+			}
+			entries = append(entries, store.ProjectionEntry{
+				CampfireID: str(m, "CampfireID"),
+				ViewName:   str(m, "ViewName"),
+				MessageID:  str(m, "MessageID"),
+				IndexedAt:  toInt64(m["IndexedAt"]),
+			})
+		}
+	}
+	// Sort by indexed_at (already zero-padded in RowKey, but we need numeric order).
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].IndexedAt < entries[j].IndexedAt
+	})
+	return entries, nil
+}
+
+// GetProjectionMetadata retrieves metadata for a projection view.
+// Returns nil, nil if not found.
+func (ts *TableStore) GetProjectionMetadata(campfireID, viewName string) (*store.ProjectionMetadata, error) {
+	rowKey := fmt.Sprintf("%s|_meta", viewName)
+	entity, err := getEntity(context.Background(), ts.projections, ts.pk(campfireID), encodeKey(rowKey))
+	if err != nil {
+		return nil, fmt.Errorf("aztable: GetProjectionMetadata: %w", err)
+	}
+	if entity == nil {
+		return nil, nil
+	}
+	return &store.ProjectionMetadata{
+		CampfireID:       str(entity, "CampfireID"),
+		ViewName:         str(entity, "ViewName"),
+		PredicateHash:    str(entity, "PredicateHash"),
+		LastCompactionID: str(entity, "LastCompactionID"),
+		HighWaterMark:    toInt64(entity["HighWaterMark"]),
+	}, nil
+}
+
+// SetProjectionMetadata upserts metadata for a projection view.
+func (ts *TableStore) SetProjectionMetadata(campfireID, viewName string, meta store.ProjectionMetadata) error {
+	rowKey := fmt.Sprintf("%s|_meta", viewName)
+	entity := map[string]any{
+		"PartitionKey":     ts.pk(campfireID),
+		"RowKey":           encodeKey(rowKey),
+		"CampfireID":       campfireID,
+		"ViewName":         viewName,
+		"PredicateHash":    meta.PredicateHash,
+		"LastCompactionID": meta.LastCompactionID,
+		"HighWaterMark":    meta.HighWaterMark,
+	}
+	return upsertEntity(context.Background(), ts.projections, entity)
 }
