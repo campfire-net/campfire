@@ -122,50 +122,12 @@ func relayMeteringShim(
 		return // no relay — no event
 	}
 	if emitter != nil {
-		hopCount := len(msg.Provenance) - 1
-		if hopCount < 0 {
-			hopCount = 0
-		}
-		_ = hopCount
 		emitter.Emit(forge.UsageEvent{
 			AccountID:      campfireID, // TODO(M5): replace with real Forge account ID
 			ServiceID:      "campfire-hosting",
 			UnitType:       "relay-bytes",
 			Quantity:       float64(len(msg.Payload)),
 			IdempotencyKey: campfireID + ":" + msg.ID + ":relay",
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TestRelayMetering_HopCountCalculation
-// ---------------------------------------------------------------------------
-
-// TestRelayMetering_HopCountCalculation verifies hop count = len(provenance) - 1.
-// The first provenance hop is the origin campfire (storage write), not a relay.
-func TestRelayMetering_HopCountCalculation(t *testing.T) {
-	tests := []struct {
-		name           string
-		provenanceHops int // number of ProvenanceHop entries in msg.Provenance
-		wantRelayHops  int // expected hop count = provenanceHops - 1, clamped to 0
-	}{
-		{"zero hops (not yet stored)", 0, 0},
-		{"one hop (origin only)", 1, 0},
-		{"two hops (one relay)", 2, 1},
-		{"three hops (two relays)", 3, 2},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			provenance := make([]message.ProvenanceHop, tt.provenanceHops)
-			hopCount := len(provenance) - 1
-			if hopCount < 0 {
-				hopCount = 0
-			}
-			if hopCount != tt.wantRelayHops {
-				t.Errorf("hop count = %d, want %d (provenance len=%d)",
-					hopCount, tt.wantRelayHops, tt.provenanceHops)
-			}
 		})
 	}
 }
