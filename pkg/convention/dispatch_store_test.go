@@ -2,6 +2,7 @@ package convention
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ func TestMemoryDispatchStore_GetCursor_DefaultZero(t *testing.T) {
 
 	val, err := store.GetCursor(ctx, "server1", "campfire1")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if val != 0 {
 		t.Fatalf("expected 0 for missing cursor, got %d", val)
@@ -27,7 +28,7 @@ func TestMemoryDispatchStore_AdvanceCursor_ForwardOnly(t *testing.T) {
 	// First advance: 0 → 100, should succeed.
 	advanced, err := store.AdvanceCursor(ctx, "server1", "campfire1", 100)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if !advanced {
 		t.Fatal("expected cursor to advance from 0 to 100")
@@ -41,7 +42,7 @@ func TestMemoryDispatchStore_AdvanceCursor_ForwardOnly(t *testing.T) {
 	// Same timestamp: should not advance.
 	advanced, err = store.AdvanceCursor(ctx, "server1", "campfire1", 100)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if advanced {
 		t.Fatal("expected no advance for equal timestamp")
@@ -50,7 +51,7 @@ func TestMemoryDispatchStore_AdvanceCursor_ForwardOnly(t *testing.T) {
 	// Earlier timestamp: should not advance.
 	advanced, err = store.AdvanceCursor(ctx, "server1", "campfire1", 50)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if advanced {
 		t.Fatal("expected no advance for earlier timestamp")
@@ -59,7 +60,7 @@ func TestMemoryDispatchStore_AdvanceCursor_ForwardOnly(t *testing.T) {
 	// Later timestamp: should advance.
 	advanced, err = store.AdvanceCursor(ctx, "server1", "campfire1", 200)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if !advanced {
 		t.Fatal("expected cursor to advance to 200")
@@ -112,7 +113,7 @@ func TestMemoryDispatchStore_AdvanceCursor_ConcurrentSafety(t *testing.T) {
 
 	val, err := store.GetCursor(ctx, "server1", "campfire1")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if val != goroutines {
 		t.Fatalf("expected cursor %d, got %d", int64(goroutines), val)
@@ -126,7 +127,7 @@ func TestMemoryDispatchStore_MarkDispatched_InsertIfNotExists(t *testing.T) {
 	// First call: should succeed.
 	inserted, err := store.MarkDispatched(ctx, "campfire1", "msg1", "server1", "", "testconv", "testop")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if !inserted {
 		t.Fatal("expected first MarkDispatched to return true")
@@ -135,7 +136,7 @@ func TestMemoryDispatchStore_MarkDispatched_InsertIfNotExists(t *testing.T) {
 	// Second call with same message: should return false.
 	inserted, err = store.MarkDispatched(ctx, "campfire1", "msg1", "server1", "", "testconv", "testop")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if inserted {
 		t.Fatal("expected duplicate MarkDispatched to return false")
@@ -144,7 +145,7 @@ func TestMemoryDispatchStore_MarkDispatched_InsertIfNotExists(t *testing.T) {
 	// Different messageID: should succeed.
 	inserted, err = store.MarkDispatched(ctx, "campfire1", "msg2", "server1", "", "testconv", "testop")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if !inserted {
 		t.Fatal("expected MarkDispatched with different messageID to return true")
@@ -161,7 +162,7 @@ func TestMemoryDispatchStore_StatusTransitions(t *testing.T) {
 	// Initial status.
 	status, err := store.GetDispatchStatus(ctx, "campfire1", "msg1")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if status != "dispatched" {
 		t.Fatalf("expected 'dispatched', got %q", status)
@@ -192,7 +193,7 @@ func TestMemoryDispatchStore_GetDispatchStatus_Missing(t *testing.T) {
 
 	status, err := store.GetDispatchStatus(ctx, "campfire1", "nonexistent")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if status != "" {
 		t.Fatalf("expected empty string for missing record, got %q", status)
@@ -202,18 +203,20 @@ func TestMemoryDispatchStore_GetDispatchStatus_Missing(t *testing.T) {
 func TestMemoryDispatchStore_MarkFulfilled_NoRecord(t *testing.T) {
 	store := NewMemoryDispatchStore()
 	ctx := context.Background()
-	// Should not error when no record exists.
-	if err := store.MarkFulfilled(ctx, "campfire1", "nonexistent"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// Should return ErrDispatchNotFound when no record exists.
+	err := store.MarkFulfilled(ctx, "campfire1", "nonexistent")
+	if !errors.Is(err, ErrDispatchNotFound) {
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 }
 
 func TestMemoryDispatchStore_MarkFailed_NoRecord(t *testing.T) {
 	store := NewMemoryDispatchStore()
 	ctx := context.Background()
-	// Should not error when no record exists.
-	if err := store.MarkFailed(ctx, "campfire1", "nonexistent"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// Should return ErrDispatchNotFound when no record exists.
+	err := store.MarkFailed(ctx, "campfire1", "nonexistent")
+	if !errors.Is(err, ErrDispatchNotFound) {
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 }
 
@@ -241,7 +244,7 @@ func TestMemoryDispatchStore_ListStaleDispatches(t *testing.T) {
 
 	stale, err := store.ListStaleDispatches(ctx, 1*time.Hour)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if len(stale) != 1 {
 		t.Fatalf("expected 1 stale record, got %d", len(stale))
@@ -287,7 +290,7 @@ func TestMemoryDispatchStore_CleanupOldDispatches(t *testing.T) {
 
 	removed, err := store.CleanupOldDispatches(ctx, 1*time.Hour)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 	if removed != 2 {
 		t.Fatalf("expected 2 removed, got %d", removed)

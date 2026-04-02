@@ -1,10 +1,16 @@
 package convention
 
 import (
+	"errors"
 	"context"
 	"sync"
 	"time"
 )
+
+// ErrDispatchNotFound is returned by MarkFulfilled and MarkFailed when the
+// dispatch record does not exist. Callers can use errors.Is to distinguish
+// "successfully marked" (nil) from "record was missing."
+var ErrDispatchNotFound = errors.New("dispatch record not found")
 
 // DispatchStore abstracts cursor and dispatch-marker storage for the
 // ConventionDispatcher. The aztable implementation (in cf-mcp) and an
@@ -26,9 +32,11 @@ type DispatchStore interface {
 	MarkDispatched(ctx context.Context, campfireID, messageID, serverID, forgeAccountID, convention, operation string) (bool, error)
 
 	// MarkFulfilled updates the dispatch marker status to "fulfilled".
+	// Returns ErrDispatchNotFound if the record does not exist.
 	MarkFulfilled(ctx context.Context, campfireID, messageID string) error
 
 	// MarkFailed updates the dispatch marker status to "failed".
+	// Returns ErrDispatchNotFound if the record does not exist.
 	MarkFailed(ctx context.Context, campfireID, messageID string) error
 
 	// GetDispatchStatus returns the status of a dispatched message.
@@ -46,6 +54,22 @@ type DispatchStore interface {
 	// message and returns the new count. Used by the fallback sweep to enforce the
 	// maximum re-dispatch cap.
 	IncrementRedispatchCount(ctx context.Context, campfireID, messageID string) (int, error)
+
+	// GetRedispatchCount returns the current RedispatchCount for a dispatch record.
+	// Returns 0 if the record does not exist.
+	GetRedispatchCount(ctx context.Context, campfireID, messageID string) (int, error)
+
+	// MarkFulfilledCAS updates the dispatch marker status to "fulfilled" only if
+	// the current RedispatchCount matches expectedGen. Returns true if the update
+	// succeeded, false if the generation has changed (indicating a re-dispatch
+	// occurred and the caller is a stale handler). This prevents double-dispatch:
+	// a slow original handler completing after the sweep has re-dispatched.
+	MarkFulfilledCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (bool, error)
+
+	// MarkFailedCAS updates the dispatch marker status to "failed" only if
+	// the current RedispatchCount matches expectedGen. Returns true if the update
+	// succeeded, false if the generation has changed. See MarkFulfilledCAS.
+	MarkFailedCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (bool, error)
 
 	// ListUnbilledDispatches returns fulfilled dispatch records where
 	// TokensConsumed > 0 and BilledAt == 0. Used by the billing sweep to find
@@ -146,26 +170,28 @@ func (s *MemoryDispatchStore) MarkDispatched(_ context.Context, campfireID, mess
 }
 
 // MarkFulfilled updates the dispatch marker status to "fulfilled".
+	// Returns ErrDispatchNotFound if the record does not exist.
 func (s *MemoryDispatchStore) MarkFulfilled(_ context.Context, campfireID, messageID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
 	rec, exists := s.dispatches[k]
 	if !exists {
-		return nil
+		return ErrDispatchNotFound
 	}
 	rec.Status = "fulfilled"
 	return nil
 }
 
 // MarkFailed updates the dispatch marker status to "failed".
+	// Returns ErrDispatchNotFound if the record does not exist.
 func (s *MemoryDispatchStore) MarkFailed(_ context.Context, campfireID, messageID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
 	rec, exists := s.dispatches[k]
 	if !exists {
-		return nil
+		return ErrDispatchNotFound
 	}
 	rec.Status = "failed"
 	return nil
@@ -211,6 +237,55 @@ func (s *MemoryDispatchStore) IncrementRedispatchCount(_ context.Context, campfi
 	}
 	rec.RedispatchCount++
 	return rec.RedispatchCount, nil
+}
+
+// GetRedispatchCount returns the current RedispatchCount for a dispatch record.
+// Returns 0 if the record does not exist.
+func (s *MemoryDispatchStore) GetRedispatchCount(_ context.Context, campfireID, messageID string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	k := dispatchKey{campfireID: campfireID, messageID: messageID}
+	rec, exists := s.dispatches[k]
+	if !exists {
+		return 0, nil
+	}
+	return rec.RedispatchCount, nil
+}
+
+// MarkFulfilledCAS updates the dispatch marker status to "fulfilled" only if
+// the current RedispatchCount matches expectedGen. Returns false if the
+// generation has changed (stale handler) or the record does not exist.
+func (s *MemoryDispatchStore) MarkFulfilledCAS(_ context.Context, campfireID, messageID string, expectedGen int) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := dispatchKey{campfireID: campfireID, messageID: messageID}
+	rec, exists := s.dispatches[k]
+	if !exists {
+		return false, nil
+	}
+	if rec.RedispatchCount != expectedGen {
+		return false, nil
+	}
+	rec.Status = "fulfilled"
+	return true, nil
+}
+
+// MarkFailedCAS updates the dispatch marker status to "failed" only if
+// the current RedispatchCount matches expectedGen. Returns false if the
+// generation has changed (stale handler) or the record does not exist.
+func (s *MemoryDispatchStore) MarkFailedCAS(_ context.Context, campfireID, messageID string, expectedGen int) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := dispatchKey{campfireID: campfireID, messageID: messageID}
+	rec, exists := s.dispatches[k]
+	if !exists {
+		return false, nil
+	}
+	if rec.RedispatchCount != expectedGen {
+		return false, nil
+	}
+	rec.Status = "failed"
+	return true, nil
 }
 
 // ListUnbilledDispatches returns fulfilled dispatch records where

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -312,7 +313,7 @@ func (d *ConventionDispatcher) dispatchTier1(
 		if sendErr := d.sendErrorFulfillment(campfireID, msg.ID, err, entry.Client); sendErr != nil {
 			d.logger.Printf("convention dispatcher: send error fulfillment (msg %s): %v", msg.ID, sendErr)
 		}
-		if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil {
+		if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil && !errors.Is(markErr, ErrDispatchNotFound) {
 			d.logger.Printf("convention dispatcher: MarkFailed (msg %s): %v", msg.ID, markErr)
 		}
 		return "failed"
@@ -321,14 +322,14 @@ func (d *ConventionDispatcher) dispatchTier1(
 	if resp != nil {
 		if sendErr := d.sendFulfillment(campfireID, msg.ID, resp, entry.Client); sendErr != nil {
 			d.logger.Printf("convention dispatcher: send fulfillment (msg %s): %v", msg.ID, sendErr)
-			if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil {
+			if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil && !errors.Is(markErr, ErrDispatchNotFound) {
 				d.logger.Printf("convention dispatcher: MarkFailed (msg %s): %v", msg.ID, markErr)
 			}
 			return "failed"
 		}
 	}
 
-	if err := d.store.MarkFulfilled(ctx, campfireID, msg.ID); err != nil {
+	if err := d.store.MarkFulfilled(ctx, campfireID, msg.ID); err != nil && !errors.Is(err, ErrDispatchNotFound) {
 		d.logger.Printf("convention dispatcher: MarkFulfilled (msg %s): %v", msg.ID, err)
 	}
 	return "fulfilled"
@@ -361,7 +362,7 @@ func (d *ConventionDispatcher) dispatchTier2(
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 marshal (msg %s): %v", msg.ID, err)
-		if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil {
+		if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil && !errors.Is(markErr, ErrDispatchNotFound) {
 			d.logger.Printf("convention dispatcher: MarkFailed (msg %s): %v", msg.ID, markErr)
 		}
 		return "failed"
@@ -370,7 +371,7 @@ func (d *ConventionDispatcher) dispatchTier2(
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, entry.HandlerURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 build request (msg %s): %v", msg.ID, err)
-		if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil {
+		if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil && !errors.Is(markErr, ErrDispatchNotFound) {
 			d.logger.Printf("convention dispatcher: MarkFailed (msg %s): %v", msg.ID, markErr)
 		}
 		return "failed"
@@ -380,7 +381,7 @@ func (d *ConventionDispatcher) dispatchTier2(
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 POST (msg %s): %v", msg.ID, err)
-		if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil {
+		if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil && !errors.Is(markErr, ErrDispatchNotFound) {
 			d.logger.Printf("convention dispatcher: MarkFailed (msg %s): %v", msg.ID, markErr)
 		}
 		return "failed"
@@ -388,7 +389,7 @@ func (d *ConventionDispatcher) dispatchTier2(
 	resp.Body.Close()
 
 	if resp.StatusCode == http.StatusAccepted {
-		if err := d.store.MarkFulfilled(ctx, campfireID, msg.ID); err != nil {
+		if err := d.store.MarkFulfilled(ctx, campfireID, msg.ID); err != nil && !errors.Is(err, ErrDispatchNotFound) {
 			d.logger.Printf("convention dispatcher: MarkFulfilled (msg %s): %v", msg.ID, err)
 		}
 		return "fulfilled"
@@ -396,7 +397,7 @@ func (d *ConventionDispatcher) dispatchTier2(
 
 	// Non-202 response is treated as failure.
 	d.logger.Printf("convention dispatcher: tier2 POST status %d (msg %s)", resp.StatusCode, msg.ID)
-	if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil {
+	if markErr := d.store.MarkFailed(ctx, campfireID, msg.ID); markErr != nil && !errors.Is(markErr, ErrDispatchNotFound) {
 		d.logger.Printf("convention dispatcher: MarkFailed (msg %s): %v", msg.ID, markErr)
 	}
 	return "failed"

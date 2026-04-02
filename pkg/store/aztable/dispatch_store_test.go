@@ -11,10 +11,12 @@ package aztable_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
 )
 
@@ -254,24 +256,26 @@ func TestDispatchStore_GetDispatchStatus_NotFound(t *testing.T) {
 }
 
 // TestDispatchStore_MarkFulfilled_NoRecord verifies that MarkFulfilled on a
-// non-existent record returns nil (matches MemoryDispatchStore behaviour).
+// non-existent record returns ErrDispatchNotFound.
 func TestDispatchStore_MarkFulfilled_NoRecord(t *testing.T) {
 	s := newTestDispatchStore(t)
 	ctx := context.Background()
 
-	if err := s.MarkFulfilled(ctx, unique("cf"), unique("msg")); err != nil {
-		t.Fatalf("MarkFulfilled on absent record: %v", err)
+	err := s.MarkFulfilled(ctx, unique("cf"), unique("msg"))
+	if !errors.Is(err, convention.ErrDispatchNotFound) {
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 }
 
 // TestDispatchStore_MarkFailed_NoRecord verifies that MarkFailed on a
-// non-existent record returns nil (matches MemoryDispatchStore behaviour).
+// non-existent record returns ErrDispatchNotFound.
 func TestDispatchStore_MarkFailed_NoRecord(t *testing.T) {
 	s := newTestDispatchStore(t)
 	ctx := context.Background()
 
-	if err := s.MarkFailed(ctx, unique("cf"), unique("msg")); err != nil {
-		t.Fatalf("MarkFailed on absent record: %v", err)
+	err := s.MarkFailed(ctx, unique("cf"), unique("msg"))
+	if !errors.Is(err, convention.ErrDispatchNotFound) {
+		t.Fatalf("expected ErrDispatchNotFound, got %v", err)
 	}
 }
 
