@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -696,6 +697,166 @@ func TestDispatchStore_MarkBilled_StaleETag(t *testing.T) {
 	}
 	if err := s.MarkBilled(ctx, cfID, msgID, freshETag); err != nil {
 		t.Fatalf("MarkBilled with fresh ETag should succeed: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MarkBilled concurrent modification regression tests (campfire-agent-0uu)
+// ---------------------------------------------------------------------------
+
+// helperCreateUnbilledRecord dispatches, fulfills, and sets tokens on a record,
+// returning the record's ETag from ListUnbilledDispatches.
+func helperCreateUnbilledRecord(t *testing.T, s *aztable.TableDispatchStore, cfID, msgID, serverID string) string {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "", "conv", "op"); err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+	if err := s.MarkFulfilled(ctx, cfID, msgID); err != nil {
+		t.Fatalf("MarkFulfilled: %v", err)
+	}
+	if err := s.SetTokensConsumed(ctx, cfID, msgID, 100); err != nil {
+		t.Fatalf("SetTokensConsumed: %v", err)
+	}
+	unbilled, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches: %v", err)
+	}
+	for _, r := range unbilled {
+		if r.CampfireID == cfID && r.MessageID == msgID {
+			if r.ETag == "" {
+				t.Fatal("ETag is empty")
+			}
+			return r.ETag
+		}
+	}
+	t.Fatal("record not found in ListUnbilledDispatches")
+	return ""
+}
+
+// TestDispatchStore_MarkBilled_ConcurrentRace verifies that when two goroutines
+// both read the same ETag and race to call MarkBilled, exactly one succeeds and
+// the other gets ErrConcurrentModification.
+func TestDispatchStore_MarkBilled_ConcurrentRace(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+	cfID := unique("cf")
+	msgID := unique("msg")
+	serverID := unique("server")
+
+	// Create a fulfilled, unbilled record and capture the ETag.
+	etag := helperCreateUnbilledRecord(t, s, cfID, msgID, serverID)
+
+	// Two goroutines race with the same ETag.
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	gate := make(chan struct{}) // synchronize start
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-gate // wait for both goroutines to be ready
+			errs[idx] = s.MarkBilled(ctx, cfID, msgID, etag)
+		}(i)
+	}
+
+	close(gate) // release both goroutines simultaneously
+	wg.Wait()
+
+	// Exactly one should succeed; the other should get ErrConcurrentModification.
+	wins := 0
+	conflicts := 0
+	for i, err := range errs {
+		if err == nil {
+			wins++
+		} else if errors.Is(err, convention.ErrConcurrentModification) {
+			conflicts++
+		} else {
+			t.Errorf("goroutine %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if wins != 1 {
+		t.Errorf("expected exactly 1 winner, got %d (wins=%d, conflicts=%d)", wins, wins, conflicts)
+	}
+	if conflicts != 1 {
+		t.Errorf("expected exactly 1 conflict, got %d (wins=%d, conflicts=%d)", conflicts, wins, conflicts)
+	}
+
+	// Verify the winner's change persisted — record should no longer be unbilled.
+	unbilled, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches after race: %v", err)
+	}
+	for _, r := range unbilled {
+		if r.CampfireID == cfID && r.MessageID == msgID {
+			t.Error("record still unbilled after race — winner's MarkBilled did not persist")
+		}
+	}
+}
+
+// TestDispatchStore_MarkBilled_RetryAfterConflict verifies the retry-after-conflict
+// pattern: a loser re-reads the record with a fresh ETag and successfully calls
+// MarkBilled on the second attempt.
+func TestDispatchStore_MarkBilled_RetryAfterConflict(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+	cfID := unique("cf")
+	msgID := unique("msg")
+	serverID := unique("server")
+
+	// Create an unbilled record.
+	originalETag := helperCreateUnbilledRecord(t, s, cfID, msgID, serverID)
+
+	// Simulate a concurrent modification by incrementing the redispatch count,
+	// which changes the entity and invalidates the original ETag.
+	if _, err := s.IncrementRedispatchCount(ctx, cfID, msgID); err != nil {
+		t.Fatalf("IncrementRedispatchCount: %v", err)
+	}
+
+	// Attempt 1: MarkBilled with the now-stale ETag — must fail.
+	err := s.MarkBilled(ctx, cfID, msgID, originalETag)
+	if err == nil {
+		t.Fatal("MarkBilled with stale ETag should have failed")
+	}
+	if !errors.Is(err, convention.ErrConcurrentModification) {
+		t.Fatalf("expected ErrConcurrentModification, got: %v", err)
+	}
+
+	// Retry pattern: re-read to get a fresh ETag.
+	unbilled, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches for retry: %v", err)
+	}
+	var freshETag string
+	for _, r := range unbilled {
+		if r.CampfireID == cfID && r.MessageID == msgID {
+			freshETag = r.ETag
+			break
+		}
+	}
+	if freshETag == "" {
+		t.Fatal("record not found in unbilled list for retry")
+	}
+	if freshETag == originalETag {
+		t.Fatal("fresh ETag should differ from original after concurrent modification")
+	}
+
+	// Attempt 2: MarkBilled with the fresh ETag — must succeed.
+	if err := s.MarkBilled(ctx, cfID, msgID, freshETag); err != nil {
+		t.Fatalf("MarkBilled with fresh ETag (retry) should succeed: %v", err)
+	}
+
+	// Verify record is now billed.
+	unbilled2, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches after retry: %v", err)
+	}
+	for _, r := range unbilled2 {
+		if r.CampfireID == cfID && r.MessageID == msgID {
+			t.Error("record still unbilled after successful retry")
+		}
 	}
 }
 
