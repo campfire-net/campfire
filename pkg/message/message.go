@@ -22,7 +22,14 @@ type Message struct {
 	Provenance  []ProvenanceHop `cbor:"8,keyasint" json:"provenance"`
 	// Instance is tainted (sender-asserted, not verified) metadata identifying
 	// the sender's role or instance name (e.g. "strategist", "cfo").
-	// NOT covered by message signature — can be set to any string.
+	//
+	// TRUST BOUNDARY: Instance is NOT included in MessageSignInput and is NOT
+	// covered by the message signature. Any sender can set Instance to any
+	// arbitrary string — including spoofing another agent's role name. Consumers
+	// MUST treat Instance as an untrusted display hint only. Never use Instance
+	// for access control, routing decisions, or trust assertions. Use Sender
+	// (the verified Ed25519 public key) for identity-sensitive operations.
+	//
 	// Empty string is the default for backward compatibility.
 	Instance string `cbor:"9,keyasint,omitempty" json:"instance,omitempty"`
 	// SenderCampfireID is the sender agent's self-campfire ID (identity address).

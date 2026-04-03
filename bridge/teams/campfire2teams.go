@@ -26,6 +26,9 @@ type teamsPayload struct {
 // Format: "[sender_hex_8chars] (instance) tag1,tag2: payload"
 // If instance is empty, the "(instance)" part is omitted.
 // If there are no tags, the "tag1,tag2: " prefix on payload is omitted.
+//
+// NOTE: msg.Instance is tainted (sender-asserted, not verified). It is shown
+// here as a display label only — not as a verified identity claim.
 func FormatMessage(msg store.MessageRecord) string {
 	// Truncate sender to 8 hex chars.
 	sender := msg.Sender
