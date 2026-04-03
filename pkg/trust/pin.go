@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -62,8 +63,11 @@ type PinScope struct {
 }
 
 // pinFile is the serialized pin store format.
+// Pins is stored as a raw JSON value so the HMAC can be computed over the
+// exact bytes that appear in the file — eliminating the TOCTOU between the
+// HMAC computation and the final serialization.
 type pinFile struct {
-	Pins map[string]*Pin `json:"pins"`
+	Pins json.RawMessage `json:"pins"`
 	HMAC string          `json:"hmac"`
 }
 
@@ -194,21 +198,33 @@ func (ps *PinStore) ClearPins(scope PinScope) {
 }
 
 // Save writes the pin store to disk with HMAC integrity and 0600 permissions.
+// The write is atomic: data is written to a temp file in the same directory
+// and then renamed over the target, so a crash mid-write never corrupts the
+// existing file.
+//
+// The HMAC is computed over the exact bytes of the serialized pins map before
+// they are embedded in the outer pinFile struct, eliminating any TOCTOU
+// between the HMAC computation and the final serialization.
 func (ps *PinStore) Save() error {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 
-	pinsJSON, err := json.Marshal(ps.pins)
+	// Serialize the pins map first — this is the canonical byte sequence the
+	// HMAC will cover.
+	pinsJSON, err := json.MarshalIndent(ps.pins, "  ", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling pins: %w", err)
 	}
 
+	// Compute HMAC over the exact bytes that will be stored.
 	mac := hmac.New(sha256.New, ps.hmacKey)
 	mac.Write(pinsJSON)
 	macHex := hex.EncodeToString(mac.Sum(nil))
 
+	// Embed the already-serialized pins as a raw JSON value so that the bytes
+	// that appear in the file are identical to what the HMAC covers.
 	pf := pinFile{
-		Pins: ps.pins,
+		Pins: json.RawMessage(pinsJSON),
 		HMAC: macHex,
 	}
 
@@ -217,10 +233,49 @@ func (ps *PinStore) Save() error {
 		return fmt.Errorf("marshaling pin file: %w", err)
 	}
 
-	return os.WriteFile(ps.path, data, 0600)
+	// Atomic write: write to a temp file then rename.
+	dir := filepath.Dir(ps.path)
+	tmp, err := os.CreateTemp(dir, ".pins-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	// Clean up the temp file if anything goes wrong before the rename.
+	success := false
+	defer func() {
+		if !success {
+			os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("setting temp file permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("writing pin file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("syncing pin file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, ps.path); err != nil {
+		return fmt.Errorf("renaming temp file: %w", err)
+	}
+	success = true
+	return nil
 }
 
 // Load reads the pin store from disk and verifies HMAC integrity.
+// The HMAC is verified against the raw bytes of the "pins" JSON value —
+// the same bytes that Save() used when computing the HMAC — so no
+// re-serialization is required and the check is exact.
 func (ps *PinStore) Load() error {
 	data, err := os.ReadFile(ps.path)
 	if err != nil {
@@ -232,22 +287,23 @@ func (ps *PinStore) Load() error {
 		return fmt.Errorf("parsing pin file: %w", err)
 	}
 
-	// Verify HMAC.
-	pinsJSON, err := json.Marshal(pf.Pins)
-	if err != nil {
-		return fmt.Errorf("re-marshaling pins for HMAC: %w", err)
-	}
-
+	// Verify HMAC against the raw bytes of the stored pins value.
 	mac := hmac.New(sha256.New, ps.hmacKey)
-	mac.Write(pinsJSON)
+	mac.Write([]byte(pf.Pins))
 	expectedMAC := hex.EncodeToString(mac.Sum(nil))
 
 	if !hmac.Equal([]byte(pf.HMAC), []byte(expectedMAC)) {
 		return fmt.Errorf("HMAC verification failed: pin file may be tampered")
 	}
 
+	// Decode the pins map from the raw JSON.
+	var pins map[string]*Pin
+	if err := json.Unmarshal(pf.Pins, &pins); err != nil {
+		return fmt.Errorf("decoding pins: %w", err)
+	}
+
 	ps.mu.Lock()
-	ps.pins = pf.Pins
+	ps.pins = pins
 	if ps.pins == nil {
 		ps.pins = make(map[string]*Pin)
 	}

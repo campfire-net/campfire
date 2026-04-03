@@ -257,3 +257,106 @@ func TestPinStore_FilePermissions(t *testing.T) {
 		t.Errorf("file permissions = %o, want 0600", perm)
 	}
 }
+
+// TestPinStore_AtomicWrite verifies that Save() writes to a temp file and
+// renames, so no temp file is left behind on success.
+func TestPinStore_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	_, priv, _ := ed25519.GenerateKey(nil)
+
+	ps, err := NewPinStore(path, priv.Seed())
+	if err != nil {
+		t.Fatalf("NewPinStore: %v", err)
+	}
+
+	ps.SetPin("campfire-1", "trust", "verify", &Pin{
+		ContentHash: "hash-abc",
+		SignerKey:   "key-abc",
+		SignerType:  SignerCampfireKey,
+		TrustStatus: TrustAdopted,
+		PinnedAt:   time.Now(),
+	})
+
+	if err := ps.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// The target file must exist.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("target file missing after Save: %v", err)
+	}
+
+	// No temp files (.pins-*.tmp) should remain in the directory.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "pins.json" {
+			t.Errorf("unexpected file left in dir after Save: %s", e.Name())
+		}
+	}
+}
+
+// TestPinStore_HMACMatchesStoredBytes verifies that the HMAC covers the exact
+// bytes stored in the file (no TOCTOU between HMAC computation and write).
+// A file hand-crafted with mismatched HMAC must be rejected; a valid file must
+// round-trip correctly.
+func TestPinStore_HMACMatchesStoredBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	_, priv, _ := ed25519.GenerateKey(nil)
+	privSeed := priv.Seed()
+
+	ps, err := NewPinStore(path, privSeed)
+	if err != nil {
+		t.Fatalf("NewPinStore: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	ps.SetPin("campfire-1", "trust", "verify", &Pin{
+		ContentHash: "deadbeef",
+		SignerKey:   "pubkey-hex",
+		SignerType:  SignerConventionRegistry,
+		TrustStatus: TrustAdopted,
+		PinnedAt:   now,
+	})
+
+	if err := ps.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Reload and verify round-trip.
+	ps2, err := NewPinStore(path, privSeed)
+	if err != nil {
+		t.Fatalf("NewPinStore reload: %v", err)
+	}
+	pins := ps2.ListPins()
+	if len(pins) != 1 {
+		t.Fatalf("expected 1 pin, got %d", len(pins))
+	}
+	pin, ok := pins["campfire-1:trust:verify"]
+	if !ok {
+		t.Fatal("pin not found after reload")
+	}
+	if pin.ContentHash != "deadbeef" {
+		t.Errorf("ContentHash = %s, want deadbeef", pin.ContentHash)
+	}
+
+	// Tamper with the raw "pins" bytes in the stored file — HMAC must reject it.
+	data, _ := os.ReadFile(path)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal for tamper: %v", err)
+	}
+	// Replace the pins value with slightly different content.
+	raw["pins"] = json.RawMessage(`{}`)
+	tampered, _ := json.Marshal(raw)
+	_ = os.WriteFile(path, tampered, 0600)
+
+	_, err = NewPinStore(path, privSeed)
+	if err == nil {
+		t.Fatal("expected HMAC failure after tampering with stored pins bytes, got nil")
+	}
+}
