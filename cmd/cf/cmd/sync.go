@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport"
 	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
@@ -96,22 +95,8 @@ func syncFromFilesystem(cfID string, transportDir string, s store.Store) {
 		if !fsMsg.VerifySignature() {
 			continue
 		}
-		// Reject messages with zero provenance hops. A legitimate message must
-		// have at least one hop recording the sender's identity and signature.
-		// An empty Provenance slice would pass the hop-verification loop below
-		// trivially (no iterations), allowing injection of unsigned content.
-		if len(fsMsg.Provenance) == 0 {
-			continue
-		}
-		// workspace-h0t: verify all provenance hops.
-		hopOK := true
-		for _, hop := range fsMsg.Provenance {
-			if !message.VerifyHop(fsMsg.ID, hop) {
-				hopOK = false
-				break
-			}
-		}
-		if !hopOK {
+		// Reject messages with invalid or missing provenance hops.
+		if !fsMsg.VerifyProvenance() {
 			continue
 		}
 		s.AddMessage(store.MessageRecordFromMessage(cfID, &fsMsg, store.NowNano())) //nolint:errcheck

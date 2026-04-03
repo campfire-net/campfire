@@ -205,6 +205,25 @@ func VerifyHop(messageID string, hop ProvenanceHop) bool {
 	return ed25519.Verify(hop.CampfireID, signBytes, hop.Signature)
 }
 
+// VerifyProvenance checks that a message has at least one provenance hop and
+// that all hops carry valid signatures. Returns false if Provenance is empty
+// (an empty slice passes the hop loop trivially, bypassing relay accountability)
+// or if any hop fails VerifyHop.
+//
+// This is the canonical validation used by syncIfFilesystem, syncFromFilesystem,
+// and the bridge; callers should use this rather than open-coding the loop.
+func (m *Message) VerifyProvenance() bool {
+	if len(m.Provenance) == 0 {
+		return false
+	}
+	for _, hop := range m.Provenance {
+		if !VerifyHop(m.ID, hop) {
+			return false
+		}
+	}
+	return true
+}
+
 // SenderHex returns the hex-encoded sender public key.
 func (m *Message) SenderHex() string {
 	return fmt.Sprintf("%x", m.Sender)

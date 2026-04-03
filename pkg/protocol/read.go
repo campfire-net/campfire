@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 
-	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
@@ -181,23 +180,9 @@ func (c *Client) syncIfFilesystem(campfireID string) error {
 		if !fsMsg.VerifySignature() {
 			continue
 		}
-		// Reject messages with zero provenance hops. A message with an empty
-		// Provenance slice passes the hop verification loop below without any
-		// checks, allowing unsigned relay chains to bypass relay accountability.
-		// Every legitimate message must have at least one provenance hop
-		// establishing the originating sender.
-		if len(fsMsg.Provenance) == 0 {
-			continue
-		}
-		// Verify all provenance hops.
-		hopOK := true
-		for _, hop := range fsMsg.Provenance {
-			if !message.VerifyHop(fsMsg.ID, hop) {
-				hopOK = false
-				break
-			}
-		}
-		if !hopOK {
+		// Reject messages with invalid or missing provenance hops.
+		// VerifyProvenance checks non-empty Provenance and valid hop signatures.
+		if !fsMsg.VerifyProvenance() {
 			continue
 		}
 		c.store.AddMessage(store.MessageRecordFromMessage(campfireID, &fsMsg, store.NowNano())) //nolint:errcheck
