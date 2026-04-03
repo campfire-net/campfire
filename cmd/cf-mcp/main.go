@@ -4112,6 +4112,15 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if keyRecord.Revoked {
+				// Revoke all existing operator sessions for this account so that
+				// session tokens already issued under the revoked key are also
+				// invalidated. Without this, a client holding a TTL=0 session token
+				// can continue making requests indefinitely after the key is revoked.
+				if keyRecord.AccountID != "" && s.operatorSessionIdx != nil {
+					for _, tok := range s.operatorSessionIdx.RevokeAccount(keyRecord.AccountID) {
+						s.sessManager.revokeSession(tok)
+					}
+				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "forge API key has been revoked")) //nolint:errcheck

@@ -653,3 +653,79 @@ func TestForgeTokenAuth_RevokeSessionCleansIndex(t *testing.T) {
 		t.Error("token must be removed from operatorSessionIdx after campfire_revoke_session")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test: revoked forge-tk- key kills existing operator sessions (campfire-agent-j2r)
+// ---------------------------------------------------------------------------
+
+// TestForgeTokenAuth_RevokedKeyKillsExistingSessions verifies that when a forge-tk-
+// key is detected as revoked, all existing operator session tokens for that account
+// are also invalidated — not just the forge-tk- request itself. Without this,
+// a client holding a session token issued under the revoked key could continue
+// making requests indefinitely (TTL=0 sessions never expire).
+func TestForgeTokenAuth_RevokedKeyKillsExistingSessions(t *testing.T) {
+	const accountID = "acct-revoke-sessions"
+
+	// First, the key is valid.
+	revoked := false
+	forgeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/keys" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		resp := map[string]interface{}{
+			"object": "list",
+			"data": []map[string]interface{}{
+				{
+					"token_hash_prefix": "forge-tk-test",
+					"account_id":        accountID,
+					"role":              "agent",
+					"revoked":           revoked, // toggled mid-test
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+	}))
+	t.Cleanup(forgeSrv.Close)
+
+	forgeClient := &forge.Client{
+		BaseURL:     forgeSrv.URL,
+		ServiceKey:  "forge-sk-testkey",
+		HTTPClient:  forgeSrv.Client(),
+		RetryDelays: []time.Duration{0},
+	}
+
+	srv := newSessionedServerWithForge(t, forgeClient)
+
+	// Step 1: authenticate while key is valid → get session token.
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}`
+	w1 := postMCPRequest(t, srv, "Bearer forge-tk-test", body)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("initial auth failed: HTTP %d", w1.Code)
+	}
+	resp1 := decodeRPCResponse(t, w1)
+	sessToken := extractSessionTokenFromResponse(t, resp1)
+	if sessToken == "" {
+		t.Fatal("expected session token from initial auth")
+	}
+
+	// Confirm session is in the index.
+	if _, ok := srv.operatorSessionIdx.AccountForToken(sessToken); !ok {
+		t.Fatal("session token should be in index after initial auth")
+	}
+
+	// Step 2: revoke the forge-tk- key.
+	revoked = true
+
+	// Step 3: present the revoked forge-tk- key again.
+	w2 := postMCPRequest(t, srv, "Bearer forge-tk-test", body)
+	if w2.Code != http.StatusUnauthorized {
+		t.Errorf("expected HTTP 401 for revoked key, got %d; body: %s", w2.Code, w2.Body.String())
+	}
+
+	// Step 4: the existing session token must now be gone from the index.
+	if _, ok := srv.operatorSessionIdx.AccountForToken(sessToken); ok {
+		t.Error("existing session token must be removed from index when forge key is revoked")
+	}
+}
