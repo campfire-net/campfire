@@ -498,7 +498,7 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 			return nil, fmt.Errorf("adding provenance hop: %w", err)
 		}
 	} else {
-		sig, hopTimestamp, err := c.thresholdSignHop(msg, &cfState, memberCount, req.CampfireID, otherPeers, m.Threshold, memHash)
+		sig, hopTimestamp, err := c.thresholdSignHop(msg, &cfState, memberCount, req.CampfireID, otherPeers, m.Threshold, memHash, hopRole)
 		if err != nil {
 			return nil, fmt.Errorf("threshold signing: %w", err)
 		}
@@ -510,6 +510,7 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 			ReceptionRequirements: reqs,
 			Timestamp:             hopTimestamp,
 			Signature:             sig,
+			Role:                  hopRole,
 		}
 		msg.Provenance = append(msg.Provenance, hop)
 	}
@@ -547,6 +548,9 @@ type p2pPeer struct {
 // membershipHash must be the proper hash of the member set (computed from the
 // peer endpoint list via membershipHashFromPeers); it is embedded in the hop
 // sign input so all co-signers sign over the same membership snapshot.
+// role is the sender's campfire membership role (e.g. campfire.RoleFull,
+// campfire.RoleObserver); it is included in the signed data so receivers can
+// verify the hop role claim.
 func (c *Client) thresholdSignHop(
 	msg *message.Message,
 	cfState *campfire.CampfireState,
@@ -555,6 +559,7 @@ func (c *Client) thresholdSignHop(
 	peers []p2pPeer,
 	thresh uint,
 	membershipHash []byte,
+	role string,
 ) ([]byte, int64, error) {
 	share, err := c.store.GetThresholdShare(campfireID)
 	if err != nil {
@@ -595,6 +600,7 @@ func (c *Client) thresholdSignHop(
 		JoinProtocol:          cfState.JoinProtocol,
 		ReceptionRequirements: reqs,
 		Timestamp:             hopTimestamp,
+		Role:                  role,
 	}
 	signBytes, err := cfencoding.Marshal(signInput)
 	if err != nil {
