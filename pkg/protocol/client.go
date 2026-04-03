@@ -89,16 +89,25 @@ type CoSigner struct {
 // Client is NOT safe for concurrent use from multiple goroutines without external
 // synchronization. Each goroutine should use its own Client.
 type Client struct {
-	store     store.Store
-	identity  *identity.Identity
-	opts      options
-	configDir string // set by Init(); empty when using New() directly
+	store         store.Store
+	identity      *identity.Identity
+	opts          options
+	configDir     string            // set by Init(); empty when using New() directly
+	httpTransport *cfhttp.Transport // optional; enables PollBroker-driven Await in HTTP mode
 }
 
 // New creates a Client wrapping the given store.
 // identity may be nil for read-only clients that do not need to sign messages.
 func New(s store.Store, id *identity.Identity) *Client {
 	return &Client{store: s, identity: id, opts: defaultOptions()}
+}
+
+// WithHTTPTransport attaches an HTTP transport to the client, enabling
+// PollBroker-driven notifications in Client.Await for P2P HTTP campfires.
+// When set, Await subscribes to the PollBroker and wakes immediately when a
+// new message is delivered — instead of waiting for the full poll interval.
+func (c *Client) WithHTTPTransport(tr *cfhttp.Transport) {
+	c.httpTransport = tr
 }
 
 // GetMembership returns the membership record for the given campfire ID,
