@@ -170,7 +170,7 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 			if _, serr := announceClient.Send(protocol.SendRequest{
 				CampfireID: rootCampfireID,
 				Payload:    []byte(announcePayload),
-				Tags:       []string{"campfire:sub-created"},
+				Tags:       []string{campfire.TagSubCreated},
 			}); serr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not announce sub-campfire to root campfire: %v\n", serr)
 			}

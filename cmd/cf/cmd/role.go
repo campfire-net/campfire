@@ -29,7 +29,7 @@ func isRoleError(err error) bool {
 // hasSystemTag returns true if any tag in the list is a campfire:* system tag.
 func hasSystemTag(tags []string) bool {
 	for _, t := range tags {
-		if strings.HasPrefix(t, "campfire:") {
+		if strings.HasPrefix(t, campfire.TagPrefix) {
 			return true
 		}
 	}

@@ -150,7 +150,7 @@ func transportFromBeacon(b beacon.Beacon) (protocol.Transport, error) {
 func (t *clientTransport) ListAPI(ctx context.Context, campfireID string) ([]APIDeclaration, error) {
 	result, err := t.client.Read(protocol.ReadRequest{
 		CampfireID: campfireID,
-		Tags:       []string{"naming:api"},
+		Tags:       []string{TagAPI},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reading api declarations: %w", err)
@@ -174,7 +174,7 @@ func (t *clientTransport) Invoke(ctx context.Context, campfireID string, req *In
 		return nil, err
 	}
 
-	msgID, err := t.sendFuture(ctx, campfireID, payload, []string{"naming:api-invoke"})
+	msgID, err := t.sendFuture(ctx, campfireID, payload, []string{TagAPIInvoke})
 	if err != nil {
 		return nil, fmt.Errorf("sending invoke future: %w", err)
 	}
@@ -239,7 +239,7 @@ func PublishAPI(client *protocol.Client, campfireID string, decl APIDeclaration)
 	_, err = client.Send(protocol.SendRequest{
 		CampfireID: campfireID,
 		Payload:    payload,
-		Tags:       []string{"naming:api"},
+		Tags:       []string{TagAPI},
 	})
 	if err != nil {
 		return fmt.Errorf("publishing api declaration: %w", err)

@@ -249,7 +249,7 @@ func BeaconToDeclaration(b *Beacon, campfirePriv ed25519.PrivateKey, endpoint st
 // out-of-band file exchange.
 func ScanCampfire(s store.MessageStore, campfireID string) ([]Beacon, error) {
 	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{
-		Tags: []string{"routing:beacon"},
+		Tags: []string{TagBeacon},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing routing:beacon messages from campfire %s: %w", campfireID, err)

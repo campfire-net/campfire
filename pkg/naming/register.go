@@ -34,7 +34,7 @@ type registrationPayload struct {
 
 // nameTag returns the tag used for a specific name registration.
 func nameTag(name string) string {
-	return "naming:name:" + name
+	return TagNamePrefix + name
 }
 
 // Register posts a name registration to the campfire. The campfire IS the
@@ -133,7 +133,7 @@ func Unregister(ctx context.Context, client *protocol.Client, campfireID, name s
 	_, err = client.Send(protocol.SendRequest{
 		CampfireID: campfireID,
 		Payload:    payload,
-		Tags:       []string{nameTag(name), "naming:unregister"},
+		Tags:       []string{nameTag(name), TagUnregister},
 	})
 	if err != nil {
 		return fmt.Errorf("sending unregistration: %w", err)
@@ -149,7 +149,7 @@ func List(ctx context.Context, client *protocol.Client, campfireID string) ([]Re
 
 	result, err := client.Read(protocol.ReadRequest{
 		CampfireID:  campfireID,
-		TagPrefixes: []string{"naming:name:"},
+		TagPrefixes: []string{TagNamePrefix},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reading registrations: %w", err)

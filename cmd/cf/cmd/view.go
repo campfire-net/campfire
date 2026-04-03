@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/predicate"
 	"github.com/campfire-net/campfire/pkg/projection"
@@ -142,7 +143,7 @@ func runViewCreate(campfireIDArg, name, viewPredicate, viewProjection, viewOrder
 	}
 
 	// View creation uses campfire:view tag — requires full role.
-	tags := []string{"campfire:view"}
+	tags := []string{campfire.TagView}
 	if err := checkRoleCanSend(m.Role, tags); err != nil {
 		return err
 	}
@@ -338,7 +339,7 @@ func runViewList(campfireIDArg string) error {
 // findLatestView finds the most recent campfire:view message with the given name.
 func findLatestView(s store.Store, campfireID, name string) (*viewDefinition, error) {
 	// Use tag-filtered query to get campfire:view messages efficiently.
-	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{"campfire:view"}})
+	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{campfire.TagView}})
 	if err != nil {
 		return nil, fmt.Errorf("listing view messages: %w", err)
 	}
@@ -365,7 +366,7 @@ type viewInfo struct {
 
 // findAllViews returns the latest definition for each unique view name.
 func findAllViews(s store.Store, campfireID string) ([]viewInfo, error) {
-	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{"campfire:view"}})
+	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{campfire.TagView}})
 	if err != nil {
 		return nil, fmt.Errorf("listing view messages: %w", err)
 	}

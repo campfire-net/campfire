@@ -176,7 +176,7 @@ func evictThreshold1(
 		ed25519.PrivateKey(oldCFState.PrivateKey),
 		ed25519.PublicKey(oldCFState.PublicKey),
 		rekeyPayload,
-		[]string{"campfire:rekey"},
+		[]string{campfire.TagRekey},
 		nil,
 	)
 	if err != nil {
@@ -465,7 +465,7 @@ func buildAndSignRekeyMessage(
 	// Build the canonical sign bytes for the message.
 	msgID := uuid.New().String()
 	ts := time.Now().UnixNano()
-	tags := []string{"campfire:rekey"}
+	tags := []string{campfire.TagRekey}
 	antecedents := []string{}
 	signInput := message.MessageSignInput{
 		ID:          msgID,

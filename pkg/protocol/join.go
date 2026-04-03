@@ -164,7 +164,7 @@ func (c *Client) joinFilesystem(campfireID string, t *FilesystemTransport) (*Joi
 		sysMsg, sysMsgErr := message.NewMessage(
 			state.PrivateKey, state.PublicKey,
 			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, c.identity.PublicKeyHex(), now)),
-			[]string{"campfire:member-joined"},
+			[]string{campfire.TagMemberJoined},
 			nil,
 		)
 		if sysMsgErr == nil {

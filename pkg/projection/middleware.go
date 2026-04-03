@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/predicate"
 	"github.com/campfire-net/campfire/pkg/store"
 )
@@ -258,10 +259,10 @@ func (m *ProjectionMiddleware) AddMessage(msg store.MessageRecord) (bool, error)
 
 	// 3. System message with campfire:view tag → invalidate view cache.
 	if isSystemMsg(msg.Tags) {
-		if hasTagPrefix(msg.Tags, "campfire:view") {
+		if hasTagPrefix(msg.Tags, campfire.TagView) {
 			m.invalidateViewCache(msg.CampfireID)
 		}
-		if hasTagPrefix(msg.Tags, "campfire:compact") {
+		if hasTagPrefix(msg.Tags, campfire.TagCompact) {
 			// Handle compaction: delete projection entries for superseded messages.
 			m.handleCompaction(msg)
 		}
@@ -351,7 +352,7 @@ func (m *ProjectionMiddleware) getOnWriteViews(campfireID string) ([]cachedView,
 
 	// Load all view definitions.
 	msgs, err := m.base.ListMessages(campfireID, 0, store.MessageFilter{
-		Tags: []string{"campfire:view"},
+		Tags: []string{campfire.TagView},
 	})
 	if err != nil {
 		return nil, err
@@ -395,7 +396,7 @@ func (m *ProjectionMiddleware) getOnWriteViews(campfireID string) ([]cachedView,
 // findLatestView finds the most recent campfire:view message with the given name.
 func (m *ProjectionMiddleware) findLatestView(campfireID, name string) (*viewDefinition, error) {
 	msgs, err := m.base.ListMessages(campfireID, 0, store.MessageFilter{
-		Tags: []string{"campfire:view"},
+		Tags: []string{campfire.TagView},
 	})
 	if err != nil {
 		return nil, err
@@ -497,7 +498,7 @@ func buildCtx(m store.MessageRecord, fulfillmentIndex map[string]bool) *predicat
 // isSystemMsg returns true if any tag has the "campfire:" prefix.
 func isSystemMsg(tags []string) bool {
 	for _, t := range tags {
-		if strings.HasPrefix(t, "campfire:") {
+		if strings.HasPrefix(t, campfire.TagPrefix) {
 			return true
 		}
 	}
