@@ -203,6 +203,49 @@ func newProtocolClient(st store.Store, agentID *identity.Identity) *protocol.Cli
 	return protocol.New(st, agentID)
 }
 
+// syncFSVerified syncs messages from the filesystem transport into the store,
+// verifying signatures and provenance hops on every message before storing.
+// Messages with invalid signatures, empty provenance, or invalid hops are silently
+// skipped — they are not stored and will not appear in subsequent queries.
+//
+// This is the verified-sync primitive used by handleViewTool and the FS-polling
+// path of handleAwait to fix the bypass identified in campfire-agent-ltj: those
+// handlers previously called fs.Transport.ListMessages directly, bypassing the
+// signature and hop verification that protocol.Client.syncIfFilesystem performs.
+//
+// Callers in HTTP mode should skip this function entirely (messages arrive via
+// push and are already verified at ingestion). In FS mode, this must be called
+// before querying the store to ensure tampered or unsigned messages are rejected.
+func syncFSVerified(st store.Store, fsT *fs.Transport, campfireID string) {
+	fsMessages, err := fsT.ListMessages(campfireID)
+	if err != nil {
+		return
+	}
+	for _, fsMsg := range fsMessages {
+		// Reject messages with invalid Ed25519 signature.
+		if !fsMsg.VerifySignature() {
+			continue
+		}
+		// Reject messages with empty provenance — every legitimate message must
+		// have at least one hop establishing the originating sender.
+		if len(fsMsg.Provenance) == 0 {
+			continue
+		}
+		// Reject messages with any invalid provenance hop.
+		hopOK := true
+		for _, hop := range fsMsg.Provenance {
+			if !message.VerifyHop(fsMsg.ID, hop) {
+				hopOK = false
+				break
+			}
+		}
+		if !hopOK {
+			continue
+		}
+		st.AddMessage(store.MessageRecordFromMessage(campfireID, &fsMsg, store.NowNano())) //nolint:errcheck
+	}
+}
+
 // fsTransport returns a filesystem transport rooted at the correct base dir.
 // In hosted HTTP mode, campfire state (campfire.cbor, members/) lives under
 // the session's cfHome. In filesystem mode, it uses the shared transport dir.
@@ -2578,17 +2621,17 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 	// global default transport dir (CF_TRANSPORT_DIR or /tmp/campfire) so that
 	// campfires without a membership record in the store (e.g. project campfires
 	// or test setups) are still polled correctly.
+	//
+	// syncFSVerified is used instead of fsTransport.ListMessages to ensure that
+	// signature and provenance-hop verification happen on every synced message
+	// (campfire-agent-ltj: raw ListMessages bypassed verification).
 	fsTransport := fs.New(fs.DefaultBaseDir())
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	// Initial sync and check.
-	if msgs, err := fsTransport.ListMessages(campfireID); err == nil {
-		for _, m := range msgs {
-			st.AddMessage(store.MessageRecordFromMessage(campfireID, &m, store.NowNano())) //nolint:errcheck
-		}
-	}
+	syncFSVerified(st, fsTransport, campfireID)
 	if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
 		result, _ := toolResultJSON(msg)
 		return okResponse(id, result)
@@ -2602,11 +2645,7 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 		case <-ticker.C:
 		}
 
-		if msgs, err := fsTransport.ListMessages(campfireID); err == nil {
-			for _, m := range msgs {
-				st.AddMessage(store.MessageRecordFromMessage(campfireID, &m, store.NowNano())) //nolint:errcheck
-			}
-		}
+		syncFSVerified(st, fsTransport, campfireID)
 		if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
 			result, _ := toolResultJSON(msg)
 			return okResponse(id, result)

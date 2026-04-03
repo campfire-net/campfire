@@ -491,13 +491,11 @@ func (s *server) handleViewTool(id interface{}, entry *viewToolEntry, args map[s
 
 	// Sync from filesystem transport (same as handleRead — in fs mode,
 	// messages live on disk and must be synced to SQLite before querying).
+	// syncFSVerified is used instead of fsT.ListMessages to ensure signature
+	// and provenance-hop verification happen on every synced message
+	// (campfire-agent-ltj: raw ListMessages bypassed verification).
 	if s.httpTransport == nil {
-		fsT := s.fsTransport()
-		if fsMessages, err := fsT.ListMessages(campfireID); err == nil {
-			for _, fsMsg := range fsMessages {
-				st.AddMessage(store.MessageRecordFromMessage(campfireID, &fsMsg, store.NowNano())) //nolint:errcheck
-			}
-		}
+		syncFSVerified(st, s.fsTransport(), campfireID)
 	}
 
 	pred, err := predicate.Parse(entry.predicate)
