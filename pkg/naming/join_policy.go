@@ -52,14 +52,44 @@ func LoadJoinPolicy(cfHome string) (*JoinPolicy, error) {
 }
 
 // SaveJoinPolicy writes the join policy config to cfHome atomically.
+// It writes to a temporary file in the same directory and renames it
+// into place so a crash during write cannot corrupt the existing file.
 func SaveJoinPolicy(cfHome string, jp *JoinPolicy) error {
 	data, err := json.MarshalIndent(jp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling join policy: %w", err)
 	}
-	path := filepath.Join(cfHome, joinPolicyFile)
 	if err := os.MkdirAll(cfHome, 0700); err != nil {
 		return fmt.Errorf("creating campfire home: %w", err)
 	}
-	return os.WriteFile(path, data, 0600)
+	// Write to a temp file in the same directory so the rename is on the
+	// same filesystem (guaranteeing an atomic swap on POSIX systems).
+	tmp, err := os.CreateTemp(cfHome, joinPolicyFile+".tmp*")
+	if err != nil {
+		return fmt.Errorf("creating temp file for join policy: %w", err)
+	}
+	tmpName := tmp.Name()
+	// Clean up the temp file if anything goes wrong before the rename.
+	defer func() {
+		if tmpName != "" {
+			os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("setting join policy permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("writing join policy: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("flushing join policy: %w", err)
+	}
+	target := filepath.Join(cfHome, joinPolicyFile)
+	if err := os.Rename(tmpName, target); err != nil {
+		return fmt.Errorf("installing join policy: %w", err)
+	}
+	tmpName = "" // rename succeeded — suppress deferred cleanup
+	return nil
 }
