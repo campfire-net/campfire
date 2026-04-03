@@ -346,6 +346,10 @@ type Session struct {
 	conventionTools *conventionToolMap // persisted across per-request server instances
 	lastActivity    time.Time
 	mu              sync.Mutex
+	// forgeAccountID, when non-empty, indicates that this session was created
+	// via forge-tk- auth and the account was already resolved. handleInit skips
+	// EnsureOperatorAccount when this field is set; the account is known to exist.
+	forgeAccountID string
 }
 
 // server returns a *server wired to this session's cfHome and beaconDir.
@@ -658,6 +662,20 @@ func (m *SessionManager) validateToken(token string) (string, error) {
 	return m.registry.lookup(token, m.ttl())
 }
 
+// validateTokenNoExpiry validates a bearer token with TTL=0 (no expiry check).
+// Used for operator session tokens issued via forge-tk- authentication — those
+// tokens never expire on their own; they are revoked explicitly via account revocation.
+// Returns a typed error (tokenRevokedError, tokenUnknownError) on failure.
+func (m *SessionManager) validateTokenNoExpiry(token string) (string, error) {
+	return m.registry.lookup(token, 0)
+}
+
+// issueForID issues a new session token mapped to an existing internalID.
+// Used by forge-tk- auth to reuse a stable account ID across re-authentications.
+func (m *SessionManager) issueForID(internalID string) (string, error) {
+	return m.registry.issueFor(internalID)
+}
+
 // getSession returns the active Session for a token, or nil if not found.
 // The token is validated against the registry (with TTL check); if invalid, nil is returned.
 // This is a read-only lookup — it does not create new sessions.
@@ -869,6 +887,116 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 			t.SetOnMessageDelivered(func(ctx context.Context, cancel context.CancelFunc, campfireID string, msg *store.MessageRecord) {
 				if !d.DispatchWithCancel(ctx, cancel, campfireID, msg) {
 					// No convention handler matched — release the timeout context immediately.
+					if cancel != nil {
+						cancel()
+					}
+				}
+			})
+		}
+		sess.httpTransport = t
+		sess.router = m.router
+		m.router.RegisterSession(token, t)
+	}
+
+	m.sessions.Store(internalID, sess)
+	return sess, nil
+}
+
+// getOrCreateOperator is like getOrCreate but uses TTL=0 (no expiry check).
+// Used for operator session tokens issued via forge-tk- auth — those tokens
+// never expire on their own and must be validated without a TTL deadline.
+// The caller is responsible for validating the token before calling this method.
+func (m *SessionManager) getOrCreateOperator(token string) (*Session, error) {
+	// Use TTL=0 so operator tokens are never rejected for expiry.
+	internalID, err := m.registry.lookup(token, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fast path: session already exists.
+	if v, ok := m.sessions.Load(internalID); ok {
+		sess := v.(*Session)
+		sess.touch()
+		return sess, nil
+	}
+
+	// Slow path: serialize creation under the lock.
+	m.createMu.Lock()
+	defer m.createMu.Unlock()
+
+	if v, ok := m.sessions.Load(internalID); ok {
+		sess := v.(*Session)
+		sess.touch()
+		return sess, nil
+	}
+
+	// Enforce the session limit.
+	limit := m.maxSessions
+	if limit <= 0 {
+		limit = defaultMaxSessions
+	}
+	var count int
+	m.sessions.Range(func(_, _ interface{}) bool {
+		count++
+		return count < limit
+	})
+	if count >= limit {
+		return nil, &sessionLimitError{limit: limit}
+	}
+
+	cfHome := filepath.Join(m.sessionsDir, internalID)
+	beaconDir := filepath.Join(cfHome, "beacons")
+	if err := os.MkdirAll(beaconDir, 0700); err != nil {
+		return nil, err
+	}
+
+	if m.sessionStore != nil {
+		identityPath := filepath.Join(cfHome, "identity.json")
+		if _, statErr := os.Stat(identityPath); os.IsNotExist(statErr) {
+			if data, ok, loadErr := m.sessionStore.LoadIdentity(internalID); loadErr == nil && ok {
+				if writeErr := os.WriteFile(identityPath, data, 0600); writeErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: write cloud identity to disk: %v\n", writeErr)
+				}
+			}
+		}
+	}
+
+	var rawStore store.Store
+	if m.storeFactory != nil {
+		rawStore, err = m.storeFactory(internalID)
+	} else {
+		rawStore, err = store.Open(store.StorePath(cfHome))
+	}
+	if err != nil {
+		return nil, err
+	}
+	rl := ratelimit.New(rawStore, ratelimit.Config{})
+
+	sess := &Session{
+		token:        token,
+		internalID:   internalID,
+		cfHome:       cfHome,
+		beaconDir:    beaconDir,
+		st:           rl,
+		rateLimiter:  rl,
+		lastActivity: time.Now(),
+	}
+
+	if m.router != nil {
+		t := cfhttp.New("", rl)
+		t.StartNoncePruner()
+		fsT := fs.New(cfHome)
+		t.SetKeyProvider(func(campfireID string) (privKey []byte, pubKey []byte, err error) {
+			state, err := fsT.ReadState(campfireID)
+			if err != nil {
+				return nil, nil, err
+			}
+			return state.PrivateKey, state.PublicKey, nil
+		})
+		if m.conventionDispatcher != nil {
+			d := m.conventionDispatcher
+			t.SetOnMessageDelivered(func(ctx context.Context, cancel context.CancelFunc, campfireID string, msg *store.MessageRecord) {
+				if !d.DispatchWithCancel(ctx, cancel, campfireID, msg) {
 					if cancel != nil {
 						cancel()
 					}
