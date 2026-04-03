@@ -8,12 +8,28 @@ import (
 	"testing"
 	"time"
 
+	"crypto/ed25519"
+
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
+
+// addTestProvenance adds a valid provenance hop so VerifyProvenance passes.
+func addTestProvenance(t *testing.T, msg *message.Message) {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	if err := msg.AddHop(priv, pub, nil, 1, "open", nil, campfire.RoleFull); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // setupBridgeFilterEnv creates a minimal environment for bridge filter tests.
 func setupBridgeFilterEnv(t *testing.T, campfireID string) (*fs.Transport, store.Store, *identity.Identity, string) {
@@ -61,6 +77,7 @@ func TestBridgeTagFilterRelaysMatchingMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addTestProvenance(t, msgTagged)
 	if err := fsTransport.WriteMessage(campfireID, msgTagged); err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +87,7 @@ func TestBridgeTagFilterRelaysMatchingMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addTestProvenance(t, msgUntagged)
 	if err := fsTransport.WriteMessage(campfireID, msgUntagged); err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +125,7 @@ func TestBridgeTagFilterStoresUnmatchedLocally(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addTestProvenance(t, msgOther)
 	if err := fsTransport.WriteMessage(campfireID, msgOther); err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +185,7 @@ func TestBridgeNoTagFilterRelaysAll(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		addTestProvenance(t, msg)
 		if err := fsTransport.WriteMessage(campfireID, msg); err != nil {
 			t.Fatal(err)
 		}
@@ -201,6 +221,7 @@ func TestBridgeTagFilterORSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addTestProvenance(t, msgA)
 	if err := fsTransport.WriteMessage(campfireID, msgA); err != nil {
 		t.Fatal(err)
 	}
@@ -210,6 +231,7 @@ func TestBridgeTagFilterORSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addTestProvenance(t, msgB)
 	if err := fsTransport.WriteMessage(campfireID, msgB); err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +241,7 @@ func TestBridgeTagFilterORSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addTestProvenance(t, msgC)
 	if err := fsTransport.WriteMessage(campfireID, msgC); err != nil {
 		t.Fatal(err)
 	}

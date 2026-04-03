@@ -159,6 +159,7 @@ func TestBridgeFSToHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addTestProvenance(t, msg1)
 	if err := fsTransport.WriteMessage(campfireID, msg1); err != nil {
 		t.Fatal(err)
 	}
@@ -367,6 +368,7 @@ func makeMessageWithTimestamp(t *testing.T, id *identity.Identity, payload []byt
 	if err != nil {
 		t.Fatal(err)
 	}
+	addTestProvenance(t, msg)
 	msg.Timestamp = ts
 	return msg
 }
@@ -406,6 +408,7 @@ func TestBridgeDedup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addTestProvenance(t, msg1)
 	if err := fsTransport.WriteMessage(campfireID, msg1); err != nil {
 		t.Fatal(err)
 	}
@@ -461,6 +464,7 @@ func TestBridgeForwardedSetRebuildsOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addTestProvenance(t, msg1)
 	if err := fsTransport.WriteMessage(campfireID, msg1); err != nil {
 		t.Fatal(err)
 	}
