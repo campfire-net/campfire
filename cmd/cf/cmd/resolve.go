@@ -299,22 +299,34 @@ func resolveByNameFallback(name string, s store.Store) (string, error) {
 	return "", fmt.Errorf("name %q not found in any reachable root", name)
 }
 
+// DefaultConsultTimeout is the fallback timeout for consultRootsForName when
+// CF_CONSULT_TIMEOUT is not set. 2s is chosen to fail fast when the consult
+// campfire is unreachable — the caller falls back to legacy root discovery, so
+// a long wait here adds latency with no benefit.
+const DefaultConsultTimeout = 2 * time.Second
+
 // consultTimeout returns the timeout for consultRootsForName.
 // It reads CF_CONSULT_TIMEOUT (a Go duration string, e.g. "30s", "2m") and falls
-// back to 10s for backwards compatibility.
+// back to DefaultConsultTimeout (2s).
 func consultTimeout() time.Duration {
 	if raw := os.Getenv("CF_CONSULT_TIMEOUT"); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
 			return d
 		}
 	}
-	return 10 * time.Second
+	return DefaultConsultTimeout
 }
 
 // consultRootsForName sends a join-root-query future to the consult campfire
 // and waits for the agent to respond with a list of root IDs. The timeout is
-// controlled by the CF_CONSULT_TIMEOUT environment variable (default: 10s).
+// controlled by the CF_CONSULT_TIMEOUT environment variable (default: 2s).
+// A short default ensures that an unreachable consult campfire fails fast so
+// the caller can fall back to legacy root discovery without a long latency cliff.
 func consultRootsForName(name string, jp *naming.JoinPolicy) ([]string, error) {
+	timeout := consultTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	client, err := protocol.Init(CFHome())
 	if err != nil {
 		return nil, fmt.Errorf("init protocol client for consult: %w", err)
@@ -339,10 +351,10 @@ func consultRootsForName(name string, jp *naming.JoinPolicy) ([]string, error) {
 		return nil, fmt.Errorf("sending consult query: %w", err)
 	}
 
-	resp, err := client.Await(context.Background(), protocol.AwaitRequest{
+	resp, err := client.Await(ctx, protocol.AwaitRequest{
 		CampfireID:  jp.ConsultCampfire,
 		TargetMsgID: msg.ID,
-		Timeout:     consultTimeout(),
+		Timeout:     timeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("awaiting consult response: %w", err)
