@@ -399,6 +399,93 @@ func TestEnsureOperatorAccount_ConcurrentSameKey(t *testing.T) {
 	}
 }
 
+// TestEnsureOperatorAccount_FirstCallerCancelDoesNotFailWaiters verifies that
+// when the first caller cancels its context, concurrent waiters still receive
+// a successful result. This is the regression test for the singleflight
+// context-sharing bug: previously the first caller's ctx was used for the
+// shared operation, so cancellation would abort work for all waiters.
+func TestEnsureOperatorAccount_FirstCallerCancelDoesNotFailWaiters(t *testing.T) {
+	// ready gates the test: the first call signals when it's inside the handler,
+	// giving us time to cancel the first caller's context while waiters are queued.
+	ready := make(chan struct{}, 1)
+	proceed := make(chan struct{})
+
+	fakeForgeSvr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/accounts" && r.Method == http.MethodPost {
+			select {
+			case ready <- struct{}{}:
+			default:
+			}
+			<-proceed
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"account_id": "forge-cancel-test"}) //nolint:errcheck
+			return
+		}
+		// credit endpoint
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(fakeForgeSvr.Close)
+
+	store := aztable.NewMemoryOperatorAccountStore()
+	mgr := &forgeAccountManager{
+		forge: &forge.Client{
+			BaseURL:     fakeForgeSvr.URL,
+			ServiceKey:  "forge-sk-test",
+			RetryDelays: []time.Duration{},
+		},
+		store:           store,
+		parentAccountID: "campfire-hosting",
+	}
+
+	pubkey := "cancel-test-key"
+
+	// firstCtx: will be cancelled before the Forge call completes.
+	firstCtx, firstCancel := context.WithCancel(context.Background())
+	defer firstCancel()
+
+	waiterID := make(chan string, 1)
+	waiterErr := make(chan error, 1)
+
+	// Launch first caller.
+	go func() {
+		mgr.EnsureOperatorAccount(firstCtx, pubkey) //nolint:errcheck
+	}()
+
+	// Wait until the Forge handler is in-flight, then cancel the first caller.
+	<-ready
+	firstCancel()
+
+	// Launch second caller while the Forge call is still pending.
+	go func() {
+		id, err := mgr.EnsureOperatorAccount(context.Background(), pubkey)
+		waiterID <- id
+		waiterErr <- err
+	}()
+
+	// Give the waiter goroutine a moment to join the singleflight group, then
+	// let the Forge handler finish.
+	time.Sleep(20 * time.Millisecond)
+	close(proceed)
+
+	// The waiter MUST succeed regardless of what happened to the first caller.
+	select {
+	case err := <-waiterErr:
+		if err != nil {
+			t.Errorf("waiter got error after first caller cancel: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for waiter result")
+	}
+
+	select {
+	case id := <-waiterID:
+		if id != "forge-cancel-test" {
+			t.Errorf("waiter got wrong account ID: %q", id)
+		}
+	default:
+	}
+}
+
 // Verify that an error in fmt.Sprintf is surfaced — just a compile-time
 // sanity check that the forge package types are accessible.
 var _ = fmt.Sprintf
