@@ -4292,6 +4292,10 @@ func (s *server) serveHTTP(addr string) error {
 		go s.startBillingSweepLoop(context.Background())
 	}
 
+	// Start the admin campfire convention server when CF_ADMIN_CAMPFIRE is set.
+	// Fail-open: logs a warning and continues if setup fails (e.g. missing forge key).
+	s.wireAdminCampfire(context.Background())
+
 	fmt.Fprintf(os.Stderr, "cf-mcp listening on %s\n", addr)
 	srv := &http.Server{
 		Addr:              addr,
