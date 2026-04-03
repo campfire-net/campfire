@@ -60,17 +60,12 @@ type clientAdapter struct {
 	client *protocol.Client
 }
 
-func (a *clientAdapter) sendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, campfireKey bool) (string, error) {
-	mode := protocol.SigningModeMemberKey
-	if campfireKey {
-		mode = protocol.SigningModeCampfireKey
-	}
+func (a *clientAdapter) sendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, _ bool) (string, error) {
 	msg, err := a.client.Send(protocol.SendRequest{
 		CampfireID:  campfireID,
 		Payload:     payload,
 		Tags:        tags,
 		Antecedents: antecedents,
-		SigningMode: mode,
 	})
 	if err != nil {
 		return "", err

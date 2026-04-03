@@ -374,7 +374,7 @@ msg, err := client.Send(protocol.SendRequest{
 })
 ```
 
-For P2P HTTP with threshold > 1, use `SigningModeThreshold`. The client runs FROST signing rounds with co-signers automatically.
+For P2P HTTP with threshold > 1, the client automatically runs FROST signing rounds with co-signers. No special field is required in `SendRequest`.
 
 ## Subscribe
 
