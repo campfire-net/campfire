@@ -13,3 +13,9 @@ func checkCampfireDirOwnership() error {
 func promptPassphrase() ([]byte, error) {
 	return nil, nil
 }
+
+// passphraseSupported reports whether the current platform can prompt for a
+// passphrase at identity creation time. Always false on Windows.
+func passphraseSupported() bool {
+	return false
+}

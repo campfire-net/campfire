@@ -44,6 +44,12 @@ func promptPassphrase() ([]byte, error) {
 	return passphrase, nil
 }
 
+// passphraseSupported reports whether the current platform can prompt for a
+// passphrase at identity creation time. Always true on Unix.
+func passphraseSupported() bool {
+	return true
+}
+
 // checkCampfireDirOwnership checks if ~/.campfire/ exists and is root-owned.
 // Returns an error with an actionable message if so.
 func checkCampfireDirOwnership() error {
