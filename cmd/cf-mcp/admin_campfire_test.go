@@ -232,6 +232,47 @@ func TestAdminCreateKey_ForgeError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestAdminCreateKey_EmptyAccountID
+// ---------------------------------------------------------------------------
+
+// TestAdminCreateKey_EmptyAccountID verifies that an allowed sender submitting
+// an empty account_id receives an error response and Forge is never called.
+// This tests the validation gate on the security boundary between the allowlist
+// check and the Forge API call.
+func TestAdminCreateKey_EmptyAccountID(t *testing.T) {
+	const allowedKey = "aaaa1234abcd5678aaaa1234abcd5678aaaa1234abcd5678aaaa1234abcd5678"
+
+	fc := &fakeForgeKeyCreator{
+		returnKey: forge.Key{KeyPlaintext: "should-not-appear"},
+	}
+
+	handler := buildAdminHandler([]string{allowedKey}, fc)
+	req := makeAdminRequest(allowedKey, "" /* empty account_id */)
+
+	resp, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+
+	// Forge must NOT have been called.
+	if fc.callCount != 0 {
+		t.Errorf("expected CreateKey not called, got %d call(s)", fc.callCount)
+	}
+
+	body := extractPayloadMap(t, resp)
+	if body["error"] == "" {
+		t.Errorf("expected error field in response for empty account_id")
+	}
+	// Key must not appear in an error response.
+	if _, ok := body["key"]; ok {
+		t.Errorf("key field must not appear in error response")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestLoadAdminCampfireConfig
 // ---------------------------------------------------------------------------
 
