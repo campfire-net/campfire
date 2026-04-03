@@ -4087,28 +4087,31 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 
 	// Auth middleware: parse Authorization header and dispatch by scheme.
 	// Supported: "Bearer <token>" — validated against issuance registry.
-	// Supported: "Bearer forge-tk-<token>" — resolved via Forge API, issues TTL=0 session.
+	// Supported: "Bearer forge-sk-<token>" or "Bearer forge-tk-<token>" — resolved via Forge API, issues TTL=0 session.
+	//   forge-sk- is the prefix Forge assigns to service/tenant keys created via CreateKey.
+	//   forge-tk- is accepted for forward-compatibility if Forge ever issues tenant-scoped keys with that prefix.
+	//   forge-ak- (admin keys) are intentionally NOT accepted here.
 	// Prepared: "Signed <pubkey>:<sig>" — reserved for future P1 (client-side crypto).
 	token := ""
-	forgeTokenPresented := false // true when the raw bearer value has the forge-tk- prefix
-	resolvedForgeAccountID := "" // set when forge-tk- auth succeeds; written to sess.forgeAccountID
+	forgeTokenPresented := false // true when the raw bearer value has the forge-sk-/forge-tk- prefix
+	resolvedForgeAccountID := "" // set when forge-sk-/forge-tk- auth succeeds; written to sess.forgeAccountID
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		raw := strings.TrimPrefix(authHeader, "Bearer ")
-		if strings.HasPrefix(raw, "forge-tk-") {
+		if strings.HasPrefix(raw, "forge-sk-") || strings.HasPrefix(raw, "forge-tk-") {
 			// Forge API key branch: validate with Forge, issue a TTL=0 session token.
 			forgeTokenPresented = true
 			if s.sessManager == nil || s.sessManager.forgeAccounts == nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
-				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "forge-tk- auth not available: Forge service key not configured")) //nolint:errcheck
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "forge operator key auth not available: Forge service key not configured")) //nolint:errcheck
 				return
 			}
 			keyRecord, resolveErr := s.sessManager.forgeAccounts.forge.ResolveKey(r.Context(), raw)
 			if resolveErr != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
-				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("forge-tk- auth failed: %v", resolveErr))) //nolint:errcheck
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("forge operator key auth failed: %v", resolveErr))) //nolint:errcheck
 				return
 			}
 			if keyRecord.Revoked {
