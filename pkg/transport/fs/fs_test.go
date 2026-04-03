@@ -1053,3 +1053,60 @@ func TestPushSubscriber_DeduplicateByFilename(t *testing.T) {
 		t.Fatalf("second copyFile() (dedup) error: %v", err)
 	}
 }
+
+// TestInit_DirectoryPermissions verifies that Init creates campfire directories
+// with mode 0700, not 0755. Campfire directories contain campfire.cbor which
+// holds the campfire private key — they must not be world-readable.
+func TestInit_DirectoryPermissions(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	cfDir := tr.CampfireDir(cf.PublicKeyHex())
+	want := os.FileMode(0700)
+
+	for _, sub := range []string{"", "members", "messages"} {
+		dir := cfDir
+		if sub != "" {
+			dir = filepath.Join(cfDir, sub)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		got := info.Mode().Perm()
+		if got != want {
+			t.Errorf("directory %s has mode %04o, want %04o (directories holding private key material must be owner-only)", dir, got, want)
+		}
+	}
+}
+
+// TestAddPushSubscriber_DirectoryPermissions verifies that the push-subscribers
+// directory is created with mode 0700.
+func TestAddPushSubscriber_DirectoryPermissions(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	id := newTestIdentity(t)
+	inboxDir := t.TempDir()
+	if err := tr.AddPushSubscriber(cf.PublicKeyHex(), pubKey(id), inboxDir); err != nil {
+		t.Fatalf("AddPushSubscriber() error: %v", err)
+	}
+
+	subDir := filepath.Join(tr.CampfireDir(cf.PublicKeyHex()), "push-subscribers")
+	info, err := os.Stat(subDir)
+	if err != nil {
+		t.Fatalf("stat push-subscribers dir: %v", err)
+	}
+	got := info.Mode().Perm()
+	want := os.FileMode(0700)
+	if got != want {
+		t.Errorf("push-subscribers dir has mode %04o, want %04o", got, want)
+	}
+}

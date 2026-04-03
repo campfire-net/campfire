@@ -54,7 +54,9 @@ or join the existing campfire instead.`,
 
 		// Set up filesystem transport rooted in the project's .campfire/ directory.
 		campfireDir := filepath.Join(projectDir, ".campfire")
-		if err := os.MkdirAll(campfireDir, 0755); err != nil {
+		// 0700: .campfire/ will contain campfire.cbor with the campfire
+		// private key — restrict to owner only.
+		if err := os.MkdirAll(campfireDir, 0700); err != nil {
 			return fmt.Errorf("creating .campfire directory: %w", err)
 		}
 		transport := fs.NewPathRooted(campfireDir)
