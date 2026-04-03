@@ -180,8 +180,14 @@ func (c *Client) rekeyAfterEvict(req EvictRequest, m *store.Membership) (*EvictR
 	newGroupPub := dkgResults[1].GroupPublicKey()
 	newCampfireID := fmt.Sprintf("%x", newGroupPub)
 
+	// Validate TransportDir before any filesystem access.
+	transportDir, err := sanitizeTransportDir(m.TransportDir)
+	if err != nil {
+		return nil, fmt.Errorf("protocol.Client.Evict: invalid transport dir: %w", err)
+	}
+
 	// Read the old campfire state to preserve join protocol and reception requirements.
-	statePath := filepath.Join(m.TransportDir, oldCampfireID+".cbor")
+	statePath := filepath.Join(transportDir, oldCampfireID+".cbor")
 	stateData, err := os.ReadFile(statePath)
 	if err != nil {
 		return nil, fmt.Errorf("protocol.Client.Evict: reading old campfire state: %w", err)
@@ -206,7 +212,7 @@ func (c *Client) rekeyAfterEvict(req EvictRequest, m *store.Membership) (*EvictR
 	if err != nil {
 		return nil, fmt.Errorf("protocol.Client.Evict: encoding new campfire state: %w", err)
 	}
-	newStatePath := filepath.Join(m.TransportDir, newCampfireID+".cbor")
+	newStatePath := filepath.Join(transportDir, newCampfireID+".cbor")
 	if err := atomicWriteFile(newStatePath, newStateData); err != nil {
 		return nil, fmt.Errorf("protocol.Client.Evict: writing new campfire state: %w", err)
 	}

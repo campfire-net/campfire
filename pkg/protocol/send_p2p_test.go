@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -252,6 +253,55 @@ func TestSendP2PHTTP_NoPeers(t *testing.T) {
 	}
 	if len(msgs) == 0 {
 		t.Error("message not found in local store (no peers)")
+	}
+}
+
+// TestSendP2PHTTP_PathTraversal verifies that Send rejects membership records
+// whose TransportDir contains path traversal sequences. A malicious or
+// corrupted store record must not cause reads or writes outside the intended
+// campfire transport directory.
+//
+// Regression test for campfire-agent-zde.
+func TestSendP2PHTTP_PathTraversal(t *testing.T) {
+	agentID, s, tmpDir := setupTestEnv(t)
+
+	// Generate a campfire identity so we have a valid campfireID.
+	cfID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating campfire identity: %v", err)
+	}
+	campfireID := cfID.PublicKeyHex()
+
+	// Craft a traversal path: a raw string with ".." components that would escape
+	// the intended transport directory if used directly in filepath.Join.
+	// This simulates a tampered SQLite store record — the string is stored as-is,
+	// not processed through filepath.Join/Clean when written.
+	traversalDir := tmpDir + "/../../etc"
+
+	// Write a membership record with the traversal TransportDir.
+	if err := s.AddMembership(store.Membership{
+		CampfireID:    campfireID,
+		TransportDir:  traversalDir,
+		JoinProtocol:  "open",
+		Role:          campfire.RoleFull,
+		JoinedAt:      0,
+		Threshold:     1,
+		TransportType: "p2p-http",
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	client := protocol.New(s, agentID)
+	_, err = client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("should be rejected"),
+	})
+	if err == nil {
+		t.Fatal("expected Send to fail with path traversal TransportDir, but it succeeded")
+	}
+	// The error must mention transport dir validation — not a generic file-not-found.
+	if !strings.Contains(err.Error(), "transport dir") {
+		t.Errorf("expected 'transport dir' in error, got: %v", err)
 	}
 }
 

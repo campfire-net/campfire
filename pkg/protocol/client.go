@@ -280,18 +280,25 @@ func (c *Client) sendGitHub(req SendRequest, m *store.Membership) (*message.Mess
 		if req.RoleOverride != "" {
 			hopRole = req.RoleOverride
 		}
-		// Member count: GitHub transport has no local member list; use peer endpoints
-		// count if available, otherwise fall back to 1 (at minimum the sender is a member).
+		// Member count and membership hash: GitHub transport has no on-disk member
+		// file, so we derive both from the peer endpoint list in the local store.
+		// If the list is empty (no peers discovered yet), fall back to a single
+		// member (the sender) with an empty-set hash.
 		memberCount := 1
-		if peers, peerErr := c.store.ListPeerEndpoints(req.CampfireID); peerErr == nil && len(peers) > 0 {
-			memberCount = len(peers)
+		var ghPeers []store.PeerEndpoint
+		if pp, peerErr := c.store.ListPeerEndpoints(req.CampfireID); peerErr == nil {
+			ghPeers = pp
+			if len(ghPeers) > 0 {
+				memberCount = len(ghPeers)
+			}
 		}
+		ghMemHash := membershipHashFromPeers(ghPeers)
 		// ReceptionRequirements are not stored in the membership record; use empty
 		// slice to match the GitHub transport's open-by-default join model.
 		reqs := []string{}
 		if err := msg.AddHop(
 			cfPrivKey, cfPubKey,
-			cfPubKey, // MembershipHash: use public key (GitHub has no member file hash)
+			ghMemHash,
 			memberCount,
 			m.JoinProtocol,
 			reqs,
@@ -312,11 +319,72 @@ func (c *Client) sendGitHub(req SendRequest, m *store.Membership) (*message.Mess
 	return msg, nil
 }
 
+// sanitizeTransportDir validates that dir is a safe absolute path with no path
+// traversal sequences. It returns the cleaned path or an error if dir is empty,
+// not absolute, or contains ".." components in the raw value.
+//
+// This prevents a malicious or corrupted membership record from using a
+// TransportDir like "/safe/../../../etc" to access files outside the intended
+// campfire transport directory. We check the raw path before filepath.Clean
+// because Clean silently resolves ".." — the raw presence of ".." indicates
+// a tampered or malformed stored value.
+func sanitizeTransportDir(dir string) (string, error) {
+	if dir == "" {
+		return "", fmt.Errorf("transport dir is empty")
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("transport dir is not absolute: %q", dir)
+	}
+	// Check the raw path for ".." components before cleaning.
+	// A legitimately-created TransportDir (set during Join via tr.CampfireDir)
+	// is always a clean absolute path with no traversal components.
+	for _, part := range strings.Split(dir, string(filepath.Separator)) {
+		if part == ".." {
+			return "", fmt.Errorf("transport dir contains path traversal: %q", dir)
+		}
+	}
+	return filepath.Clean(dir), nil
+}
+
+// membershipHashFromPeers computes a MembershipHash from a list of peer
+// endpoints. It decodes each peer's hex-encoded public key, builds a Member
+// slice, and delegates to campfire.Campfire.MembershipHash().
+//
+// Peer endpoint roles ("creator", "member") are normalised via
+// campfire.EffectiveRole to their campfire equivalents before hashing so that
+// the hash matches what the filesystem transport would produce for the same
+// member set (spec §2.5).
+//
+// If peers is empty the function returns the SHA-256 hash of an empty member
+// set (same as campfire.Campfire{}.MembershipHash()) rather than substituting
+// the campfire public key.
+func membershipHashFromPeers(peers []store.PeerEndpoint) []byte {
+	members := make([]campfire.Member, 0, len(peers))
+	for _, p := range peers {
+		pubBytes, err := hex.DecodeString(p.MemberPubkey)
+		if err != nil {
+			// Skip peers with malformed public keys; they will be absent from
+			// the hash rather than causing a substitution with wrong data.
+			continue
+		}
+		members = append(members, campfire.Member{
+			PublicKey: pubBytes,
+			Role:      campfire.EffectiveRole(p.Role),
+		})
+	}
+	cf := &campfire.Campfire{Members: members}
+	return cf.MembershipHash()
+}
+
 // sendP2PHTTP delivers req via the P2P HTTP transport.
 // For threshold<=1: signs provenance hop with the campfire key.
 // For threshold>1: runs FROST signing rounds with co-signers.
 func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Message, error) {
-	statePath := filepath.Join(m.TransportDir, req.CampfireID+".cbor")
+	transportDir, err := sanitizeTransportDir(m.TransportDir)
+	if err != nil {
+		return nil, fmt.Errorf("invalid transport dir: %w", err)
+	}
+	statePath := filepath.Join(transportDir, req.CampfireID+".cbor")
 	stateData, err := os.ReadFile(statePath)
 	if err != nil {
 		return nil, fmt.Errorf("reading campfire state: %w", err)
@@ -349,6 +417,12 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 		memberCount = 1
 	}
 
+	// Compute the membership hash from the known peer list. This is the correct
+	// value per spec §2.5: it must be derived from the member set, not the
+	// campfire public key. Previously the public key was used as a substitute,
+	// weakening provenance verification.
+	memHash := membershipHashFromPeers(peers)
+
 	reqs := cfState.ReceptionRequirements
 	if reqs == nil {
 		reqs = []string{}
@@ -360,7 +434,7 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 		if err := msg.AddHop(
 			ed25519.PrivateKey(cfState.PrivateKey),
 			ed25519.PublicKey(cfState.PublicKey),
-			cfState.PublicKey,
+			memHash,
 			memberCount,
 			cfState.JoinProtocol,
 			reqs,
@@ -369,13 +443,13 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 			return nil, fmt.Errorf("adding provenance hop: %w", err)
 		}
 	} else {
-		sig, hopTimestamp, err := c.thresholdSignHop(msg, &cfState, memberCount, req.CampfireID, otherPeers, m.Threshold)
+		sig, hopTimestamp, err := c.thresholdSignHop(msg, &cfState, memberCount, req.CampfireID, otherPeers, m.Threshold, memHash)
 		if err != nil {
 			return nil, fmt.Errorf("threshold signing: %w", err)
 		}
 		hop := message.ProvenanceHop{
 			CampfireID:            cfState.PublicKey,
-			MembershipHash:        cfState.PublicKey,
+			MembershipHash:        memHash,
 			MemberCount:           memberCount,
 			JoinProtocol:          cfState.JoinProtocol,
 			ReceptionRequirements: reqs,
@@ -413,6 +487,9 @@ type p2pPeer struct {
 
 // thresholdSignHop runs FROST signing rounds with co-signers to produce a
 // threshold signature for the provenance hop.
+// membershipHash must be the proper hash of the member set (computed from the
+// peer endpoint list via membershipHashFromPeers); it is embedded in the hop
+// sign input so all co-signers sign over the same membership snapshot.
 func (c *Client) thresholdSignHop(
 	msg *message.Message,
 	cfState *campfire.CampfireState,
@@ -420,6 +497,7 @@ func (c *Client) thresholdSignHop(
 	campfireID string,
 	peers []p2pPeer,
 	thresh uint,
+	membershipHash []byte,
 ) ([]byte, int64, error) {
 	share, err := c.store.GetThresholdShare(campfireID)
 	if err != nil {
@@ -455,7 +533,7 @@ func (c *Client) thresholdSignHop(
 	signInput := message.HopSignInput{
 		MessageID:             msg.ID,
 		CampfireID:            cfState.PublicKey,
-		MembershipHash:        cfState.PublicKey,
+		MembershipHash:        membershipHash,
 		MemberCount:           memberCount,
 		JoinProtocol:          cfState.JoinProtocol,
 		ReceptionRequirements: reqs,
@@ -504,6 +582,7 @@ func IsRoleError(err error, target **RoleError) bool {
 
 // checkRoleCanSend enforces campfire membership role restrictions.
 // Observer: cannot send any messages.
+// BlindRelay: cannot originate messages (store/forward only, no CEK).
 // Writer: cannot send campfire:* system messages.
 // Full (default): no restrictions.
 func checkRoleCanSend(role string, tags []string) error {
@@ -511,6 +590,8 @@ func checkRoleCanSend(role string, tags []string) error {
 	switch effective {
 	case campfire.RoleObserver:
 		return &RoleError{msg: "role observer: cannot send messages (read-only membership)"}
+	case campfire.RoleBlindRelay:
+		return &RoleError{msg: "role blind-relay: cannot originate messages (store/forward only)"}
 	case campfire.RoleWriter:
 		if hasSystemTag(tags) {
 			return &RoleError{msg: "role writer: cannot send campfire:* system messages (requires full membership)"}
