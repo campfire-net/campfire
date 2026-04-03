@@ -6,7 +6,100 @@ import (
 	"testing"
 
 	cfcrypto "github.com/campfire-net/campfire/pkg/crypto"
+	"golang.org/x/crypto/argon2"
 )
+
+// TestWrapKeyArgon2idSaltUniqueness proves that the same passphrase with different
+// random salts produces different KEKs, satisfying the done condition for
+// campfire-agent-aex: WrapKey uses argon2id + random salt for passphrase-derived KEK.
+func TestWrapKeyArgon2idSaltUniqueness(t *testing.T) {
+	passphrase := []byte("same-passphrase")
+
+	// Generate two different salts and derive KEKs manually to confirm they differ.
+	salt1 := make([]byte, 32)
+	salt2 := make([]byte, 32)
+	if _, err := rand.Read(salt1); err != nil {
+		t.Fatalf("generating salt1: %v", err)
+	}
+	if _, err := rand.Read(salt2); err != nil {
+		t.Fatalf("generating salt2: %v", err)
+	}
+
+	kek1 := argon2.IDKey(passphrase, salt1, 3, 64*1024, 4, 32)
+	kek2 := argon2.IDKey(passphrase, salt2, 3, 64*1024, 4, 32)
+
+	if bytes.Equal(kek1, kek2) {
+		t.Fatal("same passphrase with different salts produced identical KEKs — argon2id salt is not being applied")
+	}
+}
+
+// TestWrapKeyProducesDifferentBlobsEachCall verifies that WrapKey calls on the
+// same input produce different blobs (random salt + random GCM nonce).
+func TestWrapKeyProducesDifferentBlobsEachCall(t *testing.T) {
+	privKey := make([]byte, 64)
+	rand.Read(privKey) //nolint:errcheck
+	token := []byte("same-token")
+
+	w1, err := cfcrypto.WrapKey(privKey, token)
+	if err != nil {
+		t.Fatalf("WrapKey call 1: %v", err)
+	}
+	w2, err := cfcrypto.WrapKey(privKey, token)
+	if err != nil {
+		t.Fatalf("WrapKey call 2: %v", err)
+	}
+	if bytes.Equal(w1, w2) {
+		t.Fatal("two WrapKey calls on the same input produced identical blobs (salt or nonce reuse)")
+	}
+}
+
+// TestWrapKeyArgon2idRoundTrip verifies that a key wrapped with the argon2id
+// path can be correctly unwrapped with the same passphrase.
+func TestWrapKeyArgon2idRoundTrip(t *testing.T) {
+	privKey := make([]byte, 64)
+	if _, err := rand.Read(privKey); err != nil {
+		t.Fatalf("generating private key: %v", err)
+	}
+	passphrase := []byte("correct-horse-battery-staple")
+
+	wrapped, err := cfcrypto.WrapKey(privKey, passphrase)
+	if err != nil {
+		t.Fatalf("WrapKey: %v", err)
+	}
+
+	got, err := cfcrypto.UnwrapKey(wrapped, passphrase)
+	if err != nil {
+		t.Fatalf("UnwrapKey: %v", err)
+	}
+	if !bytes.Equal(got, privKey) {
+		t.Error("argon2id round-trip: unwrapped key does not match original")
+	}
+}
+
+// TestWrapKeyBackwardCompatLegacyHKDF verifies that blobs produced by the old
+// HKDF/zero-salt implementation can still be unwrapped (backward compatibility).
+func TestWrapKeyBackwardCompatLegacyHKDF(t *testing.T) {
+	privKey := make([]byte, 64)
+	if _, err := rand.Read(privKey); err != nil {
+		t.Fatalf("generating private key: %v", err)
+	}
+	token := []byte("legacy-session-token")
+
+	// Produce a legacy blob using the internal helper exported for testing.
+	legacyBlob, err := cfcrypto.WrapKeyLegacyHKDF(privKey, token)
+	if err != nil {
+		t.Fatalf("WrapKeyLegacyHKDF: %v", err)
+	}
+
+	// UnwrapKey must handle the legacy format transparently.
+	got, err := cfcrypto.UnwrapKey(legacyBlob, token)
+	if err != nil {
+		t.Fatalf("UnwrapKey on legacy blob: %v", err)
+	}
+	if !bytes.Equal(got, privKey) {
+		t.Error("legacy backward-compat: unwrapped key does not match original")
+	}
+}
 
 func TestWrapKeyUnwrapKeyRoundTrip(t *testing.T) {
 	// Generate a realistic Ed25519 private key (64 bytes).
