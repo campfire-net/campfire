@@ -157,9 +157,13 @@ func TestConventionMetering_IdempotencyKeyFormat(t *testing.T) {
 		Tier:      2,
 		ServerID:  "my-server",
 		MessageID: "my-message-id",
+		// ForgeAccountID is required for the hook to emit.
+		ForgeAccountID: "acct-roundtrip",
 	})
 
-	deadline := time.Now().Add(2 * time.Second)
+	// 5s deadline: ForgeEmitter batches for up to 1s before flushing. CI
+	// scheduling jitter can push the flush to ~1.5s; 5s gives ample margin.
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		n := len(*events)
