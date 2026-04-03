@@ -1,6 +1,7 @@
 package provenance
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -751,6 +752,68 @@ func TestChallenger_PruneExpired(t *testing.T) {
 	}
 }
 
+// --- Regression: challenge ID collision silently overwrites active challenge (campfire-agent-08m) ---
+//
+// Before this fix, IssueChallenge would silently overwrite an existing active challenge
+// when the same ID was presented twice. An attacker or buggy caller could clobber a
+// pending challenge, invalidating the original operator's nonce and hijacking the
+// verification flow. The fix returns ErrChallengeIDCollision instead of overwriting.
+
+// TestIssueChallenge_DuplicateIDRejected verifies that issuing a challenge with an ID
+// that is already active returns ErrChallengeIDCollision rather than silently
+// overwriting the existing challenge. (Regression: campfire-agent-08m)
+func TestIssueChallenge_DuplicateIDRejected(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+
+	// Issue the first challenge successfully.
+	first, err := c.IssueChallenge("msg-dup-001", testInitiatorKey, testTargetKey, testCallback, now)
+	if err != nil {
+		t.Fatalf("first IssueChallenge: unexpected error: %v", err)
+	}
+
+	// A second call with the same ID must be rejected.
+	_, err = c.IssueChallenge("msg-dup-001", testInitiatorKey, testTargetKey, testCallback, now.Add(time.Second))
+	if err != ErrChallengeIDCollision {
+		t.Errorf("expected ErrChallengeIDCollision for duplicate ID, got %v", err)
+	}
+
+	// The original challenge must still be intact — the nonce must not have been replaced.
+	c.mu.Lock()
+	stored, ok := c.active["msg-dup-001"]
+	c.mu.Unlock()
+	if !ok {
+		t.Fatal("original challenge was removed from active map after collision attempt")
+	}
+	if stored.Nonce != first.Nonce {
+		t.Errorf("original challenge nonce was overwritten: want %q, got %q", first.Nonce, stored.Nonce)
+	}
+	if stored.IssuedAt != first.IssuedAt {
+		t.Errorf("original challenge IssuedAt was overwritten: want %v, got %v", first.IssuedAt, stored.IssuedAt)
+	}
+}
+
+// TestIssueChallenge_DuplicateIDAfterExpiry verifies that once an expired challenge has
+// been evicted, the same ID may be reused without triggering ErrChallengeIDCollision.
+// (Regression: campfire-agent-08m)
+func TestIssueChallenge_DuplicateIDAfterExpiry(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+
+	// Issue a challenge that will expire.
+	_, err := c.IssueChallenge("msg-reuse-001", testInitiatorKey, testTargetKey, testCallback, now)
+	if err != nil {
+		t.Fatalf("first IssueChallenge: unexpected error: %v", err)
+	}
+
+	// Advance past TTL and trigger a new IssueChallenge to evict the expired entry.
+	future := now.Add(challengeTTL + time.Second)
+	_, err = c.IssueChallenge("msg-reuse-001", testInitiatorKey, testTargetKey, testCallback, future)
+	if err != nil {
+		t.Errorf("expected no error when reusing an ID after expiry eviction, got %v", err)
+	}
+}
+
 // TestValidateResponse_AllKnownProofTypesAccepted verifies that all five recognized
 // proof types pass validation when a non-empty proof_token is provided.
 // This ensures the valid set doesn't accidentally exclude any spec-defined type.
@@ -775,5 +838,106 @@ func TestValidateResponse_AllKnownProofTypesAccepted(t *testing.T) {
 		if err != nil {
 			t.Errorf("proof_type %q should be accepted, got error: %v", pt, err)
 		}
+	}
+}
+
+// --- Regression: targetTimestamps map grows unboundedly for unique target keys (campfire-agent-33c) ---
+//
+// Before this fix, PruneExpired called pruneExpiredChallenges which removed expired
+// entries from c.active but never swept c.targetTimestamps. An attacker (or long-running
+// legitimate workload) generating challenges for many distinct target keys would cause the
+// targetTimestamps map to grow without bound — a memory leak and DoS vector. The rate-window
+// pruning only happened per-key during IssueChallenge, so keys with no further activity
+// were never cleaned up.
+//
+// Fix: pruneExpiredChallenges now performs a global sweep of targetTimestamps after
+// removing expired challenges, calling pruneTargetTimestamps for every key.
+
+// TestChallenger_PruneExpired_CleansTargetTimestamps verifies that PruneExpired removes
+// targetTimestamps entries for targets whose timestamps have all fallen outside the rate
+// window. Without this fix the map grows unboundedly for unique target keys.
+// (Regression: campfire-agent-33c)
+func TestChallenger_PruneExpired_CleansTargetTimestamps(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+
+	// Issue one challenge per unique target key — simulates the DoS pattern of
+	// many unique targets, none of which ever re-challenge or respond.
+	const numTargets = 30
+	for i := 0; i < numTargets; i++ {
+		target := fmt.Sprintf("target-unique-gc-%03d", i)
+		id := fmt.Sprintf("msg-gc-%03d", i)
+		_, err := c.IssueChallenge(id, testInitiatorKey, target, testCallback, now)
+		if err != nil {
+			t.Fatalf("IssueChallenge for target %q: %v", target, err)
+		}
+	}
+
+	// Sanity: all target keys are present in targetTimestamps.
+	c.mu.Lock()
+	before := len(c.targetTimestamps)
+	c.mu.Unlock()
+	if before != numTargets {
+		t.Fatalf("expected %d entries in targetTimestamps before prune, got %d", numTargets, before)
+	}
+
+	// Advance time past both the challenge TTL and the rate window, then prune.
+	// All timestamps fall outside the rate window — every key should be swept.
+	future := now.Add(challengeRateWindow + time.Second)
+	c.PruneExpired(future)
+
+	// targetTimestamps must be empty — no keys with in-window timestamps remain.
+	c.mu.Lock()
+	after := len(c.targetTimestamps)
+	c.mu.Unlock()
+	if after != 0 {
+		t.Errorf("expected targetTimestamps to be empty after PruneExpired past rate window, got %d entries", after)
+	}
+
+	// active map must also be empty — all challenges expired.
+	c.mu.Lock()
+	activeAfter := len(c.active)
+	c.mu.Unlock()
+	if activeAfter != 0 {
+		t.Errorf("expected active map to be empty after PruneExpired past TTL, got %d entries", activeAfter)
+	}
+}
+
+// TestChallenger_PruneExpired_KeepsActiveTargetTimestamps verifies that PruneExpired does
+// NOT remove targetTimestamps entries for targets that still have in-window timestamps.
+// (Regression: campfire-agent-33c)
+func TestChallenger_PruneExpired_KeepsActiveTargetTimestamps(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+
+	// One target that will fall outside the window by prune time.
+	_, err := c.IssueChallenge("msg-gc-old-001", testInitiatorKey, "target-old", testCallback, now)
+	if err != nil {
+		t.Fatalf("IssueChallenge old: %v", err)
+	}
+
+	// One target that stays within the window (issued 30 minutes after "now").
+	recentTime := now.Add(30 * time.Minute)
+	_, err = c.IssueChallenge("msg-gc-recent-001", testInitiatorKey, "target-recent", testCallback, recentTime)
+	if err != nil {
+		t.Fatalf("IssueChallenge recent: %v", err)
+	}
+
+	// Prune at a time where the old target's timestamp is outside the window
+	// but the recent target's timestamp is still inside.
+	// Rate window = 1 hour; old timestamp is at "now"; pruning at now+61min.
+	pruneAt := now.Add(challengeRateWindow + time.Minute)
+	c.PruneExpired(pruneAt)
+
+	c.mu.Lock()
+	_, oldPresent := c.targetTimestamps["target-old"]
+	_, recentPresent := c.targetTimestamps["target-recent"]
+	c.mu.Unlock()
+
+	if oldPresent {
+		t.Error("target-old should have been swept from targetTimestamps (all its timestamps expired)")
+	}
+	if !recentPresent {
+		t.Error("target-recent should still be in targetTimestamps (its timestamp is within the rate window)")
 	}
 }

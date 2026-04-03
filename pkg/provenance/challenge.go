@@ -170,6 +170,15 @@ func (c *Challenger) IssueChallenge(id, initiatorKey, targetKey, callbackCampfir
 		return nil, ErrRateLimitExceeded
 	}
 
+	// Duplicate ID check: if a challenge with this ID is already active, reject rather
+	// than silently overwriting it. A collision would let an attacker (or a buggy caller)
+	// clobber a pending challenge — invalidating the original operator's nonce and
+	// potentially hijacking the verification flow. IDs are caller-supplied (e.g., campfire
+	// message IDs) and MUST be globally unique; a collision is always a bug or attack.
+	if _, exists := c.active[id]; exists {
+		return nil, ErrChallengeIDCollision
+	}
+
 	ch := &Challenge{
 		ID:               id,
 		InitiatorKey:     initiatorKey,
@@ -186,10 +195,17 @@ func (c *Challenger) IssueChallenge(id, initiatorKey, targetKey, callbackCampfir
 }
 
 // pruneExpiredChallenges removes challenges from the active map that are past
-// their TTL. This is lazy eviction: called from IssueChallenge so that
-// long-lived Challenger instances don't accumulate unanswered challenges without
-// bound. Challenges that were never answered (target offline, etc.) are cleaned
-// up here rather than waiting for a ValidateResponse call that may never arrive.
+// their TTL, then sweeps targetTimestamps for keys that have no remaining
+// in-window timestamps. This is lazy eviction: called from IssueChallenge so
+// that long-lived Challenger instances don't accumulate unanswered challenges
+// without bound. Challenges that were never answered (target offline, etc.) are
+// cleaned up here rather than waiting for a ValidateResponse call that may never
+// arrive.
+//
+// Without the targetTimestamps sweep, unique target keys accumulate unboundedly
+// in the rate-limit map across the lifetime of the process — a memory leak and
+// a DoS vector (an attacker generating unique target keys fills the map without
+// bound regardless of TTL expiry).
 //
 // Must be called with c.mu held.
 func (c *Challenger) pruneExpiredChallenges(now time.Time) {
@@ -197,6 +213,12 @@ func (c *Challenger) pruneExpiredChallenges(now time.Time) {
 		if now.Sub(ch.IssuedAt) > challengeTTL {
 			delete(c.active, id)
 		}
+	}
+	// Global sweep: remove targetTimestamps entries whose timestamps have all
+	// fallen outside the rate window. pruneTargetTimestamps already handles the
+	// delete-if-empty logic, so we just need to call it for every key.
+	for targetKey := range c.targetTimestamps {
+		c.pruneTargetTimestamps(targetKey, now)
 	}
 }
 
@@ -399,4 +421,11 @@ var (
 	// Without a proof_token there is no actual proof — the attestation would be
 	// meaningless and MUST be rejected.
 	ErrEmptyProofToken = errors.New("provenance: proof_token must not be empty")
+
+	// ErrChallengeIDCollision is returned when IssueChallenge is called with an ID
+	// that is already present in the active challenge map. Challenge IDs are
+	// caller-supplied (e.g., campfire message IDs) and MUST be globally unique.
+	// A collision would silently overwrite the original operator's pending nonce,
+	// so it is rejected as a bug or potential attack.
+	ErrChallengeIDCollision = errors.New("provenance: challenge ID already exists in active set — IDs must be unique")
 )
