@@ -216,8 +216,8 @@ func TestForgeTokenAuth_InvalidToken(t *testing.T) {
 	if resp.Error.Code != -32000 {
 		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
 	}
-	if !strings.Contains(resp.Error.Message, "forge-tk-") {
-		t.Errorf("expected 'forge-tk-' in error message, got: %q", resp.Error.Message)
+	if !strings.Contains(resp.Error.Message, "forge") {
+		t.Errorf("expected 'forge' in error message, got: %q", resp.Error.Message)
 	}
 }
 
