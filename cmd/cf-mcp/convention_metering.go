@@ -72,6 +72,11 @@ func buildConventionMeteringHook(emitter *forge.ForgeEmitter) convention.Meterin
 		if sessionAcct := sessionForgeAccountFromContext(ctx); sessionAcct != "" {
 			accountID = sessionAcct
 		}
+		if accountID == "" {
+			// No account to bill — skip emission rather than sending a malformed
+			// event with an empty AccountID that Forge would drop or misattribute.
+			return
+		}
 		emitter.Emit(forge.UsageEvent{
 			AccountID:      accountID,
 			ServiceID:      "campfire-hosting",

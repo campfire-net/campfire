@@ -546,3 +546,110 @@ func TestForgeTokenAuth_RotateTokenBlocked(t *testing.T) {
 		t.Error("operator session token should still be in index after blocked rotation")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test: forge-tk- re-auth reuses existing session token (campfire-agent-0t0)
+// ---------------------------------------------------------------------------
+
+// TestForgeTokenAuth_ReuseExistingToken verifies that when a forge-tk- API key
+// is presented for an account that already has a live session token, the same
+// session token is returned rather than issuing a new one. This prevents
+// unbounded token accumulation in the registry.
+func TestForgeTokenAuth_ReuseExistingToken(t *testing.T) {
+	const accountID = "acct-reuse-test"
+	forgeSrv, _ := newForgeResolveServer(t, accountID, http.StatusOK)
+
+	forgeClient := &forge.Client{
+		BaseURL:     forgeSrv.URL,
+		ServiceKey:  "forge-sk-testkey",
+		HTTPClient:  forgeSrv.Client(),
+		RetryDelays: []time.Duration{0},
+	}
+
+	srv := newSessionedServerWithForge(t, forgeClient)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}`
+
+	// First auth: get initial session token.
+	w1 := postMCPRequest(t, srv, "Bearer forge-tk-test", body)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first init failed: HTTP %d; body: %s", w1.Code, w1.Body.String())
+	}
+	resp1 := decodeRPCResponse(t, w1)
+	token1 := extractSessionTokenFromResponse(t, resp1)
+	if token1 == "" {
+		t.Fatal("expected session token from first forge-tk- init")
+	}
+
+	// Second auth: same forge-tk- key should return the same session token.
+	w2 := postMCPRequest(t, srv, "Bearer forge-tk-test", body)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second init failed: HTTP %d; body: %s", w2.Code, w2.Body.String())
+	}
+	resp2 := decodeRPCResponse(t, w2)
+	token2 := extractSessionTokenFromResponse(t, resp2)
+	if token2 == "" {
+		t.Fatal("expected session token from second forge-tk- init")
+	}
+
+	// The same token must be returned — no new token issued.
+	if token1 != token2 {
+		t.Errorf("expected same session token on re-auth: first=%q, second=%q", token1, token2)
+	}
+
+	// Only one token should be in the index for this account.
+	tokens := srv.operatorSessionIdx.TokensForAccount(accountID)
+	if len(tokens) != 1 {
+		t.Errorf("expected 1 token in index for account, got %d: %v", len(tokens), tokens)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: campfire_revoke_session removes token from operatorSessionIndex (campfire-agent-kjv)
+// ---------------------------------------------------------------------------
+
+// TestForgeTokenAuth_RevokeSessionCleansIndex verifies that revoking an operator
+// session token removes it from operatorSessionIdx, preventing a desync where a
+// revoked token stays live in the index with TTL=0 semantics.
+func TestForgeTokenAuth_RevokeSessionCleansIndex(t *testing.T) {
+	const accountID = "acct-revoke-clean"
+	forgeSrv, _ := newForgeResolveServer(t, accountID, http.StatusOK)
+
+	forgeClient := &forge.Client{
+		BaseURL:     forgeSrv.URL,
+		ServiceKey:  "forge-sk-testkey",
+		HTTPClient:  forgeSrv.Client(),
+		RetryDelays: []time.Duration{0},
+	}
+
+	srv := newSessionedServerWithForge(t, forgeClient)
+
+	// Authenticate to get a session token.
+	initBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}`
+	w := postMCPRequest(t, srv, "Bearer forge-tk-test", initBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("init failed: HTTP %d", w.Code)
+	}
+	resp := decodeRPCResponse(t, w)
+	sessToken := extractSessionTokenFromResponse(t, resp)
+	if sessToken == "" {
+		t.Fatal("expected session token from init")
+	}
+
+	// Confirm it's in the index.
+	if _, ok := srv.operatorSessionIdx.AccountForToken(sessToken); !ok {
+		t.Fatal("token should be in index before revoke")
+	}
+
+	// Revoke the session.
+	revokeBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"campfire_revoke_session","arguments":{}}}`
+	w2 := postMCPRequest(t, srv, "Bearer "+sessToken, revokeBody)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("revoke failed: HTTP %d; body: %s", w2.Code, w2.Body.String())
+	}
+
+	// Token must be removed from the index after revocation.
+	if _, ok := srv.operatorSessionIdx.AccountForToken(sessToken); ok {
+		t.Error("token must be removed from operatorSessionIdx after campfire_revoke_session")
+	}
+}

@@ -1086,7 +1086,12 @@ func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonR
 	// is already set): the account was resolved during auth and is known to exist.
 	// EnsureOperatorAccount requires an OperatorAccountStore which is not
 	// available in the forge-tk- path; calling it would panic.
-	isForgeSession := s.sess != nil && s.sess.forgeAccountID != ""
+	isForgeSession := false
+	if s.sess != nil {
+		s.sess.mu.Lock()
+		isForgeSession = s.sess.forgeAccountID != ""
+		s.sess.mu.Unlock()
+	}
 	if s.forgeAccounts != nil && !isForgeSession {
 		pubkeyHex := agentID.PublicKeyHex()
 		sess := s.sess // capture for goroutine
@@ -1219,15 +1224,17 @@ Other commands: campfire_discover (find campfires), campfire_create (start one).
 // forge-tk- API key, and "session" for normal anonymous sessions.
 // operator_account_id is included only for "operator_key" sessions.
 func (s *server) injectAuthMethodFields(m map[string]interface{}) {
-	if s.sess != nil && s.sess.forgeAccountID != "" {
+	if s.sess != nil {
 		s.sess.mu.Lock()
 		acctID := s.sess.forgeAccountID
 		s.sess.mu.Unlock()
-		m["auth_method"] = "operator_key"
-		m["operator_account_id"] = acctID
-	} else {
-		m["auth_method"] = "session"
+		if acctID != "" {
+			m["auth_method"] = "operator_key"
+			m["operator_account_id"] = acctID
+			return
+		}
 	}
+	m["auth_method"] = "session"
 }
 
 // autoProvisionResult holds the result of autoProvisionCampfire.
@@ -2341,7 +2348,7 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 		dispatchCtx, dispatchCancel := context.WithTimeout(parentCtx, 30*time.Second)
 		// For forge-tk- sessions, inject the operator's Forge account ID into the
 		// dispatch context so the metering hook bills the operator directly.
-		if s.sess != nil && s.sess.forgeAccountID != "" {
+		if s.sess != nil {
 			s.sess.mu.Lock()
 			forgeAcct := s.sess.forgeAccountID
 			s.sess.mu.Unlock()
@@ -4117,20 +4124,33 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			accountID := keyRecord.AccountID
-			// Issue a new TTL=0 session token using the accountID as the stable internalID.
-			// TTL=0 means no expiry check — the token persists until explicitly revoked.
-			sessToken, issueErr := s.sessManager.issueForID(accountID)
-			if issueErr != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("forge-tk- auth: issuing session token: %v", issueErr))) //nolint:errcheck
-				return
-			}
-			// Register the association in the operator session index.
+			// Reuse an existing session token if one is already registered for this
+			// account. This prevents unbounded token accumulation: each forge-tk-
+			// auth request would otherwise issue a fresh token without expiry,
+			// growing the registry indefinitely for long-lived operator deployments.
+			sessToken := ""
 			if s.operatorSessionIdx != nil {
-				s.operatorSessionIdx.Register(accountID, sessToken)
+				if existing := s.operatorSessionIdx.TokensForAccount(accountID); len(existing) > 0 {
+					sessToken = existing[0]
+				}
 			}
-			// Override token with the newly issued session token and treat as init.
+			if sessToken == "" {
+				// No existing token — issue a new TTL=0 session token.
+				// TTL=0 means no expiry check — the token persists until explicitly revoked.
+				var issueErr error
+				sessToken, issueErr = s.sessManager.issueForID(accountID)
+				if issueErr != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("forge-tk- auth: issuing session token: %v", issueErr))) //nolint:errcheck
+					return
+				}
+				// Register the new token in the operator session index.
+				if s.operatorSessionIdx != nil {
+					s.operatorSessionIdx.Register(accountID, sessToken)
+				}
+			}
+			// Override token with the session token and treat as init.
 			token = sessToken
 			resolvedForgeAccountID = accountID
 		} else {
@@ -4233,6 +4253,11 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.sessManager.revokeSession(token)
+		// Clean up the operator session index so revoked tokens don't stay
+		// as live entries with TTL=0 semantics after the session is gone.
+		if s.operatorSessionIdx != nil {
+			s.operatorSessionIdx.Remove(token)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		resp := okResponse(req.ID, map[string]interface{}{
 			"content": []map[string]interface{}{
@@ -4306,6 +4331,21 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 		var limitErr *sessionLimitError
 		if errors.As(sessErr, &limitErr) {
 			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		// For forge-tk- sessions that issued a fresh token: if getOrCreateOperator
+		// fails, clean up the newly-issued token from the registry and index to
+		// prevent orphaned entries that accumulate without a live session.
+		// Reused tokens (0t0 fix) are intentionally not cleaned: other requests
+		// may already hold references to the same token.
+		if forgeTokenPresented && resolvedForgeAccountID != "" {
+			if s.operatorSessionIdx != nil {
+				existing := s.operatorSessionIdx.TokensForAccount(resolvedForgeAccountID)
+				if len(existing) == 1 && existing[0] == token {
+					// Only token for this account was the one we just issued — safe to remove.
+					s.operatorSessionIdx.Remove(token)
+					s.sessManager.revokeSession(token)
+				}
+			}
 		}
 		json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("creating session: %v", sessErr))) //nolint:errcheck
 		return
