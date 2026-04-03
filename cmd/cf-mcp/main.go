@@ -2423,6 +2423,7 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 
 	// Collect messages per campfire.
 	var allMessages []protocol.Message
+	preFilterCursors := map[string]int64{} // campfireID → MaxTimestamp from protocol result
 	for _, cfID := range campfireIDs {
 		var afterTS int64
 		if !readAll {
@@ -2437,6 +2438,12 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 			return errResponse(id, -32000, fmt.Sprintf("listing messages: %v", readErr))
 		}
 		allMessages = append(allMessages, result.Messages...)
+		// Track the pre-filter MaxTimestamp so the cursor advances past all
+		// messages the server returned, not just the ones that survive tag/sender
+		// filtering. Without this, filtered-out messages re-appear on the next read.
+		if result.MaxTimestamp > preFilterCursors[cfID] {
+			preFilterCursors[cfID] = result.MaxTimestamp
+		}
 	}
 
 	type jsonMsg struct {
@@ -2503,16 +2510,16 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 		out = []jsonMsg{}
 	}
 
-	// Advance cursors unless all/peek
-	if !readAll && !readPeek && len(allMessages) > 0 {
-		cursors := map[string]int64{}
-		for _, m := range allMessages {
-			if m.Timestamp > cursors[m.CampfireID] {
-				cursors[m.CampfireID] = m.Timestamp
+	// Advance cursors unless all/peek.
+	// Use preFilterCursors (MaxTimestamp from the protocol result) rather than
+	// scanning allMessages. allMessages is the post-filter set, so scanning it
+	// would leave filtered-out messages behind the cursor and re-deliver them
+	// on the next read.
+	if !readAll && !readPeek {
+		for cfID, ts := range preFilterCursors {
+			if ts > 0 {
+				st.SetReadCursor(cfID, ts)
 			}
-		}
-		for cfID, ts := range cursors {
-			st.SetReadCursor(cfID, ts)
 		}
 	}
 
