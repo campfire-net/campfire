@@ -241,7 +241,7 @@ func TestSendFROST(t *testing.T) {
 	signInput := message.HopSignInput{
 		MessageID:             msg.ID,
 		CampfireID:            cfPub,
-		MembershipHash:        cfPub,
+		MembershipHash:        hop.MembershipHash,
 		MemberCount:           hop.MemberCount,
 		JoinProtocol:          hop.JoinProtocol,
 		ReceptionRequirements: hop.ReceptionRequirements,
