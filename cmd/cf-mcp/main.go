@@ -1125,16 +1125,18 @@ Campfire: %s (status: %s, free tier: 1000 msg/month)
 Call tools/list now — if this campfire has convention declarations, they are already registered as typed MCP tools with validated arguments, proper tags, and signing. Use those tools to interact with this campfire. Do NOT fall back to campfire_send unless no convention tool covers your use case.`,
 			status, agentID.PublicKeyHex(), identityType, s.cfHome,
 			provResult.campfireID, provResult.campfireStatus)
-		result, _ := toolResultJSON(map[string]interface{}{
-			"public_key":   agentID.PublicKeyHex(),
-			"campfire_id":  provResult.campfireID,
+		initFields := map[string]interface{}{
+			"public_key":      agentID.PublicKeyHex(),
+			"campfire_id":     provResult.campfireID,
 			"campfire_status": provResult.campfireStatus,
-			"threshold":    provResult.threshold,
-			"role":         campfire.RoleFull,
-			"free_tier":    true,
-			"monthly_cap":  ratelimit.DefaultMonthlyMessageCap,
-			"guide":        guide,
-		})
+			"threshold":       provResult.threshold,
+			"role":            campfire.RoleFull,
+			"free_tier":       true,
+			"monthly_cap":     ratelimit.DefaultMonthlyMessageCap,
+			"guide":           guide,
+		}
+		s.injectAuthMethodFields(initFields)
+		result, _ := toolResultJSON(initFields)
 		return okResponse(id, result)
 	}
 
@@ -1185,24 +1187,47 @@ Other commands: campfire_discover (find campfires), campfire_create (start one).
 	}
 
 	if auditCampfireID != "" {
-		result, _ := toolResultJSON(map[string]interface{}{
+		auditFields := map[string]interface{}{
 			"public_key":        agentID.PublicKeyHex(),
 			"audit_campfire_id": auditCampfireID,
 			"audit_status":      auditStatus,
 			"guide":             guide,
-		})
+		}
+		s.injectAuthMethodFields(auditFields)
+		result, _ := toolResultJSON(auditFields)
 		return okResponse(id, result)
 	}
 
 	// Audit writer unavailable: include warning so the agent knows transparency
 	// logging is not active for this session (§5.e).
-	result, _ := toolResultJSON(map[string]interface{}{
+	noAuditFields := map[string]interface{}{
 		"public_key":   agentID.PublicKeyHex(),
 		"audit_status": auditStatus,
 		"audit_error":  auditError,
 		"guide":        guide,
-	})
+	}
+	s.injectAuthMethodFields(noAuditFields)
+	result, _ := toolResultJSON(noAuditFields)
 	return okResponse(id, result)
+}
+
+// injectAuthMethodFields adds auth_method and (for operator key sessions)
+// operator_account_id to the given map. Called by handleInit on every response
+// path so callers always see these fields in the campfire_init result.
+//
+// auth_method is "operator_key" when the session was authenticated via a
+// forge-tk- API key, and "session" for normal anonymous sessions.
+// operator_account_id is included only for "operator_key" sessions.
+func (s *server) injectAuthMethodFields(m map[string]interface{}) {
+	if s.sess != nil && s.sess.forgeAccountID != "" {
+		s.sess.mu.Lock()
+		acctID := s.sess.forgeAccountID
+		s.sess.mu.Unlock()
+		m["auth_method"] = "operator_key"
+		m["operator_account_id"] = acctID
+	} else {
+		m["auth_method"] = "session"
+	}
 }
 
 // autoProvisionResult holds the result of autoProvisionCampfire.
@@ -2314,6 +2339,14 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 			parentCtx = context.Background()
 		}
 		dispatchCtx, dispatchCancel := context.WithTimeout(parentCtx, 30*time.Second)
+		// For forge-tk- sessions, inject the operator's Forge account ID into the
+		// dispatch context so the metering hook bills the operator directly.
+		if s.sess != nil && s.sess.forgeAccountID != "" {
+			s.sess.mu.Lock()
+			forgeAcct := s.sess.forgeAccountID
+			s.sess.mu.Unlock()
+			dispatchCtx = WithSessionForgeAccount(dispatchCtx, forgeAcct)
+		}
 		// Lazy-load convention server registrations for this campfire on first send.
 		s.loadConventionServersForCampfire(dispatchCtx, campfireID)
 		msgRec := store.MessageRecordFromMessage(campfireID, msg, store.NowNano())
