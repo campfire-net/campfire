@@ -1424,3 +1424,96 @@ func TestDispatcher_Tier1_TokensConsumed_MeteringEvent(t *testing.T) {
 		t.Fatalf("expected metering TokensConsumed=%d, got %d", expectedTokens, ev.TokensConsumed)
 	}
 }
+
+
+// ---- ErrDispatchNotFound in sendFulfillment failure path (campfire-agent-695) ----
+
+// notFoundOnMarkFailedCASStore wraps MemoryDispatchStore and makes MarkFailedCAS
+// return (false, true, nil) — simulating the dispatch record being deleted between
+// MarkFulfilledCAS success and the MarkFailedCAS revert after sendFulfillment fails.
+type notFoundOnMarkFailedCASStore struct {
+	*convention.MemoryDispatchStore
+}
+
+func (s *notFoundOnMarkFailedCASStore) MarkFailedCAS(_ context.Context, campfireID, messageID string, _ int) (bool, bool, error) {
+	// Simulate the record disappearing before the revert (e.g. cleanup race).
+	s.MemoryDispatchStore.DeleteDispatch(campfireID, messageID)
+	return false, true, nil
+}
+
+// TestDispatcher_Tier1_SendFulfillmentFailure_DispatchNotFound_SkipsMeteringAndCursor
+// verifies that when sendFulfillment fails AND the subsequent MarkFailedCAS revert
+// returns notFound=true, the dispatcher returns "not_found", skips metering, and
+// does not advance the cursor. This covers the gap where ErrDispatchNotFound was
+// previously silently ignored in the sendFulfillment failure path (campfire-agent-695).
+func TestDispatcher_Tier1_SendFulfillmentFailure_DispatchNotFound_SkipsMeteringAndCursor(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	inner := convention.NewMemoryDispatchStore()
+	ds := &notFoundOnMarkFailedCASStore{MemoryDispatchStore: inner}
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	serverIDHex := env.serverID.PublicKeyHex()
+
+	var mu sync.Mutex
+	var meterEvents []convention.ConventionMeterEvent
+	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
+		mu.Lock()
+		meterEvents = append(meterEvents, ev)
+		mu.Unlock()
+	}
+
+	// Use a client with a broken transport so Send() fails when posting the
+	// fulfillment message, driving execution into the MarkFailedCAS revert path.
+	brokenStoreDir := t.TempDir()
+	brokenStore, err := store.Open(filepath.Join(brokenStoreDir, "broken695.db"))
+	if err != nil {
+		t.Fatalf("opening broken store: %v", err)
+	}
+	t.Cleanup(func() { brokenStore.Close() })
+	brokenStore.AddMembership(store.Membership{
+		CampfireID:    env.campfireID,
+		TransportDir:  "/nonexistent/path/that/will/fail",
+		JoinProtocol:  "open",
+		Role:          campfire.RoleFull,
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	})
+	brokenClient := protocol.New(brokenStore, env.serverID)
+
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", brokenClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		return &convention.Response{Payload: map[string]any{"result": "ok"}}, nil
+	}, serverIDHex, "forge-acct-695")
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	msg.ID = "msg-notfound-sendfulfillment-695"
+	msg.Timestamp = time.Now().UnixNano()
+
+	dispatched := d.Dispatch(context.Background(), env.campfireID, msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	// The dispatch record is deleted by notFoundOnMarkFailedCASStore, so
+	// waitForDispatch would never find a terminal status. Wait a moment for
+	// the goroutine to finish instead.
+	time.Sleep(200 * time.Millisecond)
+
+	// Metering hook must NOT have fired ("not_found" skips metering).
+	mu.Lock()
+	nEvents := len(meterEvents)
+	mu.Unlock()
+	if nEvents != 0 {
+		t.Fatalf("expected 0 metering events when sendFulfillment failure revert finds no record, got %d", nEvents)
+	}
+
+	// Cursor must NOT have advanced.
+	cursor695, err := inner.GetCursor(context.Background(), serverIDHex, env.campfireID)
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cursor695 != 0 {
+		t.Fatalf("expected cursor 0 (not advanced) when sendFulfillment failure revert finds no record, got %d", cursor695)
+	}
+}
+
