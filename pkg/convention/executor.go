@@ -98,6 +98,12 @@ func (a *clientAdapter) readMessages(_ context.Context, campfireID string, tags 
 }
 
 func (a *clientAdapter) sendFutureAndAwait(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string, timeout time.Duration) (string, []byte, error) {
+	// Check for context cancellation before sending — client.Send does not accept
+	// a context, so cancellation must be checked explicitly before and after the call.
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
+
 	msg, err := a.client.Send(protocol.SendRequest{
 		CampfireID:  campfireID,
 		Payload:     payload,
@@ -106,6 +112,11 @@ func (a *clientAdapter) sendFutureAndAwait(ctx context.Context, campfireID strin
 	})
 	if err != nil {
 		return "", nil, fmt.Errorf("sending future: %w", err)
+	}
+
+	// Re-check after Send in case the context was cancelled concurrently.
+	if err := ctx.Err(); err != nil {
+		return msg.ID, nil, err
 	}
 
 	fulfillment, err := a.client.Await(ctx, protocol.AwaitRequest{
