@@ -195,10 +195,17 @@ func (c *Challenger) IssueChallenge(id, initiatorKey, targetKey, callbackCampfir
 }
 
 // pruneExpiredChallenges removes challenges from the active map that are past
-// their TTL. This is lazy eviction: called from IssueChallenge so that
-// long-lived Challenger instances don't accumulate unanswered challenges without
-// bound. Challenges that were never answered (target offline, etc.) are cleaned
-// up here rather than waiting for a ValidateResponse call that may never arrive.
+// their TTL, then sweeps targetTimestamps for keys that have no remaining
+// in-window timestamps. This is lazy eviction: called from IssueChallenge so
+// that long-lived Challenger instances don't accumulate unanswered challenges
+// without bound. Challenges that were never answered (target offline, etc.) are
+// cleaned up here rather than waiting for a ValidateResponse call that may never
+// arrive.
+//
+// Without the targetTimestamps sweep, unique target keys accumulate unboundedly
+// in the rate-limit map across the lifetime of the process — a memory leak and
+// a DoS vector (an attacker generating unique target keys fills the map without
+// bound regardless of TTL expiry).
 //
 // Must be called with c.mu held.
 func (c *Challenger) pruneExpiredChallenges(now time.Time) {
@@ -206,6 +213,12 @@ func (c *Challenger) pruneExpiredChallenges(now time.Time) {
 		if now.Sub(ch.IssuedAt) > challengeTTL {
 			delete(c.active, id)
 		}
+	}
+	// Global sweep: remove targetTimestamps entries whose timestamps have all
+	// fallen outside the rate window. pruneTargetTimestamps already handles the
+	// delete-if-empty logic, so we just need to call it for every key.
+	for targetKey := range c.targetTimestamps {
+		c.pruneTargetTimestamps(targetKey, now)
 	}
 }
 
