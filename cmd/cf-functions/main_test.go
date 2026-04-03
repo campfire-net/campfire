@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -191,6 +192,76 @@ func TestWaitReady_Success(t *testing.T) {
 	}
 	if baseURL == nil {
 		t.Fatal("expected non-nil baseURL")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sweep handler tests
+// ---------------------------------------------------------------------------
+
+func TestBuildSweepHandler_MethodNotAllowed(t *testing.T) {
+	// The sweep handler should reject non-POST methods.
+	handler := buildSweepHandler(&url.URL{Scheme: "http", Host: "127.0.0.1:9999"})
+	req := httptest.NewRequest(http.MethodGet, "/sweep", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestBuildSweepHandler_ForwardsToCfMcp(t *testing.T) {
+	// Start a mock cf-mcp that responds to POST /sweep.
+	mockCfMcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sweep" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected method: %s", r.Method)
+			http.Error(w, "bad method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"redispatched":2,"status":"ok"}`)
+	}))
+	defer mockCfMcp.Close()
+
+	baseURL, _ := url.Parse(mockCfMcp.URL)
+	handler := buildSweepHandler(baseURL)
+
+	req := httptest.NewRequest(http.MethodPost, "/sweep", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"redispatched":2`) {
+		t.Errorf("expected redispatched:2 in body, got: %s", body)
+	}
+}
+
+func TestBuildSweepHandler_UnreachableCfMcp(t *testing.T) {
+	// Point at a port that isn't listening — should return 200 (not retry).
+	port, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseURL := &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}
+	handler := buildSweepHandler(baseURL)
+
+	req := httptest.NewRequest(http.MethodPost, "/sweep", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	// Should return 200 to prevent Azure Functions from retrying.
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 even on cf-mcp failure, got %d", w.Code)
 	}
 }
 

@@ -61,6 +61,7 @@ func (s *server) wireConventionMetering(emitter *forge.ForgeEmitter) {
 	d.MeteringHook = buildConventionMeteringHook(emitter)
 	s.conventionDispatcher = d
 	s.conventionDispatchStore = ds
+	s.fallbackSweep = convention.NewSweeper(d, ds, nil)
 }
 
 // wireBillingSweep creates a BillingSweep from the shared conventionDispatchStore
