@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -20,7 +21,7 @@ func awaitFulfillment(s store.Store, campfireID, targetMsgID string) (*protocol.
 		return nil, err
 	}
 	client := protocol.New(s, id)
-	msg, err := client.Await(protocol.AwaitRequest{
+	msg, err := client.Await(context.Background(), protocol.AwaitRequest{
 		CampfireID:   campfireID,
 		TargetMsgID:  targetMsgID,
 		Timeout:      1 * time.Millisecond, // immediate timeout = check-only

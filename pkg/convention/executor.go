@@ -108,7 +108,7 @@ func (a *clientAdapter) sendFutureAndAwait(ctx context.Context, campfireID strin
 		return "", nil, fmt.Errorf("sending future: %w", err)
 	}
 
-	fulfillment, err := a.client.Await(protocol.AwaitRequest{
+	fulfillment, err := a.client.Await(ctx, protocol.AwaitRequest{
 		CampfireID:  campfireID,
 		TargetMsgID: msg.ID,
 		Timeout:     timeout,

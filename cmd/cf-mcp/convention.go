@@ -705,7 +705,7 @@ func (b *httpModeBackend) SendFutureAndAwait(ctx context.Context, campfireID str
 	if err != nil {
 		return "", nil, fmt.Errorf("sending future: %w", err)
 	}
-	fulfillment, awaitErr := b.client.Await(protocol.AwaitRequest{
+	fulfillment, awaitErr := b.client.Await(ctx, protocol.AwaitRequest{
 		CampfireID:  campfireID,
 		TargetMsgID: msg.ID,
 		Timeout:     timeout,

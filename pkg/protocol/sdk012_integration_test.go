@@ -261,7 +261,7 @@ func TestSDK012_AwaitFulfillment(t *testing.T) {
 	}
 	ch := make(chan awaitResult, 1)
 	go func() {
-		msg, err := client.Await(protocol.AwaitRequest{
+		msg, err := client.Await(context.Background(), protocol.AwaitRequest{
 			CampfireID:   campfireID,
 			TargetMsgID:  futureMsg.ID,
 			Timeout:      10 * time.Second,
