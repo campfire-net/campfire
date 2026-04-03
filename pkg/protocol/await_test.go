@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -163,7 +164,7 @@ func TestClientAwait_IgnoresMessagesWithoutFulfillsTag(t *testing.T) {
 	// Write a reply that references the future message but has "status" tag, not "fulfills".
 	writeTransportMessageWithAntecedents(t, cfID, tr, campfireID, "working on it", []string{"status"}, []string{futureMsg.ID})
 
-	// Await should time out — "status" tag is not "fulfills".
+	// Await should time out -- "status" tag is not "fulfills".
 	_, err := client.Await(context.Background(), protocol.AwaitRequest{
 		CampfireID:   campfireID,
 		TargetMsgID:  futureMsg.ID,
@@ -183,7 +184,7 @@ func TestClientAwait_ContextCancellation(t *testing.T) {
 
 	client := protocol.New(s, nil)
 
-	// Write a future message — no fulfillment will arrive.
+	// Write a future message -- no fulfillment will arrive.
 	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "unanswered question", []string{"future"})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -197,7 +198,7 @@ func TestClientAwait_ContextCancellation(t *testing.T) {
 		msg, err := client.Await(ctx, protocol.AwaitRequest{
 			CampfireID:   campfireID,
 			TargetMsgID:  futureMsg.ID,
-			Timeout:      0, // no timeout — only ctx cancellation stops it
+			Timeout:      0, // no timeout -- only ctx cancellation stops it
 			PollInterval: 50 * time.Millisecond,
 		})
 		ch <- result{msg, err}
@@ -244,7 +245,7 @@ func TestClientAwait_NegativeTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("Await: expected error for negative timeout, got nil")
 	}
-	// Should return almost instantly — not after any poll interval.
+	// Should return almost instantly -- not after any poll interval.
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("Await: negative timeout should return immediately, took %v", elapsed)
 	}
@@ -252,7 +253,7 @@ func TestClientAwait_NegativeTimeout(t *testing.T) {
 
 // TestClientAwait_MultipleFulfillmentsTiebreaker verifies that when multiple
 // messages fulfill the same future and their timestamps are identical, Await
-// returns the message with the lexicographically smallest ID — making the
+// returns the message with the lexicographically smallest ID -- making the
 // selection deterministic rather than dependent on iteration order.
 // (campfire-agent-mnh regression test.)
 func TestClientAwait_MultipleFulfillmentsTiebreaker(t *testing.T) {
@@ -275,7 +276,7 @@ func TestClientAwait_MultipleFulfillmentsTiebreaker(t *testing.T) {
 	const sharedTimestamp = int64(999_888_777_000)
 	fulfillIDs := []string{
 		"ccc0000000000000000000000000000000000000000000000000000000000000",
-		"aaa0000000000000000000000000000000000000000000000000000000000000", // ← smallest ID, expected winner
+		"aaa0000000000000000000000000000000000000000000000000000000000000", // <- smallest ID, expected winner
 		"bbb0000000000000000000000000000000000000000000000000000000000000",
 	}
 	for _, id := range fulfillIDs {
@@ -341,5 +342,162 @@ func TestClientAwait_ContextAlreadyCancelled(t *testing.T) {
 	}
 	if err != context.Canceled {
 		t.Errorf("Await: expected context.Canceled, got %v", err)
+	}
+}
+
+// addCompactionEvent inserts a campfire:compact message into the store that
+// marks the given message IDs as superseded. This is a test helper that mirrors
+// how cmd/cf compact builds compaction records.
+func addCompactionEvent(t *testing.T, s store.Store, campfireID string, supersedes []string) {
+	t.Helper()
+	type compactionPayload struct {
+		Supersedes     []string `json:"supersedes"`
+		Summary        []byte   `json:"summary"`
+		Retention      string   `json:"retention"`
+		CheckpointHash string   `json:"checkpoint_hash"`
+	}
+	payload, err := json.Marshal(compactionPayload{
+		Supersedes:     supersedes,
+		Summary:        []byte("test compaction summary"),
+		Retention:      "archive",
+		CheckpointHash: "testhash",
+	})
+	if err != nil {
+		t.Fatalf("marshalling compaction payload: %v", err)
+	}
+	compactRec := store.MessageRecord{
+		ID:          "compact-" + supersedes[0],
+		CampfireID:  campfireID,
+		Sender:      "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
+		Payload:     payload,
+		Tags:        []string{"campfire:compact"},
+		Antecedents: []string{},
+		Timestamp:   time.Now().UnixNano(),
+		Signature:   []byte("testsig"),
+		Provenance:  nil,
+		ReceivedAt:  time.Now().UnixNano(),
+	}
+	if _, err := s.AddMessage(compactRec); err != nil {
+		t.Fatalf("adding compaction event: %v", err)
+	}
+}
+
+// TestClientAwait_CompactedFulfillmentIsIgnored verifies that Await times out
+// when the only fulfillment in the store has been superseded by a compaction
+// event. This is the regression test for campfire-agent-xy0: findFulfillment
+// previously returned compacted messages, diverging from CLI behaviour.
+func TestClientAwait_CompactedFulfillmentIsIgnored(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	// Write the future message to transport, then sync it into the store.
+	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "pending question", []string{"future"})
+	if _, err := client.Read(protocol.ReadRequest{CampfireID: campfireID, IncludeCompacted: true}); err != nil {
+		t.Fatalf("syncing future message: %v", err)
+	}
+
+	// Insert a fulfillment directly into the store with a known ID.
+	const fulfillID = "fulfill0000000000000000000000000000000000000000000000000000000001"
+	fulfillRec := store.MessageRecord{
+		ID:          fulfillID,
+		CampfireID:  campfireID,
+		Sender:      "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
+		Payload:     []byte("ruling: proceed"),
+		Tags:        []string{"fulfills"},
+		Antecedents: []string{futureMsg.ID},
+		Timestamp:   time.Now().UnixNano(),
+		Signature:   []byte("sig"),
+		Provenance:  nil,
+		ReceivedAt:  time.Now().UnixNano(),
+	}
+	if _, err := s.AddMessage(fulfillRec); err != nil {
+		t.Fatalf("AddMessage(fulfillment): %v", err)
+	}
+
+	// Add a compaction event that supersedes the fulfillment.
+	addCompactionEvent(t, s, campfireID, []string{fulfillID})
+
+	// Await should NOT return the compacted fulfillment -- it must time out.
+	_, err := client.Await(context.Background(), protocol.AwaitRequest{
+		CampfireID:   campfireID,
+		TargetMsgID:  futureMsg.ID,
+		Timeout:      400 * time.Millisecond,
+		PollInterval: 100 * time.Millisecond,
+	})
+	if err != protocol.ErrAwaitTimeout {
+		t.Errorf("Await: expected ErrAwaitTimeout (compacted fulfillment must be ignored), got %v", err)
+	}
+}
+
+// TestClientAwait_NonCompactedFulfillmentWinsWhenEarlierWasCompacted verifies
+// that Await returns the non-compacted fulfillment when an earlier fulfillment
+// was superseded by a compaction event. The compaction must not block Await from
+// finding valid (non-compacted) fulfillments. (campfire-agent-xy0)
+func TestClientAwait_NonCompactedFulfillmentWinsWhenEarlierWasCompacted(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	// Write and sync the future message.
+	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "pending question", []string{"future"})
+	if _, err := client.Read(protocol.ReadRequest{CampfireID: campfireID, IncludeCompacted: true}); err != nil {
+		t.Fatalf("syncing future message: %v", err)
+	}
+
+	// Insert two fulfillments: one that will be compacted, one that won't.
+	const compactedFulfillID = "compacted00000000000000000000000000000000000000000000000000000001"
+	const liveFulfillID = "live000000000000000000000000000000000000000000000000000000000001"
+	baseTS := time.Now().UnixNano()
+
+	compactedRec := store.MessageRecord{
+		ID:          compactedFulfillID,
+		CampfireID:  campfireID,
+		Sender:      "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
+		Payload:     []byte("old ruling"),
+		Tags:        []string{"fulfills"},
+		Antecedents: []string{futureMsg.ID},
+		Timestamp:   baseTS,
+		Signature:   []byte("sig"),
+		Provenance:  nil,
+		ReceivedAt:  baseTS,
+	}
+	liveRec := store.MessageRecord{
+		ID:          liveFulfillID,
+		CampfireID:  campfireID,
+		Sender:      "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
+		Payload:     []byte("new ruling: proceed"),
+		Tags:        []string{"fulfills"},
+		Antecedents: []string{futureMsg.ID},
+		Timestamp:   baseTS + 1,
+		Signature:   []byte("sig"),
+		Provenance:  nil,
+		ReceivedAt:  baseTS + 1,
+	}
+	for _, rec := range []store.MessageRecord{compactedRec, liveRec} {
+		if _, err := s.AddMessage(rec); err != nil {
+			t.Fatalf("AddMessage(%s): %v", rec.ID, err)
+		}
+	}
+
+	// Compact only the earlier fulfillment, leaving the live one intact.
+	addCompactionEvent(t, s, campfireID, []string{compactedFulfillID})
+
+	// Await must return the live (non-compacted) fulfillment.
+	got, err := client.Await(context.Background(), protocol.AwaitRequest{
+		CampfireID:  campfireID,
+		TargetMsgID: futureMsg.ID,
+		Timeout:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Await: unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Await: expected non-compacted fulfillment, got nil")
+	}
+	if got.ID != liveFulfillID {
+		t.Errorf("Await: expected live fulfillment %q, got %q", liveFulfillID, got.ID)
 	}
 }
