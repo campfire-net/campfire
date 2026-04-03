@@ -1424,3 +1424,103 @@ func TestDispatcher_Tier1_TokensConsumed_MeteringEvent(t *testing.T) {
 		t.Fatalf("expected metering TokensConsumed=%d, got %d", expectedTokens, ev.TokensConsumed)
 	}
 }
+
+
+// ---- Regression: fix #12 (xkl) — MarkFailedCAS called after sendFulfillment failure ----
+
+// spyDispatchStore wraps MemoryDispatchStore and records MarkFailedCAS call arguments
+// so tests can assert the call was made with the correct parameters.
+type spyDispatchStore struct {
+	*convention.MemoryDispatchStore
+	mu                 sync.Mutex
+	markFailedCASCalls []spyMarkFailedCASCall
+}
+
+type spyMarkFailedCASCall struct {
+	campfireID string
+	messageID  string
+	gen        int
+}
+
+func (s *spyDispatchStore) MarkFailedCAS(ctx context.Context, campfireID, messageID string, gen int) (bool, bool, error) {
+	ok, notFound, err := s.MemoryDispatchStore.MarkFailedCAS(ctx, campfireID, messageID, gen)
+	s.mu.Lock()
+	s.markFailedCASCalls = append(s.markFailedCASCalls, spyMarkFailedCASCall{
+		campfireID: campfireID,
+		messageID:  messageID,
+		gen:        gen,
+	})
+	s.mu.Unlock()
+	return ok, notFound, err
+}
+
+func (s *spyDispatchStore) markFailedCASCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.markFailedCASCalls)
+}
+
+// TestDispatcher_Tier1_SendFulfillmentFailure_MarkFailedCASCalled is a regression
+// test for fix #12 (xkl): verifies that MarkFailedCAS is called in dispatchTier1
+// when the handler succeeds but sendFulfillment fails. Prior to the fix, the
+// dispatch record was left in a stale "fulfilled" state on send failure.
+func TestDispatcher_Tier1_SendFulfillmentFailure_MarkFailedCASCalled(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+
+	inner := convention.NewMemoryDispatchStore()
+	spy := &spyDispatchStore{MemoryDispatchStore: inner}
+	d := convention.NewConventionDispatcher(spy, nil)
+
+	// Use a client pointing at a nonexistent transport path so Send() fails.
+	brokenStoreDir := t.TempDir()
+	brokenStore, err := store.Open(filepath.Join(brokenStoreDir, "broken.db"))
+	if err != nil {
+		t.Fatalf("opening broken store: %v", err)
+	}
+	t.Cleanup(func() { brokenStore.Close() })
+	brokenStore.AddMembership(store.Membership{
+		CampfireID:    env.campfireID,
+		TransportDir:  "/nonexistent/path/that/will/fail",
+		JoinProtocol:  "open",
+		Role:          campfire.RoleFull,
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	})
+	brokenClient := protocol.New(brokenStore, env.serverID)
+
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", brokenClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		// Handler succeeds — triggering the sendFulfillment path.
+		return &convention.Response{Payload: map[string]any{"result": "ok"}}, nil
+	}, env.serverID.PublicKeyHex(), "")
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	dispatched := d.Dispatch(context.Background(), env.campfireID, msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	// Wait for terminal status.
+	status := waitForDispatch(t, spy.MemoryDispatchStore, env.campfireID, msg.ID, 3*time.Second)
+	if status != "failed" {
+		t.Fatalf("expected dispatch status 'failed' after sendFulfillment error, got %q", status)
+	}
+
+	// Core assertion: MarkFailedCAS must have been called after sendFulfillment failed.
+	n := spy.markFailedCASCallCount()
+	if n == 0 {
+		t.Fatal("expected MarkFailedCAS to be called after sendFulfillment failure, but it was not called")
+	}
+
+	// Verify the call used the correct campfireID and messageID.
+	spy.mu.Lock()
+	call := spy.markFailedCASCalls[n-1]
+	spy.mu.Unlock()
+	if call.campfireID != env.campfireID {
+		t.Errorf("MarkFailedCAS called with campfireID %q, want %q", call.campfireID, env.campfireID)
+	}
+	if call.messageID != msg.ID {
+		t.Errorf("MarkFailedCAS called with messageID %q, want %q", call.messageID, msg.ID)
+	}
+}
+
