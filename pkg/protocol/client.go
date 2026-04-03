@@ -511,10 +511,28 @@ func (c *Client) thresholdSignHop(
 		return nil, 0, fmt.Errorf("deserializing threshold share: %w", err)
 	}
 
+	// Build a set of participant IDs that are members of the DKG group.
+	// myDKGResult.Public.Shares is keyed by party.ID (uint16); only IDs present
+	// in this map are legitimate co-signers. Any participant ID not in this set
+	// was never part of the DKG and must be rejected before being used in signing.
+	dkgGroupIDs := make(map[uint32]struct{}, len(myDKGResult.Public.Shares))
+	for pid := range myDKGResult.Public.Shares {
+		dkgGroupIDs[uint32(pid)] = struct{}{}
+	}
+	if _, ok := dkgGroupIDs[myParticipantID]; !ok {
+		return nil, 0, fmt.Errorf("own participant ID %d not found in DKG group — share is corrupt or belongs to a different group", myParticipantID)
+	}
+
 	needed := int(thresh) - 1
 	var coSigners []p2pPeer
 	for _, p := range peers {
 		if p.participantID > 0 {
+			if _, inGroup := dkgGroupIDs[p.participantID]; !inGroup {
+				// Participant ID is not a member of our DKG group. Reject it
+				// to prevent a rogue participant from injecting an out-of-group
+				// ID into the FROST signing session.
+				continue
+			}
 			coSigners = append(coSigners, p2pPeer{endpoint: p.endpoint, participantID: p.participantID})
 		}
 		if len(coSigners) >= needed {

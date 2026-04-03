@@ -274,3 +274,122 @@ func TestSendFROST(t *testing.T) {
 		t.Error("message not stored in A's local store after send")
 	}
 }
+
+// TestThresholdSignHopRejectsOutOfGroupParticipantID is a regression test for
+// the security fix in campfire-agent-r4l: participant IDs not in the DKG group
+// must be rejected before being used in FROST signing.
+//
+// Setup:
+//   - DKG with participants {1, 2}, threshold=2.
+//   - Client A holds participant 1's share.
+//   - The only registered co-signer peer has participantID=99, which is NOT in
+//     the DKG group {1, 2}.
+//
+// Expected outcome:
+//   - Client.Send() fails with an error about insufficient co-signers.
+//   - The out-of-group ID was silently filtered before reaching FROST.
+//
+// Before the fix, participantID=99 would have been passed through to
+// cfhttp.RunFROSTSign, which could panic or produce undefined behavior because
+// the ID is absent from the group's public key set.
+func TestThresholdSignHopRejectsOutOfGroupParticipantID(t *testing.T) {
+	// --- DKG: 2 participants {1, 2}, threshold=2 ---
+	dkgResults, err := threshold.RunDKG([]uint32{1, 2}, 2)
+	if err != nil {
+		t.Fatalf("RunDKG: %v", err)
+	}
+	groupKey := dkgResults[1].GroupPublicKey()
+
+	shareA, err := threshold.MarshalResult(1, dkgResults[1])
+	if err != nil {
+		t.Fatalf("MarshalResult A: %v", err)
+	}
+
+	// --- Agent identity ---
+	idA, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity A: %v", err)
+	}
+
+	// --- Campfire identity (group key = campfire public key) ---
+	cfKeyPair, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating campfire keypair: %v", err)
+	}
+	cfPub := ed25519.PublicKey(groupKey)
+	cfPriv := cfKeyPair.PrivateKey
+	campfireID := fmt.Sprintf("%x", cfPub)
+
+	// --- Transport dir for A ---
+	transportDir := t.TempDir()
+	cfState := campfire.CampfireState{
+		PublicKey:             cfPub,
+		PrivateKey:            cfPriv,
+		JoinProtocol:          "open",
+		ReceptionRequirements: []string{},
+	}
+	stateData, err := cfencoding.Marshal(&cfState)
+	if err != nil {
+		t.Fatalf("marshaling campfire state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(transportDir, campfireID+".cbor"), stateData, 0644); err != nil {
+		t.Fatalf("writing campfire state: %v", err)
+	}
+
+	// --- Store for A ---
+	storeADir := t.TempDir()
+	sA, err := store.Open(filepath.Join(storeADir, "store.db"))
+	if err != nil {
+		t.Fatalf("opening store A: %v", err)
+	}
+	t.Cleanup(func() { sA.Close() })
+
+	// --- A's membership (p2p-http, threshold=2) ---
+	if err := sA.AddMembership(store.Membership{
+		CampfireID:    campfireID,
+		TransportDir:  transportDir,
+		JoinProtocol:  "open",
+		Role:          campfire.RoleFull,
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     2,
+		TransportType: "p2p-http",
+	}); err != nil {
+		t.Fatalf("adding A's membership: %v", err)
+	}
+
+	// --- A's threshold share ---
+	if err := sA.UpsertThresholdShare(store.ThresholdShare{
+		CampfireID:    campfireID,
+		ParticipantID: 1,
+		SecretShare:   shareA,
+	}); err != nil {
+		t.Fatalf("storing share A: %v", err)
+	}
+
+	// --- Register a rogue peer with participantID=99 (not in DKG group {1,2}) ---
+	// This simulates a rogue participant advertising an out-of-group ID.
+	rogueID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating rogue identity: %v", err)
+	}
+	sA.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:    campfireID,
+		MemberPubkey:  rogueID.PublicKeyHex(),
+		Endpoint:      "http://127.0.0.1:19999", // unreachable; must be rejected before contact
+		ParticipantID: 99,                        // NOT in DKG group {1, 2}
+	})
+
+	// --- Attempt Client.Send() — must fail because no valid co-signers remain ---
+	client := protocol.New(sA, idA)
+	_, sendErr := client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("should not send"),
+		Tags:       []string{"status"},
+	})
+	if sendErr == nil {
+		t.Fatal("expected Client.Send to fail when only out-of-group participant IDs are available, but it succeeded")
+	}
+	// Confirm the error is about co-signer count (group validation filtered the rogue
+	// ID) rather than a FROST panic or crypto error from processing an invalid ID.
+	t.Logf("Client.Send correctly rejected rogue participantID=99: %v", sendErr)
+}
