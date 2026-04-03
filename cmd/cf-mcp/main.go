@@ -140,6 +140,8 @@ type server struct {
 	forgeEmitter         *forge.ForgeEmitter          // non-nil when relay metering is enabled; async, fail-open
 	forgeAccounts        *forgeAccountManager         // non-nil when FORGE_SERVICE_KEY is set; auto-provisions Forge sub-accounts
 	conventionDispatcher     *convention.ConventionDispatcher    // non-nil when convention metering is enabled (M8)
+	conventionDispatchStore  convention.DispatchStore            // same store as conventionDispatcher; shared by billingSweep
+	billingSweep             *convention.BillingSweep            // non-nil when convention billing sweep is enabled
 	conventionServerStore    aztable.ConventionServerStore       // non-nil when Azure Table Storage is available (T4)
 }
 
@@ -4284,6 +4286,13 @@ func (s *server) serveHTTP(addr string) error {
 		mux.Handle("/campfire/", s.transportRouter)
 	}
 
+	// Start the convention billing sweep background loop if wired.
+	// The loop runs both the fallback Sweeper and BillingSweep on a shared
+	// 10-minute interval. It is a no-op if billingSweep is nil.
+	if s.billingSweep != nil {
+		go s.startBillingSweepLoop(context.Background())
+	}
+
 	fmt.Fprintf(os.Stderr, "cf-mcp listening on %s\n", addr)
 	srv := &http.Server{
 		Addr:              addr,
@@ -4294,6 +4303,36 @@ func (s *server) serveHTTP(addr string) error {
 		IdleTimeout:       120 * time.Second,
 	}
 	return srv.ListenAndServe()
+}
+
+// startBillingSweepLoop runs BillingSweep on a 10-minute ticker until ctx is
+// cancelled. Runs one pass immediately on startup, then every 10 minutes.
+// Logs results at each interval; per-record errors are already logged by BillingSweep.
+func (s *server) startBillingSweepLoop(ctx context.Context) {
+	const sweepInterval = 10 * time.Minute
+
+	runOnce := func() {
+		billed, err := s.billingSweep.Run(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cf-mcp: convention billing sweep error: %v\n", err)
+		} else if billed > 0 {
+			fmt.Fprintf(os.Stderr, "cf-mcp: convention billing sweep: billed %d record(s)\n", billed)
+		}
+	}
+
+	// Run once immediately so the first billing pass doesn't wait 10 minutes.
+	runOnce()
+
+	ticker := time.NewTicker(sweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runOnce()
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -4426,7 +4465,13 @@ func main() {
 	// M8: Wire convention metering hook on the ConventionDispatcher.
 	// wireConventionMetering is a no-op when forgeEmitter is nil (development / stdio mode).
 	// In hosted mode (Azure Functions), forgeEmitter is set before this runs.
+	// Also saves the DispatchStore on srv.conventionDispatchStore for BillingSweep.
 	srv.wireConventionMetering(srv.forgeEmitter)
+
+	// Wire the BillingSweep using the same DispatchStore as the ConventionDispatcher.
+	// wireBillingSweep is a no-op when forgeEmitter or conventionDispatchStore is nil.
+	// The sweep loop is started in serveHTTP.
+	srv.wireBillingSweep(srv.forgeEmitter)
 
 	// HTTP+SSE mode when --http is set, otherwise stdio.
 	if httpAddr != "" {

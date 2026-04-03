@@ -48,6 +48,9 @@ func buildConventionMeteringHook(emitter *forge.ForgeEmitter) convention.Meterin
 // backed by the given ForgeEmitter and sets it on the server.
 // If emitter is nil, no dispatcher is wired and convention metering is disabled.
 //
+// Also saves the DispatchStore on s.conventionDispatchStore so wireBillingSweep
+// can share the same store (dispatch records must be visible to both).
+//
 // Call at server startup after the ForgeEmitter is initialized.
 func (s *server) wireConventionMetering(emitter *forge.ForgeEmitter) {
 	if emitter == nil {
@@ -57,4 +60,17 @@ func (s *server) wireConventionMetering(emitter *forge.ForgeEmitter) {
 	d := convention.NewConventionDispatcher(ds, nil)
 	d.MeteringHook = buildConventionMeteringHook(emitter)
 	s.conventionDispatcher = d
+	s.conventionDispatchStore = ds
+}
+
+// wireBillingSweep creates a BillingSweep from the shared conventionDispatchStore
+// and sets it on the server. The sweep runs periodically via startSweepLoop.
+//
+// Must be called after wireConventionMetering (requires s.conventionDispatchStore).
+// If the dispatch store or emitter is nil, the sweep is not wired.
+func (s *server) wireBillingSweep(emitter *forge.ForgeEmitter) {
+	if s.conventionDispatchStore == nil || emitter == nil {
+		return
+	}
+	s.billingSweep = convention.NewBillingSweep(s.conventionDispatchStore, emitter, nil)
 }
