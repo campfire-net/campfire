@@ -408,18 +408,37 @@ func membershipHashFromPeers(peers []store.PeerEndpoint) []byte {
 // For threshold<=1: signs provenance hop with the campfire key.
 // For threshold>1: runs FROST signing rounds with co-signers.
 func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Message, error) {
-	transportDir, err := sanitizeTransportDir(m.TransportDir)
-	if err != nil {
-		return nil, fmt.Errorf("invalid transport dir: %w", err)
-	}
-	statePath := filepath.Join(transportDir, req.CampfireID+".cbor")
-	stateData, err := os.ReadFile(statePath)
-	if err != nil {
-		return nil, fmt.Errorf("reading campfire state: %w", err)
-	}
+	// Read campfire state. Two layouts are supported:
+	//   - Standard P2P HTTP: state lives at <TransportDir>/<campfireID>.cbor
+	//     (flat file layout, used when TransportDir is a filesystem path).
+	//   - Hosted-MCP HTTP: state lives at <StateDir>/<campfireID>/campfire.cbor
+	//     (fs.Transport layout). In hosted-MCP mode, TransportDir holds the
+	//     external HTTP address, so StateDir = cfHome is passed by the caller
+	//     (campfire-agent-nzk).
 	var cfState campfire.CampfireState
-	if err := cfencoding.Unmarshal(stateData, &cfState); err != nil {
-		return nil, fmt.Errorf("decoding campfire state: %w", err)
+	if req.StateDir != "" {
+		// Hosted-MCP path: read state via fs.Transport layout.
+		// fs.New(StateDir) resolves at <StateDir>/<campfireID>/campfire.cbor.
+		fst := fs.New(req.StateDir)
+		state, readErr := fst.ReadState(req.CampfireID)
+		if readErr != nil {
+			return nil, fmt.Errorf("reading campfire state: %w", readErr)
+		}
+		cfState = *state
+	} else {
+		// Standard P2P HTTP path: flat .cbor file alongside the membership.
+		transportDir, err := sanitizeTransportDir(m.TransportDir)
+		if err != nil {
+			return nil, fmt.Errorf("invalid transport dir: %w", err)
+		}
+		statePath := filepath.Join(transportDir, req.CampfireID+".cbor")
+		stateData, err := os.ReadFile(statePath)
+		if err != nil {
+			return nil, fmt.Errorf("reading campfire state: %w", err)
+		}
+		if err := cfencoding.Unmarshal(stateData, &cfState); err != nil {
+			return nil, fmt.Errorf("decoding campfire state: %w", err)
+		}
 	}
 
 	msg, err := message.NewMessage(c.identity.PrivateKey, c.identity.PublicKey, req.Payload, req.Tags, req.Antecedents)
@@ -456,6 +475,14 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 		reqs = []string{}
 	}
 
+	// Use the sender's actual membership role (consistent with sendFilesystem).
+	// Previously hardcoded to campfire.RoleFull, diverging from the inline MCP
+	// send path and sendFilesystem (campfire-agent-nzk).
+	hopRole := campfire.EffectiveRole(m.Role)
+	if req.RoleOverride != "" {
+		hopRole = req.RoleOverride
+	}
+
 	useThreshold := m.Threshold > 1
 	if !useThreshold {
 		// threshold=1 or non-threshold mode: sign with campfire private key directly.
@@ -466,7 +493,7 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 			memberCount,
 			cfState.JoinProtocol,
 			reqs,
-			campfire.RoleFull,
+			hopRole,
 		); err != nil {
 			return nil, fmt.Errorf("adding provenance hop: %w", err)
 		}

@@ -799,7 +799,8 @@ func TestHandleSend_FED1_WriterBlockedOnCampfireTag(t *testing.T) {
 	if resp.Error.Code != -32000 {
 		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
 	}
-	if !strings.Contains(resp.Error.Message, "writers cannot send campfire system messages") {
+	// protocol.Client.checkRoleCanSend returns: "role writer: cannot send campfire:* system messages"
+	if !strings.Contains(resp.Error.Message, "cannot send campfire:* system messages") {
 		t.Errorf("unexpected error message: %q", resp.Error.Message)
 	}
 }
@@ -838,7 +839,8 @@ func TestHandleSend_FED1_ObserverBlockedOnAnyMessage(t *testing.T) {
 	if resp.Error.Code != -32000 {
 		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
 	}
-	if !strings.Contains(resp.Error.Message, "observers cannot send messages") {
+	// protocol.Client.checkRoleCanSend returns: "role observer: cannot send messages (read-only membership)"
+	if !strings.Contains(resp.Error.Message, "cannot send messages") {
 		t.Errorf("unexpected error message: %q", resp.Error.Message)
 	}
 }
