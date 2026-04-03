@@ -17,6 +17,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// testForgeClient, when non-nil, is used instead of constructing a new forge.Client
+// in adminCreateOperatorCmd. Set this in tests to inject a pre-configured client
+// (e.g. with RetryDelays: []time.Duration{} to skip backoff delays).
+var testForgeClient *forge.Client
+
 var adminCmd = &cobra.Command{
 	Use:   "admin",
 	Short: "Administrative commands for operator provisioning",
@@ -59,14 +64,18 @@ Exit codes:
 		if adminKey == "" {
 			adminKey = os.Getenv("FORGE_ADMIN_KEY")
 		}
-		if adminKey == "" {
+		// Skip key validation when a pre-built test client is injected.
+		if adminKey == "" && testForgeClient == nil {
 			return fmt.Errorf("forge admin key required: set --admin-key or FORGE_ADMIN_KEY")
 		}
 
 		ctx := context.Background()
-		fc := &forge.Client{
-			BaseURL:    endpoint,
-			ServiceKey: adminKey,
+		fc := testForgeClient
+		if fc == nil {
+			fc = &forge.Client{
+				BaseURL:    endpoint,
+				ServiceKey: adminKey,
+			}
 		}
 
 		// Step 1: Create the operator account.

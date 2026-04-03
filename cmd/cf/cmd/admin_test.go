@@ -13,10 +13,14 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/campfire-net/campfire/pkg/forge"
 )
 
 // mockForgeServer creates an httptest.Server that handles the Forge account/key endpoints.
@@ -32,13 +36,27 @@ func mockForgeServer(t *testing.T, accountHandler, keyHandler http.HandlerFunc) 
 // runAdminCreateOperator executes `cf admin create-operator` with the given extra args
 // and returns (stdout, error).
 // It resets cobra flag state before each call to prevent cross-test leakage.
-func runAdminCreateOperator(t *testing.T, extraArgs ...string) (string, error) {
+// srv, when non-nil, is used to inject a forge.Client with zero RetryDelays so
+// failure tests don't sleep through exponential backoff.
+func runAdminCreateOperator(t *testing.T, srv *httptest.Server, adminKey string, extraArgs ...string) (string, error) {
 	t.Helper()
 
 	// Reset flag values to defaults before each run so tests don't bleed state.
 	adminCreateOperatorCmd.Flags().Set("name", "")           //nolint:errcheck
 	adminCreateOperatorCmd.Flags().Set("forge-endpoint", "") //nolint:errcheck
 	adminCreateOperatorCmd.Flags().Set("admin-key", "")      //nolint:errcheck
+
+	// Inject a pre-built client with zero retry delays so tests don't sleep.
+	if srv != nil {
+		testForgeClient = &forge.Client{
+			BaseURL:     srv.URL,
+			ServiceKey:  adminKey,
+			RetryDelays: []time.Duration{0}, // minimal backoff in tests
+		}
+	} else {
+		testForgeClient = nil
+	}
+	t.Cleanup(func() { testForgeClient = nil })
 
 	// Capture stdout via cobra's OutOrStdout.
 	var out bytes.Buffer
@@ -53,16 +71,34 @@ func runAdminCreateOperator(t *testing.T, extraArgs ...string) (string, error) {
 	return out.String(), err
 }
 
-// TestAdminCreateOperator_Success verifies successful account creation and key output.
+// TestAdminCreateOperator_Success verifies successful account creation and key output,
+// including request body inspection and Authorization header validation.
 func TestAdminCreateOperator_Success(t *testing.T) {
+	const adminKey = "forge-sk-test"
 	accountCalled := false
 	keyCalled := false
 
 	srv := mockForgeServer(t,
-		// POST /v1/accounts
+		// POST /v1/accounts — inspect body and Authorization header.
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			// Validate Authorization header.
+			if got := r.Header.Get("Authorization"); got != "Bearer "+adminKey {
+				http.Error(w, "bad Authorization: "+got, http.StatusUnauthorized)
+				return
+			}
+			// Validate request body contains the correct name field.
+			raw, _ := io.ReadAll(r.Body)
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				http.Error(w, "bad JSON body: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if body["name"] != "test-operator" {
+				http.Error(w, "expected name=test-operator, got: "+body["name"].(string), http.StatusBadRequest)
 				return
 			}
 			accountCalled = true
@@ -73,10 +109,30 @@ func TestAdminCreateOperator_Success(t *testing.T) {
 				"created_at": "2026-04-01T00:00:00Z",
 			})
 		}),
-		// POST /v1/keys
+		// POST /v1/keys — inspect body for role and target_account_id.
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			// Validate Authorization header.
+			if got := r.Header.Get("Authorization"); got != "Bearer "+adminKey {
+				http.Error(w, "bad Authorization: "+got, http.StatusUnauthorized)
+				return
+			}
+			// Validate request body: role must be "tenant", target_account_id must match.
+			raw, _ := io.ReadAll(r.Body)
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				http.Error(w, "bad JSON body: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if body["role"] != "tenant" {
+				http.Error(w, "expected role=tenant, got: "+body["role"].(string), http.StatusBadRequest)
+				return
+			}
+			if body["target_account_id"] != "acct-test-123" {
+				http.Error(w, "expected target_account_id=acct-test-123", http.StatusBadRequest)
 				return
 			}
 			keyCalled = true
@@ -91,9 +147,7 @@ func TestAdminCreateOperator_Success(t *testing.T) {
 	)
 	defer srv.Close()
 
-	out, err := runAdminCreateOperator(t,
-		"--forge-endpoint", srv.URL,
-		"--admin-key", "forge-sk-test",
+	out, err := runAdminCreateOperator(t, srv, adminKey,
 		"--name", "test-operator",
 	)
 	if err != nil {
@@ -124,7 +178,8 @@ func TestAdminCreateOperator_MissingAdminKey(t *testing.T) {
 	// Ensure env var is not set.
 	t.Setenv("FORGE_ADMIN_KEY", "")
 
-	_, err := runAdminCreateOperator(t, "--forge-endpoint", "http://localhost:9999")
+	// No server needed — command fails before making any requests.
+	_, err := runAdminCreateOperator(t, nil, "", "--forge-endpoint", "http://localhost:9999")
 	if err == nil {
 		t.Fatal("expected error for missing admin key, got nil")
 	}
@@ -147,10 +202,7 @@ func TestAdminCreateOperator_ForgeAccountFailure(t *testing.T) {
 	)
 	defer srv.Close()
 
-	_, err := runAdminCreateOperator(t,
-		"--forge-endpoint", srv.URL,
-		"--admin-key", "forge-sk-test",
-	)
+	_, err := runAdminCreateOperator(t, srv, "forge-sk-test")
 	if err == nil {
 		t.Fatal("expected error from Forge account creation failure, got nil")
 	}
@@ -176,10 +228,7 @@ func TestAdminCreateOperator_ForgeKeyFailure(t *testing.T) {
 	)
 	defer srv.Close()
 
-	_, err := runAdminCreateOperator(t,
-		"--forge-endpoint", srv.URL,
-		"--admin-key", "forge-sk-test",
-	)
+	_, err := runAdminCreateOperator(t, srv, "forge-sk-test")
 	if err == nil {
 		t.Fatal("expected error from Forge key creation failure, got nil")
 	}
@@ -210,10 +259,7 @@ func TestAdminCreateOperator_EmptyKeyPlaintext(t *testing.T) {
 	)
 	defer srv.Close()
 
-	_, err := runAdminCreateOperator(t,
-		"--forge-endpoint", srv.URL,
-		"--admin-key", "forge-sk-test",
-	)
+	_, err := runAdminCreateOperator(t, srv, "forge-sk-test")
 	if err == nil {
 		t.Fatal("expected error for empty key plaintext, got nil")
 	}
@@ -225,14 +271,24 @@ func TestAdminCreateOperator_EmptyKeyPlaintext(t *testing.T) {
 // TestAdminCreateOperator_EnvFallback verifies that FORGE_ENDPOINT and FORGE_ADMIN_KEY
 // env vars are used when flags are not set.
 func TestAdminCreateOperator_EnvFallback(t *testing.T) {
+	const envAdminKey = "forge-sk-env-key"
 	srv := mockForgeServer(t,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Validate Authorization header uses the env admin key.
+			if got := r.Header.Get("Authorization"); got != "Bearer "+envAdminKey {
+				http.Error(w, "bad Authorization: "+got, http.StatusUnauthorized)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck
 				"account_id": "acct-env-test",
 			})
 		}),
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := r.Header.Get("Authorization"); got != "Bearer "+envAdminKey {
+				http.Error(w, "bad Authorization: "+got, http.StatusUnauthorized)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck
 				"key":        "forge-tk-env-test",
@@ -244,9 +300,10 @@ func TestAdminCreateOperator_EnvFallback(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("FORGE_ENDPOINT", srv.URL)
-	t.Setenv("FORGE_ADMIN_KEY", "forge-sk-env-key")
+	t.Setenv("FORGE_ADMIN_KEY", envAdminKey)
 
-	out, err := runAdminCreateOperator(t) // no flags
+	// Inject client with the env key and zero retry delays.
+	out, err := runAdminCreateOperator(t, srv, envAdminKey) // no extra flags
 	if err != nil {
 		t.Fatalf("expected success using env vars, got error: %v", err)
 	}
