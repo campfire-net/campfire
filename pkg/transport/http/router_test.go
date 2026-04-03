@@ -699,3 +699,38 @@ func TestLegacyBeaconNoPath(t *testing.T) {
 		t.Errorf("legacy beacon NextHop should be empty, got %q", routes[0].NextHop)
 	}
 }
+
+// TestLoopDetectionCaseInsensitive verifies that loop detection is
+// case-insensitive: a beacon with an uppercase variant of the own node_id
+// in its path must be detected as a loop and dropped.
+//
+// Security regression test for campfire-agent-ob9 / campfire-agent-d3o:
+// an attacker previously could evade loop detection by using "ABC" when the
+// router's own node_id is "abc".
+func TestLoopDetectionCaseInsensitive(t *testing.T) {
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireIDHex := hex.EncodeToString(cfPub)
+
+	// Router's own node_id is lowercase.
+	const ownNodeID = "abc"
+	rt := newRoutingTableWithNodeID(ownNodeID)
+
+	// Path contains the uppercase variant — must still be detected as a loop.
+	path := []string{"nodeX", "ABC", "nodeY"}
+	ts := time.Now().Unix()
+	payload := makeBeaconPayloadWithPath(t, cfPriv, cfPub, "http://loop-case.example.com:8080", "p2p-http", ts, path)
+
+	// HandleBeacon must return nil (silent drop, not an error).
+	if err := rt.HandleBeacon(payload, "gw", "nodeY"); err != nil {
+		t.Errorf("case-variant loop beacon should be silently dropped (nil error), got: %v", err)
+	}
+
+	// No route should have been installed.
+	routes := rt.Lookup(campfireIDHex)
+	if len(routes) != 0 {
+		t.Errorf("case-variant looped beacon should not install route, got %d routes", len(routes))
+	}
+}
