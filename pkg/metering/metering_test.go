@@ -1258,3 +1258,114 @@ func TestGCZeroBalance_BalanceCheckErrorSkipsCampfire(t *testing.T) {
 		t.Errorf("expected 1 deletion (cf-err skipped), got %d", n)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// campfireID parameter verification (campfire-agent-cbh)
+// ---------------------------------------------------------------------------
+
+// deleteCall records both campfireID and messageID passed to DeleteMessage.
+type deleteCall struct {
+	CampfireID string
+	MessageID  string
+}
+
+// campfireIDTrackingStore captures the campfireID parameter in DeleteMessage calls.
+type campfireIDTrackingStore struct {
+	messages []metering.OldMessage
+	calls    []deleteCall
+}
+
+func (s *campfireIDTrackingStore) ListMessagesOlderThan(_ context.Context, campfireID string, _ int64) ([]metering.OldMessage, error) {
+	if campfireID == "" {
+		return s.messages, nil
+	}
+	var out []metering.OldMessage
+	for _, msg := range s.messages {
+		if msg.CampfireID == campfireID {
+			out = append(out, msg)
+		}
+	}
+	return out, nil
+}
+
+func (s *campfireIDTrackingStore) DeleteMessage(_ context.Context, campfireID, messageID string) error {
+	s.calls = append(s.calls, deleteCall{CampfireID: campfireID, MessageID: messageID})
+	return nil
+}
+
+// TestGCZeroBalance_DeleteMessageReceivesCorrectCampfireID verifies that
+// GarbageCollectZeroBalance passes the correct campfireID to DeleteMessage
+// for each message, especially when messages span multiple campfires.
+func TestGCZeroBalance_DeleteMessageReceivesCorrectCampfireID(t *testing.T) {
+	store := &campfireIDTrackingStore{
+		messages: []metering.OldMessage{
+			{ID: "msg-a1", CampfireID: "cf-alpha"},
+			{ID: "msg-a2", CampfireID: "cf-alpha"},
+			{ID: "msg-b1", CampfireID: "cf-beta"},
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{
+			"acct-alpha": 0,
+			"acct-beta":  -100,
+		},
+	}
+	accountLookup := func(id string) string {
+		switch id {
+		case "cf-alpha":
+			return "acct-alpha"
+		case "cf-beta":
+			return "acct-beta"
+		}
+		return ""
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker, accountLookup, 90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("expected 3 messages deleted, got %d", n)
+	}
+	if len(store.calls) != 3 {
+		t.Fatalf("expected 3 DeleteMessage calls, got %d", len(store.calls))
+	}
+
+	// Build a set of (campfireID, messageID) pairs from the calls.
+	type pair struct{ campfire, message string }
+	got := make(map[pair]bool)
+	for _, c := range store.calls {
+		got[pair{c.CampfireID, c.MessageID}] = true
+	}
+
+	expected := []pair{
+		{"cf-alpha", "msg-a1"},
+		{"cf-alpha", "msg-a2"},
+		{"cf-beta", "msg-b1"},
+	}
+	for _, e := range expected {
+		if !got[e] {
+			t.Errorf("missing DeleteMessage call with campfireID=%q messageID=%q", e.campfire, e.message)
+		}
+	}
+
+	// Also verify no call received a wrong campfireID.
+	for _, c := range store.calls {
+		var expectedCampfire string
+		switch {
+		case c.MessageID == "msg-a1" || c.MessageID == "msg-a2":
+			expectedCampfire = "cf-alpha"
+		case c.MessageID == "msg-b1":
+			expectedCampfire = "cf-beta"
+		default:
+			t.Errorf("unexpected message ID in DeleteMessage call: %q", c.MessageID)
+			continue
+		}
+		if c.CampfireID != expectedCampfire {
+			t.Errorf("DeleteMessage called with campfireID=%q for messageID=%q, expected campfireID=%q",
+				c.CampfireID, c.MessageID, expectedCampfire)
+		}
+	}
+}

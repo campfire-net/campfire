@@ -1,0 +1,10 @@
+{
+  "bindings": [
+    {
+      "name": "sweepTimer",
+      "type": "timerTrigger",
+      "direction": "in",
+      "schedule": "%CF_SWEEP_SCHEDULE%"
+    }
+  ]
+}

@@ -219,7 +219,17 @@ func run() error {
 		}
 	})
 	// -------------------------------------------------------------------------
+	// -------------------------------------------------------------------------
+	// Timer-triggered fallback sweep handler.
+	// Azure Functions timer triggers send a POST to /{functionName}. The handler
+	// forwards the request to cf-mcp's /sweep endpoint. This catches messages
+	// that the event-driven dispatch path missed.
+	// -------------------------------------------------------------------------
+	sweepHandler := buildSweepHandler(childBaseURL)
+
+	// -------------------------------------------------------------------------
 	// HTTP mux: /api/health and /api/payment are own; everything else proxied.
+	// Timer trigger routes (no /api prefix) are handled directly.
 	// -------------------------------------------------------------------------
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -230,6 +240,7 @@ func run() error {
 	mux.Handle("/api/mcp/", proxyWithChallenge)
 	mux.Handle("/api/sse", proxyWithChallenge)
 	mux.Handle("/api/campfire/", proxyWithChallenge)
+	mux.HandleFunc("/sweep", sweepHandler)
 
 	srv := &http.Server{
 		Addr:              listenAddr,
@@ -356,6 +367,55 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	}
 	r.written = r.written || len(b) > 0
 	return r.ResponseWriter.Write(b)
+}
+
+// buildSweepHandler returns an HTTP handler that forwards timer trigger requests
+// to cf-mcp's /sweep endpoint. Azure Functions timer triggers POST to /{functionName}
+// with a JSON body containing timer metadata. We forward as a POST to cf-mcp /sweep,
+// which runs the fallback dispatch sweep and returns results.
+//
+// The handler returns 200 to the Functions host regardless of sweep outcome (the
+// Functions runtime treats non-2xx as a trigger failure and retries). Actual errors
+// are logged to stderr where Azure Application Insights picks them up.
+func buildSweepHandler(childBaseURL *url.URL) http.HandlerFunc {
+	client := &http.Client{Timeout: 60 * time.Second}
+	sweepURL := childBaseURL.String() + "/sweep"
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, sweepURL, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cf-functions: sweep: build request: %v\n", err)
+			w.WriteHeader(http.StatusOK) // return 200 to avoid Functions retry
+			return
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cf-functions: sweep: POST to cf-mcp: %v\n", err)
+			w.WriteHeader(http.StatusOK) // return 200 to avoid Functions retry
+			return
+		}
+		defer resp.Body.Close()
+
+		// Forward the response from cf-mcp to the Functions host.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				w.Write(buf[:n])
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}
 }
 
 // setEnv sets key=value in env, replacing any existing entry for key.

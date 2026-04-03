@@ -98,7 +98,7 @@ func TestBillingSweep_BillsUnbilledTokenDispatches(t *testing.T) {
 	// Create a fulfilled dispatch with token consumption.
 	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "acct-server1", "myconv", "myop")
 	ds.MarkFulfilled(ctx, "cf1", "msg1")
-	ds.SetTokensConsumed("cf1", "msg1", 500)
+	ds.SetTokensConsumed(ctx, "cf1", "msg1", 500)
 
 	sweep := convention.NewBillingSweep(ds, emitter, nil)
 	billed, err := sweep.Run(ctx)
@@ -130,7 +130,7 @@ func TestBillingSweep_SkipsAlreadyBilledDispatches(t *testing.T) {
 	// Create and bill a dispatch first.
 	ds.MarkDispatched(ctx, "cf1", "msg1", "server1", "acct-server1", "myconv", "myop")
 	ds.MarkFulfilled(ctx, "cf1", "msg1")
-	ds.SetTokensConsumed("cf1", "msg1", 500)
+	ds.SetTokensConsumed(ctx, "cf1", "msg1", 500)
 	// Get the ETag to pass to MarkBilled.
 	unbilled, _ := ds.ListUnbilledDispatches(ctx)
 	if len(unbilled) != 1 {
@@ -202,7 +202,7 @@ func TestBillingSweep_IdempotencyKeyFormat(t *testing.T) {
 
 	ds.MarkDispatched(ctx, "cf1", "msg-abc", "srv-xyz", "acct-xyz", "myconv", "myop")
 	ds.MarkFulfilled(ctx, "cf1", "msg-abc")
-	ds.SetTokensConsumed("cf1", "msg-abc", 1000)
+	ds.SetTokensConsumed(ctx, "cf1", "msg-abc", 1000)
 
 	sweep := convention.NewBillingSweep(ds, emitter, nil)
 
@@ -243,7 +243,7 @@ func TestBillingSweep_MultiplePending(t *testing.T) {
 	for i, msgID := range []string{"msg1", "msg2", "msg3"} {
 		ds.MarkDispatched(ctx, "cf1", msgID, "server1", "acct-server1", "myconv", "myop")
 		ds.MarkFulfilled(ctx, "cf1", msgID)
-		ds.SetTokensConsumed("cf1", msgID, int64(100*(i+1)))
+		ds.SetTokensConsumed(ctx, "cf1", msgID, int64(100*(i+1)))
 	}
 
 	sweep := convention.NewBillingSweep(ds, emitter, nil)
@@ -287,7 +287,7 @@ func TestMemoryDispatchStore_ListUnbilledDispatches(t *testing.T) {
 	// Fulfilled with tokens — should appear.
 	ds.MarkDispatched(ctx, "cf1", "msg-a", "srv1", "acct-srv1", "conv", "op")
 	ds.MarkFulfilled(ctx, "cf1", "msg-a")
-	ds.SetTokensConsumed("cf1", "msg-a", 100)
+	ds.SetTokensConsumed(ctx, "cf1", "msg-a", 100)
 
 	// Fulfilled without tokens — should NOT appear.
 	ds.MarkDispatched(ctx, "cf1", "msg-b", "srv1", "acct-srv1", "conv", "op")
@@ -296,7 +296,7 @@ func TestMemoryDispatchStore_ListUnbilledDispatches(t *testing.T) {
 	// Fulfilled with tokens but already billed — should NOT appear.
 	ds.MarkDispatched(ctx, "cf1", "msg-c", "srv1", "acct-srv1", "conv", "op")
 	ds.MarkFulfilled(ctx, "cf1", "msg-c")
-	ds.SetTokensConsumed("cf1", "msg-c", 200)
+	ds.SetTokensConsumed(ctx, "cf1", "msg-c", 200)
 	// Get ETag for msg-c to pass to MarkBilled.
 	unbilledC, _ := ds.ListUnbilledDispatches(ctx)
 	var msgCETag string
@@ -309,7 +309,7 @@ func TestMemoryDispatchStore_ListUnbilledDispatches(t *testing.T) {
 
 	// Dispatched (not fulfilled) with tokens — should NOT appear.
 	ds.MarkDispatched(ctx, "cf1", "msg-d", "srv1", "acct-srv1", "conv", "op")
-	ds.SetTokensConsumed("cf1", "msg-d", 300)
+	ds.SetTokensConsumed(ctx, "cf1", "msg-d", 300)
 
 	unbilled, err := ds.ListUnbilledDispatches(ctx)
 	if err != nil {
@@ -333,7 +333,7 @@ func TestMemoryDispatchStore_MarkBilled(t *testing.T) {
 
 	ds.MarkDispatched(ctx, "cf1", "msg1", "srv1", "acct-srv1", "conv", "op")
 	ds.MarkFulfilled(ctx, "cf1", "msg1")
-	ds.SetTokensConsumed("cf1", "msg1", 50)
+	ds.SetTokensConsumed(ctx, "cf1", "msg1", 50)
 
 	// Before billing: should appear as unbilled.
 	unbilled, _ := ds.ListUnbilledDispatches(ctx)
@@ -373,7 +373,7 @@ func TestMarkBilled_ConcurrentRedispatchReset(t *testing.T) {
 	// Set up a fulfilled dispatch with token consumption.
 	ds.MarkDispatched(ctx, "cf1", "msg1", "srv1", "acct-srv1", "conv", "op")
 	ds.MarkFulfilled(ctx, "cf1", "msg1")
-	ds.SetTokensConsumed("cf1", "msg1", 500)
+	ds.SetTokensConsumed(ctx, "cf1", "msg1", 500)
 
 	// Step 1: Read unbilled dispatches (captures ETag at this point in time).
 	unbilled, err := ds.ListUnbilledDispatches(ctx)
@@ -480,7 +480,7 @@ func TestBillingSweep_UsesForgeAccountID_NotServerID(t *testing.T) {
 	// the server's own ID and the customer's ForgeAccountID.
 	ds.MarkDispatched(ctx, "cf-billing", "msg-regression", serverID, customerForgeAccountID, "myconv", "myop")
 	ds.MarkFulfilled(ctx, "cf-billing", "msg-regression")
-	ds.SetTokensConsumed("cf-billing", "msg-regression", 750)
+	ds.SetTokensConsumed(ctx, "cf-billing", "msg-regression", 750)
 
 	sweep := convention.NewBillingSweep(ds, emitter, nil)
 	billed, err := sweep.Run(ctx)

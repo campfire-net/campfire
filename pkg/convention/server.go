@@ -29,6 +29,9 @@ type Response struct {
 	Payload any
 	// Tags are additional tags to include on the response message (beyond "fulfills").
 	Tags []string
+	// TokensConsumed is the number of LLM tokens consumed by the handler.
+	// If > 0, the dispatcher records it on the dispatch record for billing.
+	TokensConsumed int64
 }
 
 // HandlerFunc is the signature for convention operation handlers.

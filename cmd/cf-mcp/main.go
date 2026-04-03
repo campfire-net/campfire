@@ -142,6 +142,7 @@ type server struct {
 	conventionDispatcher     *convention.ConventionDispatcher    // non-nil when convention metering is enabled (M8)
 	conventionDispatchStore  convention.DispatchStore            // same store as conventionDispatcher; shared by billingSweep
 	billingSweep             *convention.BillingSweep            // non-nil when convention billing sweep is enabled
+	fallbackSweep            *convention.Sweeper                 // non-nil when convention dispatching is enabled; runs on-demand via /sweep
 	conventionServerStore    aztable.ConventionServerStore       // non-nil when Azure Table Storage is available (T4)
 }
 
@@ -4279,6 +4280,10 @@ func (s *server) serveHTTP(addr string) error {
 	if s.transportRouter != nil {
 		mux.Handle("/campfire/", s.transportRouter)
 	}
+
+	// Mount the on-demand fallback sweep endpoint. Called by the Azure Functions
+	// timer trigger to catch messages missed by the event-driven dispatch path.
+	mux.HandleFunc("/sweep", s.handleSweep)
 
 	// Start the convention billing sweep background loop if wired.
 	// The loop runs both the fallback Sweeper and BillingSweep on a shared
