@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -312,6 +313,7 @@ func TestSendGitHub_MissingToken(t *testing.T) {
 	// Ensure GITHUB_TOKEN is not set in the environment for this test.
 	t.Setenv("GITHUB_TOKEN", "")
 
+	// Use protocol.New (no configDir) so the credential-file fallback is skipped.
 	client := protocol.New(s, agentID)
 	_, err = client.Send(protocol.SendRequest{
 		CampfireID: campfireID,
@@ -320,5 +322,54 @@ func TestSendGitHub_MissingToken(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for missing token, got nil")
+	}
+}
+
+// TestSendGitHub_CredFileToken verifies that Send reads the GitHub token from
+// the configDir/github-token credential file when no request token or env var
+// is set. This is the campfire-agent-azj fix: the credential-file fallback.
+func TestSendGitHub_CredFileToken(t *testing.T) {
+	fake := &fakeGitHubServer{}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	// Use protocol.Init to get a Client with configDir set.
+	configDir := t.TempDir()
+	client, err := protocol.Init(configDir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer client.Close()
+
+	// Write a credential file with a fake token.
+	credFile := filepath.Join(configDir, "github-token")
+	if err := os.WriteFile(credFile, []byte("ghp_credfile_token\n"), 0600); err != nil {
+		t.Fatalf("writing credential file: %v", err)
+	}
+
+	campfireID := setupGitHubCampfire(t, client.ClientStore(), srv.URL)
+
+	// Ensure GITHUB_TOKEN is not set so the cred-file path is exercised.
+	t.Setenv("GITHUB_TOKEN", "")
+
+	msg, err := client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("cred file token test"),
+		Tags:       []string{"status"},
+		// GitHubToken intentionally omitted — should be resolved from credential file
+	})
+	if err != nil {
+		t.Fatalf("Send with credential file token: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("Send returned nil message")
+	}
+
+	// Fake server must have received the POST (proving the token was resolved).
+	fake.mu.Lock()
+	commentCount := len(fake.comments)
+	fake.mu.Unlock()
+	if commentCount != 1 {
+		t.Errorf("fake server received %d POST requests, want 1", commentCount)
 	}
 }

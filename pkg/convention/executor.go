@@ -361,10 +361,14 @@ func isTimeoutErr(err error) bool {
 		strings.Contains(msg, "timed out")
 }
 
+// stepTimeout is the per-step timeout for workflow execution.
+// It is also used by executeQueryStep for sync convention awaits, so it is
+// defined at package level rather than inside executeWorkflow.
+const stepTimeout = 30 * time.Second
+
 // executeWorkflow runs a multi-step convention operation.
 func (e *Executor) executeWorkflow(ctx context.Context, decl *Declaration, campfireID string, args map[string]any) (*ExecuteResult, error) {
 	const totalTimeout = 120 * time.Second
-	const stepTimeout = 30 * time.Second
 
 	wfCtx, wfCancel := context.WithTimeout(ctx, totalTimeout)
 	defer wfCancel()
@@ -410,7 +414,7 @@ func (e *Executor) executeQueryStep(ctx context.Context, step Step, campfireID s
 		}
 	}
 
-	_, result, err := e.transport.sendFutureAndAwait(ctx, campfireID, futurePayload, futureTags, nil, 30*time.Second)
+	_, result, err := e.transport.sendFutureAndAwait(ctx, campfireID, futurePayload, futureTags, nil, stepTimeout)
 	if err != nil {
 		return fmt.Errorf("query future: %w", err)
 	}
