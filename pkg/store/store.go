@@ -881,7 +881,7 @@ func (s *SQLiteStore) ListMessages(campfireID string, afterTimestamp int64, filt
 
 	for _, p := range f.ExcludeTagPrefixes {
 		escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(strings.ToLower(p))
-		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) LIKE ? ESCAPE '\\\\')")
+		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM json_each(tags) WHERE LOWER(value) LIKE ? ESCAPE '\\')")
 		args = append(args, escaped+"%")
 	}
 

@@ -858,6 +858,88 @@ func TestListMessages_SenderFilter_UnderscoreWildcardInjection(t *testing.T) {
 	}
 }
 
+// TestListMessages_ExcludeTagPrefixes verifies that ExcludeTagPrefixes excludes
+// messages whose tags start with the given prefix.
+func TestListMessages_ExcludeTagPrefixes(t *testing.T) {
+	s := testStore(t)
+	cfID := "etpfx-cf"
+	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+	msgs := []MessageRecord{
+		{ID: "etpfx-m1", CampfireID: cfID, Sender: "aabb", Payload: []byte("p1"), Tags: []string{"status:done"}, Antecedents: []string{}, Timestamp: 1, Signature: []byte("s"), Provenance: nil, ReceivedAt: 10},
+		{ID: "etpfx-m2", CampfireID: cfID, Sender: "aabb", Payload: []byte("p2"), Tags: []string{"blocker"}, Antecedents: []string{}, Timestamp: 2, Signature: []byte("s"), Provenance: nil, ReceivedAt: 20},
+		{ID: "etpfx-m3", CampfireID: cfID, Sender: "aabb", Payload: []byte("p3"), Tags: []string{"status:pending"}, Antecedents: []string{}, Timestamp: 3, Signature: []byte("s"), Provenance: nil, ReceivedAt: 30},
+	}
+	for _, m := range msgs {
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage(%s): %v", m.ID, err)
+		}
+	}
+	result, err := s.ListMessages(cfID, 0, MessageFilter{ExcludeTagPrefixes: []string{"status"}})
+	if err != nil {
+		t.Fatalf("ListMessages(ExcludeTagPrefixes=[status]): %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("got %d messages, want 1 (only blocker)", len(result))
+	}
+	if len(result) > 0 && result[0].ID != "etpfx-m2" {
+		t.Errorf("got ID %s, want etpfx-m2", result[0].ID)
+	}
+}
+
+// TestListMessages_ExcludeTagPrefixes_PercentWildcardInjection verifies that
+// a '%' character in an ExcludeTagPrefixes entry is treated as a literal, not
+// a LIKE wildcard. Regression test for the double-escaped ESCAPE clause bug.
+func TestListMessages_ExcludeTagPrefixes_PercentWildcardInjection(t *testing.T) {
+	s := testStore(t)
+	cfID := "etpfx-pct-cf"
+	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+	msgs := []MessageRecord{
+		{ID: "pct-m1", CampfireID: cfID, Sender: "aabb", Payload: []byte("p1"), Tags: []string{"status"}, Antecedents: []string{}, Timestamp: 1, Signature: []byte("s"), Provenance: nil, ReceivedAt: 10},
+		{ID: "pct-m2", CampfireID: cfID, Sender: "aabb", Payload: []byte("p2"), Tags: []string{"blocker"}, Antecedents: []string{}, Timestamp: 2, Signature: []byte("s"), Provenance: nil, ReceivedAt: 20},
+	}
+	for _, m := range msgs {
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage(%s): %v", m.ID, err)
+		}
+	}
+	// '%' as a prefix must not match anything (no tag starts with literal '%').
+	// Before the fix, the double-escaped ESCAPE clause made '%' act as a wildcard,
+	// matching every tag and excluding all messages.
+	result, err := s.ListMessages(cfID, 0, MessageFilter{ExcludeTagPrefixes: []string{"%"}})
+	if err != nil {
+		t.Fatalf("ListMessages(ExcludeTagPrefixes=[%%]): %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("ExcludeTagPrefixes=[%%]: got %d messages, want 2 (%% must be literal, not wildcard)", len(result))
+	}
+}
+
+// TestListMessages_ExcludeTagPrefixes_UnderscoreWildcardInjection verifies that
+// '_' in an ExcludeTagPrefixes entry is treated as a literal, not a LIKE wildcard.
+func TestListMessages_ExcludeTagPrefixes_UnderscoreWildcardInjection(t *testing.T) {
+	s := testStore(t)
+	cfID := "etpfx-us-cf"
+	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+	msgs := []MessageRecord{
+		// tag is "at" — would match "_t%" if '_' were a wildcard
+		{ID: "us-m1", CampfireID: cfID, Sender: "aabb", Payload: []byte("p1"), Tags: []string{"at"}, Antecedents: []string{}, Timestamp: 1, Signature: []byte("s"), Provenance: nil, ReceivedAt: 10},
+		{ID: "us-m2", CampfireID: cfID, Sender: "aabb", Payload: []byte("p2"), Tags: []string{"blocker"}, Antecedents: []string{}, Timestamp: 2, Signature: []byte("s"), Provenance: nil, ReceivedAt: 20},
+	}
+	for _, m := range msgs {
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage(%s): %v", m.ID, err)
+		}
+	}
+	// "_t" as a prefix should not match "at"; both messages must be returned.
+	result, err := s.ListMessages(cfID, 0, MessageFilter{ExcludeTagPrefixes: []string{"_t"}})
+	if err != nil {
+		t.Fatalf("ListMessages(ExcludeTagPrefixes=[_t]): %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("ExcludeTagPrefixes=[_t]: got %d messages, want 2 (_ must be literal, not wildcard)", len(result))
+	}
+}
+
 func TestListMessages_BothFilters(t *testing.T) {
 	s, cfID := setupFilterTestStore(t)
 	// sender aabb + tag status → only m1
