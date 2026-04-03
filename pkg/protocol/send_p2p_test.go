@@ -349,6 +349,99 @@ func TestSendP2PHTTP_PeerDeliveryFailure(t *testing.T) {
 }
 
 
+// TestSendP2PHTTP_ActualRoleInHop is a regression test for campfire-agent-v7b:
+// sendP2PHTTP was hardcoding campfire.RoleFull in the provenance hop instead of
+// using the sender's actual membership role. A writer-role member sending a message
+// via P2P HTTP must produce a hop with role="writer", not "full".
+//
+// Note: observers cannot send (checkRoleCanSend blocks them). We use the writer
+// role here since it can send regular messages and is not RoleFull, making it
+// a direct regression witness for the hardcoded-RoleFull bug.
+func TestSendP2PHTTP_ActualRoleInHop(t *testing.T) {
+	// Fake peer that accepts delivery normally.
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer peer.Close()
+
+	agentID, s, tmpDir := setupTestEnv(t)
+
+	// Build a campfire with a writer membership (role="writer").
+	cfID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating campfire identity: %v", err)
+	}
+	campfireID := cfID.PublicKeyHex()
+
+	cfState := campfire.CampfireState{
+		PublicKey:             cfID.PublicKey,
+		PrivateKey:            cfID.PrivateKey,
+		JoinProtocol:          "open",
+		ReceptionRequirements: []string{},
+		CreatedAt:             time.Now().UnixNano(),
+		Threshold:             1,
+	}
+	stateData, err := cfencoding.Marshal(&cfState)
+	if err != nil {
+		t.Fatalf("marshalling campfire state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, campfireID+".cbor"), stateData, 0644); err != nil {
+		t.Fatalf("writing campfire state: %v", err)
+	}
+
+	// Membership with role="writer" — the bug was this being reported as "full".
+	if err := s.AddMembership(store.Membership{
+		CampfireID:    campfireID,
+		TransportDir:  tmpDir,
+		JoinProtocol:  "open",
+		Role:          campfire.RoleWriter,
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "p2p-http",
+	}); err != nil {
+		t.Fatalf("adding writer membership: %v", err)
+	}
+
+	// Register a peer so delivery is exercised (no-peers path skips deliver call).
+	peerID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating peer identity: %v", err)
+	}
+	if err := s.UpsertPeerEndpoint(store.PeerEndpoint{
+		CampfireID:   campfireID,
+		MemberPubkey: peerID.PublicKeyHex(),
+		Endpoint:     peer.URL,
+	}); err != nil {
+		t.Fatalf("registering peer endpoint: %v", err)
+	}
+
+	client := protocol.New(s, agentID)
+	msg, err := client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("writer p2p send"),
+		Tags:       []string{"status"},
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(msg.Provenance) != 1 {
+		t.Fatalf("expected 1 provenance hop, got %d", len(msg.Provenance))
+	}
+
+	hop := msg.Provenance[0]
+
+	// The hop Role must reflect the actual member role (writer), not the
+	// previously hardcoded RoleFull.
+	if hop.Role != campfire.RoleWriter {
+		t.Errorf("hop.Role = %q, want %q (actual member role must appear in provenance hop, not hardcoded RoleFull)", hop.Role, campfire.RoleWriter)
+	}
+
+	// Hop signature must still verify (role is included in signed data).
+	if !message.VerifyHop(msg.ID, hop) {
+		t.Error("provenance hop signature is invalid")
+	}
+}
+
 // errOnAddMessageStore wraps a real store.Store and injects a configurable error
 // into AddMessage. All other methods delegate to the underlying store unchanged.
 // Used to exercise the AddMessage error path in sendP2PHTTP (and other send paths)

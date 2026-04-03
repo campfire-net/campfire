@@ -237,7 +237,9 @@ func TestSendFROST(t *testing.T) {
 	hop := msg.Provenance[0]
 
 	// The hop signature must verify against the group public key.
-	// Reconstruct the sign input the same way thresholdSignHop does.
+	// Reconstruct the sign input the same way thresholdSignHop does,
+	// including the Role field (role is now included in the signed data so
+	// that receivers can verify the hop role claim).
 	signInput := message.HopSignInput{
 		MessageID:             msg.ID,
 		CampfireID:            cfPub,
@@ -246,6 +248,7 @@ func TestSendFROST(t *testing.T) {
 		JoinProtocol:          hop.JoinProtocol,
 		ReceptionRequirements: hop.ReceptionRequirements,
 		Timestamp:             hop.Timestamp,
+		Role:                  hop.Role,
 	}
 	signBytes, err := cfencoding.Marshal(signInput)
 	if err != nil {
@@ -253,6 +256,11 @@ func TestSendFROST(t *testing.T) {
 	}
 	if !ed25519.Verify(groupKey, signBytes, hop.Signature) {
 		t.Error("hop signature does not verify against FROST group public key")
+	}
+
+	// The hop must carry the sender's actual role (RoleFull — set in A's membership).
+	if hop.Role != campfire.RoleFull {
+		t.Errorf("hop.Role = %q, want %q", hop.Role, campfire.RoleFull)
 	}
 
 	// The hop CampfireID should match the campfire public key (= FROST group key).
