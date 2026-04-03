@@ -1,9 +1,11 @@
 // Package protocol provides a unified client API for campfire operations.
-// It consolidates the duplicate read/send stacks that exist in cmd/cf, cmd/cf-mcp,
-// and pkg/convention, enabling those callers to migrate to a shared implementation.
+// It consolidates the duplicate read/send stacks from cmd/cf, cmd/cf-mcp,
+// and pkg/convention into a single implementation.
 //
-// Downstream items (campfire-agent-zkg, r02, f4a) will migrate those callers
-// to use Client.Send() and Client.Read() directly.
+// Migration complete (campfire-agent-zkg, r02, f4a, cqt): all callers in
+// cmd/cf/cmd and cmd/cf-mcp now use Client.Send() and Client.Read() directly.
+// Transport dispatch is encapsulated here; no external caller should invoke
+// transport helpers (sendFilesystem, sendGitHub, sendP2PHTTP) directly.
 package protocol
 
 import (
@@ -81,6 +83,14 @@ type SendRequest struct {
 	// messages forwarded by a bridge. If empty, the sender's stored membership role
 	// is used (the default and correct behavior for non-bridge sends).
 	RoleOverride string
+
+	// StateDir, when non-empty, selects the hosted-MCP state resolution path in
+	// sendP2PHTTP. In hosted-MCP mode, the campfire state lives under cfHome in
+	// fs.Transport layout (<StateDir>/<campfireID>/campfire.cbor), while
+	// m.TransportDir holds the external HTTP address and cannot be used for state
+	// resolution. Setting StateDir to cfHome fixes this without duplicating the
+	// protocol pipeline in the caller (campfire-agent-nzk).
+	StateDir string
 }
 
 // CoSigner is a peer endpoint used during FROST threshold signing.
