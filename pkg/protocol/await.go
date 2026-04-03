@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -23,7 +24,7 @@ type AwaitRequest struct {
 	TargetMsgID string
 
 	// Timeout is the maximum time to wait before returning ErrAwaitTimeout.
-	// Zero means wait forever.
+	// Zero means wait forever (subject to ctx cancellation).
 	Timeout time.Duration
 
 	// PollInterval is the time between store polls. Defaults to 2 seconds when zero.
@@ -31,7 +32,7 @@ type AwaitRequest struct {
 }
 
 // Await blocks until a message that fulfills TargetMsgID is available in the
-// campfire, or the timeout expires.
+// campfire, or the timeout expires, or ctx is cancelled.
 //
 // A fulfilling message is one that:
 //   - carries the "fulfills" tag, AND
@@ -43,9 +44,10 @@ type AwaitRequest struct {
 // in cmd/cf/cmd/await.go.
 //
 // Returns the fulfilling Message on success. Returns ErrAwaitTimeout if
-// the deadline expires before a fulfillment is found. Returns a wrapped error
-// for any store or sync failure encountered during the poll loop.
-func (c *Client) Await(req AwaitRequest) (*Message, error) {
+// the deadline expires before a fulfillment is found. Returns ctx.Err() if
+// the context is cancelled before a fulfillment is found. Returns a wrapped
+// error for any store or sync failure encountered during the poll loop.
+func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) {
 	if req.CampfireID == "" {
 		return nil, fmt.Errorf("protocol.Client.Await: CampfireID is required")
 	}
@@ -59,7 +61,7 @@ func (c *Client) Await(req AwaitRequest) (*Message, error) {
 	}
 
 	// Set up deadline channel. A nil channel blocks forever, which is correct
-	// for Timeout==0 (wait indefinitely).
+	// for Timeout==0 (wait indefinitely, subject to ctx cancellation).
 	var deadline <-chan time.Time
 	if req.Timeout > 0 {
 		timer := time.NewTimer(req.Timeout)
@@ -82,6 +84,8 @@ func (c *Client) Await(req AwaitRequest) (*Message, error) {
 	// Poll loop.
 	for {
 		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		case <-deadline:
 			return nil, ErrAwaitTimeout
 		case <-time.After(interval):

@@ -339,7 +339,7 @@ func consultRootsForName(name string, jp *naming.JoinPolicy) ([]string, error) {
 		return nil, fmt.Errorf("sending consult query: %w", err)
 	}
 
-	resp, err := client.Await(protocol.AwaitRequest{
+	resp, err := client.Await(context.Background(), protocol.AwaitRequest{
 		CampfireID:  jp.ConsultCampfire,
 		TargetMsgID: msg.ID,
 		Timeout:     consultTimeout(),

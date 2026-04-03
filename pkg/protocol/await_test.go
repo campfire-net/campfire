@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func TestClientAwait_FulfillmentAlreadyPresent(t *testing.T) {
 	}
 
 	// Await should return immediately.
-	got, err := client.Await(protocol.AwaitRequest{
+	got, err := client.Await(context.Background(), protocol.AwaitRequest{
 		CampfireID:  campfireID,
 		TargetMsgID: futureMsg.ID,
 		Timeout:     5 * time.Second,
@@ -63,7 +64,7 @@ func TestClientAwait_FulfillmentArrivesLater(t *testing.T) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		msg, err := client.Await(protocol.AwaitRequest{
+		msg, err := client.Await(context.Background(), protocol.AwaitRequest{
 			CampfireID:   campfireID,
 			TargetMsgID:  futureMsg.ID,
 			Timeout:      10 * time.Second,
@@ -105,7 +106,7 @@ func TestClientAwait_Timeout(t *testing.T) {
 	// Write a future message (no fulfillment will follow).
 	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "unanswered question", []string{"future"})
 
-	_, err := client.Await(protocol.AwaitRequest{
+	_, err := client.Await(context.Background(), protocol.AwaitRequest{
 		CampfireID:   campfireID,
 		TargetMsgID:  futureMsg.ID,
 		Timeout:      300 * time.Millisecond,
@@ -127,7 +128,7 @@ func TestClientAwait_RequiresCampfireID(t *testing.T) {
 
 	client := protocol.New(s, nil)
 
-	_, err := client.Await(protocol.AwaitRequest{TargetMsgID: "someid"})
+	_, err := client.Await(context.Background(), protocol.AwaitRequest{TargetMsgID: "someid"})
 	if err == nil {
 		t.Error("Await: expected error for empty CampfireID, got nil")
 	}
@@ -141,7 +142,7 @@ func TestClientAwait_RequiresTargetMsgID(t *testing.T) {
 
 	client := protocol.New(s, nil)
 
-	_, err := client.Await(protocol.AwaitRequest{CampfireID: campfireID})
+	_, err := client.Await(context.Background(), protocol.AwaitRequest{CampfireID: campfireID})
 	if err == nil {
 		t.Error("Await: expected error for empty TargetMsgID, got nil")
 	}
@@ -162,7 +163,7 @@ func TestClientAwait_IgnoresMessagesWithoutFulfillsTag(t *testing.T) {
 	writeTransportMessageWithAntecedents(t, cfID, tr, campfireID, "working on it", []string{"status"}, []string{futureMsg.ID})
 
 	// Await should time out — "status" tag is not "fulfills".
-	_, err := client.Await(protocol.AwaitRequest{
+	_, err := client.Await(context.Background(), protocol.AwaitRequest{
 		CampfireID:   campfireID,
 		TargetMsgID:  futureMsg.ID,
 		Timeout:      400 * time.Millisecond,
@@ -170,5 +171,82 @@ func TestClientAwait_IgnoresMessagesWithoutFulfillsTag(t *testing.T) {
 	})
 	if err != protocol.ErrAwaitTimeout {
 		t.Errorf("Await: expected ErrAwaitTimeout (no fulfills tag), got %v", err)
+	}
+}
+
+// TestClientAwait_ContextCancellation verifies that Await returns ctx.Err()
+// when the context is cancelled before a fulfillment arrives.
+func TestClientAwait_ContextCancellation(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	// Write a future message — no fulfillment will arrive.
+	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "unanswered question", []string{"future"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	type result struct {
+		msg *protocol.Message
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		msg, err := client.Await(ctx, protocol.AwaitRequest{
+			CampfireID:   campfireID,
+			TargetMsgID:  futureMsg.ID,
+			Timeout:      0, // no timeout — only ctx cancellation stops it
+			PollInterval: 50 * time.Millisecond,
+		})
+		ch <- result{msg, err}
+	}()
+
+	// Cancel the context after a short delay.
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+
+	select {
+	case r := <-ch:
+		if r.err == nil {
+			t.Fatal("Await: expected error on context cancellation, got nil")
+		}
+		if r.err != context.Canceled {
+			t.Errorf("Await: expected context.Canceled, got %v", r.err)
+		}
+		if r.msg != nil {
+			t.Errorf("Await: expected nil message on cancellation, got %v", r.msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Await: did not return after context cancellation")
+	}
+}
+
+// TestClientAwait_ContextAlreadyCancelled verifies that Await returns immediately
+// when called with an already-cancelled context and no fulfillment is present.
+func TestClientAwait_ContextAlreadyCancelled(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "question", []string{"future"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := client.Await(ctx, protocol.AwaitRequest{
+		CampfireID:   campfireID,
+		TargetMsgID:  futureMsg.ID,
+		Timeout:      0,
+		PollInterval: 50 * time.Millisecond,
+	})
+	// The initial check runs before entering the poll loop, so if no fulfillment
+	// is present the first poll select should return ctx.Err() immediately.
+	if err == nil {
+		t.Fatal("Await: expected error for cancelled context, got nil")
+	}
+	if err != context.Canceled {
+		t.Errorf("Await: expected context.Canceled, got %v", err)
 	}
 }

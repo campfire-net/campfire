@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,43 +64,36 @@ Example:
 		// Use transport-appropriate poll interval.
 		interval := followIntervalForTransport(*m)
 
-		// Set up signal handling so SIGINT/SIGTERM exit cleanly with code 1.
+		// Set up a cancellable context driven by SIGINT/SIGTERM.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		stopCh := make(chan os.Signal, 1)
 		signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(stopCh)
-
-		// Run Await in a goroutine so we can also watch the stop signal.
-		type awaitResult struct {
-			msg *protocol.Message
-			err error
-		}
-		resultCh := make(chan awaitResult, 1)
-
-		client := protocol.New(s, agentID)
 		go func() {
-			msg, err := client.Await(protocol.AwaitRequest{
-				CampfireID:   campfireID,
-				TargetMsgID:  targetMsgID,
-				Timeout:      timeout,
-				PollInterval: interval,
-			})
-			resultCh <- awaitResult{msg: msg, err: err}
+			select {
+			case <-stopCh:
+				cancel()
+			case <-ctx.Done():
+			}
 		}()
 
-		select {
-		case <-stopCh:
+		client := protocol.New(s, agentID)
+		msg, err := client.Await(ctx, protocol.AwaitRequest{
+			CampfireID:   campfireID,
+			TargetMsgID:  targetMsgID,
+			Timeout:      timeout,
+			PollInterval: interval,
+		})
+		if errors.Is(err, protocol.ErrAwaitTimeout) || errors.Is(err, context.Canceled) {
 			os.Exit(1)
 			return nil
-		case res := <-resultCh:
-			if errors.Is(res.err, protocol.ErrAwaitTimeout) {
-				os.Exit(1)
-				return nil
-			}
-			if res.err != nil {
-				return res.err
-			}
-			return outputFulfillment(*res.msg)
 		}
+		if err != nil {
+			return err
+		}
+		return outputFulfillment(*msg)
 	},
 }
 

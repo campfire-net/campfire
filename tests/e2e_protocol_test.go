@@ -198,7 +198,7 @@ func TestE2E_ConventionRoundTrip(t *testing.T) {
 	t.Logf("sent message ID: %s", sentMsg.ID)
 
 	// --- Step 2: Client.Await — blocks until the server's auto-threaded response arrives ---
-	fulfillment, err := callerClient.Await(protocol.AwaitRequest{
+	fulfillment, err := callerClient.Await(context.Background(), protocol.AwaitRequest{
 		CampfireID:   campfireID,
 		TargetMsgID:  sentMsg.ID,
 		Timeout:      8 * time.Second,

@@ -215,7 +215,7 @@ func (t *clientTransport) awaitFulfillment(ctx context.Context, campfireID, targ
 		timeout = DefaultResolutionTimeout
 	}
 
-	rec, err := t.client.Await(protocol.AwaitRequest{
+	rec, err := t.client.Await(ctx, protocol.AwaitRequest{
 		CampfireID:   campfireID,
 		TargetMsgID:  targetMsgID,
 		Timeout:      timeout,

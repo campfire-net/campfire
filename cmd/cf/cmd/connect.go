@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,32 +108,22 @@ Example:
 		}
 
 		// Await fulfillment of the connect-request future.
-		type awaitResult struct {
-			msg *protocol.Message
-			err error
-		}
-		resultCh := make(chan awaitResult, 1)
-		go func() {
-			msg, awaitErr := client.Await(protocol.AwaitRequest{
-				CampfireID:   targetID,
-				TargetMsgID:  connectMsg.ID,
-				Timeout:      timeout,
-				PollInterval: interval,
-			})
-			resultCh <- awaitResult{msg: msg, err: awaitErr}
-		}()
-
-		res := <-resultCh
-		if errors.Is(res.err, protocol.ErrAwaitTimeout) {
+		awaitMsg, awaitErr := client.Await(context.Background(), protocol.AwaitRequest{
+			CampfireID:   targetID,
+			TargetMsgID:  connectMsg.ID,
+			Timeout:      timeout,
+			PollInterval: interval,
+		})
+		if errors.Is(awaitErr, protocol.ErrAwaitTimeout) {
 			fmt.Fprintf(os.Stderr, "connect-request timed out after %s — no response from %s\n", timeout, targetID[:12])
 			os.Exit(1)
 			return nil
 		}
-		if res.err != nil {
-			return fmt.Errorf("awaiting connect-response: %w", res.err)
+		if awaitErr != nil {
+			return fmt.Errorf("awaiting connect-response: %w", awaitErr)
 		}
 
-		fulfillment := res.msg
+		fulfillment := awaitMsg
 
 		// Check if the response is a rejection.
 		if isConnectRejection(fulfillment) {
