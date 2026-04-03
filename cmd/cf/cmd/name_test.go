@@ -204,6 +204,41 @@ func TestNameLookupNotFound(t *testing.T) {
 	}
 }
 
+// TestNameLookupAliasStore verifies that nameLookupCmd resolves a name via the
+// alias store (step 1 of the lookup chain) before consulting any other source.
+// It pre-populates the alias store with a known alias → campfire ID mapping and
+// confirms the command outputs the alias-store resolution message.
+func TestNameLookupAliasStore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CF_HOME", dir)
+	t.Cleanup(func() { cfHome = "" })
+	cfHome = ""
+
+	// Pre-populate the alias store with a fake campfire ID.
+	aliases := naming.NewAliasStore(dir)
+	fakeID := "aabbccdd1122334455667788990011223344556677889900aabbccdd11223344"
+	if err := aliases.Set("myalias", fakeID); err != nil {
+		t.Fatalf("setting alias: %v", err)
+	}
+
+	var out bytes.Buffer
+	nameLookupCmd.SetOut(&out)
+	if err := nameLookupCmd.RunE(nameLookupCmd, []string{"myalias"}); err != nil {
+		t.Fatalf("name lookup: %v", err)
+	}
+
+	result := out.String()
+	if !strings.Contains(result, "alias store") {
+		t.Errorf("expected 'alias store' in output (step 1 resolution), got: %s", result)
+	}
+	if !strings.Contains(result, "myalias") {
+		t.Errorf("expected 'myalias' in output, got: %s", result)
+	}
+	if !strings.Contains(result, fakeID) {
+		t.Errorf("expected campfire ID %s in output, got: %s", fakeID, result)
+	}
+}
+
 // TestNameResolveRootPublicWithoutRegistry verifies that --public flag without
 // CF_ROOT_REGISTRY set returns a clear error from nameResolveRoot.
 func TestNameResolveRootPublicWithoutRegistry(t *testing.T) {
