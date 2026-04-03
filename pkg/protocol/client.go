@@ -65,6 +65,9 @@ type SendRequest struct {
 	Antecedents []string
 
 	// Instance is tainted (sender-asserted) role metadata — NOT covered by signature.
+	// Any sender can set this to any string, including spoofing another agent's role.
+	// Consumers must treat it as an untrusted display hint only. Never use for access
+	// control, routing decisions, or trust assertions.
 	Instance string
 
 	// SigningMode controls how the provenance hop is signed. Defaults to

@@ -2433,6 +2433,8 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 		ID                  string                  `json:"id"`
 		CampfireID          string                  `json:"campfire_id"`
 		Sender              string                  `json:"sender"`
+		// Instance is tainted (sender-asserted, not verified). Display only —
+		// callers must not use this field for access control or trust decisions.
 		Instance            string                  `json:"instance,omitempty"`
 		Payload             string                  `json:"payload"`
 		Tags                []string                `json:"tags"`

@@ -9,15 +9,21 @@ import (
 // Message is the SDK-facing campfire message type.
 // Sender is the hex-encoded Ed25519 public key of the message author.
 // Tags, Antecedents, Instance, and SenderCampfireID are tainted (sender-asserted) metadata.
+//
+// TRUST BOUNDARY: Instance (and SenderCampfireID) are self-reported by the sender and
+// are NOT included in the message signature. Any peer can forge any value. Treat Instance
+// as an untrusted display hint only. For identity-sensitive operations use Sender (the
+// verified Ed25519 public key).
 type Message struct {
 	ID          string
 	CampfireID  string
-	Sender      string // hex pubkey
+	Sender      string   // hex pubkey — the only cryptographically verified identity field
 	Payload     []byte
 	Tags        []string
 	Antecedents []string
 	Timestamp   int64
-	Instance    string
+	// Instance is tainted (sender-asserted, not verified) — see trust boundary note on Message.
+	Instance string
 	Signature   []byte
 	// SenderCampfireID is the hex-encoded self-campfire ID of the sender agent.
 	// Tainted (sender-asserted, not verified). Empty for legacy messages and

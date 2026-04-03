@@ -11,6 +11,8 @@ type EnrichedMessage struct {
 	SenderName     string    // display name from identity registry
 	SenderRole     string    // role from identity registry
 	SenderColor    string    // color for sender pill (Adaptive Card color name)
+	// Instance is tainted (sender-asserted, not verified). Display only —
+	// not a verified identity claim. Any sender can set any value.
 	Instance       string    // e.g. "ceo", "strategist"
 	CampfireShortID string   // first 6 hex chars of campfire ID
 	Tags           []string  // message tags

@@ -572,6 +572,8 @@ type MessageRecord struct {
 	ReceivedAt  int64                   `json:"received_at"`
 	// Instance is tainted (sender-asserted, not verified) metadata identifying
 	// the sender's role or instance name. Empty string for backward compatibility.
+	// NOT covered by message signature — any sender can set any value. Treat as
+	// untrusted display hint only. Never use for access control or routing.
 	Instance string `json:"instance,omitempty"`
 	// SenderCampfireID is the hex-encoded self-campfire ID of the sender agent.
 	// Tainted (sender-asserted, not verified). Empty for legacy messages and

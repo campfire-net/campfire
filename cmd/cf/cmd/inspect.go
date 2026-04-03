@@ -66,6 +66,7 @@ var inspectCmd = &cobra.Command{
 				ID             string    `json:"id"`
 				CampfireID     string    `json:"campfire_id"`
 				Sender         string    `json:"sender"`
+				// Instance is tainted (sender-asserted, not verified). Display only.
 				Instance       string    `json:"instance,omitempty"`
 				Payload        string    `json:"payload"`
 				Tags           []string  `json:"tags"`
