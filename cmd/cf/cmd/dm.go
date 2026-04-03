@@ -48,8 +48,6 @@ var dmCmd = &cobra.Command{
 		}
 		defer s.Close()
 
-		transport := fs.New(fs.DefaultBaseDir())
-
 		// Look for existing DM campfire
 		memberships, err := s.ListMemberships()
 		if err != nil {
@@ -57,17 +55,19 @@ var dmCmd = &cobra.Command{
 		}
 		// Find existing DM campfire: must be invite-only with exactly 2 members
 		var existingCF string
+		var existingTransportDir string
 		for _, mem := range memberships {
 			if mem.JoinProtocol != "invite-only" {
 				continue
 			}
-			members, err := transport.ListMembers(mem.CampfireID)
+			members, err := fs.ForDir(mem.TransportDir).ListMembers(mem.CampfireID)
 			if err != nil || len(members) != 2 {
 				continue
 			}
 			for _, m := range members {
 				if fmt.Sprintf("%x", m.PublicKey) == targetHex {
 					existingCF = mem.CampfireID
+					existingTransportDir = mem.TransportDir
 					break
 				}
 			}
@@ -77,9 +77,11 @@ var dmCmd = &cobra.Command{
 		}
 
 		var campfireID string
+		var transportDir string
 
 		if existingCF != "" {
 			campfireID = existingCF
+			transportDir = existingTransportDir
 		} else {
 			// Create a new DM campfire
 			cf, err := campfire.New("invite-only", nil, 1)
@@ -91,6 +93,7 @@ var dmCmd = &cobra.Command{
 			cf.AddMember(agentID.PublicKey)
 			cf.AddMember(targetKey)
 
+			transport := fs.New(fs.DefaultBaseDir())
 			if err := transport.Init(cf); err != nil {
 				return fmt.Errorf("initializing transport: %w", err)
 			}
@@ -111,13 +114,15 @@ var dmCmd = &cobra.Command{
 				return fmt.Errorf("writing target member record: %w", err)
 			}
 
+			transportDir = transport.CampfireDir(cf.PublicKeyHex())
+
 			// Publish beacon
 			b, err := beacon.New(
 				cf.PublicKey, cf.PrivateKey,
 				cf.JoinProtocol, cf.ReceptionRequirements,
 				beacon.TransportConfig{
 					Protocol: "filesystem",
-					Config:   map[string]string{"dir": transport.CampfireDir(cf.PublicKeyHex())},
+					Config:   map[string]string{"dir": transportDir},
 				},
 				fmt.Sprintf("dm:%s:%s", agentID.PublicKeyHex()[:12], targetHex[:12]),
 			)
@@ -131,7 +136,7 @@ var dmCmd = &cobra.Command{
 			// Record membership locally
 			if err := s.AddMembership(store.Membership{
 				CampfireID:   cf.PublicKeyHex(),
-				TransportDir: transport.CampfireDir(cf.PublicKeyHex()),
+				TransportDir: transportDir,
 				JoinProtocol: cf.JoinProtocol,
 				Role:         store.PeerRoleCreator,
 				JoinedAt:     now,
@@ -142,18 +147,19 @@ var dmCmd = &cobra.Command{
 			campfireID = cf.PublicKeyHex()
 		}
 
-		// Send the message
+		// Send the message using the campfire's actual transport dir.
+		tr := fs.ForDir(transportDir)
 		msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), dmTags, nil)
 		if err != nil {
 			return fmt.Errorf("creating message: %w", err)
 		}
 
-		state, err := transport.ReadState(campfireID)
+		state, err := tr.ReadState(campfireID)
 		if err != nil {
 			return fmt.Errorf("reading campfire state: %w", err)
 		}
 
-		members, err := transport.ListMembers(campfireID)
+		members, err := tr.ListMembers(campfireID)
 		if err != nil {
 			return fmt.Errorf("listing members: %w", err)
 		}
@@ -168,7 +174,7 @@ var dmCmd = &cobra.Command{
 			return fmt.Errorf("adding provenance hop: %w", err)
 		}
 
-		if err := transport.WriteMessage(campfireID, msg); err != nil {
+		if err := tr.WriteMessage(campfireID, msg); err != nil {
 			return fmt.Errorf("writing message: %w", err)
 		}
 

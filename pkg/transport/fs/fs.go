@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,9 +24,18 @@ type Transport struct {
 }
 
 // DefaultBaseDir returns the default transport base directory.
+// Priority: $CF_TRANSPORT_DIR > $CF_HOME/campfires > ~/.campfire/campfires.
+// The old default (/tmp/campfire) was ephemeral and caused split-brain:
+// store.db survived container restarts but transport files did not.
 func DefaultBaseDir() string {
 	if env := os.Getenv("CF_TRANSPORT_DIR"); env != "" {
 		return env
+	}
+	if cfHome := os.Getenv("CF_HOME"); cfHome != "" {
+		return filepath.Join(cfHome, "campfires")
+	}
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		return filepath.Join(u.HomeDir, ".campfire", "campfires")
 	}
 	return "/tmp/campfire"
 }

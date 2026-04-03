@@ -35,7 +35,7 @@ var leaveCmd = &cobra.Command{
 			return fmt.Errorf("not a member of campfire %s", campfireID[:12])
 		}
 
-		transport := fs.New(fs.DefaultBaseDir())
+		transport := fs.ForDir(m.TransportDir)
 
 		// Read campfire state for system message signing
 		state, err := transport.ReadState(campfireID)

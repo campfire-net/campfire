@@ -43,8 +43,7 @@ var membersCmd = &cobra.Command{
 			return fmt.Errorf("not a member of campfire %s", campfireID[:12])
 		}
 
-		transport := fs.New(fs.DefaultBaseDir())
-		members, err := transport.ListMembers(campfireID)
+		members, err := fs.ForDir(m.TransportDir).ListMembers(campfireID)
 		if err != nil {
 			return fmt.Errorf("listing members: %w", err)
 		}

@@ -693,21 +693,33 @@ func TestNew_IsNotPathRooted(t *testing.T) {
 	}
 }
 
-// TestDefaultBaseDir verifies the fallback path and CF_TRANSPORT_DIR env override.
+// TestDefaultBaseDir verifies the priority chain:
+// CF_TRANSPORT_DIR > CF_HOME/campfires > ~/.campfire/campfires.
 func TestDefaultBaseDir(t *testing.T) {
-	// Default.
+	// Clear env to get deterministic baseline.
+	t.Setenv("CF_TRANSPORT_DIR", "")
+	t.Setenv("CF_HOME", "")
+
+	// With no env vars, should derive from home dir.
 	dir := DefaultBaseDir()
-	if dir != "/tmp/campfire" {
-		// Only fail if the env var is also not set.
-		if os.Getenv("CF_TRANSPORT_DIR") == "" {
-			t.Errorf("DefaultBaseDir() = %q, want /tmp/campfire", dir)
+	home, err := os.UserHomeDir()
+	if err == nil {
+		want := filepath.Join(home, ".campfire", "campfires")
+		if dir != want {
+			t.Errorf("DefaultBaseDir() = %q, want %q", dir, want)
 		}
 	}
 
-	// Override via env var.
+	// CF_HOME takes priority over home dir.
+	t.Setenv("CF_HOME", "/data/campfire")
+	if got := DefaultBaseDir(); got != "/data/campfire/campfires" {
+		t.Errorf("DefaultBaseDir() with CF_HOME = %q, want /data/campfire/campfires", got)
+	}
+
+	// CF_TRANSPORT_DIR takes highest priority.
 	t.Setenv("CF_TRANSPORT_DIR", "/custom/transport")
 	if got := DefaultBaseDir(); got != "/custom/transport" {
-		t.Errorf("DefaultBaseDir() with env = %q, want /custom/transport", got)
+		t.Errorf("DefaultBaseDir() with CF_TRANSPORT_DIR = %q, want /custom/transport", got)
 	}
 }
 

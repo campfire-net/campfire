@@ -26,8 +26,6 @@ var lsCmd = &cobra.Command{
 			return fmt.Errorf("listing memberships: %w", err)
 		}
 
-		transport := fs.New(fs.DefaultBaseDir())
-
 		if jsonOutput {
 			type entry struct {
 				CampfireID   string `json:"campfire_id"`
@@ -40,7 +38,7 @@ var lsCmd = &cobra.Command{
 			}
 			var entries []entry
 			for _, m := range memberships {
-				members, _ := transport.ListMembers(m.CampfireID)
+				members, _ := fs.ForDir(m.TransportDir).ListMembers(m.CampfireID)
 				threshold := m.Threshold
 				if threshold == 0 {
 					threshold = 1
@@ -69,7 +67,7 @@ var lsCmd = &cobra.Command{
 		}
 
 		for _, m := range memberships {
-			members, _ := transport.ListMembers(m.CampfireID)
+			members, _ := fs.ForDir(m.TransportDir).ListMembers(m.CampfireID)
 			idShort := m.CampfireID
 			if len(idShort) > 12 {
 				idShort = idShort[:12]

@@ -39,7 +39,7 @@ var disbandCmd = &cobra.Command{
 		}
 
 		// Read the campfire state to get the public key bytes for beacon removal
-		transport := fs.New(fs.DefaultBaseDir())
+		transport := fs.ForDir(m.TransportDir)
 		state, err := transport.ReadState(campfireID)
 		if err != nil {
 			return fmt.Errorf("reading campfire state: %w", err)
