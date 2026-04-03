@@ -8,6 +8,7 @@
 //     wireConventionMetering was not called first).
 //   - wireConventionMetering sets conventionDispatchStore (the shared store).
 //   - The billing sweep correctly bills an unbilled dispatch record via Run.
+//   - startBillingSweepLoop exits cleanly when the context is cancelled.
 package main
 
 import (
@@ -183,5 +184,45 @@ func TestBillingSweepRun_BillsUnbilledRecord(t *testing.T) {
 	wantKey := "server-xyz:msg-001:tokens"
 	if ev.IdempotencyKey != wantKey {
 		t.Errorf("IdempotencyKey = %q, want %q", ev.IdempotencyKey, wantKey)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestBillingSweepLoop_ExitsOnContextCancel (campfire-agent-36f)
+// ---------------------------------------------------------------------------
+
+// TestBillingSweepLoop_ExitsOnContextCancel verifies that startBillingSweepLoop
+// exits promptly when its context is cancelled, exercising the ctx.Done() branch
+// that is dead in all other tests (production uses context.Background()).
+func TestBillingSweepLoop_ExitsOnContextCancel(t *testing.T) {
+	_, client, _, _ := newCapturingForgeServer(t)
+	emitter := forge.NewForgeEmitter(client, 100, nil)
+	runEmitter(t, emitter)
+
+	srv := newTestServer(t)
+	srv.wireConventionMetering(emitter)
+	srv.wireBillingSweep(emitter)
+
+	if srv.billingSweep == nil {
+		t.Fatal("billingSweep not wired — cannot exercise loop")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.startBillingSweepLoop(ctx)
+	}()
+
+	// Cancel the context. The loop must exit within a generous deadline; it
+	// should be near-immediate since the ticker fires only after 10 minutes.
+	cancel()
+
+	select {
+	case <-done:
+		// Loop exited cleanly — test passes.
+	case <-time.After(5 * time.Second):
+		t.Fatal("startBillingSweepLoop did not exit within 5s after context cancellation")
 	}
 }

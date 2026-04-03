@@ -267,6 +267,54 @@ func TestCampfireInitResponse_NormalSession(t *testing.T) {
 // TestOperatorKeyMetering_EmptyForgeAccountID (campfire-agent-htl)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// TestOperatorKeyMetering_Tier1OperatorSessionNoEmission (campfire-agent-8hm)
+// ---------------------------------------------------------------------------
+
+// TestOperatorKeyMetering_Tier1OperatorSessionNoEmission verifies that Tier 1
+// events produce NO forge emission even when the context carries an operator
+// session Forge account (WithSessionForgeAccount). The Tier 1 short-circuit
+// fires BEFORE the operator account override, so no UsageEvent must be emitted
+// regardless of what the context carries.
+func TestOperatorKeyMetering_Tier1OperatorSessionNoEmission(t *testing.T) {
+	_, client, events, mu := newCapturingForgeServer(t)
+	emitter := forge.NewForgeEmitter(client, 100, nil)
+	runEmitter(t, emitter)
+
+	hook := buildConventionMeteringHook(emitter)
+
+	// Simulate a forge-tk- session with an operator account in context.
+	const operatorAccountID = "acct-operator-tier1"
+	ctx := WithSessionForgeAccount(context.Background(), operatorAccountID)
+
+	event := convention.ConventionMeterEvent{
+		CampfireID:     "fire-tier1",
+		Convention:     "myconv",
+		Operation:      "myop",
+		Tier:           1, // Tier 1 = free — must never emit, even with operator account in ctx
+		ServerID:       "server-xyz",
+		ForgeAccountID: "acct-convention-server",
+		MessageID:      "msg-tier1-operator",
+		Status:         "fulfilled",
+	}
+	hook(ctx, event)
+
+	// Wait long enough to catch any erroneous async emission.
+	time.Sleep(300 * time.Millisecond)
+
+	mu.Lock()
+	count := len(*events)
+	mu.Unlock()
+
+	if count != 0 {
+		t.Errorf("expected 0 usage events for Tier 1 with operator session context, got %d", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestOperatorKeyMetering_EmptyForgeAccountID (campfire-agent-htl)
+// ---------------------------------------------------------------------------
+
 // TestOperatorKeyMetering_EmptyForgeAccountID verifies that when both the event
 // ForgeAccountID and the session context account are empty, the metering hook
 // does NOT emit a UsageEvent (no malformed event with AccountID="" is sent to Forge).
