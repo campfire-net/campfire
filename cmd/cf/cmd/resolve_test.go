@@ -1268,21 +1268,21 @@ func TestResolveByName_ConsultPath(t *testing.T) {
 }
 
 // TestConsultTimeout verifies that consultTimeout reads CF_CONSULT_TIMEOUT and
-// falls back to 10s when the variable is absent or malformed.
+// falls back to DefaultConsultTimeout (2s) when the variable is absent or malformed.
 func TestConsultTimeout(t *testing.T) {
 	cases := []struct {
 		name    string
 		envVal  string
 		want    time.Duration
 	}{
-		{"default when unset", "", 10 * time.Second},
+		{"default when unset", "", DefaultConsultTimeout},
 		{"valid duration 30s", "30s", 30 * time.Second},
 		{"valid duration 2m", "2m", 2 * time.Minute},
 		{"valid duration 500ms", "500ms", 500 * time.Millisecond},
-		{"invalid string falls back", "notaduration", 10 * time.Second},
-		{"zero value falls back", "0s", 10 * time.Second},
-		{"negative value falls back", "-5s", 10 * time.Second},
-		{"empty string falls back", "", 10 * time.Second},
+		{"invalid string falls back", "notaduration", DefaultConsultTimeout},
+		{"zero value falls back", "0s", DefaultConsultTimeout},
+		{"negative value falls back", "-5s", DefaultConsultTimeout},
+		{"empty string falls back", "", DefaultConsultTimeout},
 	}
 
 	for _, tc := range cases {
