@@ -123,6 +123,19 @@ func TestViewCreate_ObserverCannotCreate(t *testing.T) {
 	}
 }
 
+func TestViewCreate_BlindRelayCannotCreate(t *testing.T) {
+	_, s, campfireID := setupViewTestEnv(t, campfire.RoleBlindRelay)
+	defer s.Close()
+
+	err := runViewCreate(campfireID, "test-view", `(tag "test")`, "", "timestamp asc", "on-read", "", 0)
+	if err == nil {
+		t.Fatal("expected error: blind-relay cannot originate messages")
+	}
+	if !isRoleError(err) {
+		t.Errorf("expected role error, got: %v", err)
+	}
+}
+
 func TestViewCreate_InvalidPredicate(t *testing.T) {
 	_, s, campfireID := setupViewTestEnv(t, campfire.RoleFull)
 	defer s.Close()
