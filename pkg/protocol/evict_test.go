@@ -320,10 +320,9 @@ func testEvictDKGRekey(t *testing.T) {
 
 	// A sends a message using the new campfire ID and new DKG shares.
 	_, err = clientA.Send(protocol.SendRequest{
-		CampfireID:  newCampfireID,
-		Payload:     []byte("hello after eviction and rekey"),
-		Tags:        []string{"status"},
-		SigningMode: protocol.SigningModeThreshold,
+		CampfireID: newCampfireID,
+		Payload:    []byte("hello after eviction and rekey"),
+		Tags:       []string{"status"},
 	})
 	if err != nil {
 		t.Fatalf("A.Send after eviction+rekey: %v", err)
@@ -540,10 +539,9 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 	// This must fail — B's old share is for the old DKG group and cannot produce
 	// a valid signature for the new group key.
 	_, sendErr := clientA.Send(protocol.SendRequest{
-		CampfireID:  newCampfireID,
-		Payload:     []byte("attempted send with evicted co-signer"),
-		Tags:        []string{"status"},
-		SigningMode: protocol.SigningModeThreshold,
+		CampfireID: newCampfireID,
+		Payload:    []byte("attempted send with evicted co-signer"),
+		Tags:       []string{"status"},
 	})
 	if sendErr == nil {
 		t.Fatal("Send with evicted B as co-signer should fail — B's old share is for old group")

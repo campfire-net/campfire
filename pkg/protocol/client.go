@@ -31,25 +31,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// SigningMode controls how the provenance hop is signed.
-type SigningMode int
-
-const (
-	// SigningModeMemberKey signs the provenance hop with the campfire's own key (default).
-	// This is the standard mode for filesystem and GitHub transports, and for
-	// P2P HTTP campfires with threshold=1.
-	SigningModeMemberKey SigningMode = iota
-
-	// SigningModeCampfireKey is an alias for SigningModeMemberKey. The campfire
-	// private key is always read from the transport state file.
-	SigningModeCampfireKey
-
-	// SigningModeThreshold uses FROST threshold signing for campfires with threshold>1.
-	// Only applicable for P2P HTTP transport. Falls back to SigningModeMemberKey
-	// when threshold<=1.
-	SigningModeThreshold
-)
-
 // SendRequest holds all parameters for a single Client.Send() call.
 type SendRequest struct {
 	// CampfireID is the hex-encoded campfire public key.
@@ -69,11 +50,6 @@ type SendRequest struct {
 	// Consumers must treat it as an untrusted display hint only. Never use for access
 	// control, routing decisions, or trust assertions.
 	Instance string
-
-	// SigningMode controls how the provenance hop is signed. Defaults to
-	// SigningModeMemberKey, which is correct for filesystem and GitHub transports
-	// and P2P HTTP with threshold=1.
-	SigningMode SigningMode
 
 	// GitHubToken is required when the campfire uses the GitHub transport.
 	// If empty, the caller is responsible for injecting a token via the

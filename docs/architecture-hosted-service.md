@@ -122,12 +122,9 @@ Before any send, `Client.Send` checks the membership role:
 
 Callers can inspect the error type with `protocol.IsRoleError(err, &target)`.
 
-### Signing modes
+### Signing
 
-| Mode | When used |
-|------|-----------|
-| `SigningModeMemberKey` | Default — filesystem, GitHub, P2P with threshold≤1 |
-| `SigningModeThreshold` | P2P HTTP with threshold>1; runs FROST signing rounds |
+All sends are signed with the campfire's member key. For P2P HTTP with threshold > 1, the client automatically runs FROST signing rounds with co-signers — no caller configuration required.
 
 ## Convention-First Tool Surface
 
