@@ -4104,6 +4104,18 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("forge-tk- auth failed: %v", resolveErr))) //nolint:errcheck
 				return
 			}
+			if keyRecord.Revoked {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "forge API key has been revoked")) //nolint:errcheck
+				return
+			}
+			if keyRecord.AccountID == "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "forge API key resolved to empty account ID")) //nolint:errcheck
+				return
+			}
 			accountID := keyRecord.AccountID
 			// Issue a new TTL=0 session token using the accountID as the stable internalID.
 			// TTL=0 means no expiry check — the token persists until explicitly revoked.
