@@ -8,6 +8,7 @@ package protocol
 
 import (
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -263,6 +264,42 @@ func (c *Client) sendGitHub(req SendRequest, m *store.Membership) (*message.Mess
 		return nil, fmt.Errorf("creating message: %w", err)
 	}
 	msg.Instance = req.Instance
+
+	// Add provenance hop signed by the campfire key.
+	// The campfire private key is stored in the membership record at create/join time
+	// because the GitHub transport has no on-disk state directory (unlike filesystem
+	// and P2P HTTP transports which read campfire.cbor from the transport dir).
+	if m.CampfirePrivKey != "" {
+		cfPrivBytes, err := hex.DecodeString(m.CampfirePrivKey)
+		if err != nil {
+			return nil, fmt.Errorf("decoding campfire private key for provenance hop: %w", err)
+		}
+		cfPrivKey := ed25519.PrivateKey(cfPrivBytes)
+		cfPubKey := cfPrivKey.Public().(ed25519.PublicKey)
+		hopRole := campfire.EffectiveRole(m.Role)
+		if req.RoleOverride != "" {
+			hopRole = req.RoleOverride
+		}
+		// Member count: GitHub transport has no local member list; use peer endpoints
+		// count if available, otherwise fall back to 1 (at minimum the sender is a member).
+		memberCount := 1
+		if peers, peerErr := c.store.ListPeerEndpoints(req.CampfireID); peerErr == nil && len(peers) > 0 {
+			memberCount = len(peers)
+		}
+		// ReceptionRequirements are not stored in the membership record; use empty
+		// slice to match the GitHub transport's open-by-default join model.
+		reqs := []string{}
+		if err := msg.AddHop(
+			cfPrivKey, cfPubKey,
+			cfPubKey, // MembershipHash: use public key (GitHub has no member file hash)
+			memberCount,
+			m.JoinProtocol,
+			reqs,
+			hopRole,
+		); err != nil {
+			return nil, fmt.Errorf("adding provenance hop: %w", err)
+		}
+	}
 
 	if err := tr.Send(req.CampfireID, msg); err != nil {
 		return nil, fmt.Errorf("sending via GitHub transport: %w", err)

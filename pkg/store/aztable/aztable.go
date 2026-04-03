@@ -202,18 +202,19 @@ func (ts *TableStore) AddMembership(m store.Membership) error {
 		enc = 1
 	}
 	entity := map[string]any{
-		"PartitionKey":  ts.pk(m.CampfireID),
-		"RowKey":        "membership",
-		"CampfireID":    m.CampfireID,
-		"TransportDir":  m.TransportDir,
-		"JoinProtocol": m.JoinProtocol,
-		"Role":          m.Role,
-		"JoinedAt":      m.JoinedAt,
-		"Threshold":     int64(threshold),
-		"Description":   m.Description,
-		"CreatorPubkey": m.CreatorPubkey,
-		"TransportType": m.TransportType,
-		"Encrypted":     int64(enc),
+		"PartitionKey":    ts.pk(m.CampfireID),
+		"RowKey":          "membership",
+		"CampfireID":      m.CampfireID,
+		"TransportDir":    m.TransportDir,
+		"JoinProtocol":    m.JoinProtocol,
+		"Role":            m.Role,
+		"JoinedAt":        m.JoinedAt,
+		"Threshold":       int64(threshold),
+		"Description":     m.Description,
+		"CreatorPubkey":   m.CreatorPubkey,
+		"TransportType":   m.TransportType,
+		"Encrypted":       int64(enc),
+		"CampfirePrivKey": m.CampfirePrivKey,
 	}
 	return upsertEntity(context.Background(), ts.memberships, entity)
 }
@@ -1491,16 +1492,17 @@ func membershipFromEntity(m map[string]any) (*store.Membership, error) {
 		threshold = 1
 	}
 	return &store.Membership{
-		CampfireID:    str(m, "CampfireID"),
-		TransportDir:  str(m, "TransportDir"),
-		JoinProtocol:  str(m, "JoinProtocol"),
-		Role:          str(m, "Role"),
-		JoinedAt:      toInt64(m["JoinedAt"]),
-		Threshold:     uint(threshold),
-		Description:   str(m, "Description"),
-		CreatorPubkey: str(m, "CreatorPubkey"),
-		TransportType: str(m, "TransportType"),
-		Encrypted:     enc != 0,
+		CampfireID:      str(m, "CampfireID"),
+		TransportDir:    str(m, "TransportDir"),
+		JoinProtocol:    str(m, "JoinProtocol"),
+		Role:            str(m, "Role"),
+		JoinedAt:        toInt64(m["JoinedAt"]),
+		Threshold:       uint(threshold),
+		Description:     str(m, "Description"),
+		CreatorPubkey:   str(m, "CreatorPubkey"),
+		TransportType:   str(m, "TransportType"),
+		Encrypted:       enc != 0,
+		CampfirePrivKey: str(m, "CampfirePrivKey"),
 	}, nil
 }
 

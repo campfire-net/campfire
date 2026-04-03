@@ -207,6 +207,11 @@ CREATE TABLE IF NOT EXISTS projection_metadata (
 		sql: `ALTER TABLE projection_entries ADD COLUMN entity_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE projection_entries ADD COLUMN msg_timestamp INTEGER NOT NULL DEFAULT 0`,
 	},
+	{
+		version:     11,
+		description: "add campfire_priv_key column to campfire_memberships for GitHub transport provenance hop signing (campfire-agent-64l)",
+		sql:         "ALTER TABLE campfire_memberships ADD COLUMN campfire_priv_key TEXT NOT NULL DEFAULT ''",
+	},
 }
 
 // runMigrations applies any unapplied migrations in schemaMigrations to db.
@@ -314,6 +319,11 @@ type Membership struct {
 	// Set on join from the campfire:encrypted-init system message and enforced
 	// on every received message regardless of relay-provided state (downgrade prevention).
 	Encrypted bool `json:"encrypted,omitempty"`
+	// CampfirePrivKey is the hex-encoded Ed25519 private key of the campfire.
+	// Set only for transports that require local signing (e.g. GitHub transport).
+	// For filesystem transport, the private key is stored in the transport dir's
+	// campfire.cbor and this field is empty.
+	CampfirePrivKey string `json:"campfire_priv_key,omitempty"`
 }
 
 // EpochSecret holds the root secret and derived CEK for a specific (campfire, epoch) pair.
@@ -467,9 +477,9 @@ func (s *SQLiteStore) AddMembership(m Membership) error {
 		encrypted = 1
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, encrypted)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description, m.CreatorPubkey, tt, encrypted,
+		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, encrypted, campfire_priv_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description, m.CreatorPubkey, tt, encrypted, m.CampfirePrivKey,
 	)
 	if err != nil {
 		return fmt.Errorf("adding membership: %w", err)
@@ -505,12 +515,12 @@ func (s *SQLiteStore) RemoveMembership(campfireID string) error {
 // GetMembership returns a single membership by campfire ID.
 func (s *SQLiteStore) GetMembership(campfireID string) (*Membership, error) {
 	row := s.db.QueryRow(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, COALESCE(encrypted, 0)
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, COALESCE(encrypted, 0), COALESCE(campfire_priv_key, '')
 		 FROM campfire_memberships WHERE campfire_id = ?`, campfireID,
 	)
 	var m Membership
 	var encryptedInt int
-	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey, &m.TransportType, &encryptedInt)
+	err := row.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey, &m.TransportType, &encryptedInt, &m.CampfirePrivKey)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -524,7 +534,7 @@ func (s *SQLiteStore) GetMembership(campfireID string) (*Membership, error) {
 // ListMemberships returns all campfire memberships.
 func (s *SQLiteStore) ListMemberships() ([]Membership, error) {
 	rows, err := s.db.Query(
-		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, COALESCE(encrypted, 0)
+		`SELECT campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, COALESCE(encrypted, 0), COALESCE(campfire_priv_key, '')
 		 FROM campfire_memberships ORDER BY joined_at`,
 	)
 	if err != nil {
@@ -536,7 +546,7 @@ func (s *SQLiteStore) ListMemberships() ([]Membership, error) {
 	for rows.Next() {
 		var m Membership
 		var encryptedInt int
-		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey, &m.TransportType, &encryptedInt); err != nil {
+		if err := rows.Scan(&m.CampfireID, &m.TransportDir, &m.JoinProtocol, &m.Role, &m.JoinedAt, &m.Threshold, &m.Description, &m.CreatorPubkey, &m.TransportType, &encryptedInt, &m.CampfirePrivKey); err != nil {
 			return nil, fmt.Errorf("scanning membership: %w", err)
 		}
 		m.Encrypted = encryptedInt != 0

@@ -63,6 +63,10 @@ type AdmissionRequest struct {
 	TransportType   string
 	Description     string
 	CreatorPubkey   string
+	// CampfirePrivKey is the hex-encoded Ed25519 private key of the campfire.
+	// Only set for GitHub transport where the private key cannot be read from
+	// the transport directory. Required to add provenance hops on send.
+	CampfirePrivKey string
 }
 
 // AdmissionResult reports what was done during admission.
@@ -110,15 +114,16 @@ func AdmitMember(_ context.Context, deps AdmitterDeps, req AdmissionRequest) (Ad
 
 	// Record membership in store.
 	ms := store.Membership{
-		CampfireID:    req.CampfireID,
-		TransportDir:  req.TransportDir,
-		JoinProtocol:  req.JoinProtocol,
-		Role:          result.EffectiveRole,
-		JoinedAt:      time.Now().Unix(),
-		Description:   req.Description,
-		CreatorPubkey: req.CreatorPubkey,
-		TransportType: req.TransportType,
-		Encrypted:     req.Encrypted,
+		CampfireID:      req.CampfireID,
+		TransportDir:    req.TransportDir,
+		JoinProtocol:    req.JoinProtocol,
+		Role:            result.EffectiveRole,
+		JoinedAt:        time.Now().Unix(),
+		Description:     req.Description,
+		CreatorPubkey:   req.CreatorPubkey,
+		TransportType:   req.TransportType,
+		Encrypted:       req.Encrypted,
+		CampfirePrivKey: req.CampfirePrivKey,
 	}
 	if err := deps.Store.AddMembership(ms); err != nil {
 		return result, fmt.Errorf("admission: recording membership: %w", err)
