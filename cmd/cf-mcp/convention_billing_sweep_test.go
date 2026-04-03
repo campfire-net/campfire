@@ -139,7 +139,7 @@ func TestBillingSweepRun_BillsUnbilledRecord(t *testing.T) {
 	if err := mds.MarkFulfilled(ctx, "cf-test", "msg-001"); err != nil {
 		t.Fatalf("MarkFulfilled: %v", err)
 	}
-	mds.SetTokensConsumed("cf-test", "msg-001", 42)
+	mds.SetTokensConsumed(ctx, "cf-test", "msg-001", 42)
 
 	// Run one billing sweep pass.
 	billed, err := srv.billingSweep.Run(ctx)

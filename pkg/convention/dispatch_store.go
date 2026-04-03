@@ -88,6 +88,10 @@ type DispatchStore interface {
 	// MarkBilled returns ErrConcurrentModification instead of overwriting.
 	// No-op (returns nil) if the record does not exist.
 	MarkBilled(ctx context.Context, campfireID, messageID, etag string) error
+
+	// SetTokensConsumed sets the TokensConsumed field on a dispatch record.
+	// Called by the dispatcher after a handler reports token usage.
+	SetTokensConsumed(ctx context.Context, campfireID, messageID string, tokens int64) error
 }
 
 // DispatchRecord holds metadata about a single message dispatch.
@@ -339,14 +343,15 @@ func (s *MemoryDispatchStore) MarkBilled(_ context.Context, campfireID, messageI
 }
 
 // SetTokensConsumed sets the TokensConsumed field on a dispatch record.
-// This is a test helper for simulating handler-reported token usage.
-func (s *MemoryDispatchStore) SetTokensConsumed(campfireID, messageID string, tokens int64) {
+func (s *MemoryDispatchStore) SetTokensConsumed(_ context.Context, campfireID, messageID string, tokens int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := dispatchKey{campfireID: campfireID, messageID: messageID}
 	if rec, ok := s.dispatches[k]; ok {
 		rec.TokensConsumed = tokens
+		return nil
 	}
+	return ErrDispatchNotFound
 }
 
 // BackdateDispatch sets the DispatchedAt time of a dispatch record to age ago.

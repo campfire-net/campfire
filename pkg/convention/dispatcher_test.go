@@ -1299,3 +1299,128 @@ func TestDispatcher_Tier2_Non202_DispatchNotFound_SkipsMeteringAndCursor(t *test
 		t.Fatalf("expected cursor 0 (not advanced) for not_found tier2 dispatch, got %d", cursor)
 	}
 }
+
+// TestDispatcher_Tier1_TokensConsumed_WrittenToStore verifies that when a handler
+// returns a Response with TokensConsumed > 0, the dispatcher writes it to the
+// dispatch store via SetTokensConsumed. This is the billing pipeline's data source.
+func TestDispatcher_Tier1_TokensConsumed_WrittenToStore(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	const expectedTokens int64 = 4200
+
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient,
+		func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+			return &convention.Response{
+				Payload:        map[string]any{"ok": true},
+				TokensConsumed: expectedTokens,
+			}, nil
+		}, env.serverID.PublicKeyHex(), "acct-test",
+	)
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	dispatched := d.Dispatch(context.Background(), env.campfireID, msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	status := waitForDispatch(t, ds, env.campfireID, msg.ID, 2*time.Second)
+	if status != "fulfilled" {
+		t.Fatalf("expected fulfilled, got %s", status)
+	}
+
+	// Allow time for SetTokensConsumed to complete (runs after MarkFulfilledCAS).
+	time.Sleep(50 * time.Millisecond)
+
+	// The dispatch record should now have TokensConsumed set and appear in unbilled list.
+	unbilled, err := ds.ListUnbilledDispatches(context.Background())
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches: %v", err)
+	}
+	if len(unbilled) != 1 {
+		t.Fatalf("expected 1 unbilled dispatch, got %d", len(unbilled))
+	}
+	if unbilled[0].TokensConsumed != expectedTokens {
+		t.Fatalf("expected TokensConsumed=%d, got %d", expectedTokens, unbilled[0].TokensConsumed)
+	}
+}
+
+// TestDispatcher_Tier1_TokensConsumed_ZeroNotWritten verifies that when a handler
+// returns a Response with TokensConsumed == 0, SetTokensConsumed is NOT called
+// (the default 0 from MarkDispatched remains, and the record does not appear in
+// the unbilled list).
+func TestDispatcher_Tier1_TokensConsumed_ZeroNotWritten(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient,
+		func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+			return &convention.Response{
+				Payload: map[string]any{"ok": true},
+				// TokensConsumed intentionally left at 0
+			}, nil
+		}, env.serverID.PublicKeyHex(), "acct-test",
+	)
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	d.Dispatch(context.Background(), env.campfireID, msg)
+	waitForDispatch(t, ds, env.campfireID, msg.ID, 2*time.Second)
+	time.Sleep(50 * time.Millisecond)
+
+	unbilled, err := ds.ListUnbilledDispatches(context.Background())
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches: %v", err)
+	}
+	if len(unbilled) != 0 {
+		t.Fatalf("expected 0 unbilled dispatches (tokens=0 should not appear), got %d", len(unbilled))
+	}
+}
+
+// TestDispatcher_Tier1_TokensConsumed_MeteringEvent verifies that the metering
+// hook receives the handler's TokensConsumed value.
+func TestDispatcher_Tier1_TokensConsumed_MeteringEvent(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	const expectedTokens int64 = 7777
+
+	var mu sync.Mutex
+	var events []convention.ConventionMeterEvent
+	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
+		mu.Lock()
+		events = append(events, ev)
+		mu.Unlock()
+	}
+
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient,
+		func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+			return &convention.Response{
+				Payload:        map[string]any{"ok": true},
+				TokensConsumed: expectedTokens,
+			}, nil
+		}, env.serverID.PublicKeyHex(), "acct-test",
+	)
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	d.Dispatch(context.Background(), env.campfireID, msg)
+	waitForDispatch(t, ds, env.campfireID, msg.ID, 2*time.Second)
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	n := len(events)
+	var ev convention.ConventionMeterEvent
+	if n > 0 {
+		ev = events[0]
+	}
+	mu.Unlock()
+
+	if n != 1 {
+		t.Fatalf("expected 1 metering event, got %d", n)
+	}
+	if ev.TokensConsumed != expectedTokens {
+		t.Fatalf("expected metering TokensConsumed=%d, got %d", expectedTokens, ev.TokensConsumed)
+	}
+}
