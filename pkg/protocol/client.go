@@ -240,13 +240,27 @@ func (c *Client) sendGitHub(req SendRequest, m *store.Membership) (*message.Mess
 		return nil, fmt.Errorf("invalid GitHub transport dir: %s", m.TransportDir)
 	}
 
-	// Resolve GitHub token: use the one in the request, then fall back to env.
+	// Resolve GitHub token. Priority order:
+	//   1. GitHubToken field in the request (explicit, always wins)
+	//   2. GITHUB_TOKEN environment variable
+	//   3. configDir/github-token credential file (only when Client was created via Init)
+	// Note: the "gh auth token" fallback is CLI-only; the SDK does not shell out.
 	token := req.GitHubToken
 	if token == "" {
 		token = os.Getenv("GITHUB_TOKEN")
 	}
+	if token == "" && c.configDir != "" {
+		credFile := filepath.Join(c.configDir, "github-token")
+		if data, err := os.ReadFile(credFile); err == nil {
+			token = strings.TrimSpace(string(data))
+		}
+	}
 	if token == "" {
-		return nil, fmt.Errorf("GitHub token required: set GitHubToken in SendRequest or GITHUB_TOKEN env var")
+		credFileHint := ""
+		if c.configDir != "" {
+			credFileHint = fmt.Sprintf(", or write a token to %s/github-token", c.configDir)
+		}
+		return nil, fmt.Errorf("GitHub token required: set GitHubToken in SendRequest or GITHUB_TOKEN env var%s", credFileHint)
 	}
 
 	cfg := ghtr.Config{
@@ -567,14 +581,31 @@ func (c *Client) thresholdSignHop(
 }
 
 // RoleError is returned by Send when the membership role prohibits the send.
+// It satisfies the errors.As target interface: callers can extract it with
+// errors.As(err, &roleErr) where roleErr is of type *RoleError.
 type RoleError struct {
 	msg string
 }
 
 func (e *RoleError) Error() string { return e.msg }
 
+// As implements the errors.As target interface so that errors.As(err, target)
+// works when target is **RoleError. This matches the documented contract in
+// the Send doc comment ("role enforcement errors satisfy errors.As(*RoleError)").
+func (e *RoleError) As(target any) bool {
+	t, ok := target.(**RoleError)
+	if !ok {
+		return false
+	}
+	*t = e
+	return true
+}
+
 // IsRoleError returns true if err is a *RoleError. If target is non-nil, it is
 // set to the *RoleError value (mirrors errors.As usage pattern).
+//
+// Deprecated: prefer errors.As(err, &roleErr) directly — RoleError now implements
+// the As() method required by the errors package.
 func IsRoleError(err error, target **RoleError) bool {
 	if err == nil {
 		return false

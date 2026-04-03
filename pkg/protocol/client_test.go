@@ -6,6 +6,7 @@ package protocol_test
 // External transports (GitHub, P2P HTTP) require real infra and are not tested here.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -319,6 +320,39 @@ func TestSendFilesystem_WriterCanSendNonSystem(t *testing.T) {
 	}
 	if msg == nil {
 		t.Fatal("expected non-nil message")
+	}
+}
+
+// TestRoleError_ErrorsAs verifies that RoleError satisfies the errors.As idiom,
+// which is the documented contract in the Send doc comment. This is the
+// campfire-agent-oqp fix: RoleError.As() must be implemented so that
+// errors.As(err, &roleErr) works for wrapped errors too.
+func TestRoleError_ErrorsAs(t *testing.T) {
+	agentID, s, transportDir := setupTestEnv(t)
+	campfireID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleObserver)
+
+	client := protocol.New(s, agentID)
+	_, err := client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("msg"),
+	})
+	if err == nil {
+		t.Fatal("expected error for observer, got nil")
+	}
+
+	// Primary assertion: errors.As must work directly.
+	var roleErr *protocol.RoleError
+	if !errors.As(err, &roleErr) {
+		t.Errorf("errors.As(*RoleError) returned false; err = %v", err)
+	}
+	if roleErr == nil {
+		t.Error("errors.As set roleErr to nil")
+	}
+
+	// Secondary assertion: IsRoleError still works (backward compat).
+	var roleErr2 *protocol.RoleError
+	if !protocol.IsRoleError(err, &roleErr2) {
+		t.Errorf("IsRoleError returned false; err = %v", err)
 	}
 }
 
