@@ -45,6 +45,10 @@ func checkRoleCanSend(role string, tags []string) error {
 		return &roleEnforcementError{
 			msg: "role observer: cannot send messages (read-only membership)",
 		}
+	case campfire.RoleBlindRelay:
+		return &roleEnforcementError{
+			msg: "role blind-relay: cannot originate messages (store/forward only)",
+		}
 	case campfire.RoleWriter:
 		if hasSystemTag(tags) {
 			return &roleEnforcementError{
