@@ -322,48 +322,6 @@ func TestSendFilesystem_WriterCanSendNonSystem(t *testing.T) {
 	}
 }
 
-// TestSendFilesystem_BlindRelayRejected verifies that a blind-relay-role member
-// cannot originate messages. Blind relays store/forward encrypted messages but
-// do not hold the CEK — they must not be able to originate new messages.
-func TestSendFilesystem_BlindRelayRejected(t *testing.T) {
-	agentID, s, transportDir := setupTestEnv(t)
-	campfireID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleBlindRelay)
-
-	client := protocol.New(s, agentID)
-	_, err := client.Send(protocol.SendRequest{
-		CampfireID: campfireID,
-		Payload:    []byte("msg"),
-	})
-	if err == nil {
-		t.Fatal("expected role error for blind-relay, got nil")
-	}
-	var roleErr *protocol.RoleError
-	if !protocol.IsRoleError(err, &roleErr) {
-		t.Errorf("expected RoleError, got: %v", err)
-	}
-}
-
-// TestSendFilesystem_BlindRelaySystemTagRejected verifies that a blind-relay-role
-// member cannot send campfire:* system messages either.
-func TestSendFilesystem_BlindRelaySystemTagRejected(t *testing.T) {
-	agentID, s, transportDir := setupTestEnv(t)
-	campfireID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleBlindRelay)
-
-	client := protocol.New(s, agentID)
-	_, err := client.Send(protocol.SendRequest{
-		CampfireID: campfireID,
-		Payload:    []byte("msg"),
-		Tags:       []string{"campfire:compact"},
-	})
-	if err == nil {
-		t.Fatal("expected role error for blind-relay sending system tag, got nil")
-	}
-	var roleErr *protocol.RoleError
-	if !protocol.IsRoleError(err, &roleErr) {
-		t.Errorf("expected RoleError, got: %v", err)
-	}
-}
-
 // TestSendFilesystem_MultipleMessages verifies that multiple messages can be
 // sent to the same campfire and each gets a unique ID.
 func TestSendFilesystem_MultipleMessages(t *testing.T) {

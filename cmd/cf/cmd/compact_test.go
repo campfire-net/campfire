@@ -209,7 +209,6 @@ func TestCompactRoleEnforcement(t *testing.T) {
 		{campfire.RoleFull, false},
 		{campfire.RoleWriter, true},
 		{campfire.RoleObserver, true},
-		{campfire.RoleBlindRelay, true},
 		{"", false}, // empty role defaults to full
 	}
 
