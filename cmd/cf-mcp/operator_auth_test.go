@@ -316,6 +316,140 @@ func TestForgeTokenAuth_SkipsEnsureAccount(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: revoked forge-tk- key → 401, no session issued
+// ---------------------------------------------------------------------------
+
+// TestForgeTokenAuth_RevokedKey verifies that when Forge returns a KeyRecord
+// with Revoked=true, cf-mcp responds with HTTP 401 and does NOT issue a session
+// token or register the account in operatorSessionIndex.
+func TestForgeTokenAuth_RevokedKey(t *testing.T) {
+	const accountID = "acct-123"
+
+	forgeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/keys" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		resp := map[string]interface{}{
+			"object": "list",
+			"data": []map[string]interface{}{
+				{
+					"token_hash_prefix": "forge-tk-revoked",
+					"account_id":        accountID,
+					"role":              "agent",
+					"revoked":           true,
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+	}))
+	t.Cleanup(forgeSrv.Close)
+
+	forgeClient := &forge.Client{
+		BaseURL:     forgeSrv.URL,
+		ServiceKey:  "forge-sk-testkey",
+		HTTPClient:  forgeSrv.Client(),
+		RetryDelays: []time.Duration{0},
+	}
+
+	srv := newSessionedServerWithForge(t, forgeClient)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}`
+	w := postMCPRequest(t, srv, "Bearer forge-tk-revoked-key", body)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected HTTP 401 for revoked forge-tk- key, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var resp jsonRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding RPC response: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error for revoked forge-tk- key")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "revoked") {
+		t.Errorf("expected 'revoked' in error message, got: %q", resp.Error.Message)
+	}
+
+	// operatorSessionIndex must NOT have been modified.
+	_, ok := srv.operatorSessionIdx.AccountForToken(accountID)
+	if ok {
+		t.Error("operatorSessionIndex must not contain account ID for revoked key")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: empty account ID from Forge → 500, no session issued
+// ---------------------------------------------------------------------------
+
+// TestForgeTokenAuth_EmptyAccountID verifies that when Forge returns a KeyRecord
+// with AccountID="" (and Revoked=false), cf-mcp responds with HTTP 500 and does
+// NOT issue a session token or register anything in operatorSessionIndex.
+func TestForgeTokenAuth_EmptyAccountID(t *testing.T) {
+	forgeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/keys" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		resp := map[string]interface{}{
+			"object": "list",
+			"data": []map[string]interface{}{
+				{
+					"token_hash_prefix": "forge-tk-empty",
+					"account_id":        "",
+					"role":              "agent",
+					"revoked":           false,
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+	}))
+	t.Cleanup(forgeSrv.Close)
+
+	forgeClient := &forge.Client{
+		BaseURL:     forgeSrv.URL,
+		ServiceKey:  "forge-sk-testkey",
+		HTTPClient:  forgeSrv.Client(),
+		RetryDelays: []time.Duration{0},
+	}
+
+	srv := newSessionedServerWithForge(t, forgeClient)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}`
+	w := postMCPRequest(t, srv, "Bearer forge-tk-empty-acct", body)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected HTTP 500 for empty account ID, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var resp jsonRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding RPC response: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error for empty account ID")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "empty account ID") {
+		t.Errorf("expected 'empty account ID' in error message, got: %q", resp.Error.Message)
+	}
+
+	// operatorSessionIndex must NOT have been modified.
+	_, ok := srv.operatorSessionIdx.AccountForToken("")
+	if ok {
+		t.Error("operatorSessionIndex must not contain empty account ID")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test: operatorSessionIndex maps session token → account ID
 // ---------------------------------------------------------------------------
 
