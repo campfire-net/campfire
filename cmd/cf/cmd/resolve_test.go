@@ -1082,6 +1082,50 @@ func TestConsultRootsForName_TimeoutWhenNoResponder(t *testing.T) {
 	}
 }
 
+// TestConsultRootsForName_DefaultTimeoutIsShort is a regression test for the bug
+// where consultRootsForName used a hardcoded 10s timeout, causing a 10s latency
+// cliff before fallback when the consult campfire was unreachable. The default
+// timeout (DefaultConsultTimeout = 2s) must keep the failure well under 5s.
+func TestConsultRootsForName_DefaultTimeoutIsShort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping default timeout regression test in short mode")
+	}
+
+	creatorHome := t.TempDir()
+	callerHome := t.TempDir()
+
+	t.Setenv("CF_HOME", callerHome)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+	// Explicitly unset CF_CONSULT_TIMEOUT so the default applies.
+	t.Setenv("CF_CONSULT_TIMEOUT", "")
+
+	consultID, _ := setupConsultCampfire(t, creatorHome, callerHome)
+
+	jp := &naming.JoinPolicy{
+		Policy:          "consult",
+		ConsultCampfire: consultID,
+		JoinRoot:        "0000000000000000000000000000000000000000000000000000000000000000",
+	}
+
+	start := time.Now()
+	_, err := consultRootsForName("nobody", jp)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("consultRootsForName: expected timeout error, got nil")
+	}
+	// Regression guard: must fail in well under 5s.
+	// Before the fix the default was 10s; now it's 2s (DefaultConsultTimeout).
+	const maxAllowed = 5 * time.Second
+	if elapsed >= maxAllowed {
+		t.Errorf("consultRootsForName took %v with default timeout — latency cliff regression (want < %v)", elapsed, maxAllowed)
+	}
+	// Sanity check: default timeout constant is <= 3s.
+	if DefaultConsultTimeout > 3*time.Second {
+		t.Errorf("DefaultConsultTimeout = %v; want <= 3s to fail fast on unreachable consult", DefaultConsultTimeout)
+	}
+}
+
 // TestConsultRootsForName_NotMemberReturnsError verifies that consultRootsForName
 // returns an error when callerHome's identity has not joined the consult campfire.
 func TestConsultRootsForName_NotMemberReturnsError(t *testing.T) {
