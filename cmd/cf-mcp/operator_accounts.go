@@ -93,8 +93,14 @@ func (m *forgeAccountManager) EnsureOperatorAccount(ctx context.Context, pubkeyH
 	// singleflight deduplicates concurrent calls for the same operator key,
 	// preventing the double-create / double-credit race when two requests
 	// arrive before either has persisted the mapping.
+	//
+	// We detach from the caller's context so that cancellation by the first
+	// caller does not abort the shared operation and fail all other waiters.
+	// The shared work uses a background-derived context that is not tied to
+	// any individual request lifetime.
+	sharedCtx := context.WithoutCancel(ctx)
 	v, err, _ := m.ensureGroup.Do(pubkeyHex, func() (interface{}, error) {
-		return m.ensureOperatorAccountOnce(ctx, pubkeyHex)
+		return m.ensureOperatorAccountOnce(sharedCtx, pubkeyHex)
 	})
 	if err != nil {
 		return "", err

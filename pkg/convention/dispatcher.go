@@ -421,8 +421,15 @@ func (d *ConventionDispatcher) dispatchTier1(
 			d.logger.Printf("convention dispatcher: send fulfillment (msg %s): %v", msg.ID, sendErr)
 			// Revert to failed since the fulfillment message couldn't be sent.
 			// Must use CAS to avoid overwriting a newer generation's status.
-			if _, _, markErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); markErr != nil {
+			if ok, notFound, markErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); markErr != nil {
 				d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, markErr)
+			} else if notFound {
+				// Record was deleted between MarkFulfilledCAS and sendFulfillment.
+				// The dispatch is orphaned — skip metering and cursor advancement.
+				d.logger.Printf("convention dispatcher: send fulfillment failure revert: dispatch record not found (msg %s) — record deleted between CAS and send", msg.ID)
+				return "not_found", 0
+			} else if !ok {
+				return "stale", 0
 			}
 			return "failed", 0
 		}
