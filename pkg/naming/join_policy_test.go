@@ -13,6 +13,98 @@ const validHexID = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e
 // validHexID2 is a second valid 64-character lowercase hex campfire ID.
 const validHexID2 = "deadbeef0102030405060708090a0b0c0d0e0f1011121314151617189a1b1c1d"
 
+// TestSaveJoinPolicy_MkdirAllFailure verifies that SaveJoinPolicy returns an
+// error when the directory cannot be created.  We manufacture this by making
+// cfHome a path whose parent is itself a regular file, so MkdirAll cannot
+// traverse into it.
+func TestSaveJoinPolicy_MkdirAllFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test MkdirAll failure when running as root")
+	}
+
+	base := t.TempDir()
+	// Create a regular file at the location we will try to use as the directory.
+	blocker := filepath.Join(base, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0600); err != nil {
+		t.Fatalf("setup WriteFile: %v", err)
+	}
+	// cfHome is a path *inside* the file — MkdirAll cannot create it.
+	cfHome := filepath.Join(blocker, "cfhome")
+
+	jp := &JoinPolicy{Policy: "consult", ConsultCampfire: validHexID}
+	err := SaveJoinPolicy(cfHome, jp)
+	if err == nil {
+		t.Fatal("expected error from MkdirAll failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "creating campfire home") {
+		t.Errorf("expected 'creating campfire home' in error, got: %v", err)
+	}
+}
+
+// TestSaveJoinPolicy_CreateTempFailure verifies that SaveJoinPolicy returns an
+// error when the temporary file cannot be created.  We manufacture this by
+// making cfHome a read-only directory so os.CreateTemp fails.
+func TestSaveJoinPolicy_CreateTempFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test CreateTemp failure when running as root")
+	}
+
+	dir := t.TempDir()
+	// Remove write permission so CreateTemp cannot create a file in dir.
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
+
+	jp := &JoinPolicy{Policy: "consult", ConsultCampfire: validHexID}
+	err := SaveJoinPolicy(dir, jp)
+	if err == nil {
+		t.Fatal("expected error from CreateTemp failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "creating temp file for join policy") {
+		t.Errorf("expected 'creating temp file for join policy' in error, got: %v", err)
+	}
+}
+
+// TestSaveJoinPolicy_RenameFailure verifies that SaveJoinPolicy returns an
+// error when the final rename cannot be completed, and that the temporary file
+// is cleaned up (not left in cfHome).  We manufacture the rename failure by
+// pre-creating the target path as a non-empty directory, which makes
+// os.Rename fail on Linux (EISDIR / cannot overwrite directory with file).
+func TestSaveJoinPolicy_RenameFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test rename failure when running as root")
+	}
+
+	dir := t.TempDir()
+	// Create the target path as a directory so the rename fails.
+	target := filepath.Join(dir, joinPolicyFile)
+	if err := os.MkdirAll(filepath.Join(target, "child"), 0700); err != nil {
+		t.Fatalf("setup MkdirAll: %v", err)
+	}
+
+	jp := &JoinPolicy{Policy: "consult", ConsultCampfire: validHexID}
+	err := SaveJoinPolicy(dir, jp)
+	if err == nil {
+		t.Fatal("expected error from rename failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "installing join policy") {
+		t.Errorf("expected 'installing join policy' in error, got: %v", err)
+	}
+
+	// The deferred cleanup must have removed the temp file — only the target
+	// directory (which we planted) should remain.
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	for _, e := range entries {
+		if e.Name() != joinPolicyFile {
+			t.Errorf("stray file left after failed save: %q", e.Name())
+		}
+	}
+}
+
 func TestLoadJoinPolicy_Absent(t *testing.T) {
 	dir := t.TempDir()
 	jp, err := LoadJoinPolicy(dir)
