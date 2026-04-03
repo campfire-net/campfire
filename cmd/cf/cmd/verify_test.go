@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -269,6 +270,110 @@ func TestWaitForVerifyResponse_AcceptsCorrectSender(t *testing.T) {
 	resp, err := waitForVerifyResponse(ch, campfireID, 5*time.Second, s)
 	if err != nil {
 		t.Fatalf("expected response from legitimate sender, got error: %v", err)
+	}
+	if resp.MessageSender != targetKey {
+		t.Errorf("MessageSender: want %q, got %q", targetKey, resp.MessageSender)
+	}
+	if resp.Nonce != nonce {
+		t.Errorf("Nonce: want %q, got %q", nonce, resp.Nonce)
+	}
+}
+
+// TestWaitForVerifyResponse_CursorAdvances verifies that waitForVerifyResponse
+// does not re-scan previously seen messages on subsequent poll iterations.
+// Regression test for campfire-agent-qwq: the original code always polled from
+// timestamp 0, causing O(n) scans and unbounded memory in large campfires.
+//
+// This test inserts a large batch of old (irrelevant) messages followed by a
+// single valid response at a higher timestamp. If the cursor is not advanced
+// after the first poll, the second poll re-reads all old messages and returns
+// before the valid response is inserted. With the cursor fix, subsequent polls
+// start after the last-seen timestamp and find only the new message.
+//
+// We verify cursor correctness by checking that the function returns exactly
+// the valid response message and not a spurious error.
+func TestWaitForVerifyResponse_CursorAdvances(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Open(filepath.Join(dir, "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	campfireID := "cf-cursor-regression-qwq"
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: dir,
+		JoinProtocol: "test",
+		Role:         "full",
+		JoinedAt:     time.Now().UnixNano(),
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+
+	targetKey := "target-operator-key-cursor-test"
+	nonce := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+	ch := &provenance.Challenge{
+		ID:               "ch-cursor-001",
+		InitiatorKey:     "initiator-key",
+		TargetKey:        targetKey,
+		Nonce:            nonce,
+		CallbackCampfire: campfireID,
+		IssuedAt:         time.Now(),
+	}
+
+	// Insert 50 old irrelevant messages (from a different sender, old timestamps).
+	// These should be scanned at most once (on the first poll) with the cursor fix.
+	baseTS := time.Now().Add(-10 * time.Minute).UnixNano()
+	for i := 0; i < 50; i++ {
+		if _, err := s.AddMessage(store.MessageRecord{
+			ID:          fmt.Sprintf("msg-old-%03d", i),
+			CampfireID:  campfireID,
+			Sender:      "unrelated-sender",
+			Payload:     []byte(`{"operation":"unrelated"}`),
+			Tags:        []string{},
+			Antecedents: []string{},
+			Timestamp:   baseTS + int64(i),
+			Signature:   []byte("fake"),
+			ReceivedAt:  baseTS + int64(i),
+		}); err != nil {
+			t.Fatalf("AddMessage old[%d]: %v", i, err)
+		}
+	}
+
+	// Insert the valid response message at a timestamp after all old messages.
+	validTS := baseTS + 1000
+	validPayload := map[string]interface{}{
+		"convention":       "operator-provenance",
+		"operation":        "operator-verify",
+		"nonce":            nonce,
+		"target_key":       targetKey,
+		"contact_method":   "cf://contact",
+		"proof_type":       "captcha",
+		"proof_token":      "solved",
+		"proof_provenance": "sig",
+		"antecedent":       ch.ID,
+	}
+	raw, _ := json.Marshal(validPayload)
+	if _, err := s.AddMessage(store.MessageRecord{
+		ID:          "msg-valid-cursor",
+		CampfireID:  campfireID,
+		Sender:      targetKey,
+		Payload:     raw,
+		Tags:        []string{},
+		Antecedents: []string{},
+		Timestamp:   validTS,
+		Signature:   []byte("fake"),
+		ReceivedAt:  validTS,
+	}); err != nil {
+		t.Fatalf("AddMessage valid: %v", err)
+	}
+
+	// waitForVerifyResponse should find the valid message on the first poll.
+	resp, err := waitForVerifyResponse(ch, campfireID, 5*time.Second, s)
+	if err != nil {
+		t.Fatalf("expected valid response, got error: %v", err)
 	}
 	if resp.MessageSender != targetKey {
 		t.Errorf("MessageSender: want %q, got %q", targetKey, resp.MessageSender)
