@@ -4122,6 +4122,7 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 			sessToken, issueErr := s.sessManager.issueForID(accountID)
 			if issueErr != nil {
 				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
 				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("forge-tk- auth: issuing session token: %v", issueErr))) //nolint:errcheck
 				return
 			}
@@ -4243,6 +4244,19 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if toolName == "campfire_rotate_token" {
+		// Operator sessions (forge-tk-) must not rotate tokens: the session token
+		// is tied to the operatorSessionIndex which only registers the original
+		// token. Rotating would break TTL=0 semantics — the new token would be
+		// validated via validateToken (with TTL) and operatorSessionIdx.AccountForToken
+		// would return ok=false. Clients should re-authenticate via forge-tk- instead.
+		if s.operatorSessionIdx != nil && token != "" {
+			if _, isOperator := s.operatorSessionIdx.AccountForToken(token); isOperator {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "operator sessions cannot rotate tokens; re-authenticate with your forge-tk- API key to get a new session token")) //nolint:errcheck
+				return
+			}
+		}
 		newToken, rotErr := s.sessManager.rotateToken(token)
 		if rotErr != nil {
 			w.Header().Set("Content-Type", "application/json")

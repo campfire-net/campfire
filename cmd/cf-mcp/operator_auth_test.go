@@ -491,3 +491,58 @@ func TestForgeTokenAuth_SessionRegistered(t *testing.T) {
 		t.Errorf("operatorSessionIdx.AccountForToken: got accountID=%q, want %q", gotAccountID, accountID)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test: operator session cannot rotate token (campfire-agent-3af)
+// ---------------------------------------------------------------------------
+
+// TestForgeTokenAuth_RotateTokenBlocked verifies that campfire_rotate_token
+// returns HTTP 400 for operator sessions (forge-tk- auth), not a successful rotation.
+// Rotation would break TTL=0 semantics since the new token wouldn't be in operatorSessionIdx.
+func TestForgeTokenAuth_RotateTokenBlocked(t *testing.T) {
+	const accountID = "acct-rotate-test"
+	forgeSrv, _ := newForgeResolveServer(t, accountID, http.StatusOK)
+
+	forgeClient := &forge.Client{
+		BaseURL:     forgeSrv.URL,
+		ServiceKey:  "forge-sk-testkey",
+		HTTPClient:  forgeSrv.Client(),
+		RetryDelays: []time.Duration{0},
+	}
+
+	srv := newSessionedServerWithForge(t, forgeClient)
+
+	// Step 1: authenticate with forge-tk- to get a session token.
+	initBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}`
+	w := postMCPRequest(t, srv, "Bearer forge-tk-test", initBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("init failed: HTTP %d; body: %s", w.Code, w.Body.String())
+	}
+	resp := decodeRPCResponse(t, w)
+	sessToken := extractSessionTokenFromResponse(t, resp)
+	if sessToken == "" {
+		t.Fatal("expected session token from forge-tk- init")
+	}
+
+	// Step 2: try to rotate the operator session token — must be rejected.
+	rotateBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"campfire_rotate_token","arguments":{}}}`
+	w2 := postMCPRequest(t, srv, "Bearer "+sessToken, rotateBody)
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("expected HTTP 400 for rotate_token on operator session, got %d; body: %s", w2.Code, w2.Body.String())
+	}
+
+	var rotResp jsonRPCResponse
+	if err := json.NewDecoder(w2.Body).Decode(&rotResp); err != nil {
+		t.Fatalf("decoding rotate response: %v", err)
+	}
+	if rotResp.Error == nil {
+		t.Fatal("expected JSON-RPC error for rotate on operator session")
+	}
+	if rotResp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", rotResp.Error.Code)
+	}
+	// Verify the operator session token is still valid (not consumed by rotation).
+	if _, ok := srv.operatorSessionIdx.AccountForToken(sessToken); !ok {
+		t.Error("operator session token should still be in index after blocked rotation")
+	}
+}
