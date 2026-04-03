@@ -2196,82 +2196,40 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 
 	var msg *message.Message
 
-	if s.httpTransport != nil {
-		// HTTP mode: build message inline so we can call PollBrokerNotify after
-		// storing. The campfire state lives in cfHome (not in the membership's
-		// TransportDir, which is the external HTTP address), so protocol.Client
-		// cannot resolve the campfire key via its sendP2PHTTP path.
-		m, memberErr := st.GetMembership(campfireID)
-		if memberErr != nil {
-			return errResponse(id, -32000, fmt.Sprintf("querying membership: %v", memberErr))
+	{
+		// Delegate to protocol.Client for message creation, membership verification,
+		// role enforcement, hop signing, peer delivery, and store write.
+		//
+		// In HTTP mode, the campfire state (.cbor) lives under cfHome rather than in
+		// m.TransportDir (which holds the external HTTP address). We pass StateDir so
+		// sendP2PHTTP reads state from the correct location without duplicating the
+		// protocol pipeline here (campfire-agent-nzk).
+		sendReq := protocol.SendRequest{
+			CampfireID:  campfireID,
+			Payload:     []byte(payload),
+			Tags:        tags,
+			Antecedents: antecedents,
+			Instance:    instance,
 		}
-		if m == nil {
-			return errResponse(id, -32000, fmt.Sprintf("not a member of campfire %s", shortID(campfireID, 12)))
+		if s.httpTransport != nil {
+			sendReq.StateDir = s.cfHome
 		}
-
-		fsT := s.fsTransport()
-		members, listErr := fsT.ListMembers(campfireID)
-		if listErr != nil {
-			return errResponse(id, -32000, fmt.Sprintf("listing members: %v", listErr))
-		}
-
-		isMember := false
-		for _, mem := range members {
-			if fmt.Sprintf("%x", mem.PublicKey) == agentID.PublicKeyHex() {
-				isMember = true
-				break
-			}
-		}
-		if !isMember {
-			return errResponse(id, -32000, "not recognized as a member in the transport directory")
-		}
-
-		// FED-1: enforce campfire:* tag restrictions based on sender role.
-		switch campfire.EffectiveRole(m.Role) {
-		case campfire.RoleObserver:
-			return errResponse(id, -32000, "observers cannot send messages")
-		case campfire.RoleWriter:
-			for _, tag := range tags {
-				if strings.HasPrefix(tag, "campfire:") {
-					return errResponse(id, -32000, fmt.Sprintf("writers cannot send campfire system messages (tag %q)", tag))
-				}
-			}
-		}
-
-		msg, err = message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, antecedents)
+		client := newProtocolClient(st, agentID)
+		msg, err = client.Send(sendReq)
 		if err != nil {
-			return errResponse(id, -32000, fmt.Sprintf("creating message: %v", err))
-		}
-		msg.Instance = instance
-
-		state, stateErr := fsT.ReadState(campfireID)
-		if stateErr != nil {
-			return errResponse(id, -32000, fmt.Sprintf("reading campfire state: %v", stateErr))
-		}
-
-		cf := campfireFromState(state, members)
-		if hopErr := msg.AddHop(
-			state.PrivateKey, state.PublicKey,
-			cf.MembershipHash(), len(members),
-			state.JoinProtocol, state.ReceptionRequirements,
-			m.Role,
-		); hopErr != nil {
-			return errResponse(id, -32000, fmt.Sprintf("adding provenance hop: %v", hopErr))
-		}
-
-		if _, storeErr := st.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); storeErr != nil {
-			return errResponse(id, -32000, fmt.Sprintf("storing message: %v", storeErr))
-		}
-		// Wake any long-polling goroutines (hosted and external peers).
-		s.httpTransport.PollBrokerNotify(campfireID)
-		// Deliver to external HTTP peers.
-		peers := s.httpTransport.Peers(campfireID)
-		if len(peers) > 0 {
-			endpoints := make([]string, len(peers))
-			for i, p := range peers {
-				endpoints[i] = p.Endpoint
+			var roleErr *protocol.RoleError
+			if protocol.IsRoleError(err, &roleErr) {
+				return errResponse(id, -32000, roleErr.Error())
 			}
-			cfhttp.DeliverToAll(endpoints, campfireID, msg, agentID)
+			return errResponse(id, -32000, err.Error())
+		}
+
+		if s.httpTransport != nil {
+			// Wake any long-polling goroutines (hosted and external peers).
+			// protocol.Client.Send() delivers to external HTTP peers via the store's
+			// peer list. PollBrokerNotify wakes long-poll subscribers — this is
+			// MCP-specific and cannot live in protocol.Client.
+			s.httpTransport.PollBrokerNotify(campfireID)
 			// M7: relay metering — emit relay-bytes usage event after delivery.
 			// The emitter is async and fail-open; this never blocks the send path.
 			if s.forgeEmitter != nil {
@@ -2287,26 +2245,6 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 					IdempotencyKey: campfireID + ":" + msg.ID + ":relay",
 				})
 			}
-		}
-	} else {
-		// Filesystem (and GitHub) mode: delegate to protocol.Client which handles
-		// member verification, message creation, hop signing, and transport write.
-		// Signature verification during sync is also handled by the client (fixes
-		// reviewer finding campfire-agent-bxh: missing sig verification on sync).
-		client := newProtocolClient(st, agentID)
-		msg, err = client.Send(protocol.SendRequest{
-			CampfireID:  campfireID,
-			Payload:     []byte(payload),
-			Tags:        tags,
-			Antecedents: antecedents,
-			Instance:    instance,
-		})
-		if err != nil {
-			var roleErr *protocol.RoleError
-			if protocol.IsRoleError(err, &roleErr) {
-				return errResponse(id, -32000, roleErr.Error())
-			}
-			return errResponse(id, -32000, err.Error())
 		}
 	}
 
@@ -3161,40 +3099,55 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 		campfireID = cf.PublicKeyHex()
 	}
 
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), dmTags, nil)
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("creating message: %v", err))
-	}
-
-	state, err := transport.ReadState(campfireID)
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("reading campfire state: %v", err))
-	}
-
-	members, err := transport.ListMembers(campfireID)
-	if err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("listing members: %v", err))
-	}
-
-	cf := campfireFromState(state, members)
-	if err := msg.AddHop(
-		state.PrivateKey, state.PublicKey,
-		cf.MembershipHash(), len(members),
-		state.JoinProtocol, state.ReceptionRequirements,
-		campfire.RoleFull,
-	); err != nil {
-		return errResponse(id, -32000, fmt.Sprintf("adding provenance hop: %v", err))
-	}
+	var msg *message.Message
 
 	if s.httpTransport != nil {
-		// HTTP mode: store in SQLite and deliver to peers.
-		if _, err := st.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); err != nil {
-			return errResponse(id, -32000, fmt.Sprintf("storing message: %v", err))
+		// HTTP mode: build message inline so we can call PollBrokerNotify after
+		// storing. The DM campfire state lives in cfHome (not in the membership's
+		// TransportDir, which is the external HTTP address), so protocol.Client
+		// cannot resolve the campfire key via its sendP2PHTTP path.
+		var buildErr error
+		msg, buildErr = message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), dmTags, nil)
+		if buildErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("creating message: %v", buildErr))
+		}
+
+		state, stateErr := transport.ReadState(campfireID)
+		if stateErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("reading campfire state: %v", stateErr))
+		}
+
+		dmMembers, listErr := transport.ListMembers(campfireID)
+		if listErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("listing members: %v", listErr))
+		}
+
+		dmCF := campfireFromState(state, dmMembers)
+		if hopErr := msg.AddHop(
+			state.PrivateKey, state.PublicKey,
+			dmCF.MembershipHash(), len(dmMembers),
+			state.JoinProtocol, state.ReceptionRequirements,
+			campfire.RoleFull,
+		); hopErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("adding provenance hop: %v", hopErr))
+		}
+
+		if _, storeErr := st.AddMessage(store.MessageRecordFromMessage(campfireID, msg, store.NowNano())); storeErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("storing message: %v", storeErr))
 		}
 		s.httpTransport.PollBrokerNotify(campfireID)
 	} else {
-		if err := transport.WriteMessage(campfireID, msg); err != nil {
-			return errResponse(id, -32000, fmt.Sprintf("writing message: %v", err))
+		// Filesystem mode: delegate to protocol.Client which handles member
+		// verification, message creation, hop signing, and transport write.
+		client := newProtocolClient(st, agentID)
+		var sendErr error
+		msg, sendErr = client.Send(protocol.SendRequest{
+			CampfireID: campfireID,
+			Payload:    []byte(payload),
+			Tags:       dmTags,
+		})
+		if sendErr != nil {
+			return errResponse(id, -32000, sendErr.Error())
 		}
 	}
 
