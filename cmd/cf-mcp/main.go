@@ -144,6 +144,7 @@ type server struct {
 	billingSweep             *convention.BillingSweep            // non-nil when convention billing sweep is enabled
 	fallbackSweep            *convention.Sweeper                 // non-nil when convention dispatching is enabled; runs on-demand via /sweep
 	conventionServerStore    aztable.ConventionServerStore       // non-nil when Azure Table Storage is available (T4)
+	operatorSessionIdx  *operatorSessionIndex // bidirectional map of operator account IDs ↔ session tokens (forge-tk- auth)
 }
 
 func (s *server) identityPath() string {
@@ -1080,7 +1081,13 @@ func (s *server) handleInit(id interface{}, params map[string]interface{}) jsonR
 	// Auto-provision Forge sub-account for this operator (best-effort).
 	// Runs asynchronously to avoid blocking campfire_init on Forge availability.
 	// On success, enables Forge balance enforcement on the session's rate limiter.
-	if s.forgeAccounts != nil {
+	//
+	// Skip when the session was authenticated via forge-tk- (s.sess.forgeAccountID
+	// is already set): the account was resolved during auth and is known to exist.
+	// EnsureOperatorAccount requires an OperatorAccountStore which is not
+	// available in the forge-tk- path; calling it would panic.
+	isForgeSession := s.sess != nil && s.sess.forgeAccountID != ""
+	if s.forgeAccounts != nil && !isForgeSession {
 		pubkeyHex := agentID.PublicKeyHex()
 		sess := s.sess // capture for goroutine
 		forgeAccounts := s.forgeAccounts
@@ -1118,16 +1125,18 @@ Campfire: %s (status: %s, free tier: 1000 msg/month)
 Call tools/list now — if this campfire has convention declarations, they are already registered as typed MCP tools with validated arguments, proper tags, and signing. Use those tools to interact with this campfire. Do NOT fall back to campfire_send unless no convention tool covers your use case.`,
 			status, agentID.PublicKeyHex(), identityType, s.cfHome,
 			provResult.campfireID, provResult.campfireStatus)
-		result, _ := toolResultJSON(map[string]interface{}{
-			"public_key":   agentID.PublicKeyHex(),
-			"campfire_id":  provResult.campfireID,
+		initFields := map[string]interface{}{
+			"public_key":      agentID.PublicKeyHex(),
+			"campfire_id":     provResult.campfireID,
 			"campfire_status": provResult.campfireStatus,
-			"threshold":    provResult.threshold,
-			"role":         campfire.RoleFull,
-			"free_tier":    true,
-			"monthly_cap":  ratelimit.DefaultMonthlyMessageCap,
-			"guide":        guide,
-		})
+			"threshold":       provResult.threshold,
+			"role":            campfire.RoleFull,
+			"free_tier":       true,
+			"monthly_cap":     ratelimit.DefaultMonthlyMessageCap,
+			"guide":           guide,
+		}
+		s.injectAuthMethodFields(initFields)
+		result, _ := toolResultJSON(initFields)
 		return okResponse(id, result)
 	}
 
@@ -1178,24 +1187,47 @@ Other commands: campfire_discover (find campfires), campfire_create (start one).
 	}
 
 	if auditCampfireID != "" {
-		result, _ := toolResultJSON(map[string]interface{}{
+		auditFields := map[string]interface{}{
 			"public_key":        agentID.PublicKeyHex(),
 			"audit_campfire_id": auditCampfireID,
 			"audit_status":      auditStatus,
 			"guide":             guide,
-		})
+		}
+		s.injectAuthMethodFields(auditFields)
+		result, _ := toolResultJSON(auditFields)
 		return okResponse(id, result)
 	}
 
 	// Audit writer unavailable: include warning so the agent knows transparency
 	// logging is not active for this session (§5.e).
-	result, _ := toolResultJSON(map[string]interface{}{
+	noAuditFields := map[string]interface{}{
 		"public_key":   agentID.PublicKeyHex(),
 		"audit_status": auditStatus,
 		"audit_error":  auditError,
 		"guide":        guide,
-	})
+	}
+	s.injectAuthMethodFields(noAuditFields)
+	result, _ := toolResultJSON(noAuditFields)
 	return okResponse(id, result)
+}
+
+// injectAuthMethodFields adds auth_method and (for operator key sessions)
+// operator_account_id to the given map. Called by handleInit on every response
+// path so callers always see these fields in the campfire_init result.
+//
+// auth_method is "operator_key" when the session was authenticated via a
+// forge-tk- API key, and "session" for normal anonymous sessions.
+// operator_account_id is included only for "operator_key" sessions.
+func (s *server) injectAuthMethodFields(m map[string]interface{}) {
+	if s.sess != nil && s.sess.forgeAccountID != "" {
+		s.sess.mu.Lock()
+		acctID := s.sess.forgeAccountID
+		s.sess.mu.Unlock()
+		m["auth_method"] = "operator_key"
+		m["operator_account_id"] = acctID
+	} else {
+		m["auth_method"] = "session"
+	}
 }
 
 // autoProvisionResult holds the result of autoProvisionCampfire.
@@ -2307,6 +2339,14 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 			parentCtx = context.Background()
 		}
 		dispatchCtx, dispatchCancel := context.WithTimeout(parentCtx, 30*time.Second)
+		// For forge-tk- sessions, inject the operator's Forge account ID into the
+		// dispatch context so the metering hook bills the operator directly.
+		if s.sess != nil && s.sess.forgeAccountID != "" {
+			s.sess.mu.Lock()
+			forgeAcct := s.sess.forgeAccountID
+			s.sess.mu.Unlock()
+			dispatchCtx = WithSessionForgeAccount(dispatchCtx, forgeAcct)
+		}
 		// Lazy-load convention server registrations for this campfire on first send.
 		s.loadConventionServersForCampfire(dispatchCtx, campfireID)
 		msgRec := store.MessageRecordFromMessage(campfireID, msg, store.NowNano())
@@ -4040,11 +4080,61 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 
 	// Auth middleware: parse Authorization header and dispatch by scheme.
 	// Supported: "Bearer <token>" — validated against issuance registry.
+	// Supported: "Bearer forge-tk-<token>" — resolved via Forge API, issues TTL=0 session.
 	// Prepared: "Signed <pubkey>:<sig>" — reserved for future P1 (client-side crypto).
 	token := ""
+	forgeTokenPresented := false // true when the raw bearer value has the forge-tk- prefix
+	resolvedForgeAccountID := "" // set when forge-tk- auth succeeds; written to sess.forgeAccountID
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
-		token = strings.TrimPrefix(authHeader, "Bearer ")
+		raw := strings.TrimPrefix(authHeader, "Bearer ")
+		if strings.HasPrefix(raw, "forge-tk-") {
+			// Forge API key branch: validate with Forge, issue a TTL=0 session token.
+			forgeTokenPresented = true
+			if s.sessManager == nil || s.sessManager.forgeAccounts == nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "forge-tk- auth not available: Forge service key not configured")) //nolint:errcheck
+				return
+			}
+			keyRecord, resolveErr := s.sessManager.forgeAccounts.forge.ResolveKey(r.Context(), raw)
+			if resolveErr != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("forge-tk- auth failed: %v", resolveErr))) //nolint:errcheck
+				return
+			}
+			if keyRecord.Revoked {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "forge API key has been revoked")) //nolint:errcheck
+				return
+			}
+			if keyRecord.AccountID == "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "forge API key resolved to empty account ID")) //nolint:errcheck
+				return
+			}
+			accountID := keyRecord.AccountID
+			// Issue a new TTL=0 session token using the accountID as the stable internalID.
+			// TTL=0 means no expiry check — the token persists until explicitly revoked.
+			sessToken, issueErr := s.sessManager.issueForID(accountID)
+			if issueErr != nil {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("forge-tk- auth: issuing session token: %v", issueErr))) //nolint:errcheck
+				return
+			}
+			// Register the association in the operator session index.
+			if s.operatorSessionIdx != nil {
+				s.operatorSessionIdx.Register(accountID, sessToken)
+			}
+			// Override token with the newly issued session token and treat as init.
+			token = sessToken
+			resolvedForgeAccountID = accountID
+		} else {
+			token = raw
+		}
 	} else if strings.HasPrefix(authHeader, "Signed ") {
 		// Future: client-side Ed25519 auth. Not yet implemented.
 		w.Header().Set("Content-Type", "application/json")
@@ -4063,7 +4153,9 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 			toolName = cp.Name
 		}
 	}
-	isInit := toolName == "campfire_init"
+	// forge-tk- auth always behaves as campfire_init: it has just issued a fresh
+	// session token that the client must use for subsequent requests.
+	isInit := toolName == "campfire_init" || forgeTokenPresented
 
 	if token == "" && !isInit {
 		// Non-init request with no session token.
@@ -4089,13 +4181,26 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("issuing session token: %v", issueErr))) //nolint:errcheck
 			return
 		}
-	} else {
+	} else if !forgeTokenPresented {
 		// Validate token against registry before doing anything else.
-		if _, err := s.sessManager.validateToken(token); err != nil {
+		// For forge-tk- issued tokens (forgeTokenPresented), we just issued the
+		// token above — skip registry validation (it's guaranteed valid).
+		// For operator session tokens already in the index, use TTL=0 (no expiry).
+		var validateErr error
+		if s.operatorSessionIdx != nil {
+			if _, isOperator := s.operatorSessionIdx.AccountForToken(token); isOperator {
+				_, validateErr = s.sessManager.validateTokenNoExpiry(token)
+			} else {
+				_, validateErr = s.sessManager.validateToken(token)
+			}
+		} else {
+			_, validateErr = s.sessManager.validateToken(token)
+		}
+		if validateErr != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			var expErr *tokenExpiredError
-			if errors.As(err, &expErr) {
+			if errors.As(validateErr, &expErr) {
 				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "session token has expired: call campfire_init to get a new token")) //nolint:errcheck
 			} else {
 				json.NewEncoder(w).Encode(errResponse(req.ID, -32000, "invalid or revoked session token: call campfire_init to get a new token")) //nolint:errcheck
@@ -4174,15 +4279,30 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.sessManager.getOrCreate(token)
-	if err != nil {
+	var sess *Session
+	var sessErr error
+	if forgeTokenPresented {
+		// Forge-issued tokens use TTL=0 (no expiry); use the operator variant.
+		sess, sessErr = s.sessManager.getOrCreateOperator(token)
+	} else {
+		sess, sessErr = s.sessManager.getOrCreate(token)
+	}
+	if sessErr != nil {
 		w.Header().Set("Content-Type", "application/json")
 		var limitErr *sessionLimitError
-		if errors.As(err, &limitErr) {
+		if errors.As(sessErr, &limitErr) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("creating session: %v", err))) //nolint:errcheck
+		json.NewEncoder(w).Encode(errResponse(req.ID, -32000, fmt.Sprintf("creating session: %v", sessErr))) //nolint:errcheck
 		return
+	}
+
+	// For forge-tk- sessions, record the resolved account ID so that handleInit
+	// knows to skip EnsureOperatorAccount (the account already exists).
+	if resolvedForgeAccountID != "" {
+		sess.mu.Lock()
+		sess.forgeAccountID = resolvedForgeAccountID
+		sess.mu.Unlock()
 	}
 
 	// Build a per-request server view pointing at the session's cfHome.
@@ -4530,6 +4650,7 @@ func main() {
 
 			srv.sessManager = sm
 			srv.transportRouter = router
+			srv.operatorSessionIdx = newOperatorSessionIndex()
 
 			// T5: Propagate the ConventionDispatcher to the SessionManager so that
 			// per-session transports can wire the OnMessageDelivered hook for P2P delivery.
