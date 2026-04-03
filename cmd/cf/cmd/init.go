@@ -155,6 +155,10 @@ The --from flag requires --name — config inheritance only applies to named age
 				return fmt.Errorf("saving identity: %w", err)
 			}
 		} else {
+			if !passphraseSupported() {
+				fmt.Fprintln(os.Stderr, "warning: identity saved without encryption — passphrase prompts are not supported on Windows.")
+				fmt.Fprintln(os.Stderr, "         To encrypt your identity, set CF_PASSPHRASE in your environment before running cf init.")
+			}
 			if err := agentID.Save(identityPath); err != nil {
 				return fmt.Errorf("saving identity: %w", err)
 			}

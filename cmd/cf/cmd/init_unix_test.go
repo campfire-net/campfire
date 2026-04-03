@@ -11,6 +11,14 @@ import (
 	"testing"
 )
 
+// TestPassphraseSupportedTrueOnUnix verifies that passphraseSupported returns true
+// on non-Windows platforms, so the plaintext fallback warning is not emitted there.
+func TestPassphraseSupportedTrueOnUnix(t *testing.T) {
+	if !passphraseSupported() {
+		t.Fatal("passphraseSupported() should return true on non-Windows platforms")
+	}
+}
+
 // TestIsRootOwned_MockStat tests the ownership check logic with synthetic stat results.
 func TestIsRootOwned_MockStat(t *testing.T) {
 	// Simulate root ownership (UID 0)
