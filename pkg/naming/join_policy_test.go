@@ -38,8 +38,8 @@ func TestLoadJoinPolicy_Present(t *testing.T) {
 	if jp == nil {
 		t.Fatal("expected non-nil JoinPolicy")
 	}
-	if jp.JoinPolicy != "consult" {
-		t.Errorf("JoinPolicy: got %q, want %q", jp.JoinPolicy, "consult")
+	if jp.Policy != "consult" {
+		t.Errorf("JoinPolicy: got %q, want %q", jp.Policy, "consult")
 	}
 	if jp.ConsultCampfire != validHexID {
 		t.Errorf("ConsultCampfire: got %q, want %q", jp.ConsultCampfire, validHexID)
@@ -52,7 +52,7 @@ func TestLoadJoinPolicy_Present(t *testing.T) {
 func TestSaveAndLoadJoinPolicy_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	original := &JoinPolicy{
-		JoinPolicy:      "consult",
+		Policy:          "consult",
 		ConsultCampfire: validHexID,
 		JoinRoot:        validHexID2,
 	}

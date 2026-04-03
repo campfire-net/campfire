@@ -378,7 +378,7 @@ func TestResolveByName_FSWalkPath(t *testing.T) {
 
 	// Write join-policy.json pointing to "fs-walk".
 	if err := naming.SaveJoinPolicy(cfHomeDir, &naming.JoinPolicy{
-		JoinPolicy:      "consult",
+		Policy:          "consult",
 		ConsultCampfire: naming.FSWalkSentinel,
 		JoinRoot:        rootID,
 	}); err != nil {
@@ -983,7 +983,7 @@ func TestConsultRootsForName_ReturnsRootsFromResponder(t *testing.T) {
 	spawnResponder(respClient, consultID, []string{expectedRoot})
 
 	jp := &naming.JoinPolicy{
-		JoinPolicy:      "consult",
+		Policy:          "consult",
 		ConsultCampfire: consultID,
 		JoinRoot:        expectedRoot,
 	}
@@ -1029,7 +1029,7 @@ func TestConsultRootsForName_MultipleRoots(t *testing.T) {
 	spawnResponder(respClient, consultID, expectedRoots)
 
 	jp := &naming.JoinPolicy{
-		JoinPolicy:      "consult",
+		Policy:          "consult",
 		ConsultCampfire: consultID,
 		JoinRoot:        root1.PublicKeyHex(),
 	}
@@ -1067,7 +1067,7 @@ func TestConsultRootsForName_TimeoutWhenNoResponder(t *testing.T) {
 	consultID, _ := setupConsultCampfire(t, creatorHome, callerHome)
 
 	jp := &naming.JoinPolicy{
-		JoinPolicy:      "consult",
+		Policy:          "consult",
 		ConsultCampfire: consultID,
 		JoinRoot:        "0000000000000000000000000000000000000000000000000000000000000000",
 	}
@@ -1110,7 +1110,7 @@ func TestConsultRootsForName_NotMemberReturnsError(t *testing.T) {
 	}
 
 	jp := &naming.JoinPolicy{
-		JoinPolicy:      "consult",
+		Policy:          "consult",
 		ConsultCampfire: result.CampfireID,
 		JoinRoot:        "0000000000000000000000000000000000000000000000000000000000000000",
 	}
@@ -1197,7 +1197,7 @@ func TestResolveByName_ConsultPath(t *testing.T) {
 
 	// Write the join policy pointing to the consult campfire.
 	if err := naming.SaveJoinPolicy(callerHome, &naming.JoinPolicy{
-		JoinPolicy:      "consult",
+		Policy:          "consult",
 		ConsultCampfire: consultID,
 		JoinRoot:        rootID,
 	}); err != nil {

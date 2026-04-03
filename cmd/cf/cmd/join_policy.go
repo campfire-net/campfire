@@ -54,7 +54,7 @@ Examples:
 		}
 
 		jp := &naming.JoinPolicy{
-			JoinPolicy:      "consult",
+			Policy:          "consult",
 			ConsultCampfire: consultCampfire,
 			JoinRoot:        joinRoot,
 		}
@@ -88,7 +88,7 @@ var joinPolicyShowCmd = &cobra.Command{
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "join policy:\n  policy:  %s\n  consult: %s\n  root:    %s\n",
-			jp.JoinPolicy, jp.ConsultCampfire, jp.JoinRoot)
+			jp.Policy, jp.ConsultCampfire, jp.JoinRoot)
 		return nil
 	},
 }

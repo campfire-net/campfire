@@ -75,7 +75,7 @@ func TestJoinPolicyShow_WithPolicy(t *testing.T) {
 
 	// Pre-write a policy file directly so the test doesn't depend on set.
 	jp := &naming.JoinPolicy{
-		JoinPolicy:      "consult",
+		Policy:          "consult",
 		ConsultCampfire: validConsultID,
 		JoinRoot:        validJoinRootID,
 	}

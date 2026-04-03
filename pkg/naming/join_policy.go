@@ -14,8 +14,8 @@ import (
 // When join_policy is "consult", incoming join requests are forwarded
 // to the consult campfire for approval before being admitted.
 type JoinPolicy struct {
-	// JoinPolicy is the policy type — currently always "consult".
-	JoinPolicy string `json:"join_policy"`
+	// Policy is the policy type — currently always "consult".
+	Policy string `json:"join_policy"`
 	// ConsultCampfire is the campfire ID of the agent that approves join requests.
 	ConsultCampfire string `json:"consult_campfire"`
 	// JoinRoot is the default root campfire ID for joins.

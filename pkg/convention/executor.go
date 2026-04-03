@@ -308,7 +308,7 @@ func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfir
 		start := time.Now()
 		timeout := decl.ResponseTimeout
 		if timeout == 0 {
-			timeout = 30 * time.Second
+			timeout = stepTimeout
 		}
 		msgID, respPayload, err := e.transport.sendFutureAndAwait(ctx, campfireID, payload, composed, antecedents, timeout)
 		elapsed := time.Since(start)

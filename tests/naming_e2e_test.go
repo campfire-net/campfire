@@ -97,7 +97,7 @@ func TestNamingLocalityE2E(t *testing.T) {
 	}
 
 	if err := naming.SaveJoinPolicy(operatorHome, &naming.JoinPolicy{
-		JoinPolicy:      "consult",
+		Policy:          "consult",
 		ConsultCampfire: naming.FSWalkSentinel,
 		JoinRoot:        rootID,
 	}); err != nil {
