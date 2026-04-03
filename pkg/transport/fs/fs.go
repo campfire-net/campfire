@@ -75,9 +75,13 @@ func (t *Transport) CampfireDir(campfireID string) string {
 func (t *Transport) Init(c *campfire.Campfire) error {
 	dir := t.CampfireDir(c.PublicKeyHex())
 
-	// Create directory structure
+	// Create directory structure.
+	// Use 0700 — campfire.cbor in the parent dir contains the campfire
+	// private key, and member/message sub-directories sit inside the same
+	// campfire root. World-readable directories would expose private key
+	// material to other users on the same host.
 	for _, sub := range []string{"members", "messages"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0700); err != nil {
 			return fmt.Errorf("creating %s directory: %w", sub, err)
 		}
 	}
@@ -180,7 +184,9 @@ func (t *Transport) WriteMessage(campfireID string, msg *message.Message) error 
 // Calling AddPushSubscriber with the same memberPubkey overwrites the previous entry.
 func (t *Transport) AddPushSubscriber(campfireID string, memberPubkey []byte, inboxDir string) error {
 	dir := filepath.Join(t.CampfireDir(campfireID), "push-subscribers")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	// 0700: push-subscribers lives inside the campfire root dir and
+	// contains member pubkey filenames — restrict to owner only.
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating push-subscribers directory: %w", err)
 	}
 	memberID := fmt.Sprintf("%x", memberPubkey)
@@ -255,7 +261,9 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+	// 0700: inbox dirs receive message copies delivered from the campfire.
+	// Keep consistent with campfire transport directory permissions.
+	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
 	}
 
