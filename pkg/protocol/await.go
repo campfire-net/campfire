@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/store"
@@ -25,6 +26,7 @@ type AwaitRequest struct {
 
 	// Timeout is the maximum time to wait before returning ErrAwaitTimeout.
 	// Zero means wait forever (subject to ctx cancellation).
+	// Negative values are rejected with an error.
 	Timeout time.Duration
 
 	// PollInterval is the time between store polls. Defaults to 2 seconds when zero.
@@ -54,6 +56,12 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 	if req.TargetMsgID == "" {
 		return nil, fmt.Errorf("protocol.Client.Await: TargetMsgID is required")
 	}
+	// campfire-agent-kok: A negative timeout is a caller bug — return an error
+	// immediately rather than silently waiting forever (which happened because
+	// the req.Timeout > 0 guard below skipped timer creation for negative values).
+	if req.Timeout < 0 {
+		return nil, fmt.Errorf("protocol.Client.Await: Timeout must be >= 0 (got %v); use 0 to wait indefinitely", req.Timeout)
+	}
 
 	interval := req.PollInterval
 	if interval <= 0 {
@@ -71,8 +79,9 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 
 	// Initial sync-and-check before entering the poll loop.
 	if err := c.syncIfFilesystem(req.CampfireID); err != nil {
-		// Non-fatal: the store may have messages from a previous sync.
-		_ = err
+		// campfire-agent-zyq: Non-fatal — the store may have messages from a
+		// previous sync — but log it so operators can diagnose transport problems.
+		fmt.Fprintf(os.Stderr, "protocol.Client.Await: initial sync error (campfire=%s): %v\n", req.CampfireID, err)
 	}
 	if rec, err := c.findFulfillment(req.CampfireID, req.TargetMsgID); err != nil {
 		return nil, fmt.Errorf("protocol.Client.Await: initial fulfillment check: %w", err)
@@ -92,8 +101,9 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 		}
 
 		if err := c.syncIfFilesystem(req.CampfireID); err != nil {
-			// Non-fatal: keep polling.
-			_ = err
+			// campfire-agent-zyq: Non-fatal — keep polling — but log so operators
+			// can see repeated transport failures without attaching a debugger.
+			fmt.Fprintf(os.Stderr, "protocol.Client.Await: poll sync error (campfire=%s): %v\n", req.CampfireID, err)
 		}
 		if rec, err := c.findFulfillment(req.CampfireID, req.TargetMsgID); err != nil {
 			return nil, fmt.Errorf("protocol.Client.Await: fulfillment check: %w", err)

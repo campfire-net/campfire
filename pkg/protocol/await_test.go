@@ -222,6 +222,33 @@ func TestClientAwait_ContextCancellation(t *testing.T) {
 	}
 }
 
+// TestClientAwait_NegativeTimeout verifies that Await returns an error immediately
+// when Timeout is negative rather than silently waiting forever (campfire-agent-kok).
+func TestClientAwait_NegativeTimeout(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "unanswered question", []string{"future"})
+
+	start := time.Now()
+	_, err := client.Await(context.Background(), protocol.AwaitRequest{
+		CampfireID:  campfireID,
+		TargetMsgID: futureMsg.ID,
+		Timeout:     -1 * time.Second,
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Await: expected error for negative timeout, got nil")
+	}
+	// Should return almost instantly — not after any poll interval.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("Await: negative timeout should return immediately, took %v", elapsed)
+	}
+}
+
 // TestClientAwait_ContextAlreadyCancelled verifies that Await returns immediately
 // when called with an already-cancelled context and no fulfillment is present.
 func TestClientAwait_ContextAlreadyCancelled(t *testing.T) {
