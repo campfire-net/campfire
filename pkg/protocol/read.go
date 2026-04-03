@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/campfire-net/campfire/pkg/message"
@@ -87,8 +88,8 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 	if !req.SkipSync {
 		if err := c.syncIfFilesystem(req.CampfireID); err != nil {
 			// Sync failures are non-fatal: the store may have older messages
-			// that are still useful. Log-worthy but not blocking.
-			_ = err
+			// that are still useful. Log so operators can detect transport problems.
+			log.Printf("campfire: syncIfFilesystem(%s): %v â serving from local store", req.CampfireID, err)
 		}
 	}
 

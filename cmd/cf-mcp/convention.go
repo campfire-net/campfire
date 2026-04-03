@@ -720,7 +720,12 @@ func (b *httpModeBackend) SendFutureAndAwait(ctx context.Context, campfireID str
 func (s *server) handleConventionTool(rpcID interface{}, entry *conventionToolEntry, args map[string]interface{}) jsonRPCResponse {
 	agentKey := ""
 	var agentID *identity.Identity
-	if loaded, err := identity.Load(s.identityPath()); err == nil {
+	if loaded, err := identity.Load(s.identityPath()); err != nil {
+		// Identity load failure produces a misleading "convention operation failed"
+		// error downstream. Surface it clearly so the operator knows the real cause.
+		log.Printf("convention: identity load failed: %v", err)
+		return errResponse(rpcID, -32000, fmt.Sprintf("identity not loaded: %v — ensure the server was initialized with `cf-mcp init`", err))
+	} else {
 		agentKey = loaded.PublicKeyHex()
 		agentID = loaded
 	}
