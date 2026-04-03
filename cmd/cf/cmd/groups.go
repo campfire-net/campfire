@@ -31,6 +31,7 @@ func assignCommandGroups() {
 		"join-policy": groupCampfire,
 		"trust":        groupCampfire,
 		"ls":       groupCampfire,
+		"use":      groupCampfire,
 
 		// Messages — reading, writing, and querying messages.
 		"send":       groupMessages,

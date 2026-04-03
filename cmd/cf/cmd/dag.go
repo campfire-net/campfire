@@ -14,7 +14,7 @@ import (
 var dagCmd = &cobra.Command{
 	Use:   "dag <campfire-id>",
 	Short: "Show message DAG index (no payloads)",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dagAll, _ := cmd.Flags().GetBool("all")
 		dagTagFilters, _ := cmd.Flags().GetStringArray("tag")
@@ -25,9 +25,17 @@ var dagCmd = &cobra.Command{
 		}
 		defer s.Close()
 
-		resolved, err := resolveCampfireID(args[0], s)
-		if err != nil {
-			return err
+		var resolved string
+		if len(args) > 0 {
+			resolved, err = resolveCampfireID(args[0], s)
+			if err != nil {
+				return err
+			}
+		} else {
+			resolved, err = requireImplicitCampfire()
+			if err != nil {
+				return err
+			}
 		}
 
 		// Sync messages (same as cf read).

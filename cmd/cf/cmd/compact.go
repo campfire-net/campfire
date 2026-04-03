@@ -38,7 +38,7 @@ The compaction event is written as a regular campfire message with:
 Requires "full" membership role. Messages are never deleted — compaction is append-only.
 After compaction, cf read excludes superseded messages by default. Use cf read --all to
 see all messages including compacted ones.`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		compactBefore, _ := cmd.Flags().GetString("before")
 		compactSummary, _ := cmd.Flags().GetString("summary")
@@ -49,9 +49,17 @@ see all messages including compacted ones.`,
 		}
 		defer s.Close()
 
-		campfireID, err := resolveCampfireID(args[0], s)
-		if err != nil {
-			return err
+		var campfireID string
+		if len(args) > 0 {
+			campfireID, err = resolveCampfireID(args[0], s)
+			if err != nil {
+				return err
+			}
+		} else {
+			campfireID, err = requireImplicitCampfire()
+			if err != nil {
+				return err
+			}
 		}
 
 		if compactRetain != "archive" && compactRetain != "discard" {
@@ -102,7 +110,7 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 	}
 
 	// Only "full" role members can compact (campfire:compact is a system tag).
-	if err := checkRoleCanSend(m.Role, []string{"campfire:compact"}); err != nil {
+	if err := checkRoleCanSend(m.Role, []string{campfire.TagCompact}); err != nil {
 		return nil, err
 	}
 
@@ -193,7 +201,7 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 	_ = campfire.EffectiveRole(m.Role) // already checked above
 
 	// Route the compaction message through the appropriate transport via protocol.Client.Send.
-	compactTags := []string{"campfire:compact"}
+	compactTags := []string{campfire.TagCompact}
 	compactAntes := []string{lastSupersededID}
 	payloadStr := string(payloadJSON)
 
@@ -221,7 +229,7 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 // positives from tags like "xycampfire:compact". Unified with isCompactionEvent
 // in store.go. (Fix for workspace-27q / workspace-2i1.)
 func isCompactionMsg(m store.MessageRecord) bool {
-	return store.HasTag(m.Tags, "campfire:compact")
+	return store.HasTag(m.Tags, campfire.TagCompact)
 }
 
 // computeCheckpointHash computes SHA-256 of sorted(id + "|" + hex(signature)) for each message.
