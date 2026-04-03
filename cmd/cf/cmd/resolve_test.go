@@ -1300,3 +1300,231 @@ func TestConsultTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestGetRootRegistryID verifies that getRootRegistryID reads CF_ROOT_REGISTRY
+// from the environment, returning the trimmed value or empty string when unset.
+func TestGetRootRegistryID(t *testing.T) {
+	validID := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+
+	t.Run("returns ID when set", func(t *testing.T) {
+		t.Setenv("CF_ROOT_REGISTRY", validID)
+		got := getRootRegistryID()
+		if got != validID {
+			t.Errorf("getRootRegistryID() = %q, want %q", got, validID)
+		}
+	})
+
+	t.Run("trims whitespace", func(t *testing.T) {
+		t.Setenv("CF_ROOT_REGISTRY", "  "+validID+"  ")
+		got := getRootRegistryID()
+		if got != validID {
+			t.Errorf("getRootRegistryID() = %q, want %q (whitespace not trimmed)", got, validID)
+		}
+	})
+
+	t.Run("returns empty when unset", func(t *testing.T) {
+		t.Setenv("CF_ROOT_REGISTRY", "")
+		got := getRootRegistryID()
+		if got != "" {
+			t.Errorf("getRootRegistryID() = %q, want empty string when CF_ROOT_REGISTRY is unset", got)
+		}
+	})
+}
+
+// TestResolveNamingURI_NoRootRegistry verifies that resolveNamingURI returns a
+// clear error when CF_ROOT_REGISTRY is not set. This is the most common user
+// misconfiguration — the function must fail fast with an actionable message
+// rather than attempting resolution with an empty root ID.
+func TestResolveNamingURI_NoRootRegistry(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+	t.Setenv("CF_ROOT_REGISTRY", "")
+
+	_, err := resolveNamingURI("cf://galtrader.social.lobby")
+	if err == nil {
+		t.Fatal("resolveNamingURI: expected error when CF_ROOT_REGISTRY is unset, got nil")
+	}
+	if !strings.Contains(err.Error(), "root registry not configured") {
+		t.Errorf("error %q does not contain 'root registry not configured'", err.Error())
+	}
+}
+
+// TestResolveNamingURI_FullResolution verifies the full cf:// URI resolution path:
+// protocol.Init → NewResolverFromClient → ResolveURI. Uses a real filesystem
+// campfire as the naming root so no external dependencies are required.
+func TestResolveNamingURI_FullResolution(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+	t.Setenv("CF_ROOT_REGISTRY", "") // will be set after root creation
+
+	// Create an identity and a protocol client.
+	client, err := protocol.Init(cfHomeDir)
+	if err != nil {
+		t.Fatalf("protocol.Init: %v", err)
+	}
+	defer client.Close()
+
+	transportDir := t.TempDir()
+
+	// Create a naming root campfire and a target campfire.
+	rootResult, err := client.Create(protocol.CreateRequest{
+		Description:  "naming-uri-root",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating root campfire: %v", err)
+	}
+	rootID := rootResult.CampfireID
+
+	targetResult, err := client.Create(protocol.CreateRequest{
+		Description:  "naming-uri-target",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating target campfire: %v", err)
+	}
+	targetID := targetResult.CampfireID
+
+	// Register "myapp" in the root so cf://myapp resolves to targetID.
+	if _, err := naming.Register(context.Background(), client, rootID, "myapp", targetID, nil); err != nil {
+		t.Fatalf("naming.Register: %v", err)
+	}
+
+	// Point CF_ROOT_REGISTRY at the root we just created.
+	t.Setenv("CF_ROOT_REGISTRY", rootID)
+
+	// resolveNamingURI uses protocol.Init(CFHome()) internally. It opens its own
+	// client handle — the one we hold above is for setup only.
+	got, err := resolveNamingURI("cf://myapp")
+	if err != nil {
+		t.Fatalf("resolveNamingURI(\"cf://myapp\"): %v", err)
+	}
+	if got != targetID {
+		t.Errorf("resolveNamingURI returned %s, want %s", got, targetID)
+	}
+}
+
+// TestResolveNamingURI_MultiSegment verifies that a multi-segment cf:// URI
+// (e.g. cf://org.project) resolves correctly through the hierarchical naming walk.
+func TestResolveNamingURI_MultiSegment(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+	t.Setenv("CF_ROOT_REGISTRY", "")
+
+	client, err := protocol.Init(cfHomeDir)
+	if err != nil {
+		t.Fatalf("protocol.Init: %v", err)
+	}
+	defer client.Close()
+
+	transportDir := t.TempDir()
+
+	// Root: holds "org"
+	rootResult, err := client.Create(protocol.CreateRequest{
+		Description:  "ms-root",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating root: %v", err)
+	}
+	rootID := rootResult.CampfireID
+
+	// Intermediate: the "org" node (holds "project")
+	orgResult, err := client.Create(protocol.CreateRequest{
+		Description:  "ms-org",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating org campfire: %v", err)
+	}
+	orgID := orgResult.CampfireID
+
+	// Leaf: the final target for "org.project"
+	leafResult, err := client.Create(protocol.CreateRequest{
+		Description:  "ms-leaf",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating leaf campfire: %v", err)
+	}
+	leafID := leafResult.CampfireID
+
+	// Register "org" → orgID in root, then "project" → leafID in org.
+	if _, err := naming.Register(context.Background(), client, rootID, "org", orgID, nil); err != nil {
+		t.Fatalf("naming.Register org: %v", err)
+	}
+	if _, err := naming.Register(context.Background(), client, orgID, "project", leafID, nil); err != nil {
+		t.Fatalf("naming.Register project: %v", err)
+	}
+
+	t.Setenv("CF_ROOT_REGISTRY", rootID)
+
+	got, err := resolveNamingURI("cf://org.project")
+	if err != nil {
+		t.Fatalf("resolveNamingURI(\"cf://org.project\"): %v", err)
+	}
+	if got != leafID {
+		t.Errorf("resolveNamingURI returned %s, want %s", got, leafID)
+	}
+}
+
+// TestResolveNamingURI_UnknownName verifies that resolveNamingURI returns an
+// error (not a panic or empty string) when the name is not registered.
+func TestResolveNamingURI_UnknownName(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+
+	client, err := protocol.Init(cfHomeDir)
+	if err != nil {
+		t.Fatalf("protocol.Init: %v", err)
+	}
+	defer client.Close()
+
+	transportDir := t.TempDir()
+	rootResult, err := client.Create(protocol.CreateRequest{
+		Description:  "empty-root",
+		JoinProtocol: "open",
+		Transport:    protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err != nil {
+		t.Fatalf("creating root: %v", err)
+	}
+
+	t.Setenv("CF_ROOT_REGISTRY", rootResult.CampfireID)
+
+	_, err = resolveNamingURI("cf://doesnotexist")
+	if err == nil {
+		t.Fatal("resolveNamingURI: expected error for unknown name, got nil")
+	}
+}
+
+// TestResolveCampfireID_NamedURINoRootRegistry verifies that resolveCampfireID
+// with a named cf:// URI (not direct, not alias) routes to resolveNamingURI
+// and fails with "root registry not configured" when CF_ROOT_REGISTRY is unset.
+// This is the regression guard for the routing path: resolveCampfireID →
+// resolveNamingURI (default case in the URIKind switch).
+func TestResolveCampfireID_NamedURINoRootRegistry(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+	t.Setenv("CF_ROOT_REGISTRY", "")
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
+
+	s, _ := makeTestStore(t, nil)
+	defer s.Close()
+
+	_, err := resolveCampfireID("cf://galtrader.social", s)
+	if err == nil {
+		t.Fatal("resolveCampfireID with named URI and no CF_ROOT_REGISTRY: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "root registry not configured") {
+		t.Errorf("error %q does not contain 'root registry not configured'", err.Error())
+	}
+}
