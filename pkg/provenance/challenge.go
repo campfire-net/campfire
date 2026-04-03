@@ -307,6 +307,8 @@ func (c *Challenger) ValidateResponse(resp *ChallengeResponse, now time.Time) (*
 	// an attacker to submit arbitrary strings and bypass proof verification.
 	// An empty proof_token means the proof itself is absent — regardless of what
 	// proof_type claims, there is nothing to verify.
+	// Even a non-empty proof_token must have the correct structural format for its
+	// declared proof_type — garbage strings are rejected here. See §5.3.
 	if resp.ProofType == "" {
 		return nil, ErrEmptyProofType
 	}
@@ -315,6 +317,9 @@ func (c *Challenger) ValidateResponse(resp *ChallengeResponse, now time.Time) (*
 	}
 	if resp.ProofToken == "" {
 		return nil, ErrEmptyProofToken
+	}
+	if err := validateProofTokenFormat(resp.ProofType, resp.ProofToken); err != nil {
+		return nil, err
 	}
 
 	// Consume the challenge (one-time use).
@@ -349,7 +354,8 @@ func CreateAttestation(store AttestationStore, attestationID string, ch *Challen
 	// in ValidateResponse. CreateAttestation may be called with a manually constructed
 	// ChallengeResponse (e.g., in tests or future callers that bypass ValidateResponse),
 	// so the proof invariants are enforced here too. An attestation built on an empty or
-	// unknown proof_type, or an empty proof_token, is not a valid attestation.
+	// unknown proof_type, empty proof_token, or structurally invalid proof_token is not
+	// a valid attestation.
 	if resp.ProofType == "" {
 		return nil, ErrEmptyProofType
 	}
@@ -358,6 +364,9 @@ func CreateAttestation(store AttestationStore, attestationID string, ch *Challen
 	}
 	if resp.ProofToken == "" {
 		return nil, ErrEmptyProofToken
+	}
+	if err := validateProofTokenFormat(resp.ProofType, resp.ProofToken); err != nil {
+		return nil, err
 	}
 
 	a := &Attestation{
@@ -391,6 +400,86 @@ var validProofTypes = map[ProofType]bool{
 	ProofEmailLink: true,
 }
 
+// proofTokenMinLenCaptcha is the minimum token length for CAPTCHA proof tokens.
+// CAPTCHA solution tokens are opaque strings from an external service; >=16 chars
+// distinguishes them from random short garbage while staying well below any real
+// CAPTCHA provider's minimum token length.
+const proofTokenMinLenCaptcha = 16
+
+// proofTokenMinLenOpaque is the minimum token length for hardware and email-link
+// proof tokens. Hardware attestation blobs and signed email-link tokens carry more
+// entropy than CAPTCHA tokens; >=32 chars is a conservative lower bound.
+const proofTokenMinLenOpaque = 32
+
+// validateProofTokenFormat checks that proof_token has the correct structural format
+// for the given proof_type. It does NOT verify the cryptographic authenticity of the
+// token (that requires the issuing service), but it rejects clearly invalid tokens:
+// random short strings, wrong character sets, whitespace-contaminated values.
+// See Operator Provenance Convention v0.1 §5.3.
+//
+// Validation rules per proof_type:
+//   - ProofTOTP:      exactly 6 or 8 ASCII decimal digits (RFC 6238 §4, §5.2)
+//   - ProofSMS:       4-8 ASCII decimal digits (typical OTP code length)
+//   - ProofCaptcha:   >=16 printable non-whitespace characters
+//   - ProofHardware:  >=32 printable non-whitespace characters (attestation blob)
+//   - ProofEmailLink: >=32 printable non-whitespace characters (signed redirect token)
+func validateProofTokenFormat(pt ProofType, token string) error {
+	switch pt {
+	case ProofTOTP:
+		// RFC 6238: TOTP codes are exactly 6 or 8 decimal digits.
+		if len(token) != 6 && len(token) != 8 {
+			return fmt.Errorf("%w: totp proof_token must be exactly 6 or 8 decimal digits, got %d chars", ErrInvalidProofToken, len(token))
+		}
+		for _, r := range token {
+			if r < '0' || r > '9' {
+				return fmt.Errorf("%w: totp proof_token must contain only decimal digits", ErrInvalidProofToken)
+			}
+		}
+	case ProofSMS:
+		// SMS OTP codes are 4-8 decimal digits.
+		if len(token) < 4 || len(token) > 8 {
+			return fmt.Errorf("%w: sms proof_token must be 4-8 decimal digits, got %d chars", ErrInvalidProofToken, len(token))
+		}
+		for _, r := range token {
+			if r < '0' || r > '9' {
+				return fmt.Errorf("%w: sms proof_token must contain only decimal digits", ErrInvalidProofToken)
+			}
+		}
+	case ProofCaptcha:
+		// CAPTCHA solution tokens are opaque strings from the CAPTCHA service.
+		if len(token) < proofTokenMinLenCaptcha {
+			return fmt.Errorf("%w: captcha proof_token too short (min %d chars, got %d)", ErrInvalidProofToken, proofTokenMinLenCaptcha, len(token))
+		}
+		for _, r := range token {
+			// Reject ASCII control characters and whitespace (0x00-0x20, 0x7F).
+			if r <= 0x20 || r == 0x7F {
+				return fmt.Errorf("%w: captcha proof_token must not contain whitespace or control characters", ErrInvalidProofToken)
+			}
+		}
+	case ProofHardware:
+		// Hardware key attestation blobs are base64-encoded CBOR or similar data.
+		if len(token) < proofTokenMinLenOpaque {
+			return fmt.Errorf("%w: hardware proof_token too short (min %d chars, got %d)", ErrInvalidProofToken, proofTokenMinLenOpaque, len(token))
+		}
+		for _, r := range token {
+			if r <= 0x20 || r == 0x7F {
+				return fmt.Errorf("%w: hardware proof_token must not contain whitespace or control characters", ErrInvalidProofToken)
+			}
+		}
+	case ProofEmailLink:
+		// Email-link tokens are signed URL query parameters or opaque redirect tokens.
+		if len(token) < proofTokenMinLenOpaque {
+			return fmt.Errorf("%w: email-link proof_token too short (min %d chars, got %d)", ErrInvalidProofToken, proofTokenMinLenOpaque, len(token))
+		}
+		for _, r := range token {
+			if r <= 0x20 || r == 0x7F {
+				return fmt.Errorf("%w: email-link proof_token must not contain whitespace or control characters", ErrInvalidProofToken)
+			}
+		}
+	}
+	return nil
+}
+
 // Challenge-response sentinel errors.
 var (
 	// ErrRateLimitExceeded is returned when a target key has received the maximum
@@ -418,14 +507,23 @@ var (
 	ErrUnknownProofType = errors.New("provenance: proof_type is not a recognized value (must be one of: captcha, totp, hardware, sms, email-link)")
 
 	// ErrEmptyProofToken is returned when proof_token is empty. See §5.3, §12.2.
-	// Without a proof_token there is no actual proof — the attestation would be
+	// Without a proof_token there is no actual proof -- the attestation would be
 	// meaningless and MUST be rejected.
 	ErrEmptyProofToken = errors.New("provenance: proof_token must not be empty")
+
+	// ErrInvalidProofToken is returned when proof_token does not match the structural
+	// format required by the declared proof_type. See §5.3.
+	// Format rules: TOTP = 6 or 8 decimal digits; SMS = 4-8 decimal digits;
+	// captcha/hardware/email-link = >=16/32 printable non-whitespace characters.
+	// This check rejects clearly invalid tokens (random short strings, non-digit TOTP
+	// codes, whitespace-contaminated tokens) without requiring a call to the issuing
+	// service. Cryptographic proof of authenticity is handled at the application layer.
+	ErrInvalidProofToken = errors.New("provenance: proof_token format invalid for declared proof_type")
 
 	// ErrChallengeIDCollision is returned when IssueChallenge is called with an ID
 	// that is already present in the active challenge map. Challenge IDs are
 	// caller-supplied (e.g., campfire message IDs) and MUST be globally unique.
 	// A collision would silently overwrite the original operator's pending nonce,
 	// so it is rejected as a bug or potential attack.
-	ErrChallengeIDCollision = errors.New("provenance: challenge ID already exists in active set — IDs must be unique")
+	ErrChallengeIDCollision = errors.New("provenance: challenge ID already exists in active set -- IDs must be unique")
 )

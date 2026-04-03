@@ -1,6 +1,7 @@
 package provenance
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -618,6 +619,96 @@ func TestCreateAttestation_EmptyProofToken(t *testing.T) {
 	}
 }
 
+// --- Regression: ProofToken must be cryptographically structured, not just non-empty (campfire-agent-nyt) ---
+//
+// Before this fix, any non-empty string was accepted as a proof_token. A random garbage
+// string would pass validation even though it bears no resemblance to a valid proof.
+//
+// Fix: validateProofTokenFormat enforces structural rules per proof_type:
+//   - TOTP: exactly 6 or 8 decimal digits (RFC 6238)
+//   - SMS: 4-8 decimal digits
+//   - captcha: >=16 printable non-whitespace characters
+//   - hardware: >=32 printable non-whitespace characters
+//   - email-link: >=32 printable non-whitespace characters
+
+// TestValidateResponse_GarbageProofTokenRejected verifies that a random/garbage string
+// is rejected as a proof_token even when it is non-empty. (Regression: campfire-agent-nyt)
+func TestValidateResponse_GarbageProofTokenRejected(t *testing.T) {
+	garbageCases := []struct {
+		pt    ProofType
+		token string
+		desc  string
+	}{
+		{ProofTOTP, "abc123", "totp: non-digit chars"},
+		{ProofTOTP, "12345", "totp: 5 digits (too short)"},
+		{ProofTOTP, "1234567", "totp: 7 digits (wrong length)"},
+		{ProofTOTP, "123456789", "totp: 9 digits (too long)"},
+		{ProofTOTP, "abcdefgh", "totp: 8 non-digit chars"},
+		{ProofSMS, "123", "sms: 3 digits (too short)"},
+		{ProofSMS, "123456789", "sms: 9 digits (too long)"},
+		{ProofSMS, "abc", "sms: non-digit chars"},
+		{ProofSMS, "12 34", "sms: contains space"},
+		{ProofCaptcha, "tooshort", "captcha: too short (8 chars)"},
+		{ProofCaptcha, "x", "captcha: single char"},
+		{ProofHardware, "tooshorthardware", "hardware: too short (16 chars)"},
+		{ProofHardware, "x", "hardware: single char"},
+		{ProofEmailLink, "tooshortemaillink", "email-link: too short (17 chars)"},
+	}
+
+	for _, tc := range garbageCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			c := NewChallenger()
+			now := time.Now()
+			ch := issueTestChallenge(t, c, "msg-garbage-"+tc.desc, now)
+			resp := validResponse(ch)
+			resp.ProofType = tc.pt
+			resp.ProofToken = tc.token
+
+			_, err := c.ValidateResponse(resp, now.Add(10*time.Second))
+			if err == nil {
+				t.Errorf("expected error for garbage proof_token %q (type %q), got nil", tc.token, tc.pt)
+				return
+			}
+			if !errors.Is(err, ErrInvalidProofToken) {
+				t.Errorf("expected ErrInvalidProofToken for %q (type %q), got: %v", tc.token, tc.pt, err)
+			}
+		})
+	}
+}
+
+// TestCreateAttestation_GarbageProofTokenRejected verifies that CreateAttestation also
+// rejects garbage proof_tokens (defense-in-depth). (Regression: campfire-agent-nyt)
+func TestCreateAttestation_GarbageProofTokenRejected(t *testing.T) {
+	store := NewStore(DefaultConfig())
+	ch := &Challenge{ID: "y", TargetKey: "target", InitiatorKey: "initiator", Nonce: "n"}
+
+	garbageCases := []struct {
+		pt    ProofType
+		token string
+	}{
+		{ProofTOTP, "notdigits"},
+		{ProofSMS, "x"},
+		{ProofCaptcha, "tooshort"},
+		{ProofHardware, "tooshort"},
+		{ProofEmailLink, "tooshort"},
+	}
+
+	for _, tc := range garbageCases {
+		resp := &ChallengeResponse{
+			ProofType:  tc.pt,
+			ProofToken: tc.token,
+		}
+		_, err := CreateAttestation(store, "attest-garbage", ch, resp, time.Now())
+		if err == nil {
+			t.Errorf("expected error for garbage token %q (type %q), got nil", tc.token, tc.pt)
+			continue
+		}
+		if !errors.Is(err, ErrInvalidProofToken) {
+			t.Errorf("expected ErrInvalidProofToken for %q (type %q), got: %v", tc.token, tc.pt, err)
+		}
+	}
+}
+
 // --- Regression: unanswered challenges accumulate unbounded (campfire-agent-t0r) ---
 //
 // Before this fix, IssueChallenge added entries to the active map but nothing ever
@@ -818,25 +909,26 @@ func TestIssueChallenge_DuplicateIDAfterExpiry(t *testing.T) {
 // proof types pass validation when a non-empty proof_token is provided.
 // This ensures the valid set doesn't accidentally exclude any spec-defined type.
 func TestValidateResponse_AllKnownProofTypesAccepted(t *testing.T) {
-	knownTypes := []ProofType{
-		ProofCaptcha,
-		ProofTOTP,
-		ProofHardware,
-		ProofSMS,
-		ProofEmailLink,
+	// Each token must satisfy the structural format for its proof_type.
+	validTokens := map[ProofType]string{
+		ProofCaptcha:   "captcha-solution-token-abc123",       // 29 chars, opaque service token
+		ProofTOTP:      "123456",                              // 6 decimal digits (RFC 6238)
+		ProofHardware:  "hardware-attestation-blob-base64-ab", // 35 chars, attestation data
+		ProofSMS:       "4567",                                // 4 decimal digits
+		ProofEmailLink: "email-link-signed-redirect-token-xyz", // 36 chars, signed token
 	}
 
-	for _, pt := range knownTypes {
+	for _, pt := range []ProofType{ProofCaptcha, ProofTOTP, ProofHardware, ProofSMS, ProofEmailLink} {
 		c := NewChallenger()
 		now := time.Now()
 		ch := issueTestChallenge(t, c, "msg-pt-"+string(pt)+"-001", now)
 		resp := validResponse(ch)
 		resp.ProofType = pt
-		resp.ProofToken = "valid-token-for-" + string(pt)
+		resp.ProofToken = validTokens[pt]
 
 		_, err := c.ValidateResponse(resp, now.Add(10*time.Second))
 		if err != nil {
-			t.Errorf("proof_type %q should be accepted, got error: %v", pt, err)
+			t.Errorf("proof_type %q with valid token should be accepted, got error: %v", pt, err)
 		}
 	}
 }
