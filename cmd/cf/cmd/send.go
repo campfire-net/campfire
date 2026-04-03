@@ -39,14 +39,20 @@ var sendCmd = &cobra.Command{
 			}
 			payload = args[1]
 		} else {
-			// No campfire ID provided — fall back to project root.
-			id, _, ok := ProjectRoot()
-			if !ok {
-				return fmt.Errorf("campfire ID required: no .campfire/root found in this directory tree")
+			// No campfire ID provided — try context, then project root.
+			if ctxID, err := resolveImplicitCampfire(); err != nil {
+				return err
+			} else if ctxID != "" {
+				campfireID = ctxID
+			} else {
+				id, _, ok := ProjectRoot()
+				if !ok {
+					return fmt.Errorf("campfire ID required: no context set and no .campfire/root found in this directory tree")
+				}
+				campfireID = id
+				fromProjectRoot = true
 			}
-			campfireID = id
 			payload = args[0]
-			fromProjectRoot = true
 		}
 
 		m, err := s.GetMembership(campfireID)

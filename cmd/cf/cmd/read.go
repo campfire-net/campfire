@@ -32,8 +32,12 @@ func resolveCampfireEntries(args []string, agentID *identity.Identity, s store.S
 			return nil, nil, err
 		}
 		campfireIDs = []string{resolved}
+	} else if ctxID, err := resolveImplicitCampfire(); err != nil {
+		return nil, nil, err
+	} else if ctxID != "" {
+		campfireIDs = []string{ctxID}
 	} else {
-		// No explicit campfire — auto-join the project root if not yet a member.
+		// No explicit campfire or context — auto-join the project root if not yet a member.
 		if rootID, _, ok := ProjectRoot(); ok {
 			m, err := s.GetMembership(rootID)
 			if err != nil {

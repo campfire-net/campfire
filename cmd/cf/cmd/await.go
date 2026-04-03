@@ -27,7 +27,7 @@ Example:
   # Worker posts an escalation and waits for the decision
   msg_id=$(cf send "$campfire" --tag escalation --future "Need ruling on X" --json | jq -r .id)
   decision=$(cf await "$campfire" "$msg_id" --timeout 10m --json)`,
-	Args: cobra.ExactArgs(2),
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
 
@@ -37,11 +37,20 @@ Example:
 		}
 		defer s.Close()
 
-		campfireID, err := resolveCampfireID(args[0], s)
-		if err != nil {
-			return err
+		var campfireID, targetMsgID string
+		if len(args) == 2 {
+			campfireID, err = resolveCampfireID(args[0], s)
+			if err != nil {
+				return err
+			}
+			targetMsgID = args[1]
+		} else {
+			campfireID, err = requireImplicitCampfire()
+			if err != nil {
+				return err
+			}
+			targetMsgID = args[0]
 		}
-		targetMsgID := args[1]
 
 		// Parse timeout. Zero means wait forever.
 		var timeout time.Duration

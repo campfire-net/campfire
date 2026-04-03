@@ -27,10 +27,14 @@ var membersCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
+		} else if ctxID, ctxErr := resolveImplicitCampfire(); ctxErr != nil {
+			return ctxErr
+		} else if ctxID != "" {
+			campfireID = ctxID
 		} else {
 			id, _, ok := ProjectRoot()
 			if !ok {
-				return fmt.Errorf("campfire ID required: no .campfire/root found in this directory tree")
+				return fmt.Errorf("campfire ID required: no context set and no .campfire/root found in this directory tree")
 			}
 			campfireID = id
 		}

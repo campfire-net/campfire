@@ -14,12 +14,11 @@ import (
 var serveCmd = &cobra.Command{
 	Use:   "serve <campfire-id>",
 	Short: "Start HTTP listener for a p2p-http campfire and block until interrupted",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		serveListen, _ := cmd.Flags().GetString("listen")
 		serveTLSCert, _ := cmd.Flags().GetString("tls-cert")
 		serveTLSKey, _ := cmd.Flags().GetString("tls-key")
-		campfireID := args[0]
 
 		agentID, s, err := requireAgentAndStore()
 		if err != nil {
@@ -27,9 +26,17 @@ var serveCmd = &cobra.Command{
 		}
 		defer s.Close()
 
-		campfireID, err = resolveCampfireID(campfireID, s)
-		if err != nil {
-			return err
+		var campfireID string
+		if len(args) > 0 {
+			campfireID, err = resolveCampfireID(args[0], s)
+			if err != nil {
+				return err
+			}
+		} else {
+			campfireID, err = requireImplicitCampfire()
+			if err != nil {
+				return err
+			}
 		}
 
 		// Verify membership.

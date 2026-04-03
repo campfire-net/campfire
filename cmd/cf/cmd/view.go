@@ -43,7 +43,7 @@ Example predicates (S-expression syntax):
   (tag "memory:standing")
   (and (tag "memory:standing") (gt (field "payload.confidence") (literal 0.5)))
   (or (tag "memory:standing") (tag "memory:anchor"))`,
-	Args: cobra.ExactArgs(2),
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		viewPredicate, _ := cmd.Flags().GetString("predicate")
 		viewProjection, _ := cmd.Flags().GetString("projection")
@@ -51,27 +51,58 @@ Example predicates (S-expression syntax):
 		viewLimit, _ := cmd.Flags().GetInt("limit")
 		viewRefresh, _ := cmd.Flags().GetString("refresh")
 		viewEntityKey, _ := cmd.Flags().GetString("entity-key")
-		return runViewCreate(args[0], args[1], viewPredicate, viewProjection, viewOrdering, viewRefresh, viewEntityKey, viewLimit)
+		campfireArg, name, err := resolveViewArgs(args)
+		if err != nil {
+			return err
+		}
+		return runViewCreate(campfireArg, name, viewPredicate, viewProjection, viewOrdering, viewRefresh, viewEntityKey, viewLimit)
 	},
 }
 
 var viewReadCmd = &cobra.Command{
-	Use:   "read <campfire-id> <name>",
+	Use:   "read [campfire-id] <name>",
 	Short: "Materialize a named view",
 	Long:  `Finds the latest campfire:view definition with the given name, applies the predicate to all messages, and returns filtered/projected/ordered results.`,
-	Args:  cobra.ExactArgs(2),
+	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runViewRead(args[0], args[1])
+		campfireArg, name, err := resolveViewArgs(args)
+		if err != nil {
+			return err
+		}
+		return runViewRead(campfireArg, name)
 	},
 }
 
 var viewListCmd = &cobra.Command{
-	Use:   "list <campfire-id>",
+	Use:   "list [campfire-id]",
 	Short: "List defined views in a campfire",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runViewList(args[0])
+		var campfireArg string
+		if len(args) > 0 {
+			campfireArg = args[0]
+		} else {
+			id, err := requireImplicitCampfire()
+			if err != nil {
+				return err
+			}
+			campfireArg = id
+		}
+		return runViewList(campfireArg)
 	},
+}
+
+// resolveViewArgs resolves campfire-id and name from args, using implicit context when needed.
+// With 2 args: (campfire-id, name). With 1 arg: (context, name).
+func resolveViewArgs(args []string) (string, string, error) {
+	if len(args) == 2 {
+		return args[0], args[1], nil
+	}
+	id, err := requireImplicitCampfire()
+	if err != nil {
+		return "", "", err
+	}
+	return id, args[0], nil
 }
 
 func init() {
