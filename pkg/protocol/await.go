@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -67,7 +68,7 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 	if req.TargetMsgID == "" {
 		return nil, fmt.Errorf("protocol.Client.Await: TargetMsgID is required")
 	}
-	// campfire-agent-kok: A negative timeout is a caller bug — return an error
+	// campfire-agent-kok: A negative timeout is a caller bug -- return an error
 	// immediately rather than silently waiting forever (which happened because
 	// the req.Timeout > 0 guard below skipped timer creation for negative values).
 	if req.Timeout < 0 {
@@ -90,8 +91,8 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 
 	// Initial sync-and-check before entering the poll loop.
 	if err := c.syncIfFilesystem(req.CampfireID); err != nil {
-		// campfire-agent-zyq: Non-fatal — the store may have messages from a
-		// previous sync — but log it so operators can diagnose transport problems.
+		// campfire-agent-zyq: Non-fatal -- the store may have messages from a
+		// previous sync -- but log it so operators can diagnose transport problems.
 		fmt.Fprintf(os.Stderr, "protocol.Client.Await: initial sync error (campfire=%s): %v\n", req.CampfireID, err)
 	}
 	if rec, err := c.findFulfillment(req.CampfireID, req.TargetMsgID); err != nil {
@@ -112,7 +113,7 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 		}
 
 		if err := c.syncIfFilesystem(req.CampfireID); err != nil {
-			// campfire-agent-zyq: Non-fatal — keep polling — but log so operators
+			// campfire-agent-zyq: Non-fatal -- keep polling -- but log so operators
 			// can see repeated transport failures without attaching a debugger.
 			fmt.Fprintf(os.Stderr, "protocol.Client.Await: poll sync error (campfire=%s): %v\n", req.CampfireID, err)
 		}
@@ -129,11 +130,24 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 // It uses ListReferencingMessages to find candidates efficiently, then checks
 // that the candidate carries the "fulfills" tag. Returns nil if none is found.
 //
-// When multiple messages fulfill the same future, the winner is selected
-// deterministically: earliest timestamp wins; ties broken by lexicographically
-// smaller message ID. (campfire-agent-mnh: non-deterministic winner when
-// timestamps tie.)
+// Compaction awareness: fulfillment candidates whose IDs appear in any
+// campfire:compact event's Supersedes list are excluded. This matches the
+// behaviour of cf read (which uses ListMessages with RespectCompaction:true)
+// and prevents Await from returning a fulfillment that has been superseded by a
+// subsequent compaction event. (campfire-agent-xy0)
+//
+// When multiple non-compacted messages fulfill the same future, the winner is
+// selected deterministically: earliest timestamp wins; ties broken by
+// lexicographically smaller message ID. (campfire-agent-mnh: non-deterministic
+// winner when timestamps tie.)
 func (c *Client) findFulfillment(campfireID, targetMsgID string) (*store.MessageRecord, error) {
+	// Collect superseded message IDs from all compaction events so we can skip
+	// fulfillment candidates that have been compacted away.
+	superseded, err := collectSupersededIDs(c.store, campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("collecting compaction superseded IDs: %w", err)
+	}
+
 	refs, err := c.store.ListReferencingMessages(targetMsgID)
 	if err != nil {
 		return nil, fmt.Errorf("listing referencing messages: %w", err)
@@ -141,6 +155,10 @@ func (c *Client) findFulfillment(campfireID, targetMsgID string) (*store.Message
 	var best *store.MessageRecord
 	for i := range refs {
 		if refs[i].CampfireID != campfireID {
+			continue
+		}
+		// Skip fulfillments that were superseded by a compaction event.
+		if superseded[refs[i].ID] {
 			continue
 		}
 		hasFulfillsTag := false
@@ -158,4 +176,38 @@ func (c *Client) findFulfillment(campfireID, targetMsgID string) (*store.Message
 		}
 	}
 	return best, nil
+}
+
+// collectSupersededIDs returns the set of message IDs superseded by any
+// campfire:compact event for the given campfire. The returned map is keyed by
+// message ID; a present key (value true) means the message was compacted away.
+func collectSupersededIDs(s store.Store, campfireID string) (map[string]bool, error) {
+	events, err := s.ListCompactionEvents(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("listing compaction events: %w", err)
+	}
+	if len(events) == 0 {
+		return nil, nil
+	}
+	superseded := make(map[string]bool)
+	for i := range events {
+		var payload awaitCompactionPayload
+		if err := json.Unmarshal(events[i].Payload, &payload); err != nil {
+			// Malformed compaction payload -- skip rather than failing Await
+			// entirely. The message will be treated as non-compacted, which is
+			// the safe (non-data-loss) direction.
+			continue
+		}
+		for _, id := range payload.Supersedes {
+			superseded[id] = true
+		}
+	}
+	return superseded, nil
+}
+
+// awaitCompactionPayload holds only the fields of a campfire:compact payload
+// needed by findFulfillment. Decoding inline avoids a dependency on
+// store.CompactionPayload's unexported unmarshal helper.
+type awaitCompactionPayload struct {
+	Supersedes []string `json:"supersedes"`
 }
