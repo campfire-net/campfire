@@ -66,7 +66,9 @@ The --from flag requires --name — config inheritance only applies to named age
 				if readErr != nil {
 					continue // missing is fine
 				}
-				_ = os.WriteFile(filepath.Join(tmpDir, fname), data, 0600)
+				if writeErr := os.WriteFile(filepath.Join(tmpDir, fname), data, 0600); writeErr != nil {
+					return fmt.Errorf("inheriting %s to session: %w", fname, writeErr)
+				}
 			}
 			writeContext(tmpDir)
 			hexKey := agentID.PublicKeyHex()
