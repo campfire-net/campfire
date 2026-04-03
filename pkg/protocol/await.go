@@ -89,6 +89,21 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 		deadline = timer.C
 	}
 
+	// In HTTP/PollBroker mode, subscribe to notifications so Await wakes
+	// immediately when a message arrives instead of waiting the full poll interval.
+	// The PollBroker is signalled by the HTTP transport's handleDeliver path after
+	// each successful message delivery. (campfire-agent-5sc)
+	var pollBrokerCh <-chan struct{}
+	if c.httpTransport != nil {
+		ch, dereg, err := c.httpTransport.PollBrokerSubscribe(req.CampfireID)
+		if err == nil {
+			pollBrokerCh = ch
+			defer dereg()
+		}
+		// If PollBrokerSubscribe fails (e.g. limit exceeded), fall through to
+		// time-based polling — Await still works, just less efficiently.
+	}
+
 	// Initial sync-and-check before entering the poll loop.
 	if err := c.syncIfFilesystem(req.CampfireID); err != nil {
 		// campfire-agent-zyq: Non-fatal -- the store may have messages from a
@@ -102,14 +117,21 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 		return &msg, nil
 	}
 
-	// Poll loop.
+	// Poll loop. Wakes on:
+	//   - PollBroker notification (HTTP mode, immediate)
+	//   - Poll interval (fallback for filesystem mode or when PollBroker unavailable)
+	//   - Timeout deadline
+	//   - Context cancellation
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-deadline:
 			return nil, ErrAwaitTimeout
+		case <-pollBrokerCh:
+			// HTTP transport notified us — fall through to check.
 		case <-time.After(interval):
+			// Periodic poll (filesystem mode or PollBroker subscribe failed).
 		}
 
 		if err := c.syncIfFilesystem(req.CampfireID); err != nil {
