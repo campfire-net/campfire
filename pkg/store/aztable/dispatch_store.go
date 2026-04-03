@@ -528,14 +528,21 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 		IfMatch:    &etag,
 	})
 	if updateErr != nil {
-		// Check precondition failure (412) BEFORE not-found (404): isNotFoundError
-		// uses a substring match on "404" which can false-positive on entity keys
-		// that happen to contain that digit sequence (e.g. nanosecond timestamps).
-		if isPreconditionFailedError(updateErr) {
-			return fmt.Errorf("%w: Azure ETag mismatch on %s/%s", convention.ErrConcurrentModification, campfireID, messageID)
-		}
 		if isNotFoundError(updateErr) || isMergeNotFoundError(updateErr) {
 			return nil
+		}
+		// Check precondition failure (412): on real Azure, a merge against a
+		// non-existent entity returns 404 (caught above). On Azurite, it can
+		// return 412 instead because the ETag condition fires before the
+		// existence check. Disambiguate by doing a read: if the entity does not
+		// exist, treat as no-op (matches the documented contract); if it exists,
+		// a concurrent writer beat us and this is a genuine ETag mismatch.
+		if isPreconditionFailedError(updateErr) {
+			_, getErr := s.dispatched.GetEntity(ctx, pk, rk, nil)
+			if getErr != nil && isNotFoundError(getErr) {
+				return nil
+			}
+			return fmt.Errorf("%w: Azure ETag mismatch on %s/%s", convention.ErrConcurrentModification, campfireID, messageID)
 		}
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: update: %w", updateErr)
 	}
