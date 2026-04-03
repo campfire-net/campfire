@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -212,9 +213,11 @@ func (rt *RoutingTable) HandleBeacon(rawPayload []byte, gatewayCampfireID string
 
 	// Loop detection (spec §4.2, path-vector amendment): if own node_id appears
 	// in the beacon's path, the beacon has looped — drop it silently.
+	// Comparison is case-insensitive: an attacker cannot evade detection by
+	// using uppercase variants of the node_id (e.g., "ABC" vs "abc").
 	if rt.NodeID != "" && len(bp.Path) > 0 {
 		for _, hop := range bp.Path {
-			if hop == rt.NodeID {
+			if strings.EqualFold(hop, rt.NodeID) {
 				log.Printf("routing:beacon: loop detected for campfire_id %s (own node_id %s in path), dropping", bp.CampfireID, rt.NodeID)
 				return nil
 			}
