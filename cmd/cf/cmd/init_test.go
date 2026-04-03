@@ -428,6 +428,58 @@ func TestInitFrom_WithoutName(t *testing.T) {
 	}
 }
 
+// TestInitEmptyPassphrase_CreatesV1PlaintextIdentity verifies that cf init with no
+// passphrase (empty CF_PASSPHRASE env var and non-interactive stdin) writes a v1
+// plaintext identity file: version==1, private_key present, wrapped_key absent.
+//
+// This exercises the else-branch of the passphrase check in init.go:
+//
+//	if len(passphrase) > 0 { SaveWrapped } else { Save }  → v1 plaintext
+func TestInitEmptyPassphrase_CreatesV1PlaintextIdentity(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	// Ensure CF_PASSPHRASE is unset so resolvePassphrase returns nil.
+	// promptPassphrase returns nil in non-interactive (non-terminal) mode, which
+	// is always the case in tests — stdin is a pipe, not a TTY.
+	t.Setenv("CF_PASSPHRASE", "")
+
+	_, err := captureInitDefault(t, cfHomeDir)
+	if err != nil {
+		t.Fatalf("cf init failed: %v", err)
+	}
+
+	identityPath := filepath.Join(cfHomeDir, "identity.json")
+	raw, err := os.ReadFile(identityPath)
+	if err != nil {
+		t.Fatalf("reading identity.json: %v", err)
+	}
+
+	// Parse into a generic map so we can inspect all fields.
+	var f map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatalf("parsing identity.json: %v", err)
+	}
+
+	// version must be 1 (versionPlain).
+	var version int
+	if err := json.Unmarshal(f["version"], &version); err != nil {
+		t.Fatalf("parsing version field: %v", err)
+	}
+	if version != 1 {
+		t.Errorf("identity version = %d, want 1 (plaintext)", version)
+	}
+
+	// private_key must be present and non-empty — plaintext path writes it.
+	privKeyRaw, ok := f["private_key"]
+	if !ok || string(privKeyRaw) == "null" || string(privKeyRaw) == `""` {
+		t.Error("identity.json missing private_key — expected plaintext v1 format")
+	}
+
+	// wrapped_key must be absent or null — only present in v2 (wrapped) files.
+	if wrappedRaw, exists := f["wrapped_key"]; exists && string(wrappedRaw) != "null" {
+		t.Errorf("identity.json has wrapped_key = %s, expected absent for v1 plaintext", wrappedRaw)
+	}
+}
+
 // TestInitNamed_WithFromFlag verifies the end-to-end path: cf init --name <agent> --from <parent>
 // creates an agent with inherited config. We call inheritAgentConfig directly to avoid
 // cobra global-state issues with named agent paths, but verify the full function contract.
