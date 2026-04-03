@@ -348,6 +348,54 @@ func TestSendP2PHTTP_PeerDeliveryFailure(t *testing.T) {
 	}
 }
 
+
+// errOnAddMessageStore wraps a real store.Store and injects a configurable error
+// into AddMessage. All other methods delegate to the underlying store unchanged.
+// Used to exercise the AddMessage error path in sendP2PHTTP (and other send paths)
+// without requiring a corrupted or full database.
+type errOnAddMessageStore struct {
+	store.Store
+	addMessageErr error
+}
+
+func (s *errOnAddMessageStore) AddMessage(m store.MessageRecord) (bool, error) {
+	if s.addMessageErr != nil {
+		return false, s.addMessageErr
+	}
+	return s.Store.AddMessage(m)
+}
+
+// TestSendP2PHTTP_AddMessageError is a regression test for campfire-agent-d93:
+// sendP2PHTTP was silently discarding AddMessage errors (//nolint:errcheck).
+// If AddMessage fails (store full, disk error, corruption), Send must return an
+// error rather than reporting success while silently losing the message.
+func TestSendP2PHTTP_AddMessageError(t *testing.T) {
+	// Fake peer that accepts delivery normally.
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer peer.Close()
+
+	agentID, realStore, tmpDir := setupTestEnv(t)
+	campfireID := setupP2PHTTPCampfire(t, agentID, realStore, tmpDir, peer.URL)
+
+	// Wrap the store so AddMessage always returns a simulated error.
+	injectedErr := fmt.Errorf("simulated store failure: disk full")
+	failStore := &errOnAddMessageStore{Store: realStore, addMessageErr: injectedErr}
+
+	client := protocol.New(failStore, agentID)
+	_, err := client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("should fail on store"),
+	})
+	if err == nil {
+		t.Fatal("Send must return an error when AddMessage fails, but got nil")
+	}
+	if !strings.Contains(err.Error(), "storing sent message locally") {
+		t.Errorf("expected storing sent message locally in error, got: %v", err)
+	}
+}
+
 // TestMain for the protocol package — overrides the SSRF-safe HTTP client used
 // by pkg/transport/http so that outbound calls to loopback httptest servers succeed.
 // Without this, cfhttp.Deliver() blocks connections to 127.0.0.1.

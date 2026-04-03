@@ -205,7 +205,9 @@ func (c *Client) sendFilesystem(req SendRequest, m *store.Membership) (*message.
 
 	// Mirror to local store so the sender can read back their own messages
 	// without a sync step. Consistent with sendP2PHTTP behavior.
-	c.store.AddMessage(store.MessageRecordFromMessage(req.CampfireID, msg, store.NowNano())) //nolint:errcheck
+	if _, err := c.store.AddMessage(store.MessageRecordFromMessage(req.CampfireID, msg, store.NowNano())); err != nil {
+		return nil, fmt.Errorf("storing sent message locally: %w", err)
+	}
 
 	return msg, nil
 }
@@ -314,7 +316,9 @@ func (c *Client) sendGitHub(req SendRequest, m *store.Membership) (*message.Mess
 
 	// Mirror to local store so the sender can read back their own messages
 	// without a sync step. Consistent with sendFilesystem and sendP2PHTTP behavior.
-	c.store.AddMessage(store.MessageRecordFromMessage(req.CampfireID, msg, store.NowNano())) //nolint:errcheck
+	if _, err := c.store.AddMessage(store.MessageRecordFromMessage(req.CampfireID, msg, store.NowNano())); err != nil {
+		return nil, fmt.Errorf("storing sent message locally: %w", err)
+	}
 
 	return msg, nil
 }
@@ -474,7 +478,9 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 		}
 	}
 
-	c.store.AddMessage(store.MessageRecordFromMessage(req.CampfireID, msg, store.NowNano())) //nolint:errcheck
+	if _, err := c.store.AddMessage(store.MessageRecordFromMessage(req.CampfireID, msg, store.NowNano())); err != nil {
+		return nil, fmt.Errorf("storing sent message locally: %w", err)
+	}
 
 	return msg, nil
 }
