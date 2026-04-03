@@ -177,3 +177,55 @@ func TestLoadJoinPolicy_EmptyFieldsSkipValidation(t *testing.T) {
 		t.Fatal("expected non-nil JoinPolicy")
 	}
 }
+
+// TestSaveJoinPolicy_Atomic verifies the atomic write behaviour of SaveJoinPolicy.
+// Checks that:
+//  1. The final policy file contains correct content after a successful save.
+//  2. No stray temp files are left in cfHome after a successful save.
+//  3. Overwriting an existing policy produces the updated content, not the old one.
+func TestSaveJoinPolicy_Atomic(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write an initial policy so we exercise the overwrite path.
+	initial := &JoinPolicy{
+		Policy:          "consult",
+		ConsultCampfire: validHexID,
+		JoinRoot:        validHexID2,
+	}
+	if err := SaveJoinPolicy(dir, initial); err != nil {
+		t.Fatalf("initial SaveJoinPolicy failed: %v", err)
+	}
+
+	// Overwrite with a different policy.
+	updated := &JoinPolicy{
+		Policy:          "consult",
+		ConsultCampfire: validHexID2,
+		JoinRoot:        validHexID,
+	}
+	if err := SaveJoinPolicy(dir, updated); err != nil {
+		t.Fatalf("update SaveJoinPolicy failed: %v", err)
+	}
+
+	// The target file must exist and reflect the updated content.
+	loaded, err := LoadJoinPolicy(dir)
+	if err != nil {
+		t.Fatalf("LoadJoinPolicy after update failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil JoinPolicy after update")
+	}
+	if *loaded != *updated {
+		t.Errorf("policy mismatch after atomic update: got %+v, want %+v", *loaded, *updated)
+	}
+
+	// No temp files should remain in the directory after a successful save.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading cfHome: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != joinPolicyFile {
+			t.Errorf("unexpected file left in cfHome after save: %q", e.Name())
+		}
+	}
+}
