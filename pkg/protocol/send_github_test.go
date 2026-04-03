@@ -16,6 +16,7 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
@@ -56,14 +57,16 @@ func (f *fakeGitHubServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // setupGitHubCampfire creates a store membership record for a GitHub-transport
 // campfire pointing at the given fake server URL.
 // Returns the campfire ID (hex public key of a freshly generated campfire identity).
+// The campfire private key is stored in the membership so sendGitHub can add
+// provenance hops (campfire-agent-64l fix).
 func setupGitHubCampfire(t *testing.T, s store.Store, baseURL string) string {
 	t.Helper()
 
-	cfID, err := identity.Generate()
+	cf, err := campfire.New("open", nil, 1)
 	if err != nil {
-		t.Fatalf("generating campfire identity: %v", err)
+		t.Fatalf("generating campfire: %v", err)
 	}
-	campfireID := cfID.PublicKeyHex()
+	campfireID := cf.PublicKeyHex()
 
 	meta, err := json.Marshal(map[string]interface{}{
 		"repo":         "test/repo",
@@ -76,13 +79,14 @@ func setupGitHubCampfire(t *testing.T, s store.Store, baseURL string) string {
 	transportDir := "github:" + string(meta)
 
 	if err := s.AddMembership(store.Membership{
-		CampfireID:    campfireID,
-		TransportDir:  transportDir,
-		TransportType: "github",
-		JoinProtocol:  "open",
-		Role:          campfire.RoleFull,
-		JoinedAt:      time.Now().UnixNano(),
-		Threshold:     1,
+		CampfireID:      campfireID,
+		TransportDir:    transportDir,
+		TransportType:   "github",
+		JoinProtocol:    "open",
+		Role:            campfire.RoleFull,
+		JoinedAt:        time.Now().UnixNano(),
+		Threshold:       1,
+		CampfirePrivKey: fmt.Sprintf("%x", cf.PrivateKey),
 	}); err != nil {
 		t.Fatalf("adding membership: %v", err)
 	}
@@ -235,6 +239,52 @@ func TestSendGitHub_Instance(t *testing.T) {
 	}
 	if msg.Instance != "implementer" {
 		t.Errorf("instance mismatch: got %q, want %q", msg.Instance, "implementer")
+	}
+}
+
+// TestSendGitHub_ProvenanceHop is the regression test for campfire-agent-64l.
+// Before the fix, sendGitHub skipped the AddHop call and msg.Provenance was
+// empty. After the fix, every message sent via GitHub transport must carry at
+// least one provenance hop signed by the campfire key that passes VerifyHop.
+func TestSendGitHub_ProvenanceHop(t *testing.T) {
+	fake := &fakeGitHubServer{}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	storeDir := t.TempDir()
+	s, err := store.Open(filepath.Join(storeDir, "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+
+	campfireID := setupGitHubCampfire(t, s, srv.URL)
+
+	client := protocol.New(s, agentID)
+	msg, err := client.Send(protocol.SendRequest{
+		CampfireID:  campfireID,
+		Payload:     []byte("provenance hop regression test"),
+		Tags:        []string{"status"},
+		GitHubToken: "fake-token",
+	})
+	if err != nil {
+		t.Fatalf("Send via GitHub transport: %v", err)
+	}
+
+	// Primary assertion: provenance hop must be present (campfire-agent-64l fix).
+	if len(msg.Provenance) == 0 {
+		t.Fatal("regression campfire-agent-64l: GitHub-transport message has no provenance hop")
+	}
+
+	// Secondary assertion: the hop signature must be valid.
+	hop := msg.Provenance[0]
+	if !message.VerifyHop(msg.ID, hop) {
+		t.Error("provenance hop signature is invalid")
 	}
 }
 

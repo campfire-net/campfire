@@ -503,6 +503,8 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 	ghDescription := lookupBeaconDescription(campfireID)
 
 	// Record membership in local store via shared admission package.
+	// Store the campfire private key so sendGitHub can add provenance hops.
+	campfirePrivKeyHex := fmt.Sprintf("%x", campfirePrivKey)
 	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
 		Store: s,
 	}, admission.AdmissionRequest{
@@ -513,6 +515,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 		TransportDir:    transportDir,
 		TransportType:   "github",
 		Description:     ghDescription,
+		CampfirePrivKey: campfirePrivKeyHex,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}

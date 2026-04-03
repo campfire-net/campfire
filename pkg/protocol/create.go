@@ -127,6 +127,11 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 		CreatorPubkey: c.identity.PublicKeyHex(),
 		Description:   req.Description,
 	}
+	// For GitHub transport, store the campfire private key so sendGitHub can
+	// add a provenance hop without access to the filesystem transport state.
+	if transportType == "github" {
+		membership.CampfirePrivKey = fmt.Sprintf("%x", cf.PrivateKey)
+	}
 	if err := c.store.AddMembership(membership); err != nil {
 		return nil, fmt.Errorf("recording membership: %w", err)
 	}
