@@ -240,15 +240,8 @@ func pumpFSToHTTP(campfireID string, fsTransport *fs.Transport, s store.Store, a
 		if !fsMsg.VerifySignature() {
 			continue
 		}
-		// Verify provenance hops.
-		hopOK := true
-		for _, hop := range fsMsg.Provenance {
-			if !message.VerifyHop(fsMsg.ID, hop) {
-				hopOK = false
-				break
-			}
-		}
-		if !hopOK {
+		// Reject messages with invalid or missing provenance hops.
+		if !fsMsg.VerifyProvenance() {
 			continue
 		}
 
