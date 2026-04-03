@@ -966,6 +966,125 @@ func TestListMessages_EmptyFilter_ReturnsAll(t *testing.T) {
 	}
 }
 
+// TestListMessages_TagsAndTagPrefixesOR verifies that Tags and TagPrefixes are
+// OR-combined when both are provided: a message is included if it matches
+// any exact tag in Tags OR any prefix in TagPrefixes.
+func TestListMessages_TagsAndTagPrefixesOR(t *testing.T) {
+	s := testStore(t)
+	cfID := "tags-and-prefixes-cf"
+	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+	msgs := []MessageRecord{
+		// m1: exact tag "blocker" — matches via Tags
+		{ID: "tap-m1", CampfireID: cfID, Sender: "aa", Payload: []byte("p1"), Tags: []string{"blocker"}, Antecedents: []string{}, Timestamp: 1, Signature: []byte("s"), Provenance: nil, ReceivedAt: 10},
+		// m2: tag "galtrader:move" — matches via TagPrefixes "galtrader:"
+		{ID: "tap-m2", CampfireID: cfID, Sender: "aa", Payload: []byte("p2"), Tags: []string{"galtrader:move"}, Antecedents: []string{}, Timestamp: 2, Signature: []byte("s"), Provenance: nil, ReceivedAt: 20},
+		// m3: tag "finding" — matches neither filter
+		{ID: "tap-m3", CampfireID: cfID, Sender: "aa", Payload: []byte("p3"), Tags: []string{"finding"}, Antecedents: []string{}, Timestamp: 3, Signature: []byte("s"), Provenance: nil, ReceivedAt: 30},
+		// m4: tag "status" — matches neither filter
+		{ID: "tap-m4", CampfireID: cfID, Sender: "aa", Payload: []byte("p4"), Tags: []string{"status"}, Antecedents: []string{}, Timestamp: 4, Signature: []byte("s"), Provenance: nil, ReceivedAt: 40},
+	}
+	for _, m := range msgs {
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage(%s): %v", m.ID, err)
+		}
+	}
+
+	result, err := s.ListMessages(cfID, 0, MessageFilter{
+		Tags:        []string{"blocker"},
+		TagPrefixes: []string{"galtrader:"},
+	})
+	if err != nil {
+		t.Fatalf("ListMessages(Tags+TagPrefixes): %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("got %d messages, want 2 (blocker OR galtrader:*)", len(result))
+	}
+	ids := map[string]bool{}
+	for _, m := range result {
+		ids[m.ID] = true
+	}
+	if !ids["tap-m1"] {
+		t.Error("expected tap-m1 (blocker tag) in results")
+	}
+	if !ids["tap-m2"] {
+		t.Error("expected tap-m2 (galtrader:move prefix) in results")
+	}
+	if ids["tap-m3"] || ids["tap-m4"] {
+		t.Error("tap-m3 and tap-m4 should not match Tags+TagPrefixes filter")
+	}
+}
+
+// TestListMessages_TagsAndTagPrefixesOR_MessageMatchingBoth verifies that a
+// message matching both an exact tag and a prefix is returned exactly once.
+func TestListMessages_TagsAndTagPrefixesOR_MessageMatchingBoth(t *testing.T) {
+	s := testStore(t)
+	cfID := "tap-both-cf"
+	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+	msgs := []MessageRecord{
+		// m1 has "blocker" (exact) AND "galtrader:move" (prefix) — must appear once.
+		{ID: "tapb-m1", CampfireID: cfID, Sender: "aa", Payload: []byte("p1"), Tags: []string{"blocker", "galtrader:move"}, Antecedents: []string{}, Timestamp: 1, Signature: []byte("s"), Provenance: nil, ReceivedAt: 10},
+	}
+	for _, m := range msgs {
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage(%s): %v", m.ID, err)
+		}
+	}
+
+	result, err := s.ListMessages(cfID, 0, MessageFilter{
+		Tags:        []string{"blocker"},
+		TagPrefixes: []string{"galtrader:"},
+	})
+	if err != nil {
+		t.Fatalf("ListMessages(Tags+TagPrefixes both match): %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("expected exactly 1 message (no duplicates), got %d", len(result))
+	}
+}
+
+// TestListMessages_SenderFilter_Empty verifies that an empty Sender filter
+// matches all messages (no sender restriction applied).
+func TestListMessages_SenderFilter_Empty(t *testing.T) {
+	s, cfID := setupFilterTestStore(t)
+	msgs, err := s.ListMessages(cfID, 0, MessageFilter{Sender: ""})
+	if err != nil {
+		t.Fatalf("ListMessages(Sender=empty): %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Errorf("got %d messages with empty Sender filter, want 4 (all)", len(msgs))
+	}
+}
+
+// TestListMessages_ExcludeTagPrefixes_MultiplePrefix verifies that multiple
+// ExcludeTagPrefixes entries each independently exclude matching messages:
+// a message is excluded if it matches ANY of the listed prefixes.
+func TestListMessages_ExcludeTagPrefixes_MultiplePrefix(t *testing.T) {
+	s := testStore(t)
+	cfID := "etpfx-multi-cf"
+	s.AddMembership(Membership{CampfireID: cfID, TransportDir: "/tmp", JoinProtocol: "open", Role: "member", JoinedAt: 1})
+	msgs := []MessageRecord{
+		{ID: "mp-m1", CampfireID: cfID, Sender: "aa", Payload: []byte("p1"), Tags: []string{"status:done"}, Antecedents: []string{}, Timestamp: 1, Signature: []byte("s"), Provenance: nil, ReceivedAt: 10},
+		{ID: "mp-m2", CampfireID: cfID, Sender: "aa", Payload: []byte("p2"), Tags: []string{"blocker"}, Antecedents: []string{}, Timestamp: 2, Signature: []byte("s"), Provenance: nil, ReceivedAt: 20},
+		{ID: "mp-m3", CampfireID: cfID, Sender: "aa", Payload: []byte("p3"), Tags: []string{"note"}, Antecedents: []string{}, Timestamp: 3, Signature: []byte("s"), Provenance: nil, ReceivedAt: 30},
+	}
+	for _, m := range msgs {
+		if _, err := s.AddMessage(m); err != nil {
+			t.Fatalf("AddMessage(%s): %v", m.ID, err)
+		}
+	}
+
+	result, err := s.ListMessages(cfID, 0, MessageFilter{ExcludeTagPrefixes: []string{"status", "blocker"}})
+	if err != nil {
+		t.Fatalf("ListMessages(ExcludeTagPrefixes=[status,blocker]): %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("got %d messages, want 1 (only note)", len(result))
+	}
+	if len(result) > 0 && result[0].ID != "mp-m3" {
+		t.Errorf("got ID %s, want mp-m3", result[0].ID)
+	}
+}
+
 // --- Compaction tests ---
 
 // setupCompactionTestStore creates a store with a campfire and a few messages,
