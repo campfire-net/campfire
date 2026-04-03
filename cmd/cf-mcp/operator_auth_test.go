@@ -658,6 +658,238 @@ func TestForgeTokenAuth_RevokeSessionCleansIndex(t *testing.T) {
 // Test: revoked forge-tk- key kills existing operator sessions (campfire-agent-j2r)
 // ---------------------------------------------------------------------------
 
+// TestForgeTokenAuth_RevokedKeyRejectsOldSessionToken verifies that after a
+// forge-tk- key is revoked, a subsequent Bearer request using the OLD session
+// token (not the forge-tk- key) is rejected with HTTP 401. Without this,
+// a TTL=0 session token issued before revocation would remain valid indefinitely.
+// (campfire-agent-bdy)
+func TestForgeTokenAuth_RevokedKeyRejectsOldSessionToken(t *testing.T) {
+	const accountID = "acct-bdy-reject"
+
+	revoked := false
+	forgeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/keys" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		resp := map[string]interface{}{
+			"object": "list",
+			"data": []map[string]interface{}{
+				{
+					"token_hash_prefix": "forge-tk-bdy",
+					"account_id":        accountID,
+					"role":              "agent",
+					"revoked":           revoked,
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+	}))
+	t.Cleanup(forgeSrv.Close)
+
+	forgeClient := &forge.Client{
+		BaseURL:     forgeSrv.URL,
+		ServiceKey:  "forge-sk-testkey",
+		HTTPClient:  forgeSrv.Client(),
+		RetryDelays: []time.Duration{0},
+	}
+
+	srv := newSessionedServerWithForge(t, forgeClient)
+
+	// Step 1: authenticate while key is valid → receive session token.
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}`
+	w1 := postMCPRequest(t, srv, "Bearer forge-tk-bdy", body)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("initial auth failed: HTTP %d; body: %s", w1.Code, w1.Body.String())
+	}
+	resp1 := decodeRPCResponse(t, w1)
+	sessToken := extractSessionTokenFromResponse(t, resp1)
+	if sessToken == "" {
+		t.Fatal("expected session token from initial forge-tk- auth")
+	}
+
+	// Confirm session token is in the index.
+	if _, ok := srv.operatorSessionIdx.AccountForToken(sessToken); !ok {
+		t.Fatal("session token should be in index after initial auth")
+	}
+
+	// Step 2: revoke the forge-tk- key and present it again so the server
+	// purges all operator sessions for this account.
+	revoked = true
+	w2 := postMCPRequest(t, srv, "Bearer forge-tk-bdy", body)
+	if w2.Code != http.StatusUnauthorized {
+		t.Errorf("expected HTTP 401 for revoked forge-tk- key, got %d", w2.Code)
+	}
+
+	// Step 3: make a second request using the OLD session token (not forge-tk-).
+	// The session was purged when the key was revoked — this must return 401.
+	w3 := postMCPRequest(t, srv, "Bearer "+sessToken, body)
+	if w3.Code != http.StatusUnauthorized {
+		t.Errorf("expected HTTP 401 for old session token after key revocation, got %d; body: %s", w3.Code, w3.Body.String())
+	}
+
+	var resp3 jsonRPCResponse
+	if err := json.NewDecoder(w3.Body).Decode(&resp3); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if resp3.Error == nil {
+		t.Fatal("expected JSON-RPC error for old session token after key revocation")
+	}
+	if resp3.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", resp3.Error.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: forge-tk- re-auth with multiple tokens picks one, does not accumulate
+// ---------------------------------------------------------------------------
+
+// TestForgeTokenAuth_MultiTokenReuseNoAccumulation verifies that when multiple
+// session tokens are already registered for an account, a new forge-tk- auth
+// request picks existing[0] and does not add a third token. The index must
+// remain at 2 entries, not grow to 3.
+// (campfire-agent-lpv)
+func TestForgeTokenAuth_MultiTokenReuseNoAccumulation(t *testing.T) {
+	const accountID = "acct-lpv-multi"
+	forgeSrv, _ := newForgeResolveServer(t, accountID, http.StatusOK)
+
+	forgeClient := &forge.Client{
+		BaseURL:     forgeSrv.URL,
+		ServiceKey:  "forge-sk-testkey",
+		HTTPClient:  forgeSrv.Client(),
+		RetryDelays: []time.Duration{0},
+	}
+
+	srv := newSessionedServerWithForge(t, forgeClient)
+
+	// Manually register two tokens for the same account in the index by
+	// issuing them through the session manager (so they are valid in the registry).
+	tok1, err := srv.sessManager.issueForID(accountID)
+	if err != nil {
+		t.Fatalf("issuing tok1: %v", err)
+	}
+	tok2, err := srv.sessManager.issueForID(accountID)
+	if err != nil {
+		t.Fatalf("issuing tok2: %v", err)
+	}
+	srv.operatorSessionIdx.Register(accountID, tok1)
+	srv.operatorSessionIdx.Register(accountID, tok2)
+
+	// Confirm two tokens are present before the forge-tk- request.
+	if got := len(srv.operatorSessionIdx.TokensForAccount(accountID)); got != 2 {
+		t.Fatalf("expected 2 tokens before forge-tk- auth, got %d", got)
+	}
+
+	// Make a forge-tk- auth request: the server must pick one of the existing
+	// tokens (existing[0]) and return it — not issue a new one.
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}`
+	w := postMCPRequest(t, srv, "Bearer forge-tk-test", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("forge-tk- auth failed: HTTP %d; body: %s", w.Code, w.Body.String())
+	}
+	resp := decodeRPCResponse(t, w)
+	returnedToken := extractSessionTokenFromResponse(t, resp)
+	if returnedToken == "" {
+		t.Fatal("expected session token from forge-tk- auth")
+	}
+
+	// The returned token must be one of the two pre-existing tokens.
+	if returnedToken != tok1 && returnedToken != tok2 {
+		t.Errorf("expected returned token to be tok1 or tok2 (reuse), got %q", returnedToken)
+	}
+
+	// The index must still have exactly 2 tokens — no new token accumulated.
+	tokens := srv.operatorSessionIdx.TokensForAccount(accountID)
+	if len(tokens) != 2 {
+		t.Errorf("expected index to have 2 tokens after forge-tk- re-auth, got %d: %v", len(tokens), tokens)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: getOrCreateOperator failure does not remove pre-existing reused token
+// ---------------------------------------------------------------------------
+
+// TestForgeTokenAuth_GetOrCreateFailurePreservesReusedToken verifies that when
+// getOrCreateOperator fails AFTER the token-reuse path, the pre-existing tokens
+// are NOT removed from operatorSessionIdx. The cleanup at main.go:4349-4357
+// only removes a token when it was freshly issued (len==1 and matches), not
+// when multiple tokens were already registered (reuse scenario).
+// (campfire-agent-4nf)
+func TestForgeTokenAuth_GetOrCreateFailurePreservesReusedToken(t *testing.T) {
+	const accountID = "acct-4nf-preserve"
+	forgeSrv, _ := newForgeResolveServer(t, accountID, http.StatusOK)
+
+	forgeClient := &forge.Client{
+		BaseURL:     forgeSrv.URL,
+		ServiceKey:  "forge-sk-testkey",
+		HTTPClient:  forgeSrv.Client(),
+		RetryDelays: []time.Duration{0},
+	}
+
+	srv := newSessionedServerWithForge(t, forgeClient)
+
+	// Register TWO tokens for the account directly in the index WITHOUT issuing
+	// them through the session registry. This simulates the "multiple pre-existing
+	// tokens" scenario (lpv). When getOrCreateOperator is called with existing[0],
+	// registry.lookup will fail (token not in registry), triggering the cleanup path.
+	// With 2 tokens, the cleanup condition (len==1) is false → neither is removed.
+	const fakeToken1 = "sess-4nf-fake-token-alpha"
+	const fakeToken2 = "sess-4nf-fake-token-beta"
+	srv.operatorSessionIdx.Register(accountID, fakeToken1)
+	srv.operatorSessionIdx.Register(accountID, fakeToken2)
+
+	// Confirm two tokens are present.
+	if got := len(srv.operatorSessionIdx.TokensForAccount(accountID)); got != 2 {
+		t.Fatalf("expected 2 tokens in index before request, got %d", got)
+	}
+
+	// Make a forge-tk- auth request. The forge server resolves the key successfully,
+	// the code finds 2 existing tokens and reuses existing[0]. Then getOrCreateOperator
+	// fails because that token is not in the session registry. The cleanup at
+	// main.go:4352 checks len(existing)==1 which is false (len==2), so it skips
+	// removal. Both tokens must remain in the index.
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}`
+	w := postMCPRequest(t, srv, "Bearer forge-tk-test", body)
+
+	// The response is HTTP 200 with a JSON-RPC error body (non-limit errors don't
+	// set a non-200 HTTP status — the error is encoded in the JSON-RPC envelope).
+	var errResp jsonRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if errResp.Error == nil {
+		t.Fatalf("expected JSON-RPC error from getOrCreateOperator failure, got success; body: %s", w.Body.String())
+	}
+
+	// Both pre-existing tokens must still be in the index.
+	tokensAfter := srv.operatorSessionIdx.TokensForAccount(accountID)
+	if len(tokensAfter) != 2 {
+		t.Errorf("expected 2 tokens in index after getOrCreateOperator failure, got %d: %v", len(tokensAfter), tokensAfter)
+	}
+
+	// Verify both specific tokens are still present.
+	found1, found2 := false, false
+	for _, tok := range tokensAfter {
+		if tok == fakeToken1 {
+			found1 = true
+		}
+		if tok == fakeToken2 {
+			found2 = true
+		}
+	}
+	if !found1 {
+		t.Errorf("fakeToken1 was removed from index; it should have been preserved (reuse path, len>1)")
+	}
+	if !found2 {
+		t.Errorf("fakeToken2 was removed from index; it should have been preserved (reuse path, len>1)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: revoked forge-tk- key kills existing operator sessions (campfire-agent-j2r)
+// ---------------------------------------------------------------------------
+
 // TestForgeTokenAuth_RevokedKeyKillsExistingSessions verifies that when a forge-tk-
 // key is detected as revoked, all existing operator session tokens for that account
 // are also invalidated — not just the forge-tk- request itself. Without this,
