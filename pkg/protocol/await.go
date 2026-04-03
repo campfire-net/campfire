@@ -10,6 +10,17 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
+// fulfillmentLess reports whether a comes before b in the deterministic
+// fulfillment ordering: earliest timestamp wins; ties broken by lexicographically
+// smaller message ID. This ensures that when multiple messages fulfill the same
+// future and their timestamps collide, Await always returns the same winner.
+func fulfillmentLess(a, b store.MessageRecord) bool {
+	if a.Timestamp != b.Timestamp {
+		return a.Timestamp < b.Timestamp
+	}
+	return a.ID < b.ID
+}
+
 // ErrAwaitTimeout is returned by Await when the timeout expires before a
 // fulfilling message is found.
 var ErrAwaitTimeout = errors.New("await: timeout waiting for fulfillment")
@@ -117,20 +128,34 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 // findFulfillment searches the store for a message that fulfills targetMsgID.
 // It uses ListReferencingMessages to find candidates efficiently, then checks
 // that the candidate carries the "fulfills" tag. Returns nil if none is found.
+//
+// When multiple messages fulfill the same future, the winner is selected
+// deterministically: earliest timestamp wins; ties broken by lexicographically
+// smaller message ID. (campfire-agent-mnh: non-deterministic winner when
+// timestamps tie.)
 func (c *Client) findFulfillment(campfireID, targetMsgID string) (*store.MessageRecord, error) {
 	refs, err := c.store.ListReferencingMessages(targetMsgID)
 	if err != nil {
 		return nil, fmt.Errorf("listing referencing messages: %w", err)
 	}
+	var best *store.MessageRecord
 	for i := range refs {
 		if refs[i].CampfireID != campfireID {
 			continue
 		}
+		hasFulfillsTag := false
 		for _, tag := range refs[i].Tags {
 			if tag == "fulfills" {
-				return &refs[i], nil
+				hasFulfillsTag = true
+				break
 			}
 		}
+		if !hasFulfillsTag {
+			continue
+		}
+		if best == nil || fulfillmentLess(refs[i], *best) {
+			best = &refs[i]
+		}
 	}
-	return nil, nil
+	return best, nil
 }

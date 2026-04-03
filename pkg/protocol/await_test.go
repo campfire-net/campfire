@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/pkg/store"
 )
 
 // TestClientAwait_FulfillmentAlreadyPresent verifies that Await returns
@@ -246,6 +247,71 @@ func TestClientAwait_NegativeTimeout(t *testing.T) {
 	// Should return almost instantly — not after any poll interval.
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("Await: negative timeout should return immediately, took %v", elapsed)
+	}
+}
+
+// TestClientAwait_MultipleFulfillmentsTiebreaker verifies that when multiple
+// messages fulfill the same future and their timestamps are identical, Await
+// returns the message with the lexicographically smallest ID — making the
+// selection deterministic rather than dependent on iteration order.
+// (campfire-agent-mnh regression test.)
+func TestClientAwait_MultipleFulfillmentsTiebreaker(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	// Write the future message into the transport so it gets synced.
+	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "pending question", []string{"future"})
+
+	// Sync the future message into the local store.
+	if _, err := client.Read(protocol.ReadRequest{CampfireID: campfireID, IncludeCompacted: true}); err != nil {
+		t.Fatalf("syncing future message: %v", err)
+	}
+
+	// Insert three fulfilling records directly into the store with identical
+	// timestamps. We control the IDs so we can predict the deterministic winner.
+	// The winner should be the lexicographically smallest ID: "aaa..."
+	const sharedTimestamp = int64(999_888_777_000)
+	fulfillIDs := []string{
+		"ccc0000000000000000000000000000000000000000000000000000000000000",
+		"aaa0000000000000000000000000000000000000000000000000000000000000", // ← smallest ID, expected winner
+		"bbb0000000000000000000000000000000000000000000000000000000000000",
+	}
+	for _, id := range fulfillIDs {
+		rec := store.MessageRecord{
+			ID:          id,
+			CampfireID:  campfireID,
+			Sender:      "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
+			Payload:     []byte("fulfillment"),
+			Tags:        []string{"fulfills"},
+			Antecedents: []string{futureMsg.ID},
+			Timestamp:   sharedTimestamp,
+			Signature:   []byte("sig"),
+			Provenance:  nil,
+			ReceivedAt:  sharedTimestamp + 1,
+		}
+		if _, err := s.AddMessage(rec); err != nil {
+			t.Fatalf("AddMessage(%s): %v", id, err)
+		}
+	}
+
+	// Await should return immediately (fulfillments already present) and always
+	// select the same winner regardless of iteration order.
+	got, err := client.Await(context.Background(), protocol.AwaitRequest{
+		CampfireID:  campfireID,
+		TargetMsgID: futureMsg.ID,
+		Timeout:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Await: unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Await: expected fulfilling message, got nil")
+	}
+	wantID := "aaa0000000000000000000000000000000000000000000000000000000000000"
+	if got.ID != wantID {
+		t.Errorf("Await: expected deterministic winner %q, got %q", wantID, got.ID)
 	}
 }
 
