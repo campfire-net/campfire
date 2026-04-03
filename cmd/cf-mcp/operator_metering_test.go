@@ -262,3 +262,42 @@ func TestCampfireInitResponse_NormalSession(t *testing.T) {
 		t.Error("operator_account_id must not be present for normal sessions")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestOperatorKeyMetering_EmptyForgeAccountID (campfire-agent-htl)
+// ---------------------------------------------------------------------------
+
+// TestOperatorKeyMetering_EmptyForgeAccountID verifies that when both the event
+// ForgeAccountID and the session context account are empty, the metering hook
+// does NOT emit a UsageEvent (no malformed event with AccountID="" is sent to Forge).
+func TestOperatorKeyMetering_EmptyForgeAccountID(t *testing.T) {
+	_, client, events, mu := newCapturingForgeServer(t)
+	emitter := forge.NewForgeEmitter(client, 100, nil)
+	runEmitter(t, emitter)
+
+	hook := buildConventionMeteringHook(emitter)
+
+	event := convention.ConventionMeterEvent{
+		CampfireID:     "fire-empty",
+		Convention:     "myconv",
+		Operation:      "myop",
+		Tier:           2,
+		ServerID:       "server-abc",
+		ForgeAccountID: "", // empty — no account to bill
+		MessageID:      "msg-empty",
+		Status:         "dispatched",
+	}
+	// No session account in context either.
+	hook(context.Background(), event)
+
+	// Give the emitter a brief window to deliver (it should not).
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	count := len(*events)
+	mu.Unlock()
+
+	if count != 0 {
+		t.Errorf("expected 0 usage events for empty ForgeAccountID, got %d", count)
+	}
+}
