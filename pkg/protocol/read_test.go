@@ -487,3 +487,212 @@ func TestClientRead_MultipleTagsOR(t *testing.T) {
 		t.Errorf("expected blocker message %q in results", msgBlocker.ID)
 	}
 }
+
+// TestClientRead_ExcludeTagPrefixes verifies that ExcludeTagPrefixes excludes
+// messages whose tags start with the given prefix.
+func TestClientRead_ExcludeTagPrefixes(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	// status:done and status:pending should be excluded by prefix "status".
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "status done", []string{"status:done"})
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "status pending", []string{"status:pending"})
+	msgBlocker := writeTransportMessage(t, cfID, tr, campfireID, "blocker", []string{"blocker"})
+
+	result, err := client.Read(protocol.ReadRequest{
+		CampfireID:         campfireID,
+		ExcludeTagPrefixes: []string{"status"},
+		IncludeCompacted:   true,
+	})
+	if err != nil {
+		t.Fatalf("Read with ExcludeTagPrefixes: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Errorf("expected 1 message (blocker only), got %d", len(result.Messages))
+	}
+	if len(result.Messages) > 0 && result.Messages[0].ID != msgBlocker.ID {
+		t.Errorf("expected blocker message %q, got %q", msgBlocker.ID, result.Messages[0].ID)
+	}
+}
+
+// TestClientRead_ExcludeTagPrefixes_MultiplePrefix verifies that multiple
+// ExcludeTagPrefixes entries are ANDed: a message is excluded if it matches
+// any of the listed prefixes.
+func TestClientRead_ExcludeTagPrefixes_MultiplePrefix(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "status msg", []string{"status:done"})
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "blocker msg", []string{"blocker"})
+	msgNote := writeTransportMessage(t, cfID, tr, campfireID, "note msg", []string{"note"})
+
+	result, err := client.Read(protocol.ReadRequest{
+		CampfireID:         campfireID,
+		ExcludeTagPrefixes: []string{"status", "blocker"},
+		IncludeCompacted:   true,
+	})
+	if err != nil {
+		t.Fatalf("Read with multiple ExcludeTagPrefixes: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Errorf("expected 1 message (note only), got %d", len(result.Messages))
+	}
+	if len(result.Messages) > 0 && result.Messages[0].ID != msgNote.ID {
+		t.Errorf("expected note message %q, got %q", msgNote.ID, result.Messages[0].ID)
+	}
+}
+
+// TestClientRead_SenderFilter verifies that the Sender field restricts results
+// to messages from the specified sender pubkey (prefix match).
+func TestClientRead_SenderFilter(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	// Write two messages from two different senders via the transport.
+	msgA := writeTransportMessage(t, cfID, tr, campfireID, "from sender A", []string{"note"})
+	msgB := writeTransportMessage(t, cfID, tr, campfireID, "from sender B", []string{"note"})
+
+	// Sync both into the store before filtering by sender.
+	allResult, err := client.Read(protocol.ReadRequest{
+		CampfireID:       campfireID,
+		IncludeCompacted: true,
+	})
+	if err != nil {
+		t.Fatalf("Read all: %v", err)
+	}
+	if len(allResult.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(allResult.Messages))
+	}
+
+	// Determine the full sender hex from the returned messages so we can construct a prefix.
+	senderByID := map[string]string{}
+	for _, m := range allResult.Messages {
+		senderByID[m.ID] = m.Sender
+	}
+	senderA, ok := senderByID[msgA.ID]
+	if !ok {
+		t.Fatalf("msgA %q not found in result", msgA.ID)
+	}
+
+	// Filter by a prefix of sender A's public key (first 8 hex chars).
+	if len(senderA) < 8 {
+		t.Fatalf("senderA hex too short: %q", senderA)
+	}
+	prefix := senderA[:8]
+
+	result, err := client.Read(protocol.ReadRequest{
+		CampfireID:       campfireID,
+		Sender:           prefix,
+		IncludeCompacted: true,
+		SkipSync:         true,
+	})
+	if err != nil {
+		t.Fatalf("Read with Sender filter: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Errorf("expected 1 message from sender A, got %d", len(result.Messages))
+	}
+	if len(result.Messages) > 0 && result.Messages[0].ID != msgA.ID {
+		t.Errorf("expected msgA %q, got %q", msgA.ID, result.Messages[0].ID)
+	}
+
+	// Confirm sender B's message is absent.
+	for _, m := range result.Messages {
+		if m.ID == msgB.ID {
+			t.Errorf("msgB %q should not appear when filtered by sender A prefix", msgB.ID)
+		}
+	}
+}
+
+// TestClientRead_TagsAndTagPrefixesOR verifies that Tags and TagPrefixes are
+// OR-combined: a message is included if it matches any exact tag OR any prefix.
+func TestClientRead_TagsAndTagPrefixesOR(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	// msgA matches via exact tag "blocker".
+	msgA := writeTransportMessage(t, cfID, tr, campfireID, "blocker msg", []string{"blocker"})
+	// msgB matches via prefix "galtrader:" (exact tag doesn't appear in Tags list).
+	msgB := writeTransportMessage(t, cfID, tr, campfireID, "galtrader move", []string{"galtrader:move"})
+	// msgC should NOT match either filter.
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "unrelated finding", []string{"finding"})
+
+	result, err := client.Read(protocol.ReadRequest{
+		CampfireID:       campfireID,
+		Tags:             []string{"blocker"},
+		TagPrefixes:      []string{"galtrader:"},
+		IncludeCompacted: true,
+	})
+	if err != nil {
+		t.Fatalf("Read with Tags+TagPrefixes: %v", err)
+	}
+
+	if len(result.Messages) != 2 {
+		t.Errorf("expected 2 messages (blocker OR galtrader:*), got %d", len(result.Messages))
+	}
+
+	ids := map[string]bool{}
+	for _, m := range result.Messages {
+		ids[m.ID] = true
+	}
+	if !ids[msgA.ID] {
+		t.Errorf("expected blocker message %q in results", msgA.ID)
+	}
+	if !ids[msgB.ID] {
+		t.Errorf("expected galtrader message %q in results", msgB.ID)
+	}
+}
+
+// TestClientRead_SyncErrorResilient_FiltersStillApply verifies that when a
+// sync error occurs (transport removed after messages are cached), filters
+// (ExcludeTagPrefixes, Sender, Tags) are still correctly applied to the cached
+// messages. This is a regression guard: non-fatal sync errors must not cause
+// the store filter to be bypassed.
+func TestClientRead_SyncErrorResilient_FiltersStillApply(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	// Write two messages and sync them into the store while transport is live.
+	_ = writeTransportMessage(t, cfID, tr, campfireID, "status msg", []string{"status:done"})
+	msgBlocker := writeTransportMessage(t, cfID, tr, campfireID, "blocker", []string{"blocker"})
+
+	// Sync into store.
+	if _, err := client.Read(protocol.ReadRequest{CampfireID: campfireID, IncludeCompacted: true}); err != nil {
+		t.Fatalf("initial sync read: %v", err)
+	}
+
+	// Remove transport to force sync failure on next Read.
+	if err := os.RemoveAll(filepath.Join(tr.BaseDir, campfireID)); err != nil {
+		t.Fatalf("removing transport dir: %v", err)
+	}
+
+	// Read with ExcludeTagPrefixes — sync will fail non-fatally; filter must apply.
+	result, err := client.Read(protocol.ReadRequest{
+		CampfireID:         campfireID,
+		ExcludeTagPrefixes: []string{"status"},
+		IncludeCompacted:   true,
+	})
+	if err != nil {
+		t.Fatalf("Read after transport removal: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Errorf("expected 1 message (blocker only) after sync error, got %d", len(result.Messages))
+	}
+	if len(result.Messages) > 0 && result.Messages[0].ID != msgBlocker.ID {
+		t.Errorf("expected blocker %q, got %q", msgBlocker.ID, result.Messages[0].ID)
+	}
+}
