@@ -751,6 +751,68 @@ func TestChallenger_PruneExpired(t *testing.T) {
 	}
 }
 
+// --- Regression: challenge ID collision silently overwrites active challenge (campfire-agent-08m) ---
+//
+// Before this fix, IssueChallenge would silently overwrite an existing active challenge
+// when the same ID was presented twice. An attacker or buggy caller could clobber a
+// pending challenge, invalidating the original operator's nonce and hijacking the
+// verification flow. The fix returns ErrChallengeIDCollision instead of overwriting.
+
+// TestIssueChallenge_DuplicateIDRejected verifies that issuing a challenge with an ID
+// that is already active returns ErrChallengeIDCollision rather than silently
+// overwriting the existing challenge. (Regression: campfire-agent-08m)
+func TestIssueChallenge_DuplicateIDRejected(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+
+	// Issue the first challenge successfully.
+	first, err := c.IssueChallenge("msg-dup-001", testInitiatorKey, testTargetKey, testCallback, now)
+	if err != nil {
+		t.Fatalf("first IssueChallenge: unexpected error: %v", err)
+	}
+
+	// A second call with the same ID must be rejected.
+	_, err = c.IssueChallenge("msg-dup-001", testInitiatorKey, testTargetKey, testCallback, now.Add(time.Second))
+	if err != ErrChallengeIDCollision {
+		t.Errorf("expected ErrChallengeIDCollision for duplicate ID, got %v", err)
+	}
+
+	// The original challenge must still be intact — the nonce must not have been replaced.
+	c.mu.Lock()
+	stored, ok := c.active["msg-dup-001"]
+	c.mu.Unlock()
+	if !ok {
+		t.Fatal("original challenge was removed from active map after collision attempt")
+	}
+	if stored.Nonce != first.Nonce {
+		t.Errorf("original challenge nonce was overwritten: want %q, got %q", first.Nonce, stored.Nonce)
+	}
+	if stored.IssuedAt != first.IssuedAt {
+		t.Errorf("original challenge IssuedAt was overwritten: want %v, got %v", first.IssuedAt, stored.IssuedAt)
+	}
+}
+
+// TestIssueChallenge_DuplicateIDAfterExpiry verifies that once an expired challenge has
+// been evicted, the same ID may be reused without triggering ErrChallengeIDCollision.
+// (Regression: campfire-agent-08m)
+func TestIssueChallenge_DuplicateIDAfterExpiry(t *testing.T) {
+	c := NewChallenger()
+	now := time.Now()
+
+	// Issue a challenge that will expire.
+	_, err := c.IssueChallenge("msg-reuse-001", testInitiatorKey, testTargetKey, testCallback, now)
+	if err != nil {
+		t.Fatalf("first IssueChallenge: unexpected error: %v", err)
+	}
+
+	// Advance past TTL and trigger a new IssueChallenge to evict the expired entry.
+	future := now.Add(challengeTTL + time.Second)
+	_, err = c.IssueChallenge("msg-reuse-001", testInitiatorKey, testTargetKey, testCallback, future)
+	if err != nil {
+		t.Errorf("expected no error when reusing an ID after expiry eviction, got %v", err)
+	}
+}
+
 // TestValidateResponse_AllKnownProofTypesAccepted verifies that all five recognized
 // proof types pass validation when a non-empty proof_token is provided.
 // This ensures the valid set doesn't accidentally exclude any spec-defined type.

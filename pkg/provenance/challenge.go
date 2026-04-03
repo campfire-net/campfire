@@ -170,6 +170,15 @@ func (c *Challenger) IssueChallenge(id, initiatorKey, targetKey, callbackCampfir
 		return nil, ErrRateLimitExceeded
 	}
 
+	// Duplicate ID check: if a challenge with this ID is already active, reject rather
+	// than silently overwriting it. A collision would let an attacker (or a buggy caller)
+	// clobber a pending challenge — invalidating the original operator's nonce and
+	// potentially hijacking the verification flow. IDs are caller-supplied (e.g., campfire
+	// message IDs) and MUST be globally unique; a collision is always a bug or attack.
+	if _, exists := c.active[id]; exists {
+		return nil, ErrChallengeIDCollision
+	}
+
 	ch := &Challenge{
 		ID:               id,
 		InitiatorKey:     initiatorKey,
@@ -399,4 +408,11 @@ var (
 	// Without a proof_token there is no actual proof — the attestation would be
 	// meaningless and MUST be rejected.
 	ErrEmptyProofToken = errors.New("provenance: proof_token must not be empty")
+
+	// ErrChallengeIDCollision is returned when IssueChallenge is called with an ID
+	// that is already present in the active challenge map. Challenge IDs are
+	// caller-supplied (e.g., campfire message IDs) and MUST be globally unique.
+	// A collision would silently overwrite the original operator's pending nonce,
+	// so it is rejected as a bug or potential attack.
+	ErrChallengeIDCollision = errors.New("provenance: challenge ID already exists in active set — IDs must be unique")
 )
