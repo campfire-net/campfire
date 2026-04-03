@@ -4468,16 +4468,22 @@ func (s *server) serveHTTP(addr string) error {
 	// timer trigger to catch messages missed by the event-driven dispatch path.
 	mux.HandleFunc("/sweep", s.handleSweep)
 
+	// serverCtx is cancelled when the HTTP server stops (normal shutdown or error).
+	// Background goroutines (billing sweep, admin campfire) use this context so
+	// they are torn down automatically instead of leaking past process shutdown.
+	serverCtx, serverCancel := context.WithCancel(context.Background())
+	defer serverCancel()
+
 	// Start the convention billing sweep background loop if wired.
 	// The loop runs both the fallback Sweeper and BillingSweep on a shared
 	// 10-minute interval. It is a no-op if billingSweep is nil.
 	if s.billingSweep != nil {
-		go s.startBillingSweepLoop(context.Background())
+		go s.startBillingSweepLoop(serverCtx)
 	}
 
 	// Start the admin campfire convention server when CF_ADMIN_CAMPFIRE is set.
 	// Fail-open: logs a warning and continues if setup fails (e.g. missing forge key).
-	s.wireAdminCampfire(context.Background())
+	s.wireAdminCampfire(serverCtx)
 
 	fmt.Fprintf(os.Stderr, "cf-mcp listening on %s\n", addr)
 	srv := &http.Server{
