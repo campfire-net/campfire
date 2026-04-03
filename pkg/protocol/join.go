@@ -16,6 +16,7 @@ package protocol
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -181,7 +182,11 @@ func (c *Client) joinFilesystem(campfireID string, t *FilesystemTransport) (*Joi
 	// Sync messages from transport into local store (trust comparison + convention sync).
 	m, err := c.store.GetMembership(campfireID)
 	if err == nil && m != nil {
-		c.syncIfFilesystem(campfireID) //nolint:errcheck
+		if syncErr := c.syncIfFilesystem(campfireID); syncErr != nil {
+			// Non-fatal post-join sync: membership was written, but transport
+			// messages may be stale. Log so operators can detect transport problems.
+			log.Printf("campfire: syncIfFilesystem(%s) after join: %v â continuing with local store", campfireID, syncErr)
+		}
 	}
 
 	return &JoinResult{
