@@ -1222,6 +1222,190 @@ func TestGCZeroBalance_ManyCampfiresVariedBalances(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// GarbageCollectZeroBalance grouping tests (campfire-agent-a6x)
+// ---------------------------------------------------------------------------
+
+// trackingGCStore records both campfireID and messageID for each DeleteMessage
+// call, enabling tests to verify that messages are dispatched to the correct
+// campfire group.
+type trackingGCStore struct {
+	messages       []metering.OldMessage
+	deletedPairs   []deletedPair // ordered log of (campfireID, messageID) delete calls
+}
+
+type deletedPair struct {
+	CampfireID string
+	MessageID  string
+}
+
+func (s *trackingGCStore) ListMessagesOlderThan(_ context.Context, campfireID string, _ int64) ([]metering.OldMessage, error) {
+	if campfireID == "" {
+		return s.messages, nil
+	}
+	var out []metering.OldMessage
+	for _, m := range s.messages {
+		if m.CampfireID == campfireID {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+func (s *trackingGCStore) DeleteMessage(_ context.Context, campfireID, messageID string) error {
+	s.deletedPairs = append(s.deletedPairs, deletedPair{CampfireID: campfireID, MessageID: messageID})
+	return nil
+}
+
+// TestGCZeroBalance_GroupingByCampfireID verifies that messages from multiple
+// campfireIDs are correctly grouped before deletion: each DeleteMessage call
+// receives the campfireID that owns the message, not a foreign campfireID.
+//
+// Setup: three campfires, two with zero/negative balance (to be GC'd), one
+// with positive balance (to be preserved). Each campfire has distinct message
+// IDs so we can verify that the campfireID passed to DeleteMessage matches the
+// message's actual owner.
+func TestGCZeroBalance_GroupingByCampfireID(t *testing.T) {
+	store := &trackingGCStore{
+		messages: []metering.OldMessage{
+			{ID: "cf-a-msg-1", CampfireID: "cf-alpha"},
+			{ID: "cf-a-msg-2", CampfireID: "cf-alpha"},
+			{ID: "cf-a-msg-3", CampfireID: "cf-alpha"},
+			{ID: "cf-b-msg-1", CampfireID: "cf-beta"},
+			{ID: "cf-b-msg-2", CampfireID: "cf-beta"},
+			{ID: "cf-g-msg-1", CampfireID: "cf-gamma"}, // positive balance — kept
+			{ID: "cf-g-msg-2", CampfireID: "cf-gamma"}, // positive balance — kept
+		},
+	}
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{
+			"acct-alpha": 0,    // zero — GC
+			"acct-beta":  -250, // negative — GC
+			"acct-gamma": 5000, // positive — preserve
+		},
+	}
+	accountLookup := func(id string) string {
+		switch id {
+		case "cf-alpha":
+			return "acct-alpha"
+		case "cf-beta":
+			return "acct-beta"
+		case "cf-gamma":
+			return "acct-gamma"
+		default:
+			return ""
+		}
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker, accountLookup, 90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+
+	// 3 (cf-alpha) + 2 (cf-beta) = 5 deletions; cf-gamma preserved.
+	if n != 5 {
+		t.Errorf("expected 5 deletions, got %d", n)
+	}
+	if len(store.deletedPairs) != 5 {
+		t.Fatalf("expected 5 delete calls, got %d: %v", len(store.deletedPairs), store.deletedPairs)
+	}
+
+	// Build a map from messageID to the campfireID that owns it in the input.
+	ownerOf := map[string]string{
+		"cf-a-msg-1": "cf-alpha",
+		"cf-a-msg-2": "cf-alpha",
+		"cf-a-msg-3": "cf-alpha",
+		"cf-b-msg-1": "cf-beta",
+		"cf-b-msg-2": "cf-beta",
+	}
+
+	// Verify every delete call used the correct campfireID for the message.
+	for _, dp := range store.deletedPairs {
+		want, ok := ownerOf[dp.MessageID]
+		if !ok {
+			t.Errorf("unexpected message deleted: %s (campfireID=%s)", dp.MessageID, dp.CampfireID)
+			continue
+		}
+		if dp.CampfireID != want {
+			t.Errorf("message %s: DeleteMessage called with campfireID=%q, want %q",
+				dp.MessageID, dp.CampfireID, want)
+		}
+	}
+
+	// Verify that cf-gamma messages were never passed to DeleteMessage.
+	for _, dp := range store.deletedPairs {
+		if dp.CampfireID == "cf-gamma" {
+			t.Errorf("cf-gamma (positive balance) message %s should not have been deleted", dp.MessageID)
+		}
+	}
+
+	// Verify each expected message was deleted exactly once.
+	deletedMsgIDs := make(map[string]int)
+	for _, dp := range store.deletedPairs {
+		deletedMsgIDs[dp.MessageID]++
+	}
+	for msgID := range ownerOf {
+		if deletedMsgIDs[msgID] != 1 {
+			t.Errorf("message %s: expected 1 delete call, got %d", msgID, deletedMsgIDs[msgID])
+		}
+	}
+}
+
+// TestGCZeroBalance_GroupingIsolatesCampfires verifies that when two campfires
+// share the same account but one is a different campfireID, DeleteMessage is
+// called with the campfireID that matches the message — not the sibling
+// campfire. This confirms the in-memory grouping step assigns messages to their
+// originating campfireID before dispatching deletes.
+func TestGCZeroBalance_GroupingIsolatesCampfires(t *testing.T) {
+	store := &trackingGCStore{
+		messages: []metering.OldMessage{
+			{ID: "fire-1-msg-a", CampfireID: "campfire-1"},
+			{ID: "fire-1-msg-b", CampfireID: "campfire-1"},
+			{ID: "fire-2-msg-a", CampfireID: "campfire-2"},
+			{ID: "fire-2-msg-b", CampfireID: "campfire-2"},
+			{ID: "fire-2-msg-c", CampfireID: "campfire-2"},
+		},
+	}
+	// Both campfires share the same account (zero balance) — all messages GC'd.
+	balChecker := &mockBalanceChecker{
+		balances: map[string]int64{"shared-zero-acct": 0},
+	}
+
+	n, err := metering.GarbageCollectZeroBalance(
+		context.Background(), store, balChecker,
+		func(string) string { return "shared-zero-acct" },
+		90*24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GarbageCollectZeroBalance: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("expected 5 deletions, got %d", n)
+	}
+
+	// Verify each message was deleted with its own campfireID, not its sibling's.
+	ownerOf := map[string]string{
+		"fire-1-msg-a": "campfire-1",
+		"fire-1-msg-b": "campfire-1",
+		"fire-2-msg-a": "campfire-2",
+		"fire-2-msg-b": "campfire-2",
+		"fire-2-msg-c": "campfire-2",
+	}
+	for _, dp := range store.deletedPairs {
+		want, ok := ownerOf[dp.MessageID]
+		if !ok {
+			t.Errorf("unexpected message deleted: %s", dp.MessageID)
+			continue
+		}
+		if dp.CampfireID != want {
+			t.Errorf("message %s: got campfireID=%q in DeleteMessage, want %q",
+				dp.MessageID, dp.CampfireID, want)
+		}
+	}
+}
+
 // TestGCZeroBalance_BalanceCheckErrorSkipsCampfire verifies that a balance
 // check error causes that campfire to be skipped (fail-safe), not the whole run.
 func TestGCZeroBalance_BalanceCheckErrorSkipsCampfire(t *testing.T) {
