@@ -75,7 +75,7 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 			return
 		case campfire.RoleWriter:
 			for _, tag := range msg.Tags {
-				if strings.HasPrefix(tag, "campfire:") {
+				if strings.HasPrefix(tag, campfire.TagPrefix) {
 					log.Printf("handleDeliver: writer %s attempted to deliver system message (tag %q) to campfire %s", senderHex, tag, campfireID)
 					http.Error(w, "writers cannot deliver campfire system messages", http.StatusForbidden)
 					return
@@ -125,7 +125,7 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 	// FED-2: validate routing:beacon payload before storage to prevent beacon poisoning.
 	// A malformed or unsigned beacon must be rejected before it is stored or relayed.
 	for _, tag := range msg.Tags {
-		if tag == "routing:beacon" {
+		if tag == beacon.TagBeacon {
 			var decl beacon.BeaconDeclaration
 			if err := json.Unmarshal(msg.Payload, &decl); err != nil {
 				log.Printf("handleDeliver: routing:beacon payload is not valid JSON for campfire %s: %v", campfireID, err)
@@ -171,14 +171,14 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 	if h.transport != nil {
 		for _, tag := range msg.Tags {
 			switch tag {
-			case "routing:beacon":
+			case beacon.TagBeacon:
 				if err := h.transport.routingTable.HandleBeacon(msg.Payload, campfireID, senderHex); err != nil {
 					log.Printf("handleDeliver: routing:beacon processing failed for campfire %s: %v", campfireID, err)
 				} else {
 					// Re-advertise the beacon to other peers with our node_id appended to the path (spec §7.2).
 					go h.reAdvertiseBeacon(campfireID, senderHex, msg.Payload)
 				}
-			case "routing:withdraw":
+			case beacon.TagWithdraw:
 				if err := h.transport.routingTable.HandleWithdraw(msg.Payload); err != nil {
 					log.Printf("handleDeliver: routing:withdraw processing failed for campfire %s: %v", campfireID, err)
 				} else {
@@ -224,7 +224,7 @@ func (h *handler) handleDeliver(w http.ResponseWriter, r *http.Request, campfire
 func (h *handler) forwardMessage(campfireID, senderHex string, msg *message.Message) {
 	// Skip routing control messages — propagated via dedicated handlers.
 	for _, tag := range msg.Tags {
-		if tag == "routing:beacon" || tag == "routing:withdraw" {
+		if tag == beacon.TagBeacon || tag == beacon.TagWithdraw {
 			return
 		}
 	}
@@ -507,7 +507,7 @@ func (h *handler) reAdvertiseBeacon(campfireID, senderHex string, rawPayload []b
 
 	// Create a new routing:beacon message signed by the gateway campfire key.
 	// This is how the re-advertisement is authenticated to downstream peers.
-	beaconMsg, err := message.NewMessage(gwPriv, gwPub, updatedPayload, []string{"routing:beacon"}, nil)
+	beaconMsg, err := message.NewMessage(gwPriv, gwPub, updatedPayload, []string{beacon.TagBeacon}, nil)
 	if err != nil {
 		log.Printf("reAdvertiseBeacon: creating beacon message failed for campfire %s: %v", campfireID, err)
 		return
@@ -587,7 +587,7 @@ func (h *handler) propagateWithdraw(campfireID, senderHex string, rawPayload []b
 	}
 
 	// Create a new routing:withdraw message with the same payload.
-	withdrawMsg, err := message.NewMessage(campfirePriv, campfirePub, rawPayload, []string{"routing:withdraw"}, nil)
+	withdrawMsg, err := message.NewMessage(campfirePriv, campfirePub, rawPayload, []string{beacon.TagWithdraw}, nil)
 	if err != nil {
 		log.Printf("propagateWithdraw: creating withdraw message failed for campfire %s: %v", campfireID, err)
 		return

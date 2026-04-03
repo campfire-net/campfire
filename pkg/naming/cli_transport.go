@@ -37,7 +37,7 @@ func (t *CLITransport) Resolve(ctx context.Context, campfireID, name string) (*R
 		return nil, err
 	}
 
-	msgID, err := t.sendFuture(campfireID, payload, []string{"naming:resolve"})
+	msgID, err := t.sendFuture(campfireID, payload, []string{TagResolve})
 	if err != nil {
 		return nil, fmt.Errorf("sending resolve future: %w", err)
 	}
@@ -61,7 +61,7 @@ func (t *CLITransport) ListChildren(ctx context.Context, campfireID, prefix stri
 		return nil, err
 	}
 
-	msgID, err := t.sendFuture(campfireID, payload, []string{"naming:resolve-list"})
+	msgID, err := t.sendFuture(campfireID, payload, []string{TagResolveList})
 	if err != nil {
 		return nil, fmt.Errorf("sending list future: %w", err)
 	}
@@ -86,7 +86,7 @@ func (t *CLITransport) ListAPI(ctx context.Context, campfireID string) ([]APIDec
 	}
 
 	msgs, err := t.Store.ListMessages(campfireID, 0, store.MessageFilter{
-		Tags: []string{"naming:api"},
+		Tags: []string{TagAPI},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reading api declarations: %w", err)
@@ -110,7 +110,7 @@ func (t *CLITransport) Invoke(ctx context.Context, campfireID string, req *Invok
 		return nil, err
 	}
 
-	msgID, err := t.sendFuture(campfireID, payload, []string{"naming:api-invoke"})
+	msgID, err := t.sendFuture(campfireID, payload, []string{TagAPIInvoke})
 	if err != nil {
 		return nil, fmt.Errorf("sending invoke future: %w", err)
 	}

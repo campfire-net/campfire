@@ -7,6 +7,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/pkg/naming"
 )
 
 // SignerType indicates how a convention:operation message was signed.
@@ -183,7 +186,7 @@ var validPerValues = map[string]bool{
 	"sender": true, "campfire_id": true, "sender_and_campfire_id": true,
 }
 
-var deniedTagPrefixes = []string{"naming:", "campfire:"}
+var deniedTagPrefixes = []string{naming.TagPrefix, campfire.TagPrefix}
 var deniedTagExact = map[string]bool{
 	"future": true, "fulfills": true, ConventionOperationTag: true, "convention:schema": true,
 	"convention:revoke": true,
@@ -324,7 +327,7 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*De
 	skipConventionDeny := decl.Convention == InfrastructureConvention
 	for i, tr := range decl.ProducesTags {
 		tag := tr.Tag
-		if skipNamingDeny && strings.HasPrefix(tag, "naming:") {
+		if skipNamingDeny && strings.HasPrefix(tag, naming.TagPrefix) {
 			continue
 		}
 		if skipConventionDeny && (tag == ConventionOperationTag || tag == conventionRevokeTag) {

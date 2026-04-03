@@ -99,7 +99,7 @@ var admitCmd = &cobra.Command{
 		sysMsg, err := message.NewMessage(
 			state.PrivateKey, state.PublicKey,
 			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, memberKeyHex, now)),
-			[]string{"campfire:member-joined"},
+			[]string{campfire.TagMemberJoined},
 			nil,
 		)
 		if err != nil {

@@ -1,5 +1,9 @@
 package convention
 
+import (
+	"github.com/campfire-net/campfire/pkg/naming"
+)
+
 // InfrastructureConvention is the convention name for convention-extension operations.
 const InfrastructureConvention = "convention-extension"
 
@@ -113,7 +117,7 @@ func NamingRegisterDeclaration() *Declaration {
 		Operation:   "naming-register",
 		Description: "Register a named endpoint in this campfire's namespace",
 		ProducesTags: []TagRule{
-			{Tag: "naming:name:", Cardinality: "zero_or_more", Pattern: "naming:name:*"},
+			{Tag: naming.TagNamePrefix, Cardinality: "zero_or_more", Pattern: naming.TagNamePrefix + "*"},
 		},
 		RateLimit: &RateLimit{
 			Max:    5,

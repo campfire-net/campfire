@@ -10,9 +10,11 @@ import (
 	"log"
 	httpPkg "net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
@@ -376,7 +378,7 @@ func (s *server) publishViews(st store.Store, campfireID string, entries []inter
 			continue
 		}
 
-		tags := []string{"campfire:view"}
+		tags := []string{campfire.TagView}
 		if _, err := s.sendCampfireKeySignedMessage(context.Background(), campfireID, payload, tags, nil); err != nil {
 			log.Printf("convention: publishing view %q to %s: %v", name, campfireID, err)
 			continue
@@ -400,7 +402,7 @@ func (s *server) publishViews(st store.Store, campfireID string, entries []inter
 // readAndRegisterViews reads campfire:view messages from a campfire and registers
 // them as MCP tools. Called on join to discover views that were seeded at create time.
 func (s *server) readAndRegisterViews(st store.Store, campfireID string) (int, []string) {
-	msgs, err := st.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{"campfire:view"}})
+	msgs, err := st.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{campfire.TagView}})
 	if err != nil {
 		log.Printf("convention: reading views for %s: %v", campfireID, err)
 		return 0, nil
@@ -530,7 +532,7 @@ func (s *server) handleViewTool(id interface{}, entry *viewToolEntry, args map[s
 		// Skip system messages (campfire:* tags).
 		isSystem := false
 		for _, t := range m.Tags {
-			if len(t) > 9 && t[:9] == "campfire:" {
+			if strings.HasPrefix(t, campfire.TagPrefix) {
 				isSystem = true
 				break
 			}

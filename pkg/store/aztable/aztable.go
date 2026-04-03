@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/crypto"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
@@ -1580,7 +1581,7 @@ func int32Ptr(n int32) *int32 { return &n }
 // isSystemMessage returns true if any tag has the "campfire:" prefix.
 func isSystemMessage(tags []string) bool {
 	for _, t := range tags {
-		if strings.HasPrefix(t, "campfire:") {
+		if strings.HasPrefix(t, campfire.TagPrefix) {
 			return true
 		}
 	}
@@ -1589,7 +1590,7 @@ func isSystemMessage(tags []string) bool {
 
 // isCompactionEvent returns true if the record has the "campfire:compact" tag.
 func isCompactionEvent(rec store.MessageRecord) bool {
-	return store.HasTag(rec.Tags, "campfire:compact")
+	return store.HasTag(rec.Tags, campfire.TagCompact)
 }
 
 // hasAnyTag returns true if rec tags contain any of the filter tags (case-insensitive).

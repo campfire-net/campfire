@@ -129,7 +129,7 @@ var memberSetRoleCmd = &cobra.Command{
 		sysMsg, err := message.NewMessage(
 			state.PrivateKey, state.PublicKey,
 			[]byte(payload),
-			[]string{"campfire:member-role-changed"},
+			[]string{campfire.TagMemberRoleChanged},
 			nil,
 		)
 		if err != nil {

@@ -240,7 +240,7 @@ func (aw *AuditWriter) writeEntry(entry AuditEntry) {
 		return
 	}
 
-	_ = aw.postMessage(string(payload), []string{"campfire:audit"})
+	_ = aw.postMessage(string(payload), []string{campfire.TagAudit})
 	aw.written.Add(1)
 
 	if len(aw.pendingEntries) >= merkleRootInterval {
@@ -305,7 +305,7 @@ func (aw *AuditWriter) maybePublishRoot(force bool) {
 	payload := fmt.Sprintf(`{"merkle_root":%q,"entry_count":%d,"computed_at":%d}`,
 		root, len(aw.pendingEntries), time.Now().UnixNano())
 
-	_ = aw.postMessage(payload, []string{"campfire:audit-root"})
+	_ = aw.postMessage(payload, []string{campfire.TagAuditRoot})
 
 	// Reset for the next batch.
 	aw.pendingEntries = nil

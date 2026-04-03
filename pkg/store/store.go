@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/crypto"
 	"github.com/campfire-net/campfire/pkg/message"
 	_ "modernc.org/sqlite"
@@ -645,7 +646,7 @@ func scanMessageRecord(scan func(dest ...any) error) (MessageRecord, error) {
 // encrypted under the CEK and bypass downgrade-prevention payload enforcement.
 func isSystemMessage(tags []string) bool {
 	for _, tag := range tags {
-		if strings.HasPrefix(tag, "campfire:") {
+		if strings.HasPrefix(tag, campfire.TagPrefix) {
 			return true
 		}
 	}
@@ -1574,7 +1575,7 @@ func HasTag(tags []string, tag string) bool {
 // Uses HasTag rather than strings.Contains to avoid false positives from
 // tags that happen to contain the substring (e.g. "xycampfire:compact").
 func isCompactionEvent(rec MessageRecord) bool {
-	return HasTag(rec.Tags, "campfire:compact")
+	return HasTag(rec.Tags, campfire.TagCompact)
 }
 
 // ApplyMembershipCommitAtomically processes a campfire:membership-commit in a

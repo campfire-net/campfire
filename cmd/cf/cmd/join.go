@@ -164,7 +164,7 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 		sysMsg, msgErr := message.NewMessage(
 			state.PrivateKey, state.PublicKey,
 			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, agentID.PublicKeyHex(), now)),
-			[]string{"campfire:member-joined"},
+			[]string{campfire.TagMemberJoined},
 			nil,
 		)
 		if msgErr == nil {
@@ -464,7 +464,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 		agentID.PrivateKey,
 		agentID.PublicKey,
 		[]byte(fmt.Sprintf(`{"joiner":"%s"}`, agentID.PublicKeyHex())),
-		[]string{"campfire:join-request"},
+		[]string{campfire.TagJoinRequest},
 		nil,
 	)
 	if err != nil {
@@ -576,7 +576,7 @@ func pollForKeyDelivery(tr *ghtr.Transport, campfireID string, agentID *identity
 			}
 			isKeyDelivery := false
 			for _, t := range tags {
-				if t == "campfire:key-delivery" {
+				if t == campfire.TagKeyDelivery {
 					isKeyDelivery = true
 					break
 				}

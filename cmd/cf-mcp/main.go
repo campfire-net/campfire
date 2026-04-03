@@ -1803,7 +1803,7 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		sysMsg, err := message.NewMessage(
 			state.PrivateKey, state.PublicKey,
 			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, agentID.PublicKeyHex(), now)),
-			[]string{"campfire:member-joined"},
+			[]string{campfire.TagMemberJoined},
 			nil,
 		)
 		if err != nil {
@@ -2225,7 +2225,7 @@ func (s *server) handleSend(id interface{}, params map[string]interface{}) jsonR
 	// inner_signature verification. This runs before NewMessage/client.Send so that
 	// malformed beacons are never written to the store or relayed.
 	for _, tag := range tags {
-		if tag == "routing:beacon" {
+		if tag == beacon.TagBeacon {
 			var decl beacon.BeaconDeclaration
 			if err := json.Unmarshal([]byte(payload), &decl); err != nil {
 				return errResponse(id, -32000, fmt.Sprintf("routing:beacon payload is not valid JSON: %v", err))
@@ -3633,12 +3633,12 @@ func (s *server) handleAudit(id interface{}, params map[string]interface{}) json
 		}
 		// Check for audit-root messages.
 		for _, tag := range msg.Tags {
-			if tag == "campfire:audit-root" {
+			if tag == campfire.TagAuditRoot {
 				if root, ok := entry["merkle_root"].(string); ok {
 					latestRoot = root
 				}
 			}
-			if tag == "campfire:audit" {
+			if tag == campfire.TagAudit {
 				if action, ok := entry["action"].(string); ok {
 					totalActions++
 					actionsByType[action]++

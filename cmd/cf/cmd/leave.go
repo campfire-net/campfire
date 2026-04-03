@@ -52,7 +52,7 @@ var leaveCmd = &cobra.Command{
 		sysMsg, err := message.NewMessage(
 			state.PrivateKey, state.PublicKey,
 			[]byte(fmt.Sprintf(`{"member":"%s"}`, agentID.PublicKeyHex())),
-			[]string{"campfire:member-left"},
+			[]string{campfire.TagMemberLeft},
 			nil,
 		)
 		if err != nil {
