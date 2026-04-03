@@ -298,6 +298,111 @@ func TestSendP2PHTTP_PeerDeliveryFailure(t *testing.T) {
 	}
 }
 
+
+// TestSendP2PHTTP_MembershipHashIsNotPublicKey is a regression test for
+// campfire-agent-ic9: the provenance hop MembershipHash must be derived from
+// the member set, not from the campfire public key.
+//
+// Prior to the fix, sendP2PHTTP (both threshold=1 and threshold>1 paths)
+// substituted cfState.PublicKey for MembershipHash, which weakens provenance
+// verification because the public key is already carried in CampfireID —
+// making MembershipHash redundant rather than an independent commitment to the
+// member set.
+func TestSendP2PHTTP_MembershipHashIsNotPublicKey(t *testing.T) {
+	// Fake peer that accepts any delivery.
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer peer.Close()
+
+	agentID, s, tmpDir := setupTestEnv(t)
+
+	cfID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating campfire identity: %v", err)
+	}
+	campfireID := cfID.PublicKeyHex()
+
+	cfState := campfire.CampfireState{
+		PublicKey:             cfID.PublicKey,
+		PrivateKey:            cfID.PrivateKey,
+		JoinProtocol:          "open",
+		ReceptionRequirements: []string{},
+		CreatedAt:             time.Now().UnixNano(),
+		Threshold:             1,
+	}
+	stateData, err := cfencoding.Marshal(&cfState)
+	if err != nil {
+		t.Fatalf("marshalling campfire state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, campfireID+".cbor"), stateData, 0644); err != nil {
+		t.Fatalf("writing campfire state: %v", err)
+	}
+	if err := s.AddMembership(store.Membership{
+		CampfireID:    campfireID,
+		TransportDir:  tmpDir,
+		JoinProtocol:  "open",
+		Role:          campfire.RoleFull,
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "p2p-http",
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	peerID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating peer identity: %v", err)
+	}
+	for _, ep := range []store.PeerEndpoint{
+		{CampfireID: campfireID, MemberPubkey: agentID.PublicKeyHex(), Endpoint: ""},
+		{CampfireID: campfireID, MemberPubkey: peerID.PublicKeyHex(), Endpoint: peer.URL},
+	} {
+		if err := s.UpsertPeerEndpoint(ep); err != nil {
+			t.Fatalf("registering peer endpoint %s: %v", ep.MemberPubkey, err)
+		}
+	}
+
+	client := protocol.New(s, agentID)
+	msg, err := client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("membership hash regression"),
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(msg.Provenance) != 1 {
+		t.Fatalf("expected 1 provenance hop, got %d", len(msg.Provenance))
+	}
+
+	hop := msg.Provenance[0]
+
+	// Hop must be internally consistent.
+	if !message.VerifyHop(msg.ID, hop) {
+		t.Error("provenance hop signature is invalid after membership hash fix")
+	}
+
+	// MembershipHash must NOT equal the campfire public key (pre-fix bug).
+	campfirePubKey := cfID.PublicKey
+	if len(hop.MembershipHash) == len(campfirePubKey) {
+		equal := true
+		for i := range hop.MembershipHash {
+			if hop.MembershipHash[i] != campfirePubKey[i] {
+				equal = false
+				break
+			}
+		}
+		if equal {
+			t.Error("MembershipHash equals the campfire public key — pre-fix bug detected (campfire-agent-ic9)")
+		}
+	}
+
+	// MembershipHash must be 32 bytes (SHA-256 of member set).
+	if len(hop.MembershipHash) != 32 {
+		t.Errorf("expected MembershipHash to be 32 bytes (SHA-256), got %d", len(hop.MembershipHash))
+	}
+}
+
 // TestMain for the protocol package — overrides the SSRF-safe HTTP client used
 // by pkg/transport/http so that outbound calls to loopback httptest servers succeed.
 // Without this, cfhttp.Deliver() blocks connections to 127.0.0.1.

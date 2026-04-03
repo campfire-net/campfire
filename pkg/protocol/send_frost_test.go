@@ -238,10 +238,13 @@ func TestSendFROST(t *testing.T) {
 
 	// The hop signature must verify against the group public key.
 	// Reconstruct the sign input the same way thresholdSignHop does.
+	// Since campfire-agent-ic9: MembershipHash is derived from peers, not cfPub —
+	// use hop.MembershipHash directly so the verification stays consistent with
+	// what thresholdSignHop actually signed.
 	signInput := message.HopSignInput{
 		MessageID:             msg.ID,
 		CampfireID:            cfPub,
-		MembershipHash:        cfPub,
+		MembershipHash:        hop.MembershipHash,
 		MemberCount:           hop.MemberCount,
 		JoinProtocol:          hop.JoinProtocol,
 		ReceptionRequirements: hop.ReceptionRequirements,
@@ -253,6 +256,24 @@ func TestSendFROST(t *testing.T) {
 	}
 	if !ed25519.Verify(groupKey, signBytes, hop.Signature) {
 		t.Error("hop signature does not verify against FROST group public key")
+	}
+
+	// Regression guard (campfire-agent-ic9): MembershipHash must NOT equal the
+	// campfire public key. It must be a SHA-256 hash (32 bytes).
+	if len(hop.MembershipHash) == len(cfPub) {
+		equal := true
+		for i := range hop.MembershipHash {
+			if hop.MembershipHash[i] != cfPub[i] {
+				equal = false
+				break
+			}
+		}
+		if equal {
+			t.Error("MembershipHash equals campfire public key — pre-fix bug detected (campfire-agent-ic9)")
+		}
+	}
+	if len(hop.MembershipHash) != 32 {
+		t.Errorf("expected MembershipHash to be 32 bytes (SHA-256), got %d", len(hop.MembershipHash))
 	}
 
 	// The hop CampfireID should match the campfire public key (= FROST group key).
