@@ -45,7 +45,6 @@ func assignCommandGroups() {
 		"dag":        groupMessages,
 
 		// Advanced — low-level primitives, bridges, server, and tooling.
-		"admin":      groupAdvanced,
 		"bridge":     groupAdvanced,
 		"serve":      groupAdvanced,
 		"verify":     groupAdvanced,
