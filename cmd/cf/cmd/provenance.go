@@ -12,8 +12,9 @@ import (
 
 // provenanceCmd is the parent for operator provenance operations.
 var provenanceCmd = &cobra.Command{
-	Use:   "provenance",
-	Short: "Inspect operator provenance levels and attestation history",
+	Use:    "provenance",
+	Short:  "Inspect operator provenance levels and attestation history",
+	Hidden: true,
 	Long:  "Inspect operator provenance state (local -- no messages sent).\n\n  cf provenance show <key>    display level, attestation history, freshness",
 }
 

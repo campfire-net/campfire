@@ -51,7 +51,7 @@ func TestHelpGroupsPresent(t *testing.T) {
 	}{
 		{"Convention Operations:", "convention"},
 		{"Convention Operations:", "swarm"},
-		{"Convention Operations:", "discover"},
+		// "discover" is hidden — not checked in group listing
 		{"Campfire Management:", "join"},
 		{"Campfire Management:", "init"},
 		{"Campfire Management:", "create"},
@@ -59,7 +59,7 @@ func TestHelpGroupsPresent(t *testing.T) {
 		{"Messages:", "read"},
 		{"Messages:", "compact"},
 		{"Advanced:", "bridge"},
-		{"Advanced:", "serve"},
+		// "serve" is hidden — not checked in group listing
 		{"Advanced:", "verify"},
 		{"Advanced:", "completion"},
 	}
