@@ -43,7 +43,7 @@ func setupViewTestEnv(t *testing.T, role string) (*identity.Identity, store.Stor
 // addTestMessage adds a message directly to the store for view evaluation tests.
 func addTestMessage(t *testing.T, s store.Store, agentID *identity.Identity, campfireID string, payload string, tags []string, timestamp int64) string {
 	t.Helper()
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, []string{})
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey), []byte(payload), tags, []string{})
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

@@ -371,7 +371,7 @@ func testFix5MCPSyncVerification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating sender identity: %v", err)
 	}
-	validMsg, err := message.NewMessage(senderID.PrivateKey, senderID.PublicKey, []byte("hello-world"), []string{"status"}, nil)
+	validMsg, err := message.NewMessage(message.MustNewEd25519Signer(senderID.PrivateKey, senderID.PublicKey), []byte("hello-world"), []string{"status"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage (valid): %v", err)
 	}
@@ -388,7 +388,7 @@ func testFix5MCPSyncVerification(t *testing.T) {
 	}
 
 	// --- (b) Tampered message: valid signature at creation, payload mutated after ---
-	tamperedMsg, err := message.NewMessage(senderID.PrivateKey, senderID.PublicKey, []byte("legitimate"), []string{"status"}, nil)
+	tamperedMsg, err := message.NewMessage(message.MustNewEd25519Signer(senderID.PrivateKey, senderID.PublicKey), []byte("legitimate"), []string{"status"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage (tampered): %v", err)
 	}
@@ -402,7 +402,7 @@ func testFix5MCPSyncVerification(t *testing.T) {
 	}
 
 	// --- (c) Message with empty provenance (no relay hops) ---
-	nohopMsg, err := message.NewMessage(senderID.PrivateKey, senderID.PublicKey, []byte("no-hop"), []string{"status"}, nil)
+	nohopMsg, err := message.NewMessage(message.MustNewEd25519Signer(senderID.PrivateKey, senderID.PublicKey), []byte("no-hop"), []string{"status"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage (no-hop): %v", err)
 	}

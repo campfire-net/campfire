@@ -34,7 +34,7 @@ func buildValidRecord(t *testing.T, s store.Store, campfireID string) store.Mess
 func buildMalformedSenderRecord(t *testing.T, s store.Store, campfireID string) store.MessageRecord {
 	t.Helper()
 	id := tempIdentity(t)
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("malformed sender test"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("malformed sender test"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message for malformed record: %v", err)
 	}

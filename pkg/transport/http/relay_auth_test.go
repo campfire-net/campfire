@@ -237,7 +237,7 @@ func TestRelayAuth_ThreeInstanceRelay(t *testing.T) {
 	sendAndVerify := func(t *testing.T, name string, senderID *identity.Identity, deliverEndpoint string, targetStore store.Store) {
 		t.Helper()
 		payload := fmt.Sprintf("relay-auth-test-%s-%s", name, senderID.PublicKeyHex()[:8])
-		msg, err := message.NewMessage(senderID.PrivateKey, senderID.PublicKey, []byte(payload), []string{"test"}, nil)
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(senderID.PrivateKey, senderID.PublicKey), []byte(payload), []string{"test"}, nil)
 		if err != nil {
 			t.Fatalf("[%s] NewMessage: %v", name, err)
 		}

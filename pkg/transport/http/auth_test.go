@@ -626,8 +626,7 @@ func TestRekeyRejectsUnsignedRekeyMessage(t *testing.T) {
 
 	// Build properly signed message (to verify storage does work for valid msgs).
 	signedMsg, _ := message.NewMessage(
-		ed25519.PrivateKey(oldCFPriv),
-		ed25519.PublicKey(oldCFPub),
+		message.MustNewEd25519Signer(ed25519.PrivateKey(oldCFPriv), ed25519.PublicKey(oldCFPub)),
 		[]byte(`{"old_key":"legit","new_key":"legit"}`),
 		[]string{"campfire:rekey"},
 		nil,

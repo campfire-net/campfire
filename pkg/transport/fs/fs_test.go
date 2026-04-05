@@ -55,7 +55,7 @@ func newTestMessage(t *testing.T) *message.Message {
 	if err != nil {
 		t.Fatalf("generating ed25519 key: %v", err)
 	}
-	msg, err := message.NewMessage(priv, pub, []byte("hello"), []string{"tag1"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), []byte("hello"), []string{"tag1"}, nil)
 	if err != nil {
 		t.Fatalf("message.NewMessage() error: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestListMessages_ChronologicalOrder(t *testing.T) {
 	// UnixNano timestamps (filename prefix determines sort order).
 	var ids []string
 	for i := 0; i < 3; i++ {
-		msg, err := message.NewMessage(priv, pub, []byte{byte(i)}, nil, nil)
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), []byte{byte(i)}, nil, nil)
 		if err != nil {
 			t.Fatalf("NewMessage() error: %v", err)
 		}

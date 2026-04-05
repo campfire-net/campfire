@@ -28,7 +28,7 @@ func writeZeroProvenanceMessage(t *testing.T, campfireID string, tr interface {
 		t.Fatalf("generating sender identity: %v", err)
 	}
 
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, []string{})
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey), []byte(payload), tags, []string{})
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

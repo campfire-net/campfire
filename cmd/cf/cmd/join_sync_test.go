@@ -74,7 +74,7 @@ func setupCampfireWithMessages(t *testing.T, msgCount int) (campfireID string, t
 	// hop (signed by the campfire) so syncFromFilesystem accepts it.
 	for i := 0; i < msgCount; i++ {
 		payload := []byte(fmt.Sprintf(`{"text":"message %d"}`, i))
-		msg, err := message.NewMessage(creator.PrivateKey, creator.PublicKey, payload, []string{"test:msg"}, nil)
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(creator.PrivateKey, creator.PublicKey), payload, []string{"test:msg"}, nil)
 		if err != nil {
 			t.Fatalf("creating message %d: %v", i, err)
 		}
@@ -154,7 +154,7 @@ func TestJoinFilesystem_SyncsConventionDeclarations(t *testing.T) {
 		"signing": "member_key"
 	}`)
 	tr := fs.New(transportBaseDir)
-	declMsg, err := message.NewMessage(creator.PrivateKey, creator.PublicKey, declPayload, []string{convention.ConventionOperationTag}, nil)
+	declMsg, err := message.NewMessage(message.MustNewEd25519Signer(creator.PrivateKey, creator.PublicKey), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating declaration message: %v", err)
 	}

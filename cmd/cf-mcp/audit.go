@@ -260,10 +260,11 @@ func (aw *AuditWriter) postMessage(payload string, tags []string) error {
 		return fmt.Errorf("listing audit campfire members: %w", err)
 	}
 
-	msg, err := message.NewMessage(
-		aw.agentID.PrivateKey, aw.agentID.PublicKey,
-		[]byte(payload), tags, nil,
-	)
+	auditSigner, err := message.NewEd25519Signer(aw.agentID.PrivateKey, aw.agentID.PublicKey)
+	if err != nil {
+		return fmt.Errorf("creating signer for audit message: %w", err)
+	}
+	msg, err := message.NewMessage(auditSigner, []byte(payload), tags, nil)
 	if err != nil {
 		return fmt.Errorf("creating audit message: %w", err)
 	}

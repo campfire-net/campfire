@@ -150,7 +150,7 @@ func TestConventionDeliver_E2E_HandlerFiresOnDeliverPath(t *testing.T) {
 	// uses to detect convention invocations (distinct from "convention:operation"
 	// which is the declaration tag).
 	invocationTag := conventionName + ":" + operationName
-	msg, err := message.NewMessage(cliID.PrivateKey, cliID.PublicKey, payloadBytes, []string{invocationTag}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey), payloadBytes, []string{invocationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

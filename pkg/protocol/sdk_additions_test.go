@@ -90,7 +90,7 @@ func writeBlindRelayTransportMessage(t *testing.T, cfID *identity.Identity, tr *
 		t.Fatalf("generating sender identity: %v", err)
 	}
 
-	msg, err := message.NewMessage(senderID.PrivateKey, senderID.PublicKey, []byte(payload), tags, []string{})
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(senderID.PrivateKey, senderID.PublicKey), []byte(payload), tags, []string{})
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
