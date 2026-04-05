@@ -53,7 +53,7 @@ func testCreateFilesystemRoundTrip(t *testing.T) {
 
 	// Client A: creator.
 	configDirA := t.TempDir()
-	clientA, err := protocol.Init(configDirA)
+	clientA, _, err := protocol.Init(configDirA)
 	if err != nil {
 		t.Fatalf("Init A: %v", err)
 	}
@@ -73,7 +73,7 @@ func testCreateFilesystemRoundTrip(t *testing.T) {
 
 	// Client B: joiner.
 	configDirB := t.TempDir()
-	clientB, err := protocol.Init(configDirB)
+	clientB, _, err := protocol.Init(configDirB)
 	if err != nil {
 		t.Fatalf("Init B: %v", err)
 	}
@@ -155,7 +155,7 @@ func testCreateP2PHTTPRoundTrip(t *testing.T) {
 
 	// Client A: creator with its own store and transport.
 	configDirA := t.TempDir()
-	clientA, err := protocol.Init(configDirA)
+	clientA, _, err := protocol.Init(configDirA)
 	if err != nil {
 		t.Fatalf("Init A: %v", err)
 	}
@@ -180,7 +180,7 @@ func testCreateP2PHTTPRoundTrip(t *testing.T) {
 
 	// Client B: joiner with its own store and transport.
 	configDirB := t.TempDir()
-	clientB, err := protocol.Init(configDirB)
+	clientB, _, err := protocol.Init(configDirB)
 	if err != nil {
 		t.Fatalf("Init B: %v", err)
 	}
@@ -246,7 +246,7 @@ func testCreateBeaconPublished(t *testing.T) {
 	beaconDir := t.TempDir()
 
 	configDir := t.TempDir()
-	client, err := protocol.Init(configDir)
+	client, _, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -306,7 +306,7 @@ func testCreateSelfAdmitted(t *testing.T) {
 	beaconDir := t.TempDir()
 
 	configDir := t.TempDir()
-	client, err := protocol.Init(configDir)
+	client, _, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -373,7 +373,7 @@ func testCreateDKGCompleted(t *testing.T) {
 	beaconDir := t.TempDir()
 
 	configDir := t.TempDir()
-	client, err := protocol.Init(configDir)
+	client, _, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}

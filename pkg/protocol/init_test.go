@@ -23,6 +23,124 @@ func TestInit(t *testing.T) {
 	t.Run("RoundTrip", testInitRoundTrip)
 	t.Run("StorePersistence", testInitStorePersistence)
 	t.Run("IdentityFileExists", testInitIdentityFileExists)
+	t.Run("InitResultNonNil", testInitResultNonNil)
+	t.Run("InitResultIdentityPathAlwaysPopulated", testInitResultIdentityPathAlwaysPopulated)
+	t.Run("InitResultIdentityCreatedFirstInit", testInitResultIdentityCreatedFirstInit)
+	t.Run("InitResultIdentityCreatedSubsequentInit", testInitResultIdentityCreatedSubsequentInit)
+	t.Run("InitResultWalkUpPathEmptyByDefault", testInitResultWalkUpPathEmptyByDefault)
+}
+
+// testInitResultNonNil verifies that Init() returns a non-nil *InitResult
+// alongside the *Client when err is nil.
+func testInitResultNonNil(t *testing.T) {
+	t.Helper()
+	configDir := t.TempDir()
+
+	client, result, err := protocol.Init(configDir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if result == nil {
+		t.Fatal("Init returned nil *InitResult, want non-nil")
+	}
+}
+
+// testInitResultIdentityPathAlwaysPopulated verifies that InitResult.IdentityPath
+// is never empty after a successful Init(), regardless of whether the identity
+// was created or loaded.
+func testInitResultIdentityPathAlwaysPopulated(t *testing.T) {
+	t.Helper()
+	configDir := t.TempDir()
+
+	// First call: identity is created.
+	client, result, err := protocol.Init(configDir)
+	if err != nil {
+		t.Fatalf("first Init: %v", err)
+	}
+	client.Close()
+
+	if result.IdentityPath == "" {
+		t.Error("first Init: InitResult.IdentityPath is empty, want non-empty")
+	}
+
+	// Second call: identity is loaded.
+	client2, result2, err := protocol.Init(configDir)
+	if err != nil {
+		t.Fatalf("second Init: %v", err)
+	}
+	t.Cleanup(func() { client2.Close() })
+
+	if result2.IdentityPath == "" {
+		t.Error("second Init: InitResult.IdentityPath is empty, want non-empty")
+	}
+
+	// Both paths should point to the same file.
+	if result.IdentityPath != result2.IdentityPath {
+		t.Errorf("IdentityPath changed between calls: first=%q second=%q",
+			result.IdentityPath, result2.IdentityPath)
+	}
+}
+
+// testInitResultIdentityCreatedFirstInit verifies that InitResult.IdentityCreated
+// is true when Init() generates a new keypair (first call on a fresh directory).
+func testInitResultIdentityCreatedFirstInit(t *testing.T) {
+	t.Helper()
+	configDir := t.TempDir()
+
+	client, result, err := protocol.Init(configDir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if !result.IdentityCreated {
+		t.Error("first Init: InitResult.IdentityCreated is false, want true (new identity created)")
+	}
+}
+
+// testInitResultIdentityCreatedSubsequentInit verifies that InitResult.IdentityCreated
+// is false when Init() loads an existing keypair (second call on same directory).
+func testInitResultIdentityCreatedSubsequentInit(t *testing.T) {
+	t.Helper()
+	configDir := t.TempDir()
+
+	// First call creates the identity.
+	c1, _, err := protocol.Init(configDir)
+	if err != nil {
+		t.Fatalf("first Init: %v", err)
+	}
+	c1.Close()
+
+	// Second call loads the existing identity.
+	c2, result, err := protocol.Init(configDir)
+	if err != nil {
+		t.Fatalf("second Init: %v", err)
+	}
+	t.Cleanup(func() { c2.Close() })
+
+	if result.IdentityCreated {
+		t.Error("second Init: InitResult.IdentityCreated is true, want false (identity was loaded, not created)")
+	}
+}
+
+// testInitResultWalkUpPathEmptyByDefault verifies that InitResult.WalkUpPath is
+// empty when walk-up is disabled (the default behavior — no WithWalkUp() option).
+func testInitResultWalkUpPathEmptyByDefault(t *testing.T) {
+	t.Helper()
+	configDir := t.TempDir()
+
+	client, result, err := protocol.Init(configDir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if len(result.WalkUpPath) != 0 {
+		t.Errorf("InitResult.WalkUpPath is non-empty with default options (walk-up disabled), got %v",
+			result.WalkUpPath)
+	}
 }
 
 // testInitGeneratesIdentityAndStore verifies that Init with no existing identity
@@ -31,7 +149,7 @@ func testInitGeneratesIdentityAndStore(t *testing.T) {
 	t.Helper()
 	configDir := t.TempDir()
 
-	client, err := protocol.Init(configDir)
+	client,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -59,14 +177,14 @@ func testInitIdempotency(t *testing.T) {
 	t.Helper()
 	configDir := t.TempDir()
 
-	c1, err := protocol.Init(configDir)
+	c1,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("first Init: %v", err)
 	}
 	pub1 := c1.ClientIdentity().PublicKey
 	c1.Close()
 
-	c2, err := protocol.Init(configDir)
+	c2,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("second Init: %v", err)
 	}
@@ -85,7 +203,7 @@ func testInitRoundTrip(t *testing.T) {
 	configDir := t.TempDir()
 	transportDir := t.TempDir()
 
-	client, err := protocol.Init(configDir)
+	client,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -127,7 +245,7 @@ func testInitStorePersistence(t *testing.T) {
 	transportDir := t.TempDir()
 
 	// First session: send a message.
-	c1, err := protocol.Init(configDir)
+	c1,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("first Init: %v", err)
 	}
@@ -147,7 +265,7 @@ func testInitStorePersistence(t *testing.T) {
 	}
 
 	// Second session: open the same configDir and read the message.
-	c2, err := protocol.Init(configDir)
+	c2,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("second Init: %v", err)
 	}
@@ -177,7 +295,7 @@ func testInitIdentityFileExists(t *testing.T) {
 	t.Helper()
 	configDir := t.TempDir()
 
-	client, err := protocol.Init(configDir)
+	client,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}

@@ -56,7 +56,7 @@ const (
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
-	rootCmd.PersistentFlags().StringVar(&cfHome, "cf-home", "", "path to campfire home directory (default: ~/.campfire)")
+	rootCmd.PersistentFlags().StringVar(&cfHome, "cf-home", "", "path to campfire home directory (default: ~/.cf)")
 	rootCmd.Flags().BoolVar(&helpPrimitives, "help-primitives", false, "show primitive commands (send, read, create, discover, await, inspect)")
 
 	// Register command groups for organized help output.
@@ -186,6 +186,12 @@ func conventionFlagsFromRawArgs(rawArgs []string, operationName string) []string
 
 // CFHome returns the resolved campfire home directory.
 func CFHome() string {
+	return cfHomeWithWriter(os.Stderr)
+}
+
+// cfHomeWithWriter is the testable core of CFHome. It writes deprecation
+// notices to w instead of os.Stderr so tests can capture them.
+func cfHomeWithWriter(w interface{ Write([]byte) (int, error) }) string {
 	if cfHome != "" {
 		return cfHome
 	}
@@ -197,7 +203,19 @@ func CFHome() string {
 		fmt.Fprintf(os.Stderr, "error: cannot determine home directory: %v\n", err)
 		os.Exit(1)
 	}
-	return filepath.Join(home, ".campfire")
+	cfDir := filepath.Join(home, ".cf")
+	campfireDir := filepath.Join(home, ".campfire")
+	// If ~/.cf exists, use it unconditionally.
+	if _, err := os.Stat(cfDir); err == nil {
+		return cfDir
+	}
+	// If ~/.campfire exists but ~/.cf does not, fall back with a deprecation notice.
+	if _, err := os.Stat(campfireDir); err == nil {
+		fmt.Fprintf(w, "warning: ~/.campfire is deprecated; please rename it to ~/.cf (support will be removed in v0.17)\n")
+		return campfireDir
+	}
+	// Neither exists — return the new default.
+	return cfDir
 }
 
 // IdentityPath returns the path to the identity file.

@@ -2,11 +2,12 @@ package protocol_test
 
 // Tests for protocol.Init() variadic options — campfire-agent-m6n.
 //
-// All four call forms are verified:
+// All five call forms are verified:
 //   1. Init(cfHome)                         — zero options, backward-compatible
 //   2. Init(cfHome, WithAuthorizeFunc(fn))  — fn called on authorization demand
 //   3. Init(cfHome, WithRemote(url))        — remote URL stored
-//   4. Init(cfHome, WithNoWalkUp())         — walk-up disabled
+//   4. Init(cfHome, WithWalkUp())           — walk-up enabled (opt-in)
+//   5. Init(cfHome, WithNoWalkUp())         — walk-up disabled (deprecated, no-op on default)
 
 import (
 	"testing"
@@ -19,6 +20,7 @@ func TestInitOptions(t *testing.T) {
 	t.Run("ZeroOptions", testInitZeroOptions)
 	t.Run("WithAuthorizeFunc", testInitWithAuthorizeFunc)
 	t.Run("WithRemote", testInitWithRemote)
+	t.Run("WithWalkUp", testInitWithWalkUp)
 	t.Run("WithNoWalkUp", testInitWithNoWalkUp)
 }
 
@@ -28,7 +30,7 @@ func testInitZeroOptions(t *testing.T) {
 	t.Helper()
 	configDir := t.TempDir()
 
-	client, err := protocol.Init(configDir)
+	client, _, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init(zero options): %v", err)
 	}
@@ -50,9 +52,9 @@ func testInitZeroOptions(t *testing.T) {
 		t.Errorf("RemoteURL() = %q, want empty for zero-options Init", url)
 	}
 
-	// Walk-up must be enabled by default.
-	if !client.WalkUpEnabled() {
-		t.Error("WalkUpEnabled() = false, want true for zero-options Init")
+	// Walk-up must be disabled by default (opt-in since 0.15).
+	if client.WalkUpEnabled() {
+		t.Error("WalkUpEnabled() = true, want false for zero-options Init (walk-up is now opt-in)")
 	}
 }
 
@@ -73,7 +75,7 @@ func testInitWithAuthorizeFunc(t *testing.T) {
 		return approveNext, nil
 	}
 
-	client, err := protocol.Init(configDir, protocol.WithAuthorizeFunc(fn))
+	client, _, err := protocol.Init(configDir, protocol.WithAuthorizeFunc(fn))
 	if err != nil {
 		t.Fatalf("Init(WithAuthorizeFunc): %v", err)
 	}
@@ -119,7 +121,7 @@ func testInitWithRemote(t *testing.T) {
 	configDir := t.TempDir()
 
 	const remoteURL = "https://mcp.example.com"
-	client, err := protocol.Init(configDir, protocol.WithRemote(remoteURL))
+	client, _, err := protocol.Init(configDir, protocol.WithRemote(remoteURL))
 	if err != nil {
 		t.Fatalf("Init(WithRemote): %v", err)
 	}
@@ -131,12 +133,28 @@ func testInitWithRemote(t *testing.T) {
 	}
 }
 
-// testInitWithNoWalkUp verifies that WithNoWalkUp() disables walk-up.
+// testInitWithWalkUp verifies that WithWalkUp() enables walk-up (opt-in).
+func testInitWithWalkUp(t *testing.T) {
+	t.Helper()
+	configDir := t.TempDir()
+
+	client, _, err := protocol.Init(configDir, protocol.WithWalkUp())
+	if err != nil {
+		t.Fatalf("Init(WithWalkUp()): %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if !client.WalkUpEnabled() {
+		t.Error("WalkUpEnabled() = false after WithWalkUp()")
+	}
+}
+
+// testInitWithNoWalkUp verifies that WithNoWalkUp() disables walk-up (deprecated).
 func testInitWithNoWalkUp(t *testing.T) {
 	t.Helper()
 	configDir := t.TempDir()
 
-	client, err := protocol.Init(configDir, protocol.WithNoWalkUp())
+	client, _, err := protocol.Init(configDir, protocol.WithNoWalkUp())
 	if err != nil {
 		t.Fatalf("Init(WithNoWalkUp()): %v", err)
 	}

@@ -94,6 +94,8 @@ func (b *Beacon) CampfireIDHex() string {
 }
 
 // DefaultBeaconDir returns the default beacon directory.
+// Uses ~/.cf/beacons. Falls back to ~/.campfire/beacons if ~/.campfire exists
+// but ~/.cf does not (deprecated; support will be removed in v0.17).
 func DefaultBeaconDir() string {
 	if env := os.Getenv("CF_BEACON_DIR"); env != "" {
 		return env
@@ -102,7 +104,15 @@ func DefaultBeaconDir() string {
 	if err != nil {
 		return "/tmp/campfire/beacons"
 	}
-	return filepath.Join(home, ".campfire", "beacons")
+	cfDir := filepath.Join(home, ".cf")
+	campfireDir := filepath.Join(home, ".campfire")
+	if _, err := os.Stat(cfDir); err == nil {
+		return filepath.Join(cfDir, "beacons")
+	}
+	if _, err := os.Stat(campfireDir); err == nil {
+		return filepath.Join(campfireDir, "beacons")
+	}
+	return filepath.Join(cfDir, "beacons")
 }
 
 // Publish writes a beacon file to the beacon directory.

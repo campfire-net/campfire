@@ -335,7 +335,7 @@ func TestSendGitHub_CredFileToken(t *testing.T) {
 
 	// Use protocol.Init to get a Client with configDir set.
 	configDir := t.TempDir()
-	client, err := protocol.Init(configDir)
+	client,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
