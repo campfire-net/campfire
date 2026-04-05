@@ -8,7 +8,7 @@ package protocol_test
 // Test setup pattern:
 //   1. Create a center campfire (using setupFilesystemCampfire via a bootstrap client).
 //   2. Write the .campfire/center sentinel in the project dir (cfHome).
-//   3. Call protocol.Init(cfHome) — this triggers delegation.
+//   3. Call protocol.Init(cfHome, protocol.WithWalkUp()) — this triggers delegation.
 //   4. Assert postconditions.
 
 import (
@@ -36,7 +36,7 @@ func setupCenterCampfire(t *testing.T) (cfHome string, centerCampfireID string) 
 	transportDir := t.TempDir()
 
 	// Use projDir as cfHome so Init() reuses the same store that knows about the center campfire.
-	client, _, err := protocol.Init(projDir)
+	client, _, err := protocol.Init(projDir, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("bootstrap Init: %v", err)
 	}
@@ -82,7 +82,7 @@ func testContextKeyCreated(t *testing.T) {
 
 	// Init a second client — the first client already wrote the center sentinel.
 	// Close the first client (from setupCenterCampfire) and re-init.
-	client2, _, err := protocol.Init(cfHome)
+	client2, _, err := protocol.Init(cfHome, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -115,7 +115,7 @@ func testDelegationCertValid(t *testing.T) {
 	t.Helper()
 	cfHome, centerCampfireID := setupCenterCampfire(t)
 
-	client2, _, err := protocol.Init(cfHome)
+	client2, _, err := protocol.Init(cfHome, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -164,7 +164,7 @@ func testDelegationCertInCampfire(t *testing.T) {
 	t.Helper()
 	cfHome, centerCampfireID := setupCenterCampfire(t)
 
-	client2, _, err := protocol.Init(cfHome)
+	client2, _, err := protocol.Init(cfHome, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -209,7 +209,7 @@ func testContextKeyIdempotent(t *testing.T) {
 
 	// First real Init (setupCenterCampfire already did one, but we need to trigger
 	// delegation by calling Init again after the center sentinel is in place).
-	client2, _, err := protocol.Init(cfHome)
+	client2, _, err := protocol.Init(cfHome, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("first Init: %v", err)
 	}
@@ -222,7 +222,7 @@ func testContextKeyIdempotent(t *testing.T) {
 	}
 
 	// Second Init — must not create a new key.
-	client3, _, err := protocol.Init(cfHome)
+	client3, _, err := protocol.Init(cfHome, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("second Init: %v", err)
 	}
@@ -238,7 +238,7 @@ func testContextKeyIdempotent(t *testing.T) {
 	}
 
 	// Count delegation messages in the center campfire — should still be exactly 1.
-	client4, _, err := protocol.Init(cfHome)
+	client4, _, err := protocol.Init(cfHome, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("third Init for read: %v", err)
 	}
@@ -273,7 +273,7 @@ func testNoContextKeyWithoutCenter(t *testing.T) {
 	cfHome := t.TempDir()
 
 	// No .campfire/center sentinel — plain Init.
-	client, _, err := protocol.Init(cfHome)
+	client, _, err := protocol.Init(cfHome, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("Init without center: %v", err)
 	}
