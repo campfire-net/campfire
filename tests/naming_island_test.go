@@ -27,7 +27,7 @@ func TestIslandNamingRoundTrip(t *testing.T) {
 	beaconDir := t.TempDir()
 	ctx := context.Background()
 
-	client, err := protocol.Init(t.TempDir())
+	client, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestIslandNamingSupersession(t *testing.T) {
 	beaconDir := t.TempDir()
 	ctx := context.Background()
 
-	client, err := protocol.Init(t.TempDir())
+	client, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestIslandNamingUnregister(t *testing.T) {
 	beaconDir := t.TempDir()
 	ctx := context.Background()
 
-	client, err := protocol.Init(t.TempDir())
+	client, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestIslandNamingMultipleNames(t *testing.T) {
 	beaconDir := t.TempDir()
 	ctx := context.Background()
 
-	client, err := protocol.Init(t.TempDir())
+	client, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}

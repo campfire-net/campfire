@@ -30,7 +30,7 @@ func setupNamingTestCampfire(t *testing.T) (*protocol.Client, string) {
 	t.Helper()
 
 	configDir := t.TempDir()
-	client, err := protocol.Init(configDir)
+	client, _, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestNewResolverFromClient_TwoClients(t *testing.T) {
 
 	// Client A: creator
 	configDirA := t.TempDir()
-	clientA, err := protocol.Init(configDirA)
+	clientA, _, err := protocol.Init(configDirA)
 	if err != nil {
 		t.Fatalf("Init A: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestNewResolverFromClient_TwoClients(t *testing.T) {
 
 	// Client B: joiner
 	configDirB := t.TempDir()
-	clientB, err := protocol.Init(configDirB)
+	clientB, _, err := protocol.Init(configDirB)
 	if err != nil {
 		t.Fatalf("Init B: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestClientTransportAutoJoin(t *testing.T) {
 
 	// Client A: creates root and child campfires.
 	configDirA := t.TempDir()
-	clientA, err := protocol.Init(configDirA)
+	clientA, _, err := protocol.Init(configDirA)
 	if err != nil {
 		t.Fatalf("Init A: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestClientTransportAutoJoin(t *testing.T) {
 
 	// Client B: only joins root. Should auto-join child during resolution.
 	configDirB := t.TempDir()
-	clientB, err := protocol.Init(configDirB)
+	clientB, _, err := protocol.Init(configDirB)
 	if err != nil {
 		t.Fatalf("Init B: %v", err)
 	}
@@ -456,7 +456,7 @@ func TestClientTransportInviteOnlyError(t *testing.T) {
 
 	// Client A: creates root (open) and child (invite-only).
 	configDirA := t.TempDir()
-	clientA, err := protocol.Init(configDirA)
+	clientA, _, err := protocol.Init(configDirA)
 	if err != nil {
 		t.Fatalf("Init A: %v", err)
 	}
@@ -504,7 +504,7 @@ func TestClientTransportInviteOnlyError(t *testing.T) {
 
 	// Client B: joins root only.
 	configDirB := t.TempDir()
-	clientB, err := protocol.Init(configDirB)
+	clientB, _, err := protocol.Init(configDirB)
 	if err != nil {
 		t.Fatalf("Init B: %v", err)
 	}

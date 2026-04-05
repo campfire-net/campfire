@@ -16,7 +16,7 @@ func setupRegisterTestCampfire(t *testing.T) (*protocol.Client, string, string) 
 	t.Helper()
 
 	configDir := t.TempDir()
-	client, err := protocol.Init(configDir)
+	client, _, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}

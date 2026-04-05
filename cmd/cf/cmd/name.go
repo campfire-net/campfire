@@ -39,10 +39,11 @@ var nameRegisterCmd = &cobra.Command{
 
 		ttl, _ := cmd.Flags().GetInt("ttl")
 
-		client, err := protocol.Init(CFHome())
+		client, initResult, err := protocol.Init(CFHome())
 		if err != nil {
 			return fmt.Errorf("initializing client: %w", err)
 		}
+		printInitResultVerbose(initResult)
 		defer client.Close()
 
 		var opts *naming.RegisterOptions
@@ -72,10 +73,11 @@ var nameUnregisterCmd = &cobra.Command{
 			return err
 		}
 
-		client, err := protocol.Init(CFHome())
+		client, initResult, err := protocol.Init(CFHome())
 		if err != nil {
 			return fmt.Errorf("initializing client: %w", err)
 		}
+		printInitResultVerbose(initResult)
 		defer client.Close()
 
 		if err := naming.Unregister(context.Background(), client, rootID, name); err != nil {
@@ -97,10 +99,11 @@ var nameListCmd = &cobra.Command{
 			return err
 		}
 
-		client, err := protocol.Init(CFHome())
+		client, initResult, err := protocol.Init(CFHome())
 		if err != nil {
 			return fmt.Errorf("initializing client: %w", err)
 		}
+		printInitResultVerbose(initResult)
 		defer client.Close()
 
 		regs, err := naming.List(context.Background(), client, rootID)
@@ -161,8 +164,9 @@ var nameLookupCmd = &cobra.Command{
 		operatorRoot, _ := naming.LoadOperatorRoot(CFHome())
 		registryRootID := getRootRegistryID()
 		if operatorRoot != nil || registryRootID != "" {
-			client, err := protocol.Init(CFHome())
+			client, initResult, err := protocol.Init(CFHome())
 			if err == nil {
+				printInitResultVerbose(initResult)
 				defer client.Close()
 
 				// Step 3: Try naming resolve via operator root.

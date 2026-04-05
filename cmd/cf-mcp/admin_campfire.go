@@ -137,7 +137,7 @@ func startAdminCampfire(ctx context.Context, cfg *adminCampfireConfig, cfHome st
 		return fmt.Errorf("admin campfire: forge client is required but nil")
 	}
 
-	client, err := protocol.Init(cfHome)
+	client, _, err := protocol.Init(cfHome)
 	if err != nil {
 		return fmt.Errorf("admin campfire: protocol init: %w", err)
 	}
