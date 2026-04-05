@@ -31,6 +31,15 @@ func setupDispatchEnv(t *testing.T, declPayload []byte) (campfireID string, clea
 	// Override CF_HOME to use temp dir
 	t.Setenv("CF_HOME", dir)
 	cfHome = "" // reset cached value
+	// Override CF_BEACON_DIR so DefaultBeaconDir() returns an empty directory
+	// instead of ~/.campfire/beacons. Without this, beacon.Scan walks the real
+	// beacon directory and Ed25519-verifies every file there, causing tests to
+	// time out when many beacon files are present.
+	beaconDir := filepath.Join(dir, "beacons")
+	if err := os.MkdirAll(beaconDir, 0700); err != nil {
+		t.Fatalf("creating beacon dir: %v", err)
+	}
+	t.Setenv("CF_BEACON_DIR", beaconDir)
 
 	// Generate and save identity
 	id, err := identity.Generate()
