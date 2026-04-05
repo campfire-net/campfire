@@ -327,10 +327,11 @@ func consultRootsForName(name string, jp *naming.JoinPolicy) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	client, err := protocol.Init(CFHome())
+	client, initResult, err := protocol.Init(CFHome())
 	if err != nil {
 		return nil, fmt.Errorf("init protocol client for consult: %w", err)
 	}
+	printInitResultVerbose(initResult)
 	defer client.Close()
 
 	type queryPayload struct {
@@ -378,10 +379,11 @@ func resolveNameInRoot(rootID, name string) (string, error) {
 		return "", fmt.Errorf("invalid root campfire ID %q: must be 64 hex characters", rootID)
 	}
 
-	client, err := protocol.Init(CFHome())
+	client, initResult, err := protocol.Init(CFHome())
 	if err != nil {
 		return "", err
 	}
+	printInitResultVerbose(initResult)
 	defer client.Close()
 
 	resp, err := naming.Resolve(context.Background(), client, rootID, name)
@@ -395,10 +397,11 @@ func resolveNameInRoot(rootID, name string) (string, error) {
 // Uses NewResolverFromClient (direct-read) instead of the deprecated CLITransport.
 // protocol.Init opens its own store internally, so no store parameter is needed.
 func resolveNamingURI(uri string) (string, error) {
-	client, err := protocol.Init(CFHome())
+	client, initResult, err := protocol.Init(CFHome())
 	if err != nil {
 		return "", fmt.Errorf("initializing protocol client for name resolution: %w", err)
 	}
+	printInitResultVerbose(initResult)
 	defer client.Close()
 
 	rootID := getRootRegistryID()

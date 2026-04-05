@@ -342,7 +342,7 @@ func TestResolveByName_FSWalkPath(t *testing.T) {
 	t.Setenv("CF_BEACON_DIR", t.TempDir())
 
 	// Build the protocol client from cfHomeDir.
-	client, err := protocol.Init(cfHomeDir)
+	client, _, err := protocol.Init(cfHomeDir)
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestResolveByName_FallbackNoPolicy(t *testing.T) {
 	t.Setenv("CF_BEACON_DIR", t.TempDir())
 
 	// Build the protocol client.
-	client, err := protocol.Init(cfHomeDir)
+	client, _, err := protocol.Init(cfHomeDir)
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestResolveCampfireID_NamingViaProjectRoot(t *testing.T) {
 	defer os.Setenv("CF_BEACON_DIR", origBeaconDir)
 
 	// Create a protocol client (this is the "sysop" who owns the root).
-	client, err := protocol.Init(cfHomeDir)
+	client, _, err := protocol.Init(cfHomeDir)
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}
@@ -602,7 +602,7 @@ func TestAutoJoin_OpenCampfireJoinedOnResolution(t *testing.T) {
 
 	// --- Creator: create root and target campfires, register the name. ---
 	transportDir := t.TempDir()
-	creatorClient, err := protocol.Init(creatorHome)
+	creatorClient, _, err := protocol.Init(creatorHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (creator): %v", err)
 	}
@@ -690,7 +690,7 @@ func TestAutoJoin_InviteOnlyCampfireNotJoined(t *testing.T) {
 	creatorHome, resolverHome, beaconDir := setupAutoJoinEnv(t)
 
 	transportDir := t.TempDir()
-	creatorClient, err := protocol.Init(creatorHome)
+	creatorClient, _, err := protocol.Init(creatorHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (creator): %v", err)
 	}
@@ -768,7 +768,7 @@ func TestAutoJoin_AlreadyMemberNoRejoin(t *testing.T) {
 	creatorHome, resolverHome, beaconDir := setupAutoJoinEnv(t)
 
 	transportDir := t.TempDir()
-	creatorClient, err := protocol.Init(creatorHome)
+	creatorClient, _, err := protocol.Init(creatorHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (creator): %v", err)
 	}
@@ -858,7 +858,7 @@ func setupConsultCampfire(t *testing.T, creatorHome, callerHome string) (consult
 	transportDir = t.TempDir()
 
 	// Creator: create the consult campfire.
-	creatorClient, err := protocol.Init(creatorHome)
+	creatorClient, _, err := protocol.Init(creatorHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (creator): %v", err)
 	}
@@ -875,7 +875,7 @@ func setupConsultCampfire(t *testing.T, creatorHome, callerHome string) (consult
 	consultID = result.CampfireID
 
 	// Caller: join the consult campfire so consultRootsForName can send.
-	callerClient, err := protocol.Init(callerHome)
+	callerClient, _, err := protocol.Init(callerHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (caller): %v", err)
 	}
@@ -974,7 +974,7 @@ func TestConsultRootsForName_ReturnsRootsFromResponder(t *testing.T) {
 	expectedRoot := rootID.PublicKeyHex()
 
 	// Creator's client acts as the naming agent / responder.
-	respClient, err := protocol.Init(creatorHome)
+	respClient, _, err := protocol.Init(creatorHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (responder): %v", err)
 	}
@@ -1020,7 +1020,7 @@ func TestConsultRootsForName_MultipleRoots(t *testing.T) {
 	}
 	expectedRoots := []string{root1.PublicKeyHex(), root2.PublicKeyHex()}
 
-	respClient, err := protocol.Init(creatorHome)
+	respClient, _, err := protocol.Init(creatorHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (responder): %v", err)
 	}
@@ -1138,7 +1138,7 @@ func TestConsultRootsForName_NotMemberReturnsError(t *testing.T) {
 	t.Setenv("CF_CONSULT_TIMEOUT", "1s")
 
 	transportDir := t.TempDir()
-	creatorClient, err := protocol.Init(creatorHome)
+	creatorClient, _, err := protocol.Init(creatorHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (creator): %v", err)
 	}
@@ -1190,7 +1190,7 @@ func TestResolveByName_ConsultPath(t *testing.T) {
 	consultID, _ := setupConsultCampfire(t, creatorHome, callerHome)
 
 	// Creator: create a naming root and target campfire, register a name.
-	creatorClient, err := protocol.Init(creatorHome)
+	creatorClient, _, err := protocol.Init(creatorHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (creator): %v", err)
 	}
@@ -1223,7 +1223,7 @@ func TestResolveByName_ConsultPath(t *testing.T) {
 	}
 
 	// Caller: join the naming root so resolveNameInRoot can read naming records.
-	callerClient, err := protocol.Init(callerHome)
+	callerClient, _, err := protocol.Init(callerHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (caller): %v", err)
 	}
@@ -1249,7 +1249,7 @@ func TestResolveByName_ConsultPath(t *testing.T) {
 	}
 
 	// Responder: creator's client plays the naming agent role.
-	respClient, err := protocol.Init(creatorHome)
+	respClient, _, err := protocol.Init(creatorHome)
 	if err != nil {
 		t.Fatalf("protocol.Init (responder): %v", err)
 	}
@@ -1359,7 +1359,7 @@ func TestResolveNamingURI_FullResolution(t *testing.T) {
 	t.Setenv("CF_ROOT_REGISTRY", "") // will be set after root creation
 
 	// Create an identity and a protocol client.
-	client, err := protocol.Init(cfHomeDir)
+	client, _, err := protocol.Init(cfHomeDir)
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}
@@ -1415,7 +1415,7 @@ func TestResolveNamingURI_MultiSegment(t *testing.T) {
 	t.Setenv("CF_BEACON_DIR", t.TempDir())
 	t.Setenv("CF_ROOT_REGISTRY", "")
 
-	client, err := protocol.Init(cfHomeDir)
+	client, _, err := protocol.Init(cfHomeDir)
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}
@@ -1482,7 +1482,7 @@ func TestResolveNamingURI_UnknownName(t *testing.T) {
 	t.Setenv("CF_HOME", cfHomeDir)
 	t.Setenv("CF_BEACON_DIR", t.TempDir())
 
-	client, err := protocol.Init(cfHomeDir)
+	client, _, err := protocol.Init(cfHomeDir)
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}

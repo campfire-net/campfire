@@ -47,7 +47,7 @@ func TestNamingLocalityE2E(t *testing.T) {
 		t.Fatalf("save operator identity: %v", err)
 	}
 
-	operatorClient, err := protocol.Init(operatorHome)
+	operatorClient, _, err := protocol.Init(operatorHome)
 	if err != nil {
 		t.Fatalf("operator Init: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestNamingLocalityE2E(t *testing.T) {
 	// -------------------------------------------------------------------------
 	// Step 7: Agent creates its protocol.Client and loads join policy
 	// -------------------------------------------------------------------------
-	agentClient, err := protocol.Init(agentHome)
+	agentClient, _, err := protocol.Init(agentHome)
 	if err != nil {
 		t.Fatalf("agent Init: %v", err)
 	}
