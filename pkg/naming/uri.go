@@ -3,11 +3,15 @@
 package naming
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/campfire-net/campfire/pkg/beacon"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 )
 
 // MaxDepth is the maximum number of dot-separated segments in a campfire name.
@@ -36,6 +40,12 @@ const (
 	URIKindAlias
 	// URIKindDirect is a direct 64-hex campfire ID (e.g. cf://<64 hex chars>).
 	URIKindDirect
+	// URIKindBeacon is a beacon URI containing a base64-encoded signed beacon.
+	// Accepted formats: beacon:<base64> or cf+beacon://<base64>.
+	// The campfire ID is extracted from the beacon after signature verification.
+	// SECURITY: the transport hint from the beacon MUST only be used for join
+	// operations -- never for send/read on existing memberships (SSRF prevention).
+	URIKindBeacon
 )
 
 // URI represents a parsed cf:// URI.
@@ -50,8 +60,13 @@ type URI struct {
 	Segments []string
 	// Alias is the local alias name (without ~), populated for URIKindAlias.
 	Alias string
-	// CampfireID is the direct campfire ID, populated for URIKindDirect.
+	// CampfireID is the direct campfire ID, populated for URIKindDirect and
+	// URIKindBeacon (extracted from the verified beacon payload).
 	CampfireID string
+	// BeaconData holds the raw base64-encoded beacon string for URIKindBeacon.
+	// Callers that need the full beacon should decode and unmarshal this field.
+	// SECURITY: transport hint from beacon is ONLY for join, not send/read.
+	BeaconData string
 	// Path is the slash-separated resource path (e.g. "trending").
 	// Empty if the URI has no path component.
 	Path string
@@ -68,10 +83,29 @@ type URI struct {
 //   - Null bytes rejected
 //   - Non-ASCII rejected in name/path portions
 //   - Canonicalized to lowercase
+//
+// Beacon URI formats accepted (case-insensitive prefix):
+//   - beacon:<base64>      (canonical)
+//   - cf+beacon://<base64> (alternative)
+//
+// SECURITY: for beacon URIs, the transport hint MUST only be used during join,
+// not during send/read operations on existing memberships (SSRF prevention).
 func ParseURI(raw string) (*URI, error) {
 	// Null byte check
 	if strings.ContainsRune(raw, 0) {
 		return nil, fmt.Errorf("null byte in URI")
+	}
+
+	// --- Beacon URI: beacon:<base64> ---
+	rawLower := strings.ToLower(raw)
+	if strings.HasPrefix(rawLower, "beacon:") {
+		data := raw[len("beacon:"):]
+		return parseBeaconData(data)
+	}
+	// --- Beacon URI: cf+beacon://<base64> ---
+	if strings.HasPrefix(rawLower, "cf+beacon://") {
+		data := raw[len("cf+beacon://"):]
+		return parseBeaconData(data)
 	}
 
 	// Canonicalize to lowercase
@@ -212,6 +246,54 @@ func ParseURI(raw string) (*URI, error) {
 	}, nil
 }
 
+// parseBeaconData decodes and verifies a base64-encoded beacon payload,
+// returning a URIKindBeacon URI with the campfire ID extracted from the beacon.
+//
+// SECURITY: the beacon signature MUST verify before the campfire ID is trusted.
+// Tampered beacons are rejected. The transport hint in BeaconData MUST only be
+// used for join operations -- never for send/read on existing memberships.
+func parseBeaconData(data string) (*URI, error) {
+	if data == "" {
+		return nil, fmt.Errorf("empty beacon data")
+	}
+	// Decode base64 (URL-safe without padding is canonical for URI embedding;
+	// also accept padded and standard variants for interoperability).
+	var raw []byte
+	var err error
+	for _, enc := range []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	} {
+		raw, err = enc.DecodeString(data)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("beacon base64 decode: %w", err)
+	}
+
+	// Unmarshal the beacon.
+	var b beacon.Beacon
+	if err := cfencoding.Unmarshal(raw, &b); err != nil {
+		return nil, fmt.Errorf("beacon decode: %w", err)
+	}
+
+	// SECURITY: verify the beacon signature before trusting the campfire ID.
+	// A tampered beacon (modified transport, description, etc.) must be rejected.
+	if !b.Verify() {
+		return nil, fmt.Errorf("beacon signature verification failed")
+	}
+
+	return &URI{
+		Kind:       URIKindBeacon,
+		CampfireID: b.CampfireIDHex(),
+		BeaconData: data,
+	}, nil
+}
+
 // hexRe matches exactly 64 lowercase hex characters.
 var hexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -252,7 +334,11 @@ func validatePath(path string) error {
 }
 
 // String returns the canonical string representation of the URI.
+// For beacon URIs, returns the canonical beacon:<base64> form.
 func (u *URI) String() string {
+	if u.Kind == URIKindBeacon {
+		return "beacon:" + u.BeaconData
+	}
 	var sb strings.Builder
 	sb.WriteString("cf://")
 	switch u.Kind {
@@ -294,9 +380,12 @@ func (u *URI) Args() map[string]string {
 	return args
 }
 
-// IsCampfireURI returns true if the string looks like a cf:// URI.
+// IsCampfireURI returns true if the string looks like a cf://, beacon:, or cf+beacon:// URI.
 func IsCampfireURI(s string) bool {
-	return strings.HasPrefix(strings.ToLower(s), "cf://")
+	lower := strings.ToLower(s)
+	return strings.HasPrefix(lower, "cf://") ||
+		strings.HasPrefix(lower, "beacon:") ||
+		strings.HasPrefix(lower, "cf+beacon://")
 }
 
 // LooksLikeName returns true if s looks like a bare dot-separated campfire name

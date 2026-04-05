@@ -29,7 +29,7 @@ func isValidCampfireID(id string) bool {
 // It searches cf:// URIs first, then local aliases, then the membership table and beacon directories.
 // Returns an error if the prefix is ambiguous or matches nothing.
 func resolveCampfireID(prefix string, s store.Store) (string, error) {
-	// Handle cf:// URIs — may be named, alias, or direct
+	// Handle cf://, beacon:, and cf+beacon:// URIs -- may be named, alias, direct, or beacon
 	if naming.IsCampfireURI(prefix) {
 		parsed, err := naming.ParseURI(prefix)
 		if err != nil {
@@ -41,6 +41,11 @@ func resolveCampfireID(prefix string, s store.Store) (string, error) {
 		case naming.URIKindAlias:
 			aliases := naming.NewAliasStore(CFHome())
 			return aliases.Get(parsed.Alias)
+		case naming.URIKindBeacon:
+			// CampfireID was extracted and signature-verified by ParseURI.
+			// The transport hint (BeaconData) is available to callers that need
+			// it for join operations -- resolveCampfireID only returns the ID.
+			return parsed.CampfireID, nil
 		default:
 			return resolveNamingURI(prefix)
 		}
