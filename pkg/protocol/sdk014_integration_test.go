@@ -83,7 +83,7 @@ func TestSDK014_IdentityAsInfrastructure(t *testing.T) {
 
 	// Re-open center client (uses existing identity + store from centerDir).
 	// Walk-up finds centerDir/.campfire/center in the same dir — triggers delegation.
-	centerClient,_, err := protocol.Init(centerDir)
+	centerClient,_, err := protocol.Init(centerDir, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("Phase 1: center re-Init: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestSDK014_IdentityAsInfrastructure(t *testing.T) {
 	// The sentinel is in centerDir/.campfire/center, so Init finds it immediately.
 	// context-key.pub may not exist yet (bootstrap used WithNoWalkUp).
 	centerClient.Close()
-	centerClient2,_, err := protocol.Init(centerDir)
+	centerClient2,_, err := protocol.Init(centerDir, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("Phase 2: Init with walk-up: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestSDK014_IdentityAsInfrastructure(t *testing.T) {
 	}
 
 	authCallCount := 0
-	siblingClient,_, err := protocol.Init(siblingDir, protocol.WithAuthorizeFunc(func(desc string) (bool, error) {
+	siblingClient,_, err := protocol.Init(siblingDir, protocol.WithWalkUp(), protocol.WithAuthorizeFunc(func(desc string) (bool, error) {
 		authCallCount++
 		return true, nil
 	}))
@@ -270,7 +270,7 @@ func TestSDK014_IdentityAsInfrastructure(t *testing.T) {
 	// Second Init must NOT fire authorize hook again.
 	siblingClient.Close()
 	secondCount := 0
-	siblingClient3,_, err := protocol.Init(siblingDir, protocol.WithAuthorizeFunc(func(d string) (bool, error) {
+	siblingClient3,_, err := protocol.Init(siblingDir, protocol.WithWalkUp(), protocol.WithAuthorizeFunc(func(d string) (bool, error) {
 		secondCount++
 		return true, nil
 	}))

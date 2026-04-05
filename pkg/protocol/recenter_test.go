@@ -34,7 +34,7 @@ func recenterTestEnv(t *testing.T) (cfHome string, centerID string) {
 	}
 
 	// Bootstrap: create identity and store (no center sentinel yet).
-	bootstrap,_, err := protocol.Init(cfHome)
+	bootstrap,_, err := protocol.Init(cfHome, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("bootstrap Init: %v", err)
 	}
@@ -93,7 +93,7 @@ func setupCenterForRecentering(t *testing.T, cfHome string) string {
 	beaconDir := t.TempDir()
 
 	// Bootstrap: create the store and identity first (no center sentinel yet).
-	bootstrap,_, err := protocol.Init(cfHome)
+	bootstrap,_, err := protocol.Init(cfHome, protocol.WithWalkUp())
 	if err != nil {
 		t.Fatalf("bootstrap Init: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestRecenteringPromptsOnce(t *testing.T) {
 	}
 
 	// Phase 2: Init with authorize hook — should fire the hook.
-	c1,_, err := protocol.Init(cfHome, protocol.WithAuthorizeFunc(authorizeFn))
+	c1,_, err := protocol.Init(cfHome, protocol.WithWalkUp(), protocol.WithAuthorizeFunc(authorizeFn))
 	if err != nil {
 		t.Fatalf("first Init: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRecenteringPromptsOnce(t *testing.T) {
 	}
 
 	// Phase 3: second Init — should NOT fire the hook (already claimed).
-	c2,_, err := protocol.Init(cfHome, protocol.WithAuthorizeFunc(authorizeFn))
+	c2,_, err := protocol.Init(cfHome, protocol.WithWalkUp(), protocol.WithAuthorizeFunc(authorizeFn))
 	if err != nil {
 		t.Fatalf("second Init: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestRecenteringTwoSigClaim(t *testing.T) {
 		return true, nil
 	}
 
-	client,_, err := protocol.Init(cfHome, protocol.WithAuthorizeFunc(authorizeFn))
+	client,_, err := protocol.Init(cfHome, protocol.WithWalkUp(), protocol.WithAuthorizeFunc(authorizeFn))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestRecenteringDescriptionReadable(t *testing.T) {
 		return true, nil
 	}
 
-	client,_, err := protocol.Init(cfHome, protocol.WithAuthorizeFunc(authorizeFn))
+	client,_, err := protocol.Init(cfHome, protocol.WithWalkUp(), protocol.WithAuthorizeFunc(authorizeFn))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestRecenteringDenied(t *testing.T) {
 		return false, nil // deny
 	}
 
-	client,_, err := protocol.Init(cfHome, protocol.WithAuthorizeFunc(authorizeFn))
+	client,_, err := protocol.Init(cfHome, protocol.WithWalkUp(), protocol.WithAuthorizeFunc(authorizeFn))
 	if err != nil {
 		t.Fatalf("Init should succeed even when denied: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestRecenteringAlreadyLinked(t *testing.T) {
 
 	// Phase 1: first Init with authorization — posts the claim.
 	firstCallCount := 0
-	c1,_, err := protocol.Init(cfHome, protocol.WithAuthorizeFunc(func(desc string) (bool, error) {
+	c1,_, err := protocol.Init(cfHome, protocol.WithWalkUp(), protocol.WithAuthorizeFunc(func(desc string) (bool, error) {
 		firstCallCount++
 		return true, nil
 	}))
@@ -379,7 +379,7 @@ func TestRecenteringAlreadyLinked(t *testing.T) {
 	// Phase 3: second Init — should find the delegation cert in the center
 	// campfire and NOT call the authorize hook.
 	secondCallCount := 0
-	c2,_, err := protocol.Init(cfHome, protocol.WithAuthorizeFunc(func(desc string) (bool, error) {
+	c2,_, err := protocol.Init(cfHome, protocol.WithWalkUp(), protocol.WithAuthorizeFunc(func(desc string) (bool, error) {
 		secondCallCount++
 		return true, nil
 	}))
