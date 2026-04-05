@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -161,12 +162,19 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 
 	// Write campfire:member-joined system message to transport (idempotent with sync).
 	if !alreadyOnDisk {
-		sysMsg, msgErr := message.NewMessage(
-			state.PrivateKey, state.PublicKey,
-			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, agentID.PublicKeyHex(), now)),
-			[]string{campfire.TagMemberJoined},
-			nil,
+		cfSigner, msgErr := message.NewEd25519Signer(
+			ed25519.PrivateKey(state.PrivateKey),
+			ed25519.PublicKey(state.PublicKey),
 		)
+		var sysMsg *message.Message
+		if msgErr == nil {
+			sysMsg, msgErr = message.NewMessage(
+				cfSigner,
+				[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, agentID.PublicKeyHex(), now)),
+				[]string{campfire.TagMemberJoined},
+				nil,
+			)
+		}
 		if msgErr == nil {
 			updatedMembers, _ := tr.ListMembers(campfireID)
 			cf := campfireFromState(state, updatedMembers)
@@ -189,6 +197,9 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 	// Sync messages immediately so convention declarations are available
 	// without requiring a separate cf read.
 	syncCampfire(campfireID, m, agentID, s)
+
+	// Auto-send identity:profile if the agent has a display name (best-effort).
+	maybeSendProfileMessage(campfireID, agentID, s)
 
 	// Compare fingerprints against local policy (Trust v0.2 §5.3).
 	report := compareJoinedCampfire(s, campfireID)
@@ -460,9 +471,12 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 	tr.RegisterCampfire(campfireID, issueNumber)
 
 	// Post a campfire:join-request signed message so the creator can observe it.
+	joinSigner, err := message.NewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
+	if err != nil {
+		return fmt.Errorf("creating signer for join-request: %w", err)
+	}
 	joinReqMsg, err := message.NewMessage(
-		agentID.PrivateKey,
-		agentID.PublicKey,
+		joinSigner,
 		[]byte(fmt.Sprintf(`{"joiner":"%s"}`, agentID.PublicKeyHex())),
 		[]string{campfire.TagJoinRequest},
 		nil,

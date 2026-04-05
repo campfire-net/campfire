@@ -115,7 +115,7 @@ func TestViewRead_RespectsCompaction(t *testing.T) {
 // addTestMessageRaw adds a message with a raw string payload (for compaction event testing).
 func addTestMessageRaw(t *testing.T, s store.Store, agentID *identity.Identity, campfireID string, payload string, tags []string, timestamp int64) string {
 	t.Helper()
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, []string{})
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey), []byte(payload), tags, []string{})
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestFilterNATMessages_ByTag(t *testing.T) {
 	}
 
 	makeNATMsg := func(tags []string, payload string) message.Message {
-		msg, err := message.NewMessage(id1.PrivateKey, id1.PublicKey, []byte(payload), tags, nil)
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(id1.PrivateKey, id1.PublicKey), []byte(payload), tags, nil)
 		if err != nil {
 			t.Fatalf("creating message: %v", err)
 		}
@@ -326,10 +326,8 @@ func TestFilterNATMessages_BySender(t *testing.T) {
 	}
 
 	makeMsg := func(id *identity.Identity, payload string) message.Message {
-		msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte(payload), []string{"test"}, nil)
-		if err != nil {
-			t.Fatalf("creating message: %v", err)
-		}
+		msg := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte(payload), []string{"test"}, nil)
+
 		return *msg
 	}
 
@@ -356,10 +354,8 @@ func TestFilterNATMessages_NoFilters(t *testing.T) {
 	}
 
 	makeMsg := func(payload string) message.Message {
-		msg, err := message.NewMessage(id1.PrivateKey, id1.PublicKey, []byte(payload), []string{"test"}, nil)
-		if err != nil {
-			t.Fatalf("creating message: %v", err)
-		}
+		msg := newTestMessage(t, id1.PrivateKey, id1.PublicKey, []byte(payload), []string{"test"}, nil)
+
 		return *msg
 	}
 
@@ -453,7 +449,7 @@ func TestRunNATPoll_SenderFilterApplied(t *testing.T) {
 // storeNATTestMessageWithTags stores a signed message for NAT poll filter tests.
 func storeNATTestMessageWithTags(t *testing.T, s store.Store, campfireID string, id *identity.Identity, payload string, tags []string) store.MessageRecord {
 	t.Helper()
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte(payload), tags, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte(payload), tags, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

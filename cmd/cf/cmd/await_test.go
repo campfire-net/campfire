@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
@@ -49,10 +48,8 @@ func TestFindFulfillment(t *testing.T) {
 	}
 
 	// Send a future message.
-	futureMsg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("Need ruling"), []string{"escalation", "future"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	futureMsg := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte("Need ruling"), []string{"escalation", "future"}, nil)
+
 	if _, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, futureMsg, store.NowNano())); err != nil {
 		t.Fatal(err)
 	}
@@ -67,10 +64,8 @@ func TestFindFulfillment(t *testing.T) {
 	}
 
 	// Send an unrelated message (not a fulfillment).
-	unrelated, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("Unrelated"), []string{"status"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	unrelated := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte("Unrelated"), []string{"status"}, nil)
+
 	if _, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, unrelated, store.NowNano())); err != nil {
 		t.Fatal(err)
 	}
@@ -85,10 +80,8 @@ func TestFindFulfillment(t *testing.T) {
 	}
 
 	// Send a fulfillment: has "fulfills" tag and the future's ID in antecedents.
-	fulfillMsg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("Use optimistic locking"), []string{"decision", "fulfills"}, []string{futureMsg.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fulfillMsg := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte("Use optimistic locking"), []string{"decision", "fulfills"}, []string{futureMsg.ID})
+
 	if _, err := s.AddMessage(store.MessageRecordFromMessage(campfireID, fulfillMsg, store.NowNano())); err != nil {
 		t.Fatal(err)
 	}
@@ -125,22 +118,16 @@ func TestFindFulfillmentWrongTarget(t *testing.T) {
 	}
 
 	// Send two future messages.
-	future1, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("Question 1"), []string{"future"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	future2, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("Question 2"), []string{"future"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	future1 := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte("Question 1"), []string{"future"}, nil)
+
+	future2 := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte("Question 2"), []string{"future"}, nil)
+
 	s.AddMessage(store.MessageRecordFromMessage(campfireID, future1, store.NowNano()))
 	s.AddMessage(store.MessageRecordFromMessage(campfireID, future2, store.NowNano()))
 
 	// Fulfill future2 only.
-	fulfill, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("Answer 2"), []string{"fulfills"}, []string{future2.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fulfill := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte("Answer 2"), []string{"fulfills"}, []string{future2.ID})
+
 	s.AddMessage(store.MessageRecordFromMessage(campfireID, fulfill, store.NowNano()))
 
 	// Searching for future1's fulfillment should return nil.
@@ -209,10 +196,8 @@ func TestAwaitTimeout(t *testing.T) {
 	id, _ := identity.Generate()
 
 	// Send a future message.
-	futureMsg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("Question"), []string{"future"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	futureMsg := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte("Question"), []string{"future"}, nil)
+
 	s.AddMessage(store.MessageRecordFromMessage(campfireID, futureMsg, store.NowNano()))
 
 	// awaitFulfillment should return nil (no fulfillment posted).

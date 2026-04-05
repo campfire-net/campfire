@@ -92,10 +92,8 @@ func TestFollowFilesystemPicksUpNewMessages(t *testing.T) {
 	// Write a message to the filesystem transport BEFORE starting follow.
 	// Messages must have at least one provenance hop so syncFromFilesystem accepts them.
 	transport := fs.New(tmpDir)
-	msg1, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("first message"), []string{"test"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msg1 := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte("first message"), []string{"test"}, nil)
+
 	if err := msg1.AddHop(id.PrivateKey, id.PublicKey, nil, 1, "open", []string{}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -119,10 +117,8 @@ func TestFollowFilesystemPicksUpNewMessages(t *testing.T) {
 	firstTS := msgs[0].Timestamp
 
 	// Now simulate what the follow loop does: sync again after a new message arrives.
-	msg2, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("second message"), []string{"test"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msg2 := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte("second message"), []string{"test"}, nil)
+
 	if err := msg2.AddHop(id.PrivateKey, id.PublicKey, nil, 1, "open", []string{}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +193,7 @@ func TestFollowLoopConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("test"), nil, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("test"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

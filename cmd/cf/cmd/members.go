@@ -52,17 +52,26 @@ var membersCmd = &cobra.Command{
 			return fmt.Errorf("listing members: %w", err)
 		}
 
+		// Populate profile cache from stored identity:profile messages (best-effort).
+		populateProfileCacheFromStore(s, campfireID)
+
 		if jsonOutput {
 			type entry struct {
-				PublicKey string `json:"public_key"`
-				JoinedAt string `json:"joined_at"`
+				PublicKey   string `json:"public_key"`
+				JoinedAt    string `json:"joined_at"`
+				DisplayName string `json:"display_name,omitempty"`
 			}
 			var entries []entry
 			for _, mem := range members {
-				entries = append(entries, entry{
-					PublicKey: fmt.Sprintf("%x", mem.PublicKey),
-					JoinedAt: time.Unix(0, mem.JoinedAt).Format(time.RFC3339),
-				})
+				pubkeyHex := fmt.Sprintf("%x", mem.PublicKey)
+				e := entry{
+					PublicKey: pubkeyHex,
+					JoinedAt:  time.Unix(0, mem.JoinedAt).Format(time.RFC3339),
+				}
+				if name := sessionProfileCache.Lookup(pubkeyHex); name != "" {
+					e.DisplayName = name
+				}
+				entries = append(entries, e)
 			}
 			if entries == nil {
 				entries = []entry{}
@@ -83,7 +92,12 @@ var membersCmd = &cobra.Command{
 			if len(short) > 12 {
 				short = short[:12]
 			}
-			fmt.Printf("%s  joined %s\n", short, time.Unix(0, mem.JoinedAt).Format("2006-01-02 15:04:05"))
+			line := short
+			if name := sessionProfileCache.Lookup(idHex); name != "" {
+				// Display name is UNVERIFIED — show pubkey alongside.
+				line = fmt.Sprintf("%s (%s)", name, short)
+			}
+			fmt.Printf("%s  joined %s\n", line, time.Unix(0, mem.JoinedAt).Format("2006-01-02 15:04:05"))
 		}
 		return nil
 	},

@@ -13,6 +13,11 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
+// sessionProfileCache is an in-memory display name cache for the current session.
+// It is populated from identity:profile messages encountered during read operations.
+// Display names are UNVERIFIED — self-declared by senders.
+var sessionProfileCache = protocol.NewProfileCache()
+
 // validFieldNames is the set of field names accepted by --fields.
 var validFieldNames = map[string]bool{
 	"id":          true,
@@ -101,6 +106,9 @@ func printMessagesWithFields(allMessages []protocol.Message, s store.Store, fiel
 		return
 	}
 
+	// Populate profile cache from incoming messages before rendering.
+	sessionProfileCache.LoadFromMessages(allMessages)
+
 	// Default path: nil fields means all fields, use the original output format exactly.
 	if fields == nil {
 		for _, m := range allMessages {
@@ -121,6 +129,9 @@ func printMessagesWithFields(allMessages []protocol.Message, s store.Store, fiel
 					campfireShort = campfireShort[:12]
 				}
 				senderDisplay = "@" + campfireShort + " (key: " + senderShort + ")"
+			} else if displayName := sessionProfileCache.Lookup(m.Sender); displayName != "" {
+				// Display name is UNVERIFIED — always show pubkey prefix alongside.
+				senderDisplay = displayName + " (agent:" + senderShort + ")"
 			} else {
 				senderDisplay = "agent:" + senderShort
 			}
