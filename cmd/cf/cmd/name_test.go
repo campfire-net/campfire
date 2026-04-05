@@ -52,7 +52,7 @@ func setupNameTestEnv(t *testing.T) (dir string, client *protocol.Client, rootCa
 	}
 
 	// Open protocol client for direct assertions.
-	c, err := protocol.Init(dir)
+	c, _, err := protocol.Init(dir)
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}

@@ -30,7 +30,7 @@ func TestHierarchicalResolve(t *testing.T) {
 	ctx := context.Background()
 
 	// Client A (sysop): creates all campfires and registers names.
-	clientA, err := protocol.Init(t.TempDir())
+	clientA, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("Init A: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestHierarchicalResolve(t *testing.T) {
 	}
 
 	// Client B (resolver): joins root only.
-	clientB, err := protocol.Init(t.TempDir())
+	clientB, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("Init B: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestHierarchicalResolveInviteOnly(t *testing.T) {
 	ctx := context.Background()
 
 	// Client A (sysop): creates root (open) and private (invite-only).
-	clientA, err := protocol.Init(t.TempDir())
+	clientA, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("Init A: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestHierarchicalResolveInviteOnly(t *testing.T) {
 	}
 
 	// Client B: joins root only.
-	clientB, err := protocol.Init(t.TempDir())
+	clientB, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("Init B: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestHierarchicalResolveTwoLevels(t *testing.T) {
 	ctx := context.Background()
 
 	// Client A (sysop): creates all campfires.
-	clientA, err := protocol.Init(t.TempDir())
+	clientA, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("Init A: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestHierarchicalResolveTwoLevels(t *testing.T) {
 	}
 
 	// Client B: joins root only.
-	clientB, err := protocol.Init(t.TempDir())
+	clientB, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("Init B: %v", err)
 	}
