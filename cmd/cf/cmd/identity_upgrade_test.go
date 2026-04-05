@@ -18,7 +18,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
@@ -255,16 +254,7 @@ func TestIdentityUpgrade_IsUpgradeIdentityGenesis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
-	genesisMsg, err := message.NewMessage(
-		selfCF.PrivateKey,
-		selfCF.PublicKey,
-		declPayload,
-		[]string{convention.ConventionOperationTag},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("message.NewMessage: %v", err)
-	}
+	genesisMsg := newTestMessage(t, selfCF.PrivateKey, selfCF.PublicKey, declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err := transport.WriteMessage(campfireID, genesisMsg); err != nil {
 		t.Fatalf("transport.WriteMessage: %v", err)
 	}

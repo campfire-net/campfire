@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 
+	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
@@ -38,4 +41,41 @@ func requireAgentAndStore() (*identity.Identity, store.Store, error) {
 		return nil, nil, fmt.Errorf("opening store: %w", err)
 	}
 	return agentID, s, nil
+}
+
+// populateProfileCacheFromStore loads identity:profile messages for a campfire from
+// the local store and populates sessionProfileCache. Best-effort: errors are ignored.
+func populateProfileCacheFromStore(s store.Store, campfireID string) {
+	records, err := s.ListMessages(campfireID, 0, store.MessageFilter{
+		Tags: []string{"identity:profile"},
+	})
+	if err != nil {
+		return
+	}
+	msgs := make([]protocol.Message, len(records))
+	for i, r := range records {
+		msgs[i] = protocol.MessageFromRecord(r)
+	}
+	sessionProfileCache.LoadFromMessages(msgs)
+}
+
+// maybeSendProfileMessage auto-sends an identity:profile message to campfireID
+// if the agent has a display name stored in profile.json. Best-effort: errors
+// are silently ignored so join/create continue regardless.
+// Display names are SELF-DECLARED and UNVERIFIED.
+func maybeSendProfileMessage(campfireID string, agentID *identity.Identity, s store.Store) {
+	profile := protocol.LoadProfile(CFHome())
+	if profile.DisplayName == "" {
+		return
+	}
+	payload, err := json.Marshal(map[string]string{"display_name": profile.DisplayName})
+	if err != nil {
+		return
+	}
+	client := protocol.New(s, agentID)
+	client.Send(protocol.SendRequest{ //nolint:errcheck
+		CampfireID: campfireID,
+		Payload:    payload,
+		Tags:       []string{convention.IdentityProfileTag},
+	})
 }

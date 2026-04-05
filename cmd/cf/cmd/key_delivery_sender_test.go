@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
 )
@@ -119,16 +118,8 @@ func newKDTransport(t *testing.T, srv *httptest.Server, s store.Store, campfireI
 // with a hex-encoded ciphertext payload. Returns the transport used to send.
 func postKeyDelivery(t *testing.T, tr *ghtr.Transport, senderID *identity.Identity, campfireID string, payload string) {
 	t.Helper()
-	msg, err := message.NewMessage(
-		senderID.PrivateKey,
-		senderID.PublicKey,
-		[]byte(payload),
-		[]string{"campfire:key-delivery"},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("NewMessage: %v", err)
-	}
+	msg := newTestMessage(t, senderID.PrivateKey, senderID.PublicKey, []byte(payload), []string{"campfire:key-delivery"}, nil,)
+
 	if err := tr.Send(campfireID, msg); err != nil {
 		t.Fatalf("Send: %v", err)
 	}

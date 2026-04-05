@@ -177,6 +177,9 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 		}
 	}
 
+	// Auto-send identity:profile if the agent has a display name (best-effort).
+	maybeSendProfileMessage(cf.PublicKeyHex(), agentID, s)
+
 	if jsonOutput {
 		out := map[string]interface{}{
 			"campfire_id":            cf.PublicKeyHex(),

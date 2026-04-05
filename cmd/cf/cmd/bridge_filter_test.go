@@ -73,20 +73,15 @@ func TestBridgeTagFilterRelaysMatchingMessages(t *testing.T) {
 	fsTransport, s, agentID, _ := setupBridgeFilterEnv(t, campfireID)
 
 	// Write an "escalation"-tagged message.
-	msgTagged, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte("escalation msg"), []string{"escalation"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msgTagged := newTestMessage(t, agentID.PrivateKey, agentID.PublicKey, []byte("escalation msg"), []string{"escalation"}, nil)
+
 	addTestProvenance(t, msgTagged)
 	if err := fsTransport.WriteMessage(campfireID, msgTagged); err != nil {
 		t.Fatal(err)
 	}
 
 	// Write an untagged message.
-	msgUntagged, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte("untagged msg"), nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msgUntagged := newTestMessage(t, agentID.PrivateKey, agentID.PublicKey, []byte("untagged msg"), nil, nil)
 	addTestProvenance(t, msgUntagged)
 	if err := fsTransport.WriteMessage(campfireID, msgUntagged); err != nil {
 		t.Fatal(err)
@@ -121,10 +116,8 @@ func TestBridgeTagFilterStoresUnmatchedLocally(t *testing.T) {
 	fsTransport, s, agentID, _ := setupBridgeFilterEnv(t, campfireID)
 
 	// Write a message with a non-matching tag.
-	msgOther, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte("other msg"), []string{"status"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msgOther := newTestMessage(t, agentID.PrivateKey, agentID.PublicKey, []byte("other msg"), []string{"status"}, nil)
+
 	addTestProvenance(t, msgOther)
 	if err := fsTransport.WriteMessage(campfireID, msgOther); err != nil {
 		t.Fatal(err)
@@ -181,10 +174,7 @@ func TestBridgeNoTagFilterRelaysAll(t *testing.T) {
 		{"msg b", []string{"status"}},
 		{"msg c", nil},
 	} {
-		msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload.body), payload.tags, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		msg := newTestMessage(t, agentID.PrivateKey, agentID.PublicKey, []byte(payload.body), payload.tags, nil)
 		addTestProvenance(t, msg)
 		if err := fsTransport.WriteMessage(campfireID, msg); err != nil {
 			t.Fatal(err)
@@ -217,30 +207,24 @@ func TestBridgeTagFilterORSemantics(t *testing.T) {
 	fsTransport, s, agentID, _ := setupBridgeFilterEnv(t, campfireID)
 
 	// escalation-tagged: should relay (matches first filter)
-	msgA, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte("escalation"), []string{"escalation"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msgA := newTestMessage(t, agentID.PrivateKey, agentID.PublicKey, []byte("escalation"), []string{"escalation"}, nil)
+
 	addTestProvenance(t, msgA)
 	if err := fsTransport.WriteMessage(campfireID, msgA); err != nil {
 		t.Fatal(err)
 	}
 
 	// blocker-tagged: should relay (matches second filter)
-	msgB, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte("blocker"), []string{"blocker"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msgB := newTestMessage(t, agentID.PrivateKey, agentID.PublicKey, []byte("blocker"), []string{"blocker"}, nil)
+
 	addTestProvenance(t, msgB)
 	if err := fsTransport.WriteMessage(campfireID, msgB); err != nil {
 		t.Fatal(err)
 	}
 
 	// status-tagged: should NOT relay (matches neither filter)
-	msgC, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte("status"), []string{"status"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msgC := newTestMessage(t, agentID.PrivateKey, agentID.PublicKey, []byte("status"), []string{"status"}, nil)
+
 	addTestProvenance(t, msgC)
 	if err := fsTransport.WriteMessage(campfireID, msgC); err != nil {
 		t.Fatal(err)
