@@ -1,8 +1,14 @@
 package naming
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"os"
 	"testing"
+
+	"github.com/campfire-net/campfire/pkg/beacon"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 )
 
 func TestParseURI_Valid(t *testing.T) {
@@ -436,6 +442,160 @@ func TestLooksLikeName(t *testing.T) {
 		got := LooksLikeName(tc.input)
 		if got != tc.want {
 			t.Errorf("LooksLikeName(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
+// --- Beacon URI tests ---
+
+// makeTestBeaconURI creates a valid signed beacon and returns its beacon:<base64> URI string.
+func makeTestBeaconURI(t *testing.T) (beaconURI string, campfireIDHex string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	b, err := beacon.New(pub, priv, "open", []string{}, beacon.TransportConfig{
+		Protocol: "filesystem",
+		Config:   map[string]string{"dir": "/tmp/campfire/test"},
+	}, "test beacon")
+	if err != nil {
+		t.Fatalf("beacon.New: %v", err)
+	}
+	raw, err := cfencoding.Marshal(b)
+	if err != nil {
+		t.Fatalf("marshal beacon: %v", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	return "beacon:" + encoded, b.CampfireIDHex()
+}
+
+// TestParseURI_BeaconKind tests the beacon:<base64> URI format.
+func TestParseURI_BeaconKind(t *testing.T) {
+	beaconURI, wantID := makeTestBeaconURI(t)
+
+	u, err := ParseURI(beaconURI)
+	if err != nil {
+		t.Fatalf("ParseURI beacon: %v", err)
+	}
+	if u.Kind != URIKindBeacon {
+		t.Errorf("expected URIKindBeacon, got %v", u.Kind)
+	}
+	if u.CampfireID != wantID {
+		t.Errorf("CampfireID = %q, want %q", u.CampfireID, wantID)
+	}
+	if u.BeaconData == "" {
+		t.Error("BeaconData should not be empty")
+	}
+	// String() round-trip should produce canonical beacon: form
+	if u.String() != beaconURI {
+		t.Errorf("String() = %q, want %q", u.String(), beaconURI)
+	}
+}
+
+// TestParseURI_BeaconCfPlusScheme tests the cf+beacon://<base64> URI format.
+func TestParseURI_BeaconCfPlusScheme(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	b, err := beacon.New(pub, priv, "open", []string{}, beacon.TransportConfig{
+		Protocol: "p2p-http",
+		Config:   map[string]string{"url": "https://example.com/campfire"},
+	}, "http beacon")
+	if err != nil {
+		t.Fatalf("beacon.New: %v", err)
+	}
+	raw, err := cfencoding.Marshal(b)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	uri := "cf+beacon://" + encoded
+
+	u, err := ParseURI(uri)
+	if err != nil {
+		t.Fatalf("ParseURI cf+beacon: %v", err)
+	}
+	if u.Kind != URIKindBeacon {
+		t.Errorf("expected URIKindBeacon, got %v", u.Kind)
+	}
+	if u.CampfireID != b.CampfireIDHex() {
+		t.Errorf("CampfireID = %q, want %q", u.CampfireID, b.CampfireIDHex())
+	}
+}
+
+// TestParseURI_BeaconTamperedRejected verifies that a tampered beacon is rejected.
+// SECURITY: a beacon with a modified transport field must fail signature verification.
+func TestParseURI_BeaconTamperedRejected(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	b, err := beacon.New(pub, priv, "open", []string{}, beacon.TransportConfig{
+		Protocol: "filesystem",
+		Config:   map[string]string{"dir": "/tmp/campfire/safe"},
+	}, "original")
+	if err != nil {
+		t.Fatalf("beacon.New: %v", err)
+	}
+
+	// Tamper: change the transport to point at an attacker-controlled endpoint.
+	b.Transport = beacon.TransportConfig{
+		Protocol: "p2p-http",
+		Config:   map[string]string{"url": "http://evil.example.com/ssrf"},
+	}
+
+	raw, err := cfencoding.Marshal(b)
+	if err != nil {
+		t.Fatalf("marshal tampered beacon: %v", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	uri := "beacon:" + encoded
+
+	_, err = ParseURI(uri)
+	if err == nil {
+		t.Fatal("expected error for tampered beacon, got nil")
+	}
+	if !containsCI(err.Error(), "verification failed") {
+		t.Errorf("error %q should mention verification failure", err.Error())
+	}
+}
+
+// TestParseURI_BeaconEmptyDataRejected verifies that beacon: with no data is rejected.
+func TestParseURI_BeaconEmptyDataRejected(t *testing.T) {
+	_, err := ParseURI("beacon:")
+	if err == nil {
+		t.Fatal("expected error for empty beacon data, got nil")
+	}
+}
+
+// TestParseURI_BeaconInvalidBase64Rejected verifies that malformed base64 is rejected.
+func TestParseURI_BeaconInvalidBase64Rejected(t *testing.T) {
+	_, err := ParseURI("beacon:!!!not-valid-base64!!!")
+	if err == nil {
+		t.Fatal("expected error for invalid base64, got nil")
+	}
+}
+
+// TestIsCampfireURI_BeaconFormats verifies that IsCampfireURI recognizes beacon URIs.
+func TestIsCampfireURI_BeaconFormats(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"beacon:abc123", true},
+		{"BEACON:abc123", true},
+		{"cf+beacon://abc123", true},
+		{"CF+BEACON://abc123", true},
+		{"cf://aietf.social", true},
+		{"http://example.com", false},
+		{"plaintext", false},
+	}
+	for _, tc := range cases {
+		got := IsCampfireURI(tc.input)
+		if got != tc.want {
+			t.Errorf("IsCampfireURI(%q) = %v, want %v", tc.input, got, tc.want)
 		}
 	}
 }

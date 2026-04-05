@@ -150,6 +150,11 @@ type ResolveResult struct {
 	Path string
 	// Args are the query parameters (if any) from the URI.
 	Args map[string]string
+	// BeaconData is the raw base64-encoded beacon for URIKindBeacon URIs.
+	// Non-empty only when the URI was a beacon:... URI.
+	// SECURITY: use the transport hint from this beacon ONLY for join operations.
+	// Do NOT use it for send/read on existing memberships (SSRF prevention).
+	BeaconData string
 }
 
 // ResolveURI resolves a cf:// URI to a campfire ID, optionally with path and args.
@@ -172,6 +177,17 @@ func (r *Resolver) ResolveURIParsed(ctx context.Context, u *URI) (*ResolveResult
 		}, nil
 	case URIKindAlias:
 		return nil, fmt.Errorf("alias URI cf://~%s must be resolved locally via alias store before network lookup", u.Alias)
+	case URIKindBeacon:
+		// The campfire ID was already extracted and signature-verified by ParseURI.
+		// BeaconData is passed through so callers performing join operations can
+		// read the transport hint. SECURITY: callers MUST NOT use the transport hint
+		// for send/read on existing memberships -- only for initial join.
+		return &ResolveResult{
+			CampfireID: u.CampfireID,
+			Path:       u.Path,
+			Args:       u.Args(),
+			BeaconData: u.BeaconData,
+		}, nil
 	default:
 		campfireID, err := r.ResolveName(ctx, u.Segments)
 		if err != nil {
