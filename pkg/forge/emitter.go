@@ -21,6 +21,7 @@ type ForgeEmitter struct {
 	client  *Client        // Forge client for Ingest calls
 	events  chan UsageEvent // buffered, capacity defaultBufferSize
 	done    chan struct{}   // closed when Run() exits
+	ready   chan struct{}   // closed when Run() has set cancel (signals DrainAndClose it can proceed)
 	onError func(error)    // optional error callback (for logging)
 
 	mu     sync.Mutex         // guards cancel
@@ -38,6 +39,7 @@ func NewForgeEmitter(client *Client, bufferSize int, onError func(error)) *Forge
 		client:  client,
 		events:  make(chan UsageEvent, bufferSize),
 		done:    make(chan struct{}),
+		ready:   make(chan struct{}),
 		onError: onError,
 	}
 }
@@ -63,6 +65,7 @@ func (e *ForgeEmitter) Run(ctx context.Context) {
 	e.mu.Lock()
 	e.cancel = cancel
 	e.mu.Unlock()
+	close(e.ready) // signal DrainAndClose that cancel is set and safe to call
 	defer close(e.done)
 
 	timer := time.NewTimer(batchTimeout)
@@ -95,12 +98,16 @@ func (e *ForgeEmitter) Run(ctx context.Context) {
 					default:
 					}
 				}
-				flush(ctx)
+				// Use background context so in-flight batches are delivered
+				// even if the lifecycle context is cancelled concurrently.
+				flush(context.Background())
 				timer.Reset(batchTimeout)
 			}
 		case <-timer.C:
 			if len(batch) > 0 {
-				flush(ctx)
+				// Use background context so timer-triggered flushes are delivered
+				// even if the lifecycle context is cancelled concurrently.
+				flush(context.Background())
 			}
 			timer.Reset(batchTimeout)
 		case <-ctx.Done():
@@ -135,6 +142,14 @@ func (e *ForgeEmitter) Run(ctx context.Context) {
 //
 // The provided timeout bounds how long this call blocks waiting for Run to exit.
 func (e *ForgeEmitter) DrainAndClose(timeout time.Duration) {
+	// Wait until Run() has set e.cancel. If Run() was never called, we proceed
+	// immediately (cancel will be nil and we just wait out the timeout on e.done).
+	select {
+	case <-e.ready:
+	case <-time.After(timeout):
+		return
+	}
+
 	e.mu.Lock()
 	cancel := e.cancel
 	e.mu.Unlock()
