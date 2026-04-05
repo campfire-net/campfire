@@ -754,7 +754,7 @@ func (s *server) handleConventionTool(rpcID interface{}, entry *conventionToolEn
 			client:  client,
 		}, agentKey)
 	} else {
-		executor = convention.NewExecutor(client, agentKey)
+		executor = convention.NewExecutor(client)
 	}
 
 	// Wire in the provenance store so min_operator_level gates are enforced.

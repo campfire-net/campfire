@@ -242,7 +242,7 @@ func dispatchConventionOp(ctx context.Context, campfireName string, operationNam
 	}
 
 	client := protocol.New(s, agentID)
-	executor := convention.NewExecutor(client, agentID.PublicKeyHex())
+	executor := convention.NewExecutor(client)
 
 	result, err := executor.Execute(ctx, execDecl, campfireID, args)
 	return formatConventionResult(result, err, operationName, campfireID, execDecl, jsonOutput, matched)
