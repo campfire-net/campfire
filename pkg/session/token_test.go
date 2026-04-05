@@ -3,6 +3,7 @@ package session_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -151,17 +152,58 @@ func TestTamperedTokenRejected(t *testing.T) {
 		t.Fatalf("EncodeToken: %v", err)
 	}
 
-	// Tamper with a byte in the middle of the token (after the prefix).
+	// Decode the base64 payload, flip a byte in the signature portion
+	// (last 64 bytes = ed25519.SignatureSize), re-encode as valid base64.
+	// This exercises ed25519.Verify() rejection, not base64 decode failure.
 	rawPart := tok[len("cfs1_"):]
-	tamperedBytes := []byte(rawPart)
-	if len(tamperedBytes) > 10 {
-		tamperedBytes[10] ^= 0xFF
+	decoded, err := base64.RawURLEncoding.DecodeString(rawPart)
+	if err != nil {
+		t.Fatalf("decoding token for tampering: %v", err)
 	}
-	tamperedTok := "cfs1_" + string(tamperedBytes)
+	// Flip a byte in the signature (last 64 bytes).
+	sigStart := len(decoded) - ed25519.SignatureSize
+	decoded[sigStart] ^= 0xFF
+	tamperedTok := "cfs1_" + base64.RawURLEncoding.EncodeToString(decoded)
 
 	_, err = session.DecodeToken(tamperedTok, creatorPub)
 	if err == nil {
 		t.Fatal("expected error for tampered token, got nil")
+	}
+	if !strings.Contains(err.Error(), "signature invalid") {
+		t.Errorf("expected signature invalid error, got: %v", err)
+	}
+}
+
+// TestWrongCreatorKeyRejected verifies that a token signed by key A is rejected
+// when DecodeToken is called with a different key B as the expected creator.
+func TestWrongCreatorKeyRejected(t *testing.T) {
+	creatorPubA, creatorPrivA := generateKeypair(t)
+	creatorPubB, _ := generateKeypair(t) // different key — not used for signing
+	ephPub, ephPriv := generateKeypair(t)
+	campfireID := make([]byte, 32)
+	rand.Read(campfireID) //nolint:errcheck
+
+	// Encode token signed by key A.
+	tok, err := session.EncodeToken(session.TokenParams{
+		CampfireID:       campfireID,
+		EphemeralPubKey:  ephPub,
+		EphemeralPrivKey: ephPriv,
+		TransportConfig:  []byte(`{}`),
+		TTL:              2 * time.Hour,
+		CreatorPub:       creatorPubA,
+		CreatorPriv:      creatorPrivA,
+	})
+	if err != nil {
+		t.Fatalf("EncodeToken: %v", err)
+	}
+
+	// Attempt to decode with key B — must be rejected.
+	_, err = session.DecodeToken(tok, creatorPubB)
+	if err == nil {
+		t.Fatal("expected error when decoding token with wrong creator key, got nil")
+	}
+	if !strings.Contains(err.Error(), "signature invalid") {
+		t.Errorf("expected signature invalid error, got: %v", err)
 	}
 }
 
