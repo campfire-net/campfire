@@ -12,8 +12,9 @@ import (
 )
 
 var discoverCmd = &cobra.Command{
-	Use:   "discover",
-	Short: "List campfire beacons visible from here",
+	Use:    "discover",
+	Short:  "List campfire beacons visible from here",
+	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		globalDir := BeaconDir()
 		globalBeacons, err := beacon.Scan(globalDir)

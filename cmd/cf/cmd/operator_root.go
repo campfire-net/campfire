@@ -13,8 +13,9 @@ import (
 )
 
 var rootSubCmd = &cobra.Command{
-	Use:   "root",
-	Short: "Manage operator root campfire",
+	Use:    "root",
+	Short:  "Manage operator root campfire",
+	Hidden: true,
 	Long: `Manage the operator root campfire — a local directory and root-of-trust
 for all campfires you operate.
 

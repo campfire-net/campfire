@@ -25,8 +25,9 @@ const trustVouchTag = "trust:vouch"
 const trustRevokeTag = "trust:revoke"
 
 var connectCmd = &cobra.Command{
-	Use:   "connect <campfire-id-or-alias>",
-	Short: "Request a mutual connection with another campfire's operator",
+	Use:    "connect <campfire-id-or-alias>",
+	Short:  "Request a mutual connection with another campfire's operator",
+	Hidden: true,
 	Long: `Send a connect-request to the target campfire and await their accept or reject.
 
 The connect ceremony posts a connect-request future on the target's home
