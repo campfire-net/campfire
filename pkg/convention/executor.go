@@ -16,7 +16,7 @@ import (
 // executorTransport is the internal interface used by the Executor for sending and
 // reading messages. In production code the executor is always backed by a
 // *protocol.Client (via clientAdapter). The interface is kept unexported so that
-// production callers must use NewExecutor(*protocol.Client, …).
+// production callers must use NewExecutor(*protocol.Client).
 //
 // External packages that need to inject a mock for unit testing should use
 // NewExecutorForTest, which accepts the exported ExecutorBackend interface.
@@ -28,7 +28,7 @@ type executorTransport interface {
 
 // ExecutorBackend is the exported interface for injecting a test double into the
 // Executor via NewExecutorForTest. It mirrors the four send/read operations that
-// the Executor requires. Production code always uses NewExecutor(*protocol.Client, …).
+// the Executor requires. Production code always uses NewExecutor(*protocol.Client).
 type ExecutorBackend interface {
 	SendMessage(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (msgID string, err error)
 	SendCampfireKeySigned(ctx context.Context, campfireID string, payload []byte, tags []string, antecedents []string) (msgID string, err error)
@@ -164,20 +164,21 @@ func sharedRateLimiter() *rateLimiter {
 	return globalRateLimiter
 }
 
-// NewExecutor creates an Executor backed by the given protocol.Client and agent public key.
+// NewExecutor creates an Executor backed by the given protocol.Client.
+// selfKey is derived automatically from client.PublicKeyHex().
 // All Executors created within the same process share a single rate limiter so that
 // rate limits are enforced across multiple sequential CLI calls.
-func NewExecutor(client *protocol.Client, selfKey string) *Executor {
+func NewExecutor(client *protocol.Client) *Executor {
 	return &Executor{
 		transport:   &clientAdapter{client: client},
-		selfKey:     selfKey,
+		selfKey:     client.PublicKeyHex(),
 		rateLimiter: sharedRateLimiter(),
 	}
 }
 
 // NewExecutorForTest creates an Executor backed by an ExecutorBackend test double.
 // Use this in test packages that need to inject a mock transport. Production code
-// should always use NewExecutor(*protocol.Client, …).
+// should always use NewExecutor(*protocol.Client).
 func NewExecutorForTest(backend ExecutorBackend, selfKey string) *Executor {
 	return &Executor{
 		transport:   &backendAdapter{b: backend},

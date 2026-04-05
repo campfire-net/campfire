@@ -5,10 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/pkg/store"
 )
 
 // mockTransport implements executorTransport for testing.
@@ -1597,5 +1602,58 @@ func TestExecuteQueryStep_NoResultBinding(t *testing.T) {
 	}
 	if len(bindings) != 0 {
 		t.Errorf("expected no bindings when ResultBinding is empty, got %v", bindings)
+	}
+}
+
+// TestNewExecutor_DerivesSelfKey verifies that NewExecutor(client) derives selfKey
+// from client.PublicKeyHex() rather than requiring a separate parameter.
+func TestNewExecutor_DerivesSelfKey(t *testing.T) {
+	id, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generate identity: %v", err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	client := protocol.New(s, id)
+	ex := NewExecutor(client)
+
+	if ex.selfKey != client.PublicKeyHex() {
+		t.Errorf("selfKey: got %q, want %q", ex.selfKey, client.PublicKeyHex())
+	}
+	if ex.selfKey == "" {
+		t.Error("selfKey must not be empty when client has an identity")
+	}
+}
+
+// noopBackend is a minimal ExecutorBackend that satisfies the interface without
+// doing anything. Used to test NewExecutorForTest signature stability.
+type noopBackend struct{}
+
+func (n *noopBackend) SendMessage(_ context.Context, _ string, _ []byte, _ []string, _ []string) (string, error) {
+	return "", nil
+}
+func (n *noopBackend) SendCampfireKeySigned(_ context.Context, _ string, _ []byte, _ []string, _ []string) (string, error) {
+	return "", nil
+}
+func (n *noopBackend) ReadMessages(_ context.Context, _ string, _ []string) ([]MessageRecord, error) {
+	return nil, nil
+}
+func (n *noopBackend) SendFutureAndAwait(_ context.Context, _ string, _ []byte, _ []string, _ []string, _ time.Duration) (string, []byte, error) {
+	return "", nil, nil
+}
+
+// TestNewExecutorForTest_RetainsExplicitSelfKey verifies that NewExecutorForTest still
+// accepts an explicit selfKey so test scenarios can inject specific keys.
+func TestNewExecutorForTest_RetainsExplicitSelfKey(t *testing.T) {
+	const injectedKey = "deadbeef1234"
+	ex := NewExecutorForTest(&noopBackend{}, injectedKey)
+
+	if ex.selfKey != injectedKey {
+		t.Errorf("selfKey: got %q, want %q", ex.selfKey, injectedKey)
 	}
 }
