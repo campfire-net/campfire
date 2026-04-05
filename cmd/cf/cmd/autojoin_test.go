@@ -94,6 +94,10 @@ func TestAutoJoinRootCampfire_OpenProtocol(t *testing.T) {
 
 	// Override CF_TRANSPORT_DIR so the fs transport reads from our temp dir.
 	t.Setenv("CF_TRANSPORT_DIR", transportBaseDir)
+	// Override CF_BEACON_DIR to an empty dir so beacon.Scan does not walk the
+	// real ~/.campfire/beacons directory (which can contain thousands of files
+	// and causes the test to hang indefinitely).
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
 
 	agentID, err := identity.Generate()
 	if err != nil {
@@ -156,6 +160,7 @@ func TestAutoJoinRootCampfire_OpenProtocol(t *testing.T) {
 func TestAutoJoinRootCampfire_InviteOnly(t *testing.T) {
 	campfireID, transportBaseDir := setupInviteOnlyCampfire(t)
 	t.Setenv("CF_TRANSPORT_DIR", transportBaseDir)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
 
 	agentID, err := identity.Generate()
 	if err != nil {
@@ -189,6 +194,7 @@ func TestAutoJoinRootCampfire_InviteOnly(t *testing.T) {
 func TestAutoJoinRootCampfire_AlreadyMember(t *testing.T) {
 	campfireID, transportBaseDir := setupOpenCampfire(t)
 	t.Setenv("CF_TRANSPORT_DIR", transportBaseDir)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
 
 	agentID, err := identity.Generate()
 	if err != nil {
@@ -232,6 +238,7 @@ func TestAutoJoinRootCampfire_AlreadyMember(t *testing.T) {
 func TestAutoJoinRootCampfire_NoTransportState(t *testing.T) {
 	transportBaseDir := t.TempDir()
 	t.Setenv("CF_TRANSPORT_DIR", transportBaseDir)
+	t.Setenv("CF_BEACON_DIR", t.TempDir())
 
 	agentID, err := identity.Generate()
 	if err != nil {
