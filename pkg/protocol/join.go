@@ -161,12 +161,19 @@ func (c *Client) joinFilesystem(campfireID string, t *FilesystemTransport) (*Joi
 		now := time.Now().UnixNano()
 		updatedMembers, _ := tr.ListMembers(campfireID)
 		cfObj := state.ToCampfire(updatedMembers)
-		sysMsg, sysMsgErr := message.NewMessage(
-			state.PrivateKey, state.PublicKey,
-			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, c.identity.PublicKeyHex(), now)),
-			[]string{campfire.TagMemberJoined},
-			nil,
-		)
+		cfSigner, sysMsgSignErr := message.NewEd25519Signer(state.PrivateKey, state.PublicKey)
+		var sysMsg *message.Message
+		var sysMsgErr error
+		if sysMsgSignErr == nil {
+			sysMsg, sysMsgErr = message.NewMessage(
+				cfSigner,
+				[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, c.identity.PublicKeyHex(), now)),
+				[]string{campfire.TagMemberJoined},
+				nil,
+			)
+		} else {
+			sysMsgErr = sysMsgSignErr
+		}
 		if sysMsgErr == nil {
 			if hopErr := sysMsg.AddHop(
 				state.PrivateKey, state.PublicKey,

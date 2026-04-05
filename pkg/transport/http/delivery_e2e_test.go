@@ -257,7 +257,7 @@ func TestDeliveryE2E_ThreeInstanceAllPaths(t *testing.T) {
 	sendAndVerify := func(t *testing.T, name string, sender *identity.Identity, deliverEndpoint string, targetStore store.Store) {
 		t.Helper()
 		payload := fmt.Sprintf("e2e-delivery-%s-%s", name, sender.PublicKeyHex()[:8])
-		msg, err := message.NewMessage(sender.PrivateKey, sender.PublicKey, []byte(payload), []string{"test"}, nil)
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(sender.PrivateKey, sender.PublicKey), []byte(payload), []string{"test"}, nil)
 		if err != nil {
 			t.Fatalf("[%s] NewMessage: %v", name, err)
 		}
@@ -420,7 +420,7 @@ func TestDeliveryE2E_SwitchPullToPush(t *testing.T) {
 
 	// Verify messages now arrive via push: host delivers to member's endpoint.
 	payload := "e2e-switch-pull-to-push"
-	msg, err := message.NewMessage(idHost.PrivateKey, idHost.PublicKey, []byte(payload), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(idHost.PrivateKey, idHost.PublicKey), []byte(payload), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -1840,8 +1841,15 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 	}
 
 	if !alreadyOnDisk {
+		cfSigner, err := message.NewEd25519Signer(
+			ed25519.PrivateKey(state.PrivateKey),
+			ed25519.PublicKey(state.PublicKey),
+		)
+		if err != nil {
+			return errResponse(id, -32000, fmt.Sprintf("creating signer: %v", err))
+		}
 		sysMsg, err := message.NewMessage(
-			state.PrivateKey, state.PublicKey,
+			cfSigner,
 			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, agentID.PublicKeyHex(), now)),
 			[]string{campfire.TagMemberJoined},
 			nil,
@@ -3196,7 +3204,11 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 		// TransportDir, which is the external HTTP address), so protocol.Client
 		// cannot resolve the campfire key via its sendP2PHTTP path.
 		var buildErr error
-		msg, buildErr = message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), dmTags, nil)
+		dmSigner, signerErr := message.NewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
+		if signerErr != nil {
+			return errResponse(id, -32000, fmt.Sprintf("creating signer: %v", signerErr))
+		}
+		msg, buildErr = message.NewMessage(dmSigner, []byte(payload), dmTags, nil)
 		if buildErr != nil {
 			return errResponse(id, -32000, fmt.Sprintf("creating message: %v", buildErr))
 		}

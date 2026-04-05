@@ -87,8 +87,7 @@ func TestRekeyPathTraversalRejected(t *testing.T) {
 		"new_key": newCampfireID,
 	})
 	rekeyMsg, err := message.NewMessage(
-		ed25519.PrivateKey(oldCFPriv),
-		ed25519.PublicKey(oldCFPub),
+		message.MustNewEd25519Signer(ed25519.PrivateKey(oldCFPriv), ed25519.PublicKey(oldCFPub)),
 		rekeyPayload,
 		[]string{"campfire:rekey"},
 		nil,
@@ -217,7 +216,7 @@ func TestRekeyPathTraversalAbsoluteRelative(t *testing.T) {
 
 	rekeyPayload, _ := json.Marshal(map[string]string{"old": oldCampfireID, "new": newCampfireID})
 	rekeyMsg, _ := message.NewMessage(
-		ed25519.PrivateKey(oldCFPriv), ed25519.PublicKey(oldCFPub),
+		message.MustNewEd25519Signer(ed25519.PrivateKey(oldCFPriv), ed25519.PublicKey(oldCFPub)),
 		rekeyPayload, []string{"campfire:rekey"}, nil,
 	)
 	rekeyMsgCBOR, _ := cfencoding.Marshal(rekeyMsg)
@@ -792,7 +791,7 @@ func TestDeliverSenderSpoofingRejected(t *testing.T) {
 
 	// Build a message legitimately authored by M2 (msg.Sender = M2 pubkey, signed by M2),
 	// then tamper with the payload so VerifySignature() fails.
-	m2msg, err := message.NewMessage(m2.PrivateKey, m2.PublicKey, []byte("original content"), []string{"test"}, nil)
+	m2msg, err := message.NewMessage(message.MustNewEd25519Signer(m2.PrivateKey, m2.PublicKey), []byte("original content"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -843,7 +842,7 @@ func TestDeliverInvalidMessageSigRejected(t *testing.T) {
 	ep := fmt.Sprintf("http://%s", addr)
 
 	// Create a legitimate message.
-	msg, err := message.NewMessage(m1.PrivateKey, m1.PublicKey, []byte("original payload"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(m1.PrivateKey, m1.PublicKey), []byte("original payload"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -895,7 +894,7 @@ func addPeerEndpointWithRole(t *testing.T, s store.Store, campfireID, pubKeyHex,
 // with the message signed and attributed to id, and the HTTP request signed by id.
 func buildSignedDeliverRequest(t *testing.T, ep, campfireID string, id *identity.Identity, tags []string) *http.Request {
 	t.Helper()
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("test payload"), tags, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("test payload"), tags, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

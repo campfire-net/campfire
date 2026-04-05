@@ -296,7 +296,7 @@ func (h *stubHandler) HandleActivity(ctx context.Context, body []byte) (string, 
 
 	tags := []string{"from:teams"}
 
-	msg, err := message.NewMessage(h.ident.PrivateKey, h.ident.PublicKey, payload, tags, antecedents)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(h.ident.PrivateKey, h.ident.PublicKey), payload, tags, antecedents)
 	if err != nil {
 		return "", fmt.Errorf("creating message: %w", err)
 	}

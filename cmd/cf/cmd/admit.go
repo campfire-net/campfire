@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -96,8 +97,15 @@ var admitCmd = &cobra.Command{
 		}
 
 		// Write campfire:member-joined system message
+		cfSigner, err := message.NewEd25519Signer(
+			ed25519.PrivateKey(state.PrivateKey),
+			ed25519.PublicKey(state.PublicKey),
+		)
+		if err != nil {
+			return fmt.Errorf("creating signer for system message: %w", err)
+		}
 		sysMsg, err := message.NewMessage(
-			state.PrivateKey, state.PublicKey,
+			cfSigner,
 			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, memberKeyHex, now)),
 			[]string{campfire.TagMemberJoined},
 			nil,

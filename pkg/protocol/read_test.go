@@ -90,7 +90,7 @@ func writeTransportMessage(t *testing.T, cfID *identity.Identity, tr *fs.Transpo
 		t.Fatalf("generating sender identity: %v", err)
 	}
 
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, []string{})
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey), []byte(payload), tags, []string{})
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -117,7 +117,7 @@ func writeTransportMessageWithAntecedents(t *testing.T, cfID *identity.Identity,
 		t.Fatalf("generating sender identity: %v", err)
 	}
 
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, antecedents)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey), []byte(payload), tags, antecedents)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -292,9 +292,10 @@ func TestClientRead_CursorPagination(t *testing.T) {
 		t.Fatalf("generating identity: %v", err)
 	}
 
+	directSigner := message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
 	addDirectMsg := func(payload string, tags []string, ts int64) string {
 		t.Helper()
-		msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, []string{})
+		msg, err := message.NewMessage(directSigner, []byte(payload), tags, []string{})
 		if err != nil {
 			t.Fatalf("creating message: %v", err)
 		}
@@ -370,8 +371,9 @@ func TestClientRead_Limit(t *testing.T) {
 		t.Fatalf("generating identity: %v", err)
 	}
 
+	limitSigner := message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
 	for i := 0; i < 5; i++ {
-		msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte("msg"), []string{"note"}, []string{})
+		msg, err := message.NewMessage(limitSigner, []byte("msg"), []string{"note"}, []string{})
 		if err != nil {
 			t.Fatalf("creating message: %v", err)
 		}

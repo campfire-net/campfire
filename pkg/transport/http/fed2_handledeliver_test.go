@@ -40,8 +40,7 @@ import (
 func newBeaconMessage(t *testing.T, sender *identity.Identity, payload []byte) *message.Message {
 	t.Helper()
 	msg, err := message.NewMessage(
-		sender.PrivateKey,
-		sender.PublicKey,
+		message.MustNewEd25519Signer(sender.PrivateKey, sender.PublicKey),
 		payload,
 		[]string{"routing:beacon"},
 		nil,

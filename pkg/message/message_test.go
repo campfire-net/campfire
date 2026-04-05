@@ -30,7 +30,7 @@ func testKeypair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 
 func TestNewMessageAndVerify(t *testing.T) {
 	pub, priv := testKeypair(t)
-	msg, err := NewMessage(priv, pub, []byte("hello"), []string{"test"}, nil)
+	msg, err := NewMessage(MustNewEd25519Signer(priv, pub), []byte("hello"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage() error: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestNewMessageAndVerify(t *testing.T) {
 
 func TestVerifyTamperedMessage(t *testing.T) {
 	pub, priv := testKeypair(t)
-	msg, _ := NewMessage(priv, pub, []byte("hello"), []string{"test"}, nil)
+	msg, _ := NewMessage(MustNewEd25519Signer(priv, pub), []byte("hello"), []string{"test"}, nil)
 
 	msg.Payload = []byte("tampered")
 	if msg.VerifySignature() {
@@ -62,7 +62,7 @@ func TestAntecedentsInSignature(t *testing.T) {
 	pub, priv := testKeypair(t)
 
 	// Message with antecedents
-	msg, _ := NewMessage(priv, pub, []byte("hello"), []string{"test"}, []string{"msg-1", "msg-2"})
+	msg, _ := NewMessage(MustNewEd25519Signer(priv, pub), []byte("hello"), []string{"test"}, []string{"msg-1", "msg-2"})
 	if !msg.VerifySignature() {
 		t.Error("message with antecedents should verify")
 	}
@@ -81,7 +81,7 @@ func TestAddHopAndVerify(t *testing.T) {
 	senderPub, senderPriv := testKeypair(t)
 	cfPub, cfPriv := testKeypair(t)
 
-	msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+	msg, _ := NewMessage(MustNewEd25519Signer(senderPriv, senderPub), []byte("hello"), []string{"test"}, nil)
 	err := msg.AddHop(cfPriv, cfPub, []byte("fakehash"), 2, "open", []string{"test"}, "full")
 	if err != nil {
 		t.Fatalf("AddHop() error: %v", err)
@@ -98,7 +98,7 @@ func TestVerifyTamperedHop(t *testing.T) {
 	senderPub, senderPriv := testKeypair(t)
 	cfPub, cfPriv := testKeypair(t)
 
-	msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), nil, nil)
+	msg, _ := NewMessage(MustNewEd25519Signer(senderPriv, senderPub), []byte("hello"), nil, nil)
 	msg.AddHop(cfPriv, cfPub, []byte("hash"), 1, "open", nil, "full")
 
 	msg.Provenance[0].MemberCount = 999
@@ -112,7 +112,7 @@ func TestHopRoleField(t *testing.T) {
 	cfPub, cfPriv := testKeypair(t)
 
 	t.Run("full role in signed data", func(t *testing.T) {
-		msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+		msg, _ := NewMessage(MustNewEd25519Signer(senderPriv, senderPub), []byte("hello"), []string{"test"}, nil)
 		if err := msg.AddHop(cfPriv, cfPub, []byte("hash"), 2, "open", nil, "full"); err != nil {
 			t.Fatalf("AddHop() error: %v", err)
 		}
@@ -126,7 +126,7 @@ func TestHopRoleField(t *testing.T) {
 	})
 
 	t.Run("blind-relay role in signed data", func(t *testing.T) {
-		msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+		msg, _ := NewMessage(MustNewEd25519Signer(senderPriv, senderPub), []byte("hello"), []string{"test"}, nil)
 		if err := msg.AddHop(cfPriv, cfPub, []byte("hash"), 2, "open", nil, "blind-relay"); err != nil {
 			t.Fatalf("AddHop() error: %v", err)
 		}
@@ -140,7 +140,7 @@ func TestHopRoleField(t *testing.T) {
 	})
 
 	t.Run("tampered role fails verification", func(t *testing.T) {
-		msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+		msg, _ := NewMessage(MustNewEd25519Signer(senderPriv, senderPub), []byte("hello"), []string{"test"}, nil)
 		msg.AddHop(cfPriv, cfPub, []byte("hash"), 2, "open", nil, "full")
 
 		// Tamper the role after signing — verification must fail.
@@ -153,7 +153,7 @@ func TestHopRoleField(t *testing.T) {
 	t.Run("empty role wire-compat with legacy hops", func(t *testing.T) {
 		// A hop with Role="" must verify identically to how a pre-Role hop
 		// would verify (omitempty ensures no CBOR field 8 is written).
-		msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+		msg, _ := NewMessage(MustNewEd25519Signer(senderPriv, senderPub), []byte("hello"), []string{"test"}, nil)
 		if err := msg.AddHop(cfPriv, cfPub, []byte("hash"), 2, "open", nil, ""); err != nil {
 			t.Fatalf("AddHop() with empty role error: %v", err)
 		}
@@ -167,7 +167,7 @@ func TestHopRoleField(t *testing.T) {
 	})
 
 	t.Run("CBOR roundtrip preserves role", func(t *testing.T) {
-		msg, _ := NewMessage(senderPriv, senderPub, []byte("hello"), []string{"test"}, nil)
+		msg, _ := NewMessage(MustNewEd25519Signer(senderPriv, senderPub), []byte("hello"), []string{"test"}, nil)
 		msg.AddHop(cfPriv, cfPub, []byte("hash"), 2, "open", nil, "blind-relay")
 
 		data, err := cborMarshal(msg)
@@ -192,7 +192,7 @@ func TestHopRoleField(t *testing.T) {
 
 func TestNilTags(t *testing.T) {
 	pub, priv := testKeypair(t)
-	msg, _ := NewMessage(priv, pub, []byte("hello"), nil, nil)
+	msg, _ := NewMessage(MustNewEd25519Signer(priv, pub), []byte("hello"), nil, nil)
 	if msg.Tags == nil {
 		t.Error("tags should not be nil")
 	}
@@ -205,7 +205,7 @@ func TestInstanceField(t *testing.T) {
 	pub, priv := testKeypair(t)
 
 	// Message with instance set
-	msg, err := NewMessage(priv, pub, []byte("hello"), []string{"test"}, nil)
+	msg, err := NewMessage(MustNewEd25519Signer(priv, pub), []byte("hello"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage() error: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestInstanceFieldBackwardCompat(t *testing.T) {
 	pub, priv := testKeypair(t)
 
 	// Message without instance (empty string default)
-	msg, err := NewMessage(priv, pub, []byte("hello"), []string{"test"}, nil)
+	msg, err := NewMessage(MustNewEd25519Signer(priv, pub), []byte("hello"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage() error: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestInstanceFieldBackwardCompat(t *testing.T) {
 func TestInstanceFieldSerializationRoundtrip(t *testing.T) {
 	pub, priv := testKeypair(t)
 
-	msg, _ := NewMessage(priv, pub, []byte("hello"), []string{"test"}, nil)
+	msg, _ := NewMessage(MustNewEd25519Signer(priv, pub), []byte("hello"), []string{"test"}, nil)
 	msg.Instance = "marketing"
 
 	// CBOR roundtrip
@@ -278,7 +278,7 @@ func TestInstanceFieldCBORBackwardCompat(t *testing.T) {
 
 	// Create a message without instance, marshal it, then unmarshal
 	// Simulates receiving a message from an older version that doesn't have instance
-	msg, _ := NewMessage(priv, pub, []byte("hello"), nil, nil)
+	msg, _ := NewMessage(MustNewEd25519Signer(priv, pub), []byte("hello"), nil, nil)
 
 	data, err := cborMarshal(msg)
 	if err != nil {
@@ -295,7 +295,7 @@ func TestInstanceFieldCBORBackwardCompat(t *testing.T) {
 
 func TestVerifyMessageSignatureFromStored(t *testing.T) {
 	pub, priv := testKeypair(t)
-	msg, _ := NewMessage(priv, pub, []byte("hello"), []string{"test", "foo"}, []string{"ant-1"})
+	msg, _ := NewMessage(MustNewEd25519Signer(priv, pub), []byte("hello"), []string{"test", "foo"}, []string{"ant-1"})
 
 	senderHex := msg.SenderHex()
 

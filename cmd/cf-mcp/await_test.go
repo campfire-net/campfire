@@ -106,7 +106,7 @@ func TestAwaitHTTP_FulfilledReturnsImmediately(t *testing.T) {
 	tsURL, token, campfireID, cliID := setupHTTPAwaitSession(t)
 
 	// Send the original message from the CLI agent.
-	origMsg, err := message.NewMessage(cliID.PrivateKey, cliID.PublicKey, []byte("original"), nil, nil)
+	origMsg, err := message.NewMessage(message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey), []byte("original"), nil, nil)
 	if err != nil {
 		t.Fatalf("creating original message: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestAwaitHTTP_FulfilledReturnsImmediately(t *testing.T) {
 
 	// Send a fulfilling message that references the original.
 	fulfillMsg, err := message.NewMessage(
-		cliID.PrivateKey, cliID.PublicKey,
+		message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey),
 		[]byte("fulfilled!"),
 		[]string{"fulfills"},
 		[]string{origMsg.ID},
@@ -316,7 +316,7 @@ func TestAwaitHTTP_NonFulfillingNotification(t *testing.T) {
 	// targetMsgID in its antecedents — this wakes the PollBroker but should
 	// not satisfy the await condition.
 	nonFulfillingMsg, err := message.NewMessage(
-		cliID.PrivateKey, cliID.PublicKey,
+		message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey),
 		[]byte("unrelated message"),
 		nil, // tags
 		nil, // antecedents

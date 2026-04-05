@@ -73,7 +73,7 @@ func addPeerEndpoint(t *testing.T, s store.Store, campfireID, pubKeyHex string) 
 // storeMessageRecord inserts a message record directly into the store, returning the record.
 func storeMessageRecord(t *testing.T, s store.Store, campfireID string, id *identity.Identity) store.MessageRecord {
 	t.Helper()
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("poll test payload"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("poll test payload"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestHandlePollFiltersByReceivedAt(t *testing.T) {
 
 	// Insert a message with a Timestamp 60 seconds in the past (sender clock is 60s behind)
 	// but ReceivedAt is now (the server received it just now).
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("skewed clock"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("skewed clock"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

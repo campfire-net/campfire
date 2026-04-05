@@ -73,7 +73,7 @@ func writeMessageToTransport(t *testing.T, campfireID string, payload string, ta
 		t.Fatalf("writeMessageToTransport: listing members: %v", err)
 	}
 
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), tags, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey), []byte(payload), tags, nil)
 	if err != nil {
 		t.Fatalf("writeMessageToTransport: creating message: %v", err)
 	}

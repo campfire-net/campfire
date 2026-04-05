@@ -149,7 +149,11 @@ var dmCmd = &cobra.Command{
 
 		// Send the message using the campfire's actual transport dir.
 		tr := fs.ForDir(transportDir)
-		msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte(payload), dmTags, nil)
+		dmSigner, err := message.NewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
+		if err != nil {
+			return fmt.Errorf("creating signer: %w", err)
+		}
+		msg, err := message.NewMessage(dmSigner, []byte(payload), dmTags, nil)
 		if err != nil {
 			return fmt.Errorf("creating message: %w", err)
 		}

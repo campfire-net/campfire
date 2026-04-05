@@ -617,7 +617,7 @@ func (g *gateTestHandler) handleInvoke(ctx context.Context, body []byte) (string
 	tags := []string{resultTag}
 	antecedents := []string{data.GateMsgID}
 
-	msg, err := message.NewMessage(g.ident.PrivateKey, g.ident.PublicKey, []byte(payload), tags, antecedents)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(g.ident.PrivateKey, g.ident.PublicKey), []byte(payload), tags, antecedents)
 	if err != nil {
 		return "", err
 	}

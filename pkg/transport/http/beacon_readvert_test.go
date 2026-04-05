@@ -80,7 +80,7 @@ func makeSignedBeaconMessage(
 		t.Fatalf("marshaling beacon decl: %v", err)
 	}
 
-	msg, err := message.NewMessage(senderID.PrivateKey, senderID.PublicKey, payloadBytes, []string{"routing:beacon"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(senderID.PrivateKey, senderID.PublicKey), payloadBytes, []string{"routing:beacon"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}
@@ -120,7 +120,7 @@ func makeSignedWithdrawMessage(
 		t.Fatalf("marshal withdraw payload: %v", err)
 	}
 
-	msg, err := message.NewMessage(senderID.PrivateKey, senderID.PublicKey, payloadBytes, []string{"routing:withdraw"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(senderID.PrivateKey, senderID.PublicKey), payloadBytes, []string{"routing:withdraw"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}

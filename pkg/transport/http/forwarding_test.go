@@ -378,7 +378,7 @@ func TestMaxHopsEnforced(t *testing.T) {
 	_ = startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
 
 	// Build a message and add maxHops provenance hops.
-	msg, err := message.NewMessage(id1.PrivateKey, id1.PublicKey, []byte("at hop limit"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id1.PrivateKey, id1.PublicKey), []byte("at hop limit"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestRoutingBeaconUpdatesRoutingTable(t *testing.T) {
 	payloadBytes, _ := json.Marshal(beaconPayload)
 
 	// Deliver the routing:beacon message to the gateway campfire.
-	beaconMsg, err := message.NewMessage(id1.PrivateKey, id1.PublicKey, payloadBytes, []string{"routing:beacon"}, nil)
+	beaconMsg, err := message.NewMessage(message.MustNewEd25519Signer(id1.PrivateKey, id1.PublicKey), payloadBytes, []string{"routing:beacon"}, nil)
 	if err != nil {
 		t.Fatalf("creating beacon message: %v", err)
 	}

@@ -234,7 +234,11 @@ func (h *InboundHandler) HandleActivity(ctx context.Context, authHeader string, 
 	tags := []string{"from:teams"}
 
 	// 10. Create the signed campfire message.
-	msg, err := message.NewMessage(h.ident.PrivateKey, h.ident.PublicKey, payload, tags, antecedents)
+	bridgeSigner, err := message.NewEd25519Signer(h.ident.PrivateKey, h.ident.PublicKey)
+	if err != nil {
+		return "", fmt.Errorf("creating signer: %w", err)
+	}
+	msg, err := message.NewMessage(bridgeSigner, payload, tags, antecedents)
 	if err != nil {
 		return "", fmt.Errorf("creating message: %w", err)
 	}
@@ -398,7 +402,11 @@ func (h *InboundHandler) handleGateInvoke(ctx context.Context, authHeader string
 	tags := []string{resultTag}
 	antecedents := []string{data.GateMsgID}
 
-	msg, err := message.NewMessage(h.ident.PrivateKey, h.ident.PublicKey, []byte(payload), tags, antecedents)
+	gateSigner, err := message.NewEd25519Signer(h.ident.PrivateKey, h.ident.PublicKey)
+	if err != nil {
+		return "", fmt.Errorf("creating signer for gate response: %w", err)
+	}
+	msg, err := message.NewMessage(gateSigner, []byte(payload), tags, antecedents)
 	if err != nil {
 		return "", fmt.Errorf("creating gate response message: %w", err)
 	}

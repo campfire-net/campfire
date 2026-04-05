@@ -233,7 +233,7 @@ func TestTransport_CLISendHTTPHostedRead(t *testing.T) {
 	})
 
 	// 4. CLI agent sends a message via HTTP transport (POST /campfire/{id}/deliver).
-	msg, err := message.NewMessage(cliID.PrivateKey, cliID.PublicKey, []byte("hello from CLI"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey), []byte("hello from CLI"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestTransport_PollBrokerWakesOnExternalMessage(t *testing.T) {
 	})
 
 	// 4. CLI agent delivers a message.
-	msg, err := message.NewMessage(cliID.PrivateKey, cliID.PublicKey, []byte("wake up!"), nil, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey), []byte("wake up!"), nil, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
