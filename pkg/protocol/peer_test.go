@@ -14,7 +14,7 @@ import (
 // helperInitClient creates a real protocol.Client backed by a temp dir.
 func helperInitClient(t *testing.T) *protocol.Client {
 	t.Helper()
-	client, err := protocol.Init(t.TempDir())
+	client,_, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}

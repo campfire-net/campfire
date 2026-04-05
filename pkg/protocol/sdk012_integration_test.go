@@ -31,7 +31,7 @@ func TestSDK012_CreateSendGet(t *testing.T) {
 	transportDir := t.TempDir()
 	beaconDir := t.TempDir()
 
-	client, err := protocol.Init(configDir)
+	client,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestSDK012_GetErrorPaths(t *testing.T) {
 func TestSDK012_PublicKeyHex(t *testing.T) {
 	configDir := t.TempDir()
 
-	client, err := protocol.Init(configDir)
+	client,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}

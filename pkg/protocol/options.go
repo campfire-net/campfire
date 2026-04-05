@@ -12,14 +12,14 @@ type options struct {
 	remoteURL string
 
 	// walkUp controls whether Init walks up parent directories looking for
-	// an existing center campfire. Default is true (walk-up enabled).
+	// an existing center campfire. Default is false (walk-up opt-in).
 	walkUp bool
 }
 
 // defaultOptions returns the options struct with all defaults applied.
 func defaultOptions() options {
 	return options{
-		walkUp: true,
+		walkUp: false,
 	}
 }
 
@@ -45,9 +45,21 @@ func WithRemote(url string) Option {
 	}
 }
 
+// WithWalkUp enables parent-directory walk-up for center campfire discovery.
+// Walk-up is disabled by default (opt-in). Use this option in developer
+// tooling and environments where ascending directory trees is desirable.
+func WithWalkUp() Option {
+	return func(o *options) {
+		o.walkUp = true
+	}
+}
+
 // WithNoWalkUp disables parent-directory walk-up for center campfire discovery.
-// Useful in agents and containers where the directory tree is unpredictable.
-// Walk-up is enabled by default.
+//
+// Deprecated: walk-up is now disabled by default (opt-in via WithWalkUp()).
+// WithNoWalkUp() is a no-op on a default-initialized client and will be
+// removed in a future release. Callers that relied on walk-up must now
+// explicitly pass WithWalkUp() to restore the behavior.
 func WithNoWalkUp() Option {
 	return func(o *options) {
 		o.walkUp = false

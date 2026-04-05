@@ -21,7 +21,7 @@ func TestCreateDescription(t *testing.T) {
 	beaconDir := t.TempDir()
 	configDir := t.TempDir()
 
-	client, err := protocol.Init(configDir)
+	client,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestCreateBeaconID(t *testing.T) {
 	beaconDir := t.TempDir()
 	configDir := t.TempDir()
 
-	client, err := protocol.Init(configDir)
+	client,_, err := protocol.Init(configDir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}

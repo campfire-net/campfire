@@ -29,7 +29,7 @@ func (c *Client) RemoteURL() string {
 }
 
 // WalkUpEnabled reports whether parent-directory walk-up is enabled for
-// center campfire discovery. Defaults to true; disabled by WithNoWalkUp().
+// center campfire discovery. Defaults to false; enabled by WithWalkUp().
 func (c *Client) WalkUpEnabled() bool {
 	return c.opts.walkUp
 }
