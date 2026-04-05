@@ -12,8 +12,9 @@ import (
 )
 
 var dagCmd = &cobra.Command{
-	Use:   "dag <campfire-id>",
-	Short: "Show message DAG index (no payloads)",
+	Use:    "dag <campfire-id>",
+	Short:  "Show message DAG index (no payloads)",
+	Hidden: true,
 	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dagAll, _ := cmd.Flags().GetBool("all")

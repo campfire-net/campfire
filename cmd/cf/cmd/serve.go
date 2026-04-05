@@ -12,8 +12,9 @@ import (
 )
 
 var serveCmd = &cobra.Command{
-	Use:   "serve <campfire-id>",
-	Short: "Start HTTP listener for a p2p-http campfire and block until interrupted",
+	Use:    "serve <campfire-id>",
+	Short:  "Start HTTP listener for a p2p-http campfire and block until interrupted",
+	Hidden: true,
 	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		serveListen, _ := cmd.Flags().GetString("listen")
