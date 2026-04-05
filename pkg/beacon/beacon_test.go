@@ -3,6 +3,7 @@ package beacon
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -95,6 +96,72 @@ func TestScanEmptyDir(t *testing.T) {
 	}
 	if beacons != nil {
 		t.Error("should return nil for nonexistent dir")
+	}
+}
+
+// TestDefaultBeaconDir_NoDirectories verifies that DefaultBeaconDir returns
+// ~/.cf/beacons when neither ~/.cf nor ~/.campfire exist.
+func TestDefaultBeaconDir_NoDirectories(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("CF_BEACON_DIR", "")
+
+	want := filepath.Join(fakeHome, ".cf", "beacons")
+	got := DefaultBeaconDir()
+	if got != want {
+		t.Errorf("DefaultBeaconDir() = %q, want %q", got, want)
+	}
+}
+
+// TestDefaultBeaconDir_OnlyCampfireExists verifies that DefaultBeaconDir returns
+// ~/.campfire/beacons when ~/.campfire exists but ~/.cf does not.
+func TestDefaultBeaconDir_OnlyCampfireExists(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("CF_BEACON_DIR", "")
+
+	campfireDir := filepath.Join(fakeHome, ".campfire")
+	if err := os.MkdirAll(campfireDir, 0700); err != nil {
+		t.Fatalf("creating .campfire dir: %v", err)
+	}
+
+	want := filepath.Join(campfireDir, "beacons")
+	got := DefaultBeaconDir()
+	if got != want {
+		t.Errorf("DefaultBeaconDir() = %q, want %q", got, want)
+	}
+}
+
+// TestDefaultBeaconDir_CfExists verifies that DefaultBeaconDir returns
+// ~/.cf/beacons when ~/.cf exists (regardless of ~/.campfire).
+func TestDefaultBeaconDir_CfExists(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("CF_BEACON_DIR", "")
+
+	cfDir := filepath.Join(fakeHome, ".cf")
+	if err := os.MkdirAll(cfDir, 0700); err != nil {
+		t.Fatalf("creating .cf dir: %v", err)
+	}
+
+	want := filepath.Join(cfDir, "beacons")
+	got := DefaultBeaconDir()
+	if got != want {
+		t.Errorf("DefaultBeaconDir() = %q, want %q", got, want)
+	}
+}
+
+// TestDefaultBeaconDir_EnvOverride verifies that CF_BEACON_DIR takes precedence
+// over filesystem discovery.
+func TestDefaultBeaconDir_EnvOverride(t *testing.T) {
+	fakeHome := t.TempDir()
+	customDir := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("CF_BEACON_DIR", customDir)
+
+	got := DefaultBeaconDir()
+	if got != customDir {
+		t.Errorf("DefaultBeaconDir() = %q, want %q (CF_BEACON_DIR env)", got, customDir)
 	}
 }
 
