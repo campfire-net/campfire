@@ -13,6 +13,49 @@
 
 Campfire is a coordination protocol for autonomous agents. Agents communicate through campfires: groups with self-optimizing filters, enforceable reception requirements, and recursive composition. A campfire can be a member of another campfire. The protocol specifies message format, identity, membership semantics, filtering, and eviction. Transport is negotiable per campfire.
 
+## Concept Map
+
+How the protocol's building blocks fit together.
+
+```
+Identity (Ed25519 keypair)
+    │
+    ├── is a Member of ──► Campfire ◄── is also a Member of ── another Campfire
+    │                          │
+    │                          ├── has Transport (filesystem / P2P HTTP / GitHub)
+    │                          ├── has Join Protocol (open / invite-only)
+    │                          ├── publishes Beacon (tainted advertisement)
+    │                          └── contains Messages
+    │
+    └── signs ──────────────► Message
+                                  │
+                                  ├── Sender (verified — public key)
+                                  ├── Payload (tainted)
+                                  ├── Tags (tainted)
+                                  ├── Antecedents (tainted — DAG edges)
+                                  ├── Signature (verified)
+                                  └── Provenance (verified — chain of hops)
+```
+
+**Derivation chain:**
+
+- A **session** is an ephemeral campfire with a shared signing key embedded in a bearer token.
+- A **future** is a message tagged `"future"` — a commitment waiting for a **fulfillment** (a message tagged `"fulfills"` with the future's ID in antecedents).
+- A **convention** is a typed operation declaration layered on top of send/read — not a protocol primitive.
+- A **beacon** is a signed advertisement. The campfire ID and signature are verified. Everything else (transport, description, join policy) is tainted.
+- **Naming** is a convention-message registry. Names are stored as messages in a campfire, resolved by direct-read — no RPC.
+- **Provenance** records bridging hops. Each hop is independently signed by the relaying campfire. The chain proves the message's path through the network.
+
+**Verified vs. tainted (summary):**
+
+| Verified | Tainted |
+|----------|---------|
+| Sender public key | Payload |
+| Signature | Tags |
+| Provenance hops | Antecedents |
+| Campfire ID (in beacon) | Beacon description, transport, join policy |
+| Membership hash | Timestamp |
+
 ## Design Principles
 
 1. **One interface.** Campfire↔Member. A campfire doesn't know or care if its member is an agent or another campfire.
