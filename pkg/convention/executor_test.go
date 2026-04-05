@@ -1144,6 +1144,71 @@ func TestExecuteResult_SyncTimeout(t *testing.T) {
 	}
 }
 
+// defaultSyncDecl returns a declaration without a "response" field — it defaults
+// to "sync" internally but ResponseExplicit is false. This is the fire-and-forget
+// case: the Executor must NOT block on sendFutureAndAwait.
+func defaultSyncDecl() *Declaration {
+	payload := mustJSON(map[string]any{
+		"convention":  "test-default-sync",
+		"version":     "0.1",
+		"operation":   "notify",
+		"description": "Notify with no explicit response field",
+		"signing":     "member_key",
+		// No "response" field — defaults to "sync" with ResponseExplicit=false.
+		"produces_tags": []any{
+			map[string]any{"tag": "test-default-sync:notify", "cardinality": "exactly_one"},
+		},
+	})
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		panic("defaultSyncDecl: " + err.Error())
+	}
+	return decl
+}
+
+// TestExecuteResult_DefaultSync_FireAndForget verifies that when ResponseExplicit=false
+// (no "response" field in the declaration), Execute takes the fire-and-forget path:
+// it sends via sendMessage and does NOT block on sendFutureAndAwait. This is the
+// Executor/Server sync-response asymmetry fix — the Server SDK's convention handler
+// does not respond to un-declared-sync operations, so the Executor must not block.
+func TestExecuteResult_DefaultSync_FireAndForget(t *testing.T) {
+	tr := &mockTransport{}
+	ex := newExecutorWithSharedLimiter(tr, testSenderKey)
+	decl := defaultSyncDecl()
+
+	// Confirm the precondition: Response defaults to "sync" but ResponseExplicit is false.
+	if decl.Response != "sync" {
+		t.Fatalf("expected Response=%q, got %q", "sync", decl.Response)
+	}
+	if decl.ResponseExplicit {
+		t.Fatal("expected ResponseExplicit=false for a declaration without a 'response' field")
+	}
+
+	result, err := ex.Execute(context.Background(), decl, "cf-default-sync", map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil ExecuteResult")
+	}
+	// Fire-and-forget: Response must be nil.
+	if result.Response != nil {
+		t.Errorf("expected nil Response for default-sync (ResponseExplicit=false), got %s", result.Response)
+	}
+	// MessageID must be populated.
+	if result.MessageID == "" {
+		t.Error("expected non-empty MessageID for default-sync send")
+	}
+	// Must NOT have gone through sendFutureAndAwait.
+	if len(tr.futureCalls) != 0 {
+		t.Errorf("expected 0 future calls for default-sync (ResponseExplicit=false), got %d", len(tr.futureCalls))
+	}
+	// Must have gone through sendMessage.
+	if len(tr.sentMessages) != 1 {
+		t.Errorf("expected 1 normal send for default-sync, got %d", len(tr.sentMessages))
+	}
+}
+
 // TestCollectArgValuesForPrefix_NamingNameGlob verifies that the naming:name:* glob
 // correctly matches a single-arg "name" through the HasSuffix fallback.
 func TestCollectArgValuesForPrefix_NamingNameGlob(t *testing.T) {
