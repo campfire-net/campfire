@@ -25,7 +25,8 @@ const identityFilename = "identity.json"
 // Optional configuration is supplied via functional options:
 //   - WithAuthorizeFunc(fn) — registers a hook called when authorization is required.
 //   - WithRemote(url)       — configures a remote HTTP transport endpoint.
-//   - WithNoWalkUp()        — disables parent-directory walk-up for center discovery.
+//   - WithWalkUp()          — enables parent-directory walk-up for center discovery (opt-in).
+//   - WithNoWalkUp()        — deprecated: walk-up is now off by default; this is a no-op.
 //
 // The caller is responsible for calling Close on the returned *Client when done.
 func Init(configDir string, optFuncs ...Option) (*Client, error) {
