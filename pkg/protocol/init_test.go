@@ -28,6 +28,7 @@ func TestInit(t *testing.T) {
 	t.Run("InitResultIdentityCreatedFirstInit", testInitResultIdentityCreatedFirstInit)
 	t.Run("InitResultIdentityCreatedSubsequentInit", testInitResultIdentityCreatedSubsequentInit)
 	t.Run("InitResultWalkUpPathEmptyByDefault", testInitResultWalkUpPathEmptyByDefault)
+	t.Run("InitResultWalkUpPathPopulatedWithWalkUp", testInitResultWalkUpPathPopulatedWithWalkUp)
 }
 
 // testInitResultNonNil verifies that Init() returns a non-nil *InitResult
@@ -140,6 +141,50 @@ func testInitResultWalkUpPathEmptyByDefault(t *testing.T) {
 	if len(result.WalkUpPath) != 0 {
 		t.Errorf("InitResult.WalkUpPath is non-empty with default options (walk-up disabled), got %v",
 			result.WalkUpPath)
+	}
+}
+
+// testInitResultWalkUpPathPopulatedWithWalkUp verifies that InitResult.WalkUpPath
+// is non-empty when walk-up is enabled via WithWalkUp() and the child directory
+// has parent directories. collectWalkUpPath() traverses from configDir to the
+// filesystem root — both the child and its parent must appear in the path.
+func testInitResultWalkUpPathPopulatedWithWalkUp(t *testing.T) {
+	t.Helper()
+
+	// Create a nested temp directory: parentDir/childDir.
+	// t.TempDir() returns a unique directory; we create a sub-directory inside it
+	// to guarantee a genuine parent relationship in the walk-up path.
+	parentDir := t.TempDir()
+	childDir := filepath.Join(parentDir, "child")
+	if err := os.MkdirAll(childDir, 0o755); err != nil {
+		t.Fatalf("creating child dir: %v", err)
+	}
+
+	client, result, err := protocol.Init(childDir, protocol.WithWalkUp())
+	if err != nil {
+		t.Fatalf("Init(childDir, WithWalkUp()): %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if len(result.WalkUpPath) == 0 {
+		t.Fatal("InitResult.WalkUpPath is empty with WithWalkUp() enabled, want non-empty")
+	}
+
+	// childDir must be the first entry — walk-up always starts from configDir.
+	if result.WalkUpPath[0] != childDir {
+		t.Errorf("WalkUpPath[0] = %q, want childDir %q", result.WalkUpPath[0], childDir)
+	}
+
+	// parentDir must appear somewhere in the path (it is the direct parent).
+	found := false
+	for _, dir := range result.WalkUpPath {
+		if dir == parentDir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("parentDir %q not found in WalkUpPath %v", parentDir, result.WalkUpPath)
 	}
 }
 
