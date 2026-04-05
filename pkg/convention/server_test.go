@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -933,5 +934,278 @@ func TestServerSDK_ErrorFulfillmentRoundTrip(t *testing.T) {
 	}
 	if gotErr != wantErrMsg {
 		t.Errorf("error message = %q, want %q", gotErr, wantErrMsg)
+	}
+}
+
+// gatedServerDecl returns a Declaration with min_operator_level=2 for use in Server provenance tests.
+func gatedServerDecl() *convention.Declaration {
+	return &convention.Declaration{
+		Convention:       "peering",
+		Operation:        "core-peer-establish",
+		Signing:          "member_key",
+		MinOperatorLevel: 2,
+		Args: []convention.ArgDescriptor{
+			{Name: "peer_key", Type: "string", Required: true, MaxLength: 64},
+		},
+		ProducesTags: []convention.TagRule{
+			{Tag: "peering:core", Cardinality: "exactly_one"},
+		},
+		Antecedents: "none",
+	}
+}
+
+// TestServerSDK_MinOperatorLevel_Blocked verifies that the Server rejects an incoming
+// operation message when the sender's provenance level is below the declared minimum.
+// An error fulfillment must be sent back; the handler must NOT be invoked.
+func TestServerSDK_MinOperatorLevel_Blocked(t *testing.T) {
+	env := setupServerTestEnv(t)
+	decl := gatedServerDecl()
+
+	callerKey := env.callerClient.PublicKeyHex()
+
+	// Set caller's level to 1 — below the required 2.
+	checker := &staticProvenanceChecker{levels: map[string]int{callerKey: 1}}
+
+	var handlerCalled bool
+	srv := convention.NewServer(env.serverClient, decl).
+		WithPollInterval(50 * time.Millisecond).
+		WithProvenance(checker)
+
+	srv.RegisterHandler("core-peer-establish", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		handlerCalled = true
+		return &convention.Response{Payload: map[string]any{"ok": true}}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srv.Serve(ctx, env.campfireID) //nolint:errcheck
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	sentMsg, err := env.callerClient.Send(protocol.SendRequest{
+		CampfireID: env.campfireID,
+		Payload:    []byte(`{"peer_key":"` + strings.Repeat("a", 64) + `"}`),
+		Tags:       []string{"peering:core"},
+	})
+	if err != nil {
+		t.Fatalf("caller Send: %v", err)
+	}
+
+	// Poll for an error fulfillment threaded back to the sent message.
+	var errorMsg *protocol.Message
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := env.callerClient.Read(protocol.ReadRequest{
+			CampfireID: env.campfireID,
+			Tags:       []string{"convention:error"},
+		})
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for i, msg := range result.Messages {
+			for _, ant := range msg.Antecedents {
+				if ant == sentMsg.ID {
+					errorMsg = &result.Messages[i]
+					break
+				}
+			}
+			if errorMsg != nil {
+				break
+			}
+		}
+		if errorMsg != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	wg.Wait()
+
+	if errorMsg == nil {
+		t.Fatal("expected a convention:error fulfillment but none arrived")
+	}
+	if handlerCalled {
+		t.Error("handler must NOT be called when provenance gate rejects the request")
+	}
+
+	// Verify the error payload contains the provenance rejection message.
+	errText, parseErr := convention.ParseErrorResponse(errorMsg)
+	if parseErr != nil {
+		t.Fatalf("ParseErrorResponse: %v", parseErr)
+	}
+	if !strings.Contains(errText, "operator provenance level") {
+		t.Errorf("error payload = %q, want it to mention 'operator provenance level'", errText)
+	}
+	if !strings.Contains(errText, "requires level 2") {
+		t.Errorf("error payload = %q, want 'requires level 2'", errText)
+	}
+}
+
+// TestServerSDK_MinOperatorLevel_Allowed verifies that the Server dispatches to the
+// handler when the sender's provenance level meets the declared minimum.
+func TestServerSDK_MinOperatorLevel_Allowed(t *testing.T) {
+	env := setupServerTestEnv(t)
+	decl := gatedServerDecl()
+
+	callerKey := env.callerClient.PublicKeyHex()
+
+	// Set caller's level to 2 — exactly the minimum required.
+	checker := &staticProvenanceChecker{levels: map[string]int{callerKey: 2}}
+
+	var mu sync.Mutex
+	var handlerCalled bool
+
+	srv := convention.NewServer(env.serverClient, decl).
+		WithPollInterval(50 * time.Millisecond).
+		WithProvenance(checker)
+
+	srv.RegisterHandler("core-peer-establish", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		mu.Lock()
+		handlerCalled = true
+		mu.Unlock()
+		return &convention.Response{Payload: map[string]any{"ok": true}}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srv.Serve(ctx, env.campfireID) //nolint:errcheck
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	sentMsg, err := env.callerClient.Send(protocol.SendRequest{
+		CampfireID: env.campfireID,
+		Payload:    []byte(`{"peer_key":"` + strings.Repeat("a", 64) + `"}`),
+		Tags:       []string{"peering:core"},
+	})
+	if err != nil {
+		t.Fatalf("caller Send: %v", err)
+	}
+
+	// Poll for a successful fulfillment (not error).
+	var successMsg *protocol.Message
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := env.callerClient.Read(protocol.ReadRequest{
+			CampfireID: env.campfireID,
+			Tags:       []string{"fulfills"},
+		})
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for i, msg := range result.Messages {
+			if convention.IsErrorResponse(&result.Messages[i]) {
+				continue
+			}
+			for _, ant := range msg.Antecedents {
+				if ant == sentMsg.ID {
+					successMsg = &result.Messages[i]
+					break
+				}
+			}
+			if successMsg != nil {
+				break
+			}
+		}
+		if successMsg != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	wg.Wait()
+
+	if successMsg == nil {
+		t.Fatal("expected a successful fulfillment but none arrived")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !handlerCalled {
+		t.Error("handler must be called when provenance level is sufficient")
+	}
+}
+
+// TestServerSDK_MinOperatorLevel_NoCheckerDefaultsToZero verifies that when no
+// ProvenanceChecker is attached and min_operator_level > 0, the Server rejects.
+func TestServerSDK_MinOperatorLevel_NoCheckerDefaultsToZero(t *testing.T) {
+	env := setupServerTestEnv(t)
+	decl := gatedServerDecl()
+
+	var handlerCalled bool
+	// No WithProvenance — sender defaults to level 0.
+	srv := convention.NewServer(env.serverClient, decl).
+		WithPollInterval(50 * time.Millisecond)
+
+	srv.RegisterHandler("core-peer-establish", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		handlerCalled = true
+		return nil, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srv.Serve(ctx, env.campfireID) //nolint:errcheck
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	sentMsg, err := env.callerClient.Send(protocol.SendRequest{
+		CampfireID: env.campfireID,
+		Payload:    []byte(`{"peer_key":"` + strings.Repeat("a", 64) + `"}`),
+		Tags:       []string{"peering:core"},
+	})
+	if err != nil {
+		t.Fatalf("caller Send: %v", err)
+	}
+
+	// Expect an error fulfillment.
+	var errorFound bool
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := env.callerClient.Read(protocol.ReadRequest{
+			CampfireID: env.campfireID,
+			Tags:       []string{"convention:error"},
+		})
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for _, msg := range result.Messages {
+			for _, ant := range msg.Antecedents {
+				if ant == sentMsg.ID {
+					errorFound = true
+				}
+			}
+		}
+		if errorFound {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	wg.Wait()
+
+	if !errorFound {
+		t.Fatal("expected rejection (convention:error) when no checker and min_operator_level=2")
+	}
+	if handlerCalled {
+		t.Error("handler must NOT be called when provenance gate rejects")
 	}
 }

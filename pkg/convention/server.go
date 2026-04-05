@@ -68,6 +68,10 @@ type Server struct {
 	// errFn is called when a handler or send returns an error.
 	// Defaults to discarding errors.
 	errFn func(err error)
+
+	// provenance is an optional checker used to enforce min_operator_level gates.
+	// When nil, any sender with a gated operation will be rejected (defaults to level 0).
+	provenance ProvenanceChecker
 }
 
 // NewServer creates a Server for the given convention Declaration.
@@ -93,6 +97,17 @@ func (s *Server) WithPollInterval(d time.Duration) *Server {
 // response-send returns an error. Use this for logging.
 func (s *Server) WithErrorHandler(fn func(err error)) *Server {
 	s.errFn = fn
+	return s
+}
+
+// WithProvenance attaches a ProvenanceChecker to the Server.
+// When set, the server enforces min_operator_level gates declared in convention
+// operations by checking the incoming message sender's provenance level.
+// Operations with min_operator_level > 0 are rejected unless the sender's
+// provenance level meets or exceeds the declared minimum.
+// See Operator Provenance Convention v0.1 §8.
+func (s *Server) WithProvenance(checker ProvenanceChecker) *Server {
+	s.provenance = checker
 	return s
 }
 
@@ -165,6 +180,24 @@ func (s *Server) dispatch(ctx context.Context, campfireID string, msg protocol.M
 	if !ok {
 		// No handler registered for this operation — skip silently.
 		return
+	}
+
+	// Operator provenance gate: reject if sender's level is below the declared minimum.
+	// See Operator Provenance Convention v0.1 §8.1.
+	if s.decl.MinOperatorLevel > 0 {
+		senderLevel := 0
+		if s.provenance != nil {
+			senderLevel = s.provenance.Level(msg.Sender)
+		}
+		if senderLevel < s.decl.MinOperatorLevel {
+			err := fmt.Errorf("operator provenance level %d insufficient: operation %q requires level %d",
+				senderLevel, s.decl.Convention+":"+s.decl.Operation, s.decl.MinOperatorLevel)
+			s.errFn(fmt.Errorf("convention server: provenance gate (msg %s): %w", msg.ID, err))
+			if sendErr := s.sendErrorResponse(campfireID, msg.ID, err); sendErr != nil {
+				s.errFn(fmt.Errorf("convention server: send provenance error (msg %s): %w", msg.ID, sendErr))
+			}
+			return
+		}
 	}
 
 	// Parse payload into args map.

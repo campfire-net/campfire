@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
@@ -46,6 +48,24 @@ var joinCmd = &cobra.Command{
 		}
 		defer s.Close()
 
+		// Detect beacon URI before general resolution so we can extract the
+		// transport hint for join routing.
+		// SECURITY: transport hint from beacon is ONLY used here for join, never
+		// for send/read operations on existing memberships (SSRF prevention).
+		if naming.IsCampfireURI(args[0]) {
+			parsed, parseErr := naming.ParseURI(args[0])
+			if parseErr != nil {
+				return fmt.Errorf("parsing URI: %w", parseErr)
+			}
+			if parsed.Kind == naming.URIKindBeacon {
+				existingMembership, _ := s.GetMembership(parsed.CampfireID)
+				if existingMembership != nil {
+					return fmt.Errorf("already a member of campfire %s", parsed.CampfireID[:shortIDLen])
+				}
+				return joinFromBeacon(parsed, agentID, s, joinListen, joinTLSCert, joinTLSKey, joinGitHubTokenEnv, joinGitHubBaseURL, joinGitHubRepo)
+			}
+		}
+
 		campfireID, err := resolveCampfireID(args[0], s)
 		if err != nil {
 			return err
@@ -66,6 +86,67 @@ var joinCmd = &cobra.Command{
 		}
 		return joinFilesystem(campfireID, agentID, s)
 	},
+}
+
+// joinFromBeacon joins a campfire using the transport hint from a verified beacon URI.
+// SECURITY: the transport hint is only used here (join path), never for send/read.
+func joinFromBeacon(parsed *naming.URI, agentID *identity.Identity, s store.Store, listen, tlsCert, tlsKey, githubTokenEnv, githubBaseURL, githubRepo string) error {
+	campfireID := parsed.CampfireID
+
+	// Decode the beacon to read the transport hint.
+	beaconBytes, err := decodeBeaconBase64(parsed.BeaconData)
+	if err != nil {
+		return fmt.Errorf("decoding beacon: %w", err)
+	}
+	var b beacon.Beacon
+	if err := cfencoding.Unmarshal(beaconBytes, &b); err != nil {
+		return fmt.Errorf("unmarshalling beacon: %w", err)
+	}
+	// Re-verify after decode (defence-in-depth — ParseURI already verified).
+	if !b.Verify() {
+		return fmt.Errorf("beacon signature invalid")
+	}
+
+	switch b.Transport.Protocol {
+	case "p2p-http":
+		via, ok := b.Transport.Config["url"]
+		if !ok || via == "" {
+			return fmt.Errorf("beacon p2p-http transport missing 'url' config key")
+		}
+		return joinP2PHTTP(campfireID, agentID, s, via, listen, tlsCert, tlsKey)
+	case "github":
+		// Transport hint provides repo info; delegate to GitHub join.
+		if githubRepo == "" {
+			if repo, ok := b.Transport.Config["repo"]; ok {
+				githubRepo = repo
+			}
+		}
+		if githubBaseURL == "" {
+			if u, ok := b.Transport.Config["base_url"]; ok {
+				githubBaseURL = u
+			}
+		}
+		return joinGitHub(campfireID, agentID, s, githubTokenEnv, githubBaseURL, githubRepo)
+	default:
+		// Filesystem or unknown protocol: fall back to filesystem join.
+		return joinFilesystem(campfireID, agentID, s)
+	}
+}
+
+// decodeBeaconBase64 decodes a base64-encoded beacon payload string.
+// Tries RawURL, URL, RawStd, and Std encodings in order.
+func decodeBeaconBase64(data string) ([]byte, error) {
+	for _, enc := range []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	} {
+		if raw, err := enc.DecodeString(data); err == nil {
+			return raw, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid base64 beacon data")
 }
 
 // resolveFSTransportDir returns the filesystem transport directory for campfireID.
@@ -269,13 +350,13 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
 		Store: s,
 	}, admission.AdmissionRequest{
-		CampfireID:    campfireID,
+		CampfireID:      campfireID,
 		MemberPubKeyHex: agentID.PublicKeyHex(),
-		Role:          campfire.RoleFull,
-		JoinProtocol:  result.JoinProtocol,
-		TransportDir:  stateDir,
-		TransportType: "p2p-http",
-		Description:   p2pDescription,
+		Role:            campfire.RoleFull,
+		JoinProtocol:    result.JoinProtocol,
+		TransportDir:    stateDir,
+		TransportType:   "p2p-http",
+		Description:     p2pDescription,
 	}); err != nil {
 		return fmt.Errorf("recording membership: %w", err)
 	}
@@ -629,7 +710,6 @@ func pollForKeyDelivery(tr *ghtr.Transport, campfireID string, agentID *identity
 	}
 	return nil, fmt.Errorf("key delivery not received after %d poll attempts", maxAttempts)
 }
-
 
 // lookupBeaconDescription scans global and project beacon directories for a
 // beacon matching campfireID and returns its description. Returns "" on miss.
