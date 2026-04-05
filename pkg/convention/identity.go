@@ -14,6 +14,10 @@ const (
 	IdentityHomeDeclaredTag  = "identity:home-declared"
 	IdentityHomeEchoTag      = "identity:home-echo"
 	IdentityBeaconTag        = "identity:v1"
+	// IdentityProfileTag is the tag for self-declared display name messages.
+	// Senders post {"display_name":"..."} payloads tagged identity:profile when
+	// joining or creating a campfire. Display names are UNVERIFIED — treat as hints.
+	IdentityProfileTag = "identity:profile"
 )
 
 // IntroduceMeDeclaration returns the "introduce-me" operation declaration for

@@ -333,8 +333,7 @@ func TestGitHubTransport_EndToEnd(t *testing.T) {
 	trB.RegisterCampfire(campfireID, issueNum)
 
 	joinReqMsg, err := message.NewMessage(
-		agentB.PrivateKey,
-		agentB.PublicKey,
+		message.MustNewEd25519Signer(agentB.PrivateKey, agentB.PublicKey),
 		[]byte(fmt.Sprintf(`{"joiner":"%s"}`, agentB.PublicKeyHex())),
 		[]string{"campfire:join-request"},
 		nil,
@@ -380,8 +379,7 @@ func TestGitHubTransport_EndToEnd(t *testing.T) {
 
 	// Post campfire:key-delivery comment signed by Agent A.
 	keyDeliveryMsg, err := message.NewMessage(
-		agentA.PrivateKey,
-		agentA.PublicKey,
+		message.MustNewEd25519Signer(agentA.PrivateKey, agentA.PublicKey),
 		[]byte(hex.EncodeToString(ciphertext)),
 		[]string{"campfire:key-delivery"},
 		nil,
@@ -443,8 +441,7 @@ func TestGitHubTransport_EndToEnd(t *testing.T) {
 
 	// ---- Step 3: Agent A sends a message ----
 	sentMsg, err := message.NewMessage(
-		agentA.PrivateKey,
-		agentA.PublicKey,
+		message.MustNewEd25519Signer(agentA.PrivateKey, agentA.PublicKey),
 		[]byte("hello from agent A"),
 		nil,
 		nil,

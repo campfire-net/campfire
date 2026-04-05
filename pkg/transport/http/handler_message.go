@@ -507,7 +507,12 @@ func (h *handler) reAdvertiseBeacon(campfireID, senderHex string, rawPayload []b
 
 	// Create a new routing:beacon message signed by the gateway campfire key.
 	// This is how the re-advertisement is authenticated to downstream peers.
-	beaconMsg, err := message.NewMessage(gwPriv, gwPub, updatedPayload, []string{beacon.TagBeacon}, nil)
+	gwSigner, err := message.NewEd25519Signer(gwPriv, gwPub)
+	if err != nil {
+		log.Printf("reAdvertiseBeacon: creating signer failed for campfire %s: %v", campfireID, err)
+		return
+	}
+	beaconMsg, err := message.NewMessage(gwSigner, updatedPayload, []string{beacon.TagBeacon}, nil)
 	if err != nil {
 		log.Printf("reAdvertiseBeacon: creating beacon message failed for campfire %s: %v", campfireID, err)
 		return
@@ -587,7 +592,12 @@ func (h *handler) propagateWithdraw(campfireID, senderHex string, rawPayload []b
 	}
 
 	// Create a new routing:withdraw message with the same payload.
-	withdrawMsg, err := message.NewMessage(campfirePriv, campfirePub, rawPayload, []string{beacon.TagWithdraw}, nil)
+	cfSigner, err := message.NewEd25519Signer(campfirePriv, campfirePub)
+	if err != nil {
+		log.Printf("propagateWithdraw: creating signer failed for campfire %s: %v", campfireID, err)
+		return
+	}
+	withdrawMsg, err := message.NewMessage(cfSigner, rawPayload, []string{beacon.TagWithdraw}, nil)
 	if err != nil {
 		log.Printf("propagateWithdraw: creating withdraw message failed for campfire %s: %v", campfireID, err)
 		return

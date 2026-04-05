@@ -16,7 +16,7 @@ func makeTestMessage(t *testing.T) *message.Message {
 	if err != nil {
 		t.Fatalf("generating key: %v", err)
 	}
-	msg, err := message.NewMessage(priv, pub, []byte("hello campfire"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), []byte("hello campfire"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

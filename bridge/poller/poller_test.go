@@ -43,7 +43,7 @@ func addMembership(t *testing.T, s store.Store, campfireID string) {
 func insertMessage(t *testing.T, s store.Store, campfireID string, tags []string, ts int64) string {
 	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	msg, err := message.NewMessage(priv, pub, []byte("test payload"), tags, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), []byte("test payload"), tags, nil)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}

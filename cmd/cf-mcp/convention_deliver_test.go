@@ -96,7 +96,7 @@ func TestConventionDeliver_DispatchFiresOnDeliverPath(t *testing.T) {
 	})
 
 	// Deliver a message from the CLI agent via HTTP (P2P path).
-	msg, err := message.NewMessage(cliID.PrivateKey, cliID.PublicKey, []byte("p2p test"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey), []byte("p2p test"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestConventionDeliver_NilDispatcherSafe(t *testing.T) {
 	})
 
 	// Deliver must succeed without panicking.
-	msg, err := message.NewMessage(cliID.PrivateKey, cliID.PublicKey, []byte("safe deliver"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey), []byte("safe deliver"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestConventionDeliver_DispatchContextNotCancelledByRequest(t *testing.T) {
 
 	// Deliver a message — the HTTP round-trip completes, then we check
 	// whether the context inside the hook was cancelled.
-	msg, err := message.NewMessage(cliID.PrivateKey, cliID.PublicKey, []byte("ctx regression"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey), []byte("ctx regression"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

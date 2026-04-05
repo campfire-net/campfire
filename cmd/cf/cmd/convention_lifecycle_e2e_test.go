@@ -73,7 +73,7 @@ func e2eSetupSeedCampfire(t *testing.T, transportBaseDir string, projectDir stri
 		t.Fatalf("marshaling seed declaration: %v", err)
 	}
 	// Sign with the campfire's own key so the sender matches CampfireID.
-	seedMsg, err := message.NewMessage(seedCF.PrivateKey, seedCF.PublicKey, seedPayload, []string{convention.ConventionOperationTag}, nil)
+	seedMsg, err := message.NewMessage(message.MustNewEd25519Signer(seedCF.PrivateKey, seedCF.PublicKey), seedPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating seed message: %v", err)
 	}
@@ -192,7 +192,7 @@ func e2eWriteDeclarationToStore(t *testing.T, s store.Store, agentID *identity.I
 		t.Fatalf("marshaling modified declaration: %v", err)
 	}
 
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, finalPayload, []string{convention.ConventionOperationTag}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey), finalPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating declaration message: %v", err)
 	}
@@ -219,7 +219,7 @@ func e2eWriteRevokeToStore(t *testing.T, s store.Store, agentID *identity.Identi
 	if err != nil {
 		t.Fatalf("marshaling revoke payload: %v", err)
 	}
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, payload, []string{"convention:revoke"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey), payload, []string{"convention:revoke"}, nil)
 	if err != nil {
 		t.Fatalf("creating revoke message: %v", err)
 	}

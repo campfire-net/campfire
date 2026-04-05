@@ -23,7 +23,7 @@ func TestSenderCampfireID_RoundTripCBOR(t *testing.T) {
 		t.Fatalf("generating campfire key: %v", err)
 	}
 
-	msg, err := NewMessage(priv, pub, []byte("hello"), []string{"test-tag"}, nil)
+	msg, err := NewMessage(MustNewEd25519Signer(priv, pub), []byte("hello"), []string{"test-tag"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestSenderCampfireID_OmittedForLegacyMessages(t *testing.T) {
 		t.Fatalf("generating key: %v", err)
 	}
 
-	msg, err := NewMessage(priv, pub, []byte("legacy"), []string{"tag"}, nil)
+	msg, err := NewMessage(MustNewEd25519Signer(priv, pub), []byte("legacy"), []string{"tag"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestSenderCampfireID_NotInSignInput(t *testing.T) {
 		t.Fatalf("generating campfire key: %v", err)
 	}
 
-	msg, err := NewMessage(priv, pub, []byte("signed"), []string{"tag"}, nil)
+	msg, err := NewMessage(MustNewEd25519Signer(priv, pub), []byte("signed"), []string{"tag"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestSenderCampfireID_VerifiedAgainstSender(t *testing.T) {
 		t.Fatalf("generating campfire key: %v", err)
 	}
 
-	msg, err := NewMessage(priv, pub, []byte("test"), []string{"tag"}, nil)
+	msg, err := NewMessage(MustNewEd25519Signer(priv, pub), []byte("test"), []string{"tag"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestSenderIdentity_PrefersID(t *testing.T) {
 		t.Fatalf("generating campfire key: %v", err)
 	}
 
-	msg, err := NewMessage(priv, pub, []byte("test"), []string{"tag"}, nil)
+	msg, err := NewMessage(MustNewEd25519Signer(priv, pub), []byte("test"), []string{"tag"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestSenderIdentity_FallsBackToPubkey(t *testing.T) {
 		t.Fatalf("generating key: %v", err)
 	}
 
-	msg, err := NewMessage(priv, pub, []byte("test"), []string{"tag"}, nil)
+	msg, err := NewMessage(MustNewEd25519Signer(priv, pub), []byte("test"), []string{"tag"}, nil)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}

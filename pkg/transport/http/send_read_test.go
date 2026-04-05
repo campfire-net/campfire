@@ -70,7 +70,7 @@ func TestSendReadP2PThreshold1(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// Build a message with a signed provenance hop (threshold=1).
-	msg, err := message.NewMessage(idA.PrivateKey, idA.PublicKey, []byte("hello P2P"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(idA.PrivateKey, idA.PublicKey), []byte("hello P2P"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestSendReadP2PThreshold2(t *testing.T) {
 	// In production this would go through the HTTP /sign endpoint.
 	// Here we verify the signature is correct when produced by threshold.Sign.
 	msgPayload := []byte("threshold signing test")
-	msg, err := message.NewMessage(idA.PrivateKey, idA.PublicKey, msgPayload, []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(idA.PrivateKey, idA.PublicKey), msgPayload, []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

@@ -230,8 +230,7 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 		"reason":  "eviction",
 	})
 	rekeyMsg, err := message.NewMessage(
-		ed25519.PrivateKey(oldCFPriv),
-		ed25519.PublicKey(oldCFPub),
+		message.MustNewEd25519Signer(ed25519.PrivateKey(oldCFPriv), ed25519.PublicKey(oldCFPub)),
 		rekeyPayload,
 		[]string{"campfire:rekey"},
 		nil,
@@ -347,7 +346,7 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 
 	// A sends a message under new campfire ID to B.
 	newMsg, err := message.NewMessage(
-		idA.PrivateKey, idA.PublicKey,
+		message.MustNewEd25519Signer(idA.PrivateKey, idA.PublicKey),
 		[]byte("post-rekey message"),
 		[]string{"test"},
 		nil,
@@ -767,7 +766,7 @@ func TestRekeyForgedSenderRejected(t *testing.T) {
 	})
 	// Sign with A's personal key — this should be rejected.
 	forgedMsg, err := message.NewMessage(
-		idA.PrivateKey, idA.PublicKey,
+		message.MustNewEd25519Signer(idA.PrivateKey, idA.PublicKey),
 		rekeyPayload,
 		[]string{"campfire:rekey"},
 		nil,
@@ -951,8 +950,7 @@ func TestRekeyDBFailureLeavesStateFileIntact(t *testing.T) {
 		"reason":  "eviction",
 	})
 	rekeyMsg, err := message.NewMessage(
-		ed25519.PrivateKey(oldCFPriv),
-		ed25519.PublicKey(oldCFPub),
+		message.MustNewEd25519Signer(ed25519.PrivateKey(oldCFPriv), ed25519.PublicKey(oldCFPub)),
 		rekeyPayload,
 		[]string{"campfire:rekey"},
 		nil,
@@ -1090,8 +1088,7 @@ func TestRekeyPhase2CorruptCiphertextReturns400(t *testing.T) {
 		"reason":  "eviction",
 	})
 	rekeyMsg, err := message.NewMessage(
-		ed25519.PrivateKey(oldCFPriv),
-		ed25519.PublicKey(oldCFPub),
+		message.MustNewEd25519Signer(ed25519.PrivateKey(oldCFPriv), ed25519.PublicKey(oldCFPub)),
 		rekeyPayload,
 		[]string{"campfire:rekey"},
 		nil,

@@ -131,10 +131,11 @@ func (t *CLITransport) Invoke(ctx context.Context, campfireID string, req *Invok
 func (t *CLITransport) sendFuture(campfireID string, payload []byte, tags []string) (string, error) {
 	tags = append(tags, "future")
 
-	msg, err := message.NewMessage(
-		t.Identity.PrivateKey, t.Identity.PublicKey,
-		payload, tags, nil,
-	)
+	signer, err := message.NewEd25519Signer(t.Identity.PrivateKey, t.Identity.PublicKey)
+	if err != nil {
+		return "", fmt.Errorf("creating signer: %w", err)
+	}
+	msg, err := message.NewMessage(signer, payload, tags, nil)
 	if err != nil {
 		return "", fmt.Errorf("creating message: %w", err)
 	}

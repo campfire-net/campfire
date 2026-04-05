@@ -91,7 +91,7 @@ func TestConventionDeliver_DispatchContextCancelsOnServerStop(t *testing.T) {
 		JoinedAt:  time.Now().UnixNano(),
 	})
 
-	msg, err := message.NewMessage(cliID.PrivateKey, cliID.PublicKey, []byte("stop ctx test"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey), []byte("stop ctx test"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestConventionDeliver_DispatchContextHasTimeout(t *testing.T) {
 		JoinedAt:  time.Now().UnixNano(),
 	})
 
-	msg, err := message.NewMessage(cliID.PrivateKey, cliID.PublicKey, []byte("timeout test"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(cliID.PrivateKey, cliID.PublicKey), []byte("timeout test"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

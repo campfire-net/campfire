@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
@@ -103,10 +102,8 @@ func startTestTransport(t *testing.T, campfireID string, id *identity.Identity, 
 // storeTestMessage inserts a message record into the store and returns it.
 func storeTestMessage(t *testing.T, s store.Store, campfireID string, id *identity.Identity) store.MessageRecord {
 	t.Helper()
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("nat test payload"), []string{"test"}, nil)
-	if err != nil {
-		t.Fatalf("creating message: %v", err)
-	}
+	msg := newTestMessage(t, id.PrivateKey, id.PublicKey, []byte("nat test payload"), []string{"test"}, nil)
+
 	rec := store.MessageRecord{
 		ID:          msg.ID,
 		CampfireID:  campfireID,

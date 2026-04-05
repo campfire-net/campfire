@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -49,8 +50,15 @@ var leaveCmd = &cobra.Command{
 		}
 
 		// Write campfire:member-left system message
+		cfSigner, err := message.NewEd25519Signer(
+			ed25519.PrivateKey(state.PrivateKey),
+			ed25519.PublicKey(state.PublicKey),
+		)
+		if err != nil {
+			return fmt.Errorf("creating signer for system message: %w", err)
+		}
 		sysMsg, err := message.NewMessage(
-			state.PrivateKey, state.PublicKey,
+			cfSigner,
 			[]byte(fmt.Sprintf(`{"member":"%s"}`, agentID.PublicKeyHex())),
 			[]string{campfire.TagMemberLeft},
 			nil,

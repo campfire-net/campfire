@@ -618,7 +618,11 @@ func (s *server) sendMessageHTTPMode(st store.Store, agentID *identity.Identity,
 		return nil, fmt.Errorf("not recognized as a member in the transport directory")
 	}
 
-	msg, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, payload, tags, antecedents)
+	agentSigner, err := message.NewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("creating signer: %w", err)
+	}
+	msg, err := message.NewMessage(agentSigner, payload, tags, antecedents)
 	if err != nil {
 		return nil, fmt.Errorf("creating message: %w", err)
 	}
@@ -943,7 +947,11 @@ func (s *server) sendCampfireKeySignedMessage(_ context.Context, campfireID stri
 		defer st.Close()
 	}
 
-	msg, err := message.NewMessage(campfirePriv, campfirePub, payload, tags, antecedents)
+	cfSigner, err := message.NewEd25519Signer(campfirePriv, campfirePub)
+	if err != nil {
+		return "", fmt.Errorf("creating signer for campfire-key-signed message: %w", err)
+	}
+	msg, err := message.NewMessage(cfSigner, payload, tags, antecedents)
 	if err != nil {
 		return "", fmt.Errorf("creating campfire-key-signed message: %w", err)
 	}

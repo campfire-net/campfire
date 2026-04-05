@@ -59,7 +59,7 @@ func writeFulfillment(t *testing.T, tr *fs.Transport, campfireID string) string 
 		t.Fatalf("generating identity: %v", err)
 	}
 
-	origMsg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("original"), nil, nil)
+	origMsg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("original"), nil, nil)
 	if err != nil {
 		t.Fatalf("creating original message: %v", err)
 	}
@@ -69,7 +69,7 @@ func writeFulfillment(t *testing.T, tr *fs.Transport, campfireID string) string 
 	}
 
 	fulfillMsg, err := message.NewMessage(
-		id.PrivateKey, id.PublicKey,
+		message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey),
 		[]byte("fulfilled!"),
 		[]string{"fulfills"},
 		[]string{origMsg.ID},
@@ -177,7 +177,7 @@ func TestAwaitFS_FulfilledDuringPoll(t *testing.T) {
 		t.Fatalf("generating identity: %v", err)
 	}
 
-	origMsg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("original"), nil, nil)
+	origMsg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("original"), nil, nil)
 	if err != nil {
 		t.Fatalf("creating original message: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestAwaitFS_FulfilledDuringPoll(t *testing.T) {
 	// Pre-create the fulfilling message (with provenance hop) before the goroutine
 	// so we don't need t.Fatal inside the goroutine.
 	fulfillMsg, err := message.NewMessage(
-		id.PrivateKey, id.PublicKey,
+		message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey),
 		[]byte("fulfilled!"),
 		[]string{"fulfills"},
 		[]string{origMsg.ID},
@@ -333,7 +333,7 @@ func TestAwaitFS_TamperedFulfillmentRejected(t *testing.T) {
 	}
 
 	// Create original message (will be what we await on).
-	origMsg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("original"), nil, nil)
+	origMsg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("original"), nil, nil)
 	if err != nil {
 		t.Fatalf("creating original message: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestAwaitFS_TamperedFulfillmentRejected(t *testing.T) {
 
 	// Create a fulfilling message with a valid signature...
 	fulfillMsg, err := message.NewMessage(
-		id.PrivateKey, id.PublicKey,
+		message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey),
 		[]byte("fulfilled!"),
 		[]string{"fulfills"},
 		[]string{origMsg.ID},
@@ -391,7 +391,7 @@ func TestAwaitFS_NoprovenanceFulfillmentRejected(t *testing.T) {
 	}
 
 	// Create original message WITH a provenance hop (so await can find it if synced).
-	origMsg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("original"), nil, nil)
+	origMsg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("original"), nil, nil)
 	if err != nil {
 		t.Fatalf("creating original message: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestAwaitFS_NoprovenanceFulfillmentRejected(t *testing.T) {
 	// Create a fulfilling message but DO NOT add a provenance hop.
 	// message.NewMessage sets Provenance to []ProvenanceHop{} (empty).
 	fulfillMsg, err := message.NewMessage(
-		id.PrivateKey, id.PublicKey,
+		message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey),
 		[]byte("fulfilled!"),
 		[]string{"fulfills"},
 		[]string{origMsg.ID},

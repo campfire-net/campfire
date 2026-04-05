@@ -67,7 +67,7 @@ func startTransport(t *testing.T, addr string, s store.Store) *cfhttp.Transport 
 
 func newTestMessage(t *testing.T, id *identity.Identity) *message.Message {
 	t.Helper()
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("hello from test"), []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("hello from test"), []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

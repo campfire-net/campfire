@@ -6,6 +6,7 @@ package cmd
 // admit_leave_disband_dm_test.go.
 
 import (
+	"crypto/ed25519"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,9 +15,26 @@ import (
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
+
+// newTestMessage is a test helper that creates a signed message using the
+// Ed25519 keypair directly. It wraps message.NewEd25519Signer + message.NewMessage
+// so test code can remain concise after the Signer API migration.
+func newTestMessage(t *testing.T, priv ed25519.PrivateKey, pub ed25519.PublicKey, payload []byte, tags []string, antecedents []string) *message.Message {
+	t.Helper()
+	signer, err := message.NewEd25519Signer(priv, pub)
+	if err != nil {
+		t.Fatalf("NewEd25519Signer: %v", err)
+	}
+	msg, err := message.NewMessage(signer, payload, tags, antecedents)
+	if err != nil {
+		t.Fatalf("NewMessage: %v", err)
+	}
+	return msg
+}
 
 // setupCampfireWithRole creates a campfire and adds the agent as a member with the
 // given protocol role in both the transport directory and the local store.

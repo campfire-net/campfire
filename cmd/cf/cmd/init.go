@@ -13,6 +13,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/naming"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
@@ -43,6 +44,7 @@ The --from flag requires --name — config inheritance only applies to named age
 		initSession, _ := cmd.Flags().GetBool("session")
 		initFrom, _ := cmd.Flags().GetString("from")
 		initDurable, _ := cmd.Flags().GetBool("durable")
+		initDisplayName, _ := cmd.Flags().GetString("display-name")
 		// Session identity: temp dir, print path + display name, done.
 		if initSession {
 			tmpDir, err := os.MkdirTemp("", "cf-session-")
@@ -166,6 +168,13 @@ The --from flag requires --name — config inheritance only applies to named age
 
 		// Write CONTEXT.md alongside the identity
 		writeContext(cfHome)
+
+		// Save display name to profile.json if --display-name was provided.
+		if initDisplayName != "" {
+			if saveErr := protocol.SaveProfile(cfHome, protocol.ProfileFile{DisplayName: initDisplayName}); saveErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not save profile.json: %v\n", saveErr)
+			}
+		}
 
 		// Step 2-7: Create self-campfire with identity convention genesis message.
 		// This is an atomic 7-step operation that replaces the old home+center creation.
@@ -331,13 +340,11 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity, durable bool)
 		if err != nil {
 			return "", "", fmt.Errorf("marshaling identity declaration %d: %w", i, err)
 		}
-		msg, err := message.NewMessage(
-			selfCF.PrivateKey,
-			selfCF.PublicKey,
-			declPayload,
-			[]string{convention.ConventionOperationTag},
-			nil,
-		)
+		cfSigner, err := message.NewEd25519Signer(selfCF.PrivateKey, selfCF.PublicKey)
+		if err != nil {
+			return "", "", fmt.Errorf("creating signer for genesis message %d: %w", i, err)
+		}
+		msg, err := message.NewMessage(cfSigner, declPayload, []string{convention.ConventionOperationTag}, nil)
 		if err != nil {
 			return "", "", fmt.Errorf("creating genesis message %d: %w", i, err)
 		}
@@ -358,13 +365,11 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity, durable bool)
 	if err != nil {
 		return "", "", fmt.Errorf("marshaling introduce-me payload: %w", err)
 	}
-	introduceMsg, err := message.NewMessage(
-		agentID.PrivateKey,
-		agentID.PublicKey,
-		introduceMeBytes,
-		[]string{convention.IdentityIntroductionTag},
-		nil,
-	)
+	agentSigner, err := message.NewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
+	if err != nil {
+		return "", "", fmt.Errorf("creating agent signer: %w", err)
+	}
+	introduceMsg, err := message.NewMessage(agentSigner, introduceMeBytes, []string{convention.IdentityIntroductionTag}, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("creating introduce-me message: %w", err)
 	}
@@ -523,6 +528,7 @@ func init() {
 	initCmd.Flags().String("from", "", "inherit config from this CF_HOME path (requires --name)")
 	initCmd.Flags().String("remote", "", "URL of remote campfire relay for center campfire (default: filesystem)")
 	initCmd.Flags().Bool("durable", false, "create a threshold=2 identity campfire with a cold key recovery phrase")
+	initCmd.Flags().String("display-name", "", "human-readable display name stored in ~/.cf/profile.json (unverified, max 64 chars)")
 	rootCmd.AddCommand(initCmd)
 }
 

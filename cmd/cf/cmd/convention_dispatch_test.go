@@ -83,7 +83,7 @@ func setupDispatchEnv(t *testing.T, declPayload []byte) (campfireID string, clea
 
 	// Post declaration message to campfire
 	if declPayload != nil {
-		msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, declPayload, []string{convention.ConventionOperationTag}, nil)
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), declPayload, []string{convention.ConventionOperationTag}, nil)
 		if err != nil {
 			t.Fatalf("creating declaration message: %v", err)
 		}

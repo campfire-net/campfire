@@ -147,8 +147,7 @@ func createIdentityCampfireForTest(t *testing.T, cfHome string, agentID *identit
 		t.Fatalf("json.Marshal declaration: %v", err)
 	}
 	genesisMsg, err := message.NewMessage(
-		selfCF.PrivateKey,
-		selfCF.PublicKey,
+		message.MustNewEd25519Signer(selfCF.PrivateKey, selfCF.PublicKey),
 		declPayload,
 		[]string{convention.ConventionOperationTag},
 		nil,

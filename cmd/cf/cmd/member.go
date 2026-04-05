@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -126,8 +127,15 @@ var memberSetRoleCmd = &cobra.Command{
 			`{"member":%q,"previous_role":%q,"new_role":%q,"changed_at":%d}`,
 			targetPubkeyHex, previousRole, newRole, now,
 		)
+		cfSigner, err := message.NewEd25519Signer(
+			ed25519.PrivateKey(state.PrivateKey),
+			ed25519.PublicKey(state.PublicKey),
+		)
+		if err != nil {
+			return fmt.Errorf("creating signer for system message: %w", err)
+		}
 		sysMsg, err := message.NewMessage(
-			state.PrivateKey, state.PublicKey,
+			cfSigner,
 			[]byte(payload),
 			[]string{campfire.TagMemberRoleChanged},
 			nil,

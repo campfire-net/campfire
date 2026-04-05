@@ -274,7 +274,7 @@ func setupCampfireWithDecl(t *testing.T, s store.Store, id *identity.Identity, d
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, declBytes, []string{convention.ConventionOperationTag}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), declBytes, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating declaration message: %v", err)
 	}

@@ -155,10 +155,8 @@ func TestBridgeFSToHTTP(t *testing.T) {
 
 	// Write a message to the filesystem.
 	fsTransport := fs.New(tmpDir)
-	msg1, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte("hello from fs"), []string{"test"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msg1 := newTestMessage(t, agentID.PrivateKey, agentID.PublicKey, []byte("hello from fs"), []string{"test"}, nil)
+
 	addTestProvenance(t, msg1)
 	if err := fsTransport.WriteMessage(campfireID, msg1); err != nil {
 		t.Fatal(err)
@@ -211,10 +209,8 @@ func TestBridgeHTTPToFS(t *testing.T) {
 	}
 
 	// Create a message from the remote agent.
-	remoteMsg, err := message.NewMessage(remoteID.PrivateKey, remoteID.PublicKey, []byte("hello from http"), []string{"test"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	remoteMsg := newTestMessage(t, remoteID.PrivateKey, remoteID.PublicKey, []byte("hello from http"), []string{"test"}, nil)
+
 
 	// Set up mock HTTP peer with the message to serve.
 	peer := newMockHTTPPeer()
@@ -364,7 +360,7 @@ func TestBridgeHTTPToFSCursorSemantic(t *testing.T) {
 // round-trip through the store/fs, not signature correctness.
 func makeMessageWithTimestamp(t *testing.T, id *identity.Identity, payload []byte, ts int64) *message.Message {
 	t.Helper()
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, payload, []string{"test"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), payload, []string{"test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,10 +400,8 @@ func TestBridgeDedup(t *testing.T) {
 	}
 
 	fsTransport := fs.New(tmpDir)
-	msg1, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte("dedup test"), []string{"test"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msg1 := newTestMessage(t, agentID.PrivateKey, agentID.PublicKey, []byte("dedup test"), []string{"test"}, nil)
+
 	addTestProvenance(t, msg1)
 	if err := fsTransport.WriteMessage(campfireID, msg1); err != nil {
 		t.Fatal(err)
@@ -460,10 +454,8 @@ func TestBridgeForwardedSetRebuildsOnRestart(t *testing.T) {
 	}
 
 	fsTransport := fs.New(tmpDir)
-	msg1, err := message.NewMessage(agentID.PrivateKey, agentID.PublicKey, []byte("pre-restart"), []string{"test"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	msg1 := newTestMessage(t, agentID.PrivateKey, agentID.PublicKey, []byte("pre-restart"), []string{"test"}, nil)
+
 	addTestProvenance(t, msg1)
 	if err := fsTransport.WriteMessage(campfireID, msg1); err != nil {
 		t.Fatal(err)

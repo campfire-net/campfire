@@ -172,9 +172,15 @@ func evictThreshold1(
 
 	// Build campfire:rekey message signed by OLD campfire key.
 	rekeyPayload := buildRekeyPayload(oldCampfireID, newCampfireID, reason)
-	rekeyMsg, err := message.NewMessage(
+	rekaySigner, err := message.NewEd25519Signer(
 		ed25519.PrivateKey(oldCFState.PrivateKey),
 		ed25519.PublicKey(oldCFState.PublicKey),
+	)
+	if err != nil {
+		return fmt.Errorf("creating signer for rekey message: %w", err)
+	}
+	rekeyMsg, err := message.NewMessage(
+		rekaySigner,
 		rekeyPayload,
 		[]string{campfire.TagRekey},
 		nil,

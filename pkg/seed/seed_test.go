@@ -188,14 +188,14 @@ func TestReadConventionMessages_FilesystemProtocol(t *testing.T) {
 	declPayload, _ := json.Marshal(decl)
 
 	// Write a convention:operation message signed by the campfire key.
-	msg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating signed message: %v", err)
 	}
 	writeMsgToDir(t, messagesDir, "0000000001-abc.cbor", msg)
 
 	// Write a second message with a different tag (not convention:operation) — should be filtered.
-	otherMsg, err := message.NewMessage(priv, pub, []byte("other payload"), []string{"other:tag"}, nil)
+	otherMsg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), []byte("other payload"), []string{"other:tag"}, nil)
 	if err != nil {
 		t.Fatalf("creating other message: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestReadConventionMessages_NoCampfireIDWithMessagesRejected(t *testing.T) {
 
 	// Write a valid, signed convention message to the messages dir.
 	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
-	msg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestReadConventionMessages_SignatureVerification_Reject(t *testing.T) {
 
 	// Write a convention:operation message signed by the DIFFERENT (wrong) key.
 	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
-	msg, err := message.NewMessage(differentPriv, differentPub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(differentPriv, differentPub), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestReadConventionMessages_SignatureVerification_Accept(t *testing.T) {
 
 	// Write a convention:operation message signed by the correct (matching) key.
 	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
-	msg, err := message.NewMessage(beaconPriv, beaconPub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(beaconPriv, beaconPub), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -643,7 +643,7 @@ func TestReadConventionMessages_SymlinkTraversal(t *testing.T) {
 
 	decl := map[string]any{"convention": "test", "version": "0.1", "operation": "op"}
 	declPayload, _ := json.Marshal(decl)
-	msg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating signed message: %v", err)
 	}
@@ -690,7 +690,7 @@ func TestReadConventionMessages_LegitimateAbsPath(t *testing.T) {
 
 	decl := map[string]any{"convention": "test", "version": "0.1", "operation": "op"}
 	declPayload, _ := json.Marshal(decl)
-	msg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating signed message: %v", err)
 	}
@@ -727,7 +727,7 @@ func TestReadConventionMessages_FileCountLimit(t *testing.T) {
 	// Write MaxSeedFileCount+1 .cbor files (small, valid convention messages).
 	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
 	for i := 0; i <= seed.MaxSeedFileCount; i++ {
-		msg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), declPayload, []string{convention.ConventionOperationTag}, nil)
 		if err != nil {
 			t.Fatalf("creating message %d: %v", i, err)
 		}
@@ -770,7 +770,7 @@ func TestReadConventionMessages_PerFileSizeLimit(t *testing.T) {
 
 	// Write a valid small convention message (should appear in results).
 	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "op"})
-	smallMsg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	smallMsg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating small message: %v", err)
 	}
@@ -857,7 +857,7 @@ func TestReadConventionMessages_NormalDirectoryUnchanged(t *testing.T) {
 	// Write a few normal convention messages.
 	for i := 0; i < 5; i++ {
 		declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": fmt.Sprintf("op-%d", i)})
-		msg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), declPayload, []string{convention.ConventionOperationTag}, nil)
 		if err != nil {
 			t.Fatalf("creating message %d: %v", i, err)
 		}
@@ -917,7 +917,7 @@ func TestReadConventionMessages_PerMessageSig_UnsignedRejected(t *testing.T) {
 	// Write one valid signed message so verifySeedBeaconSignatures would pass
 	// if per-message checking were absent.
 	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "valid-op"})
-	validMsg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	validMsg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating valid message: %v", err)
 	}
@@ -926,7 +926,7 @@ func TestReadConventionMessages_PerMessageSig_UnsignedRejected(t *testing.T) {
 	// Write a second convention:operation message that has its signature zeroed —
 	// simulating a message stored without a signature (unsigned).
 	unsignedPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "unsigned-op"})
-	unsignedMsg, err := message.NewMessage(priv, pub, unsignedPayload, []string{convention.ConventionOperationTag}, nil)
+	unsignedMsg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), unsignedPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating unsigned message: %v", err)
 	}
@@ -965,7 +965,7 @@ func TestReadConventionMessages_PerMessageSig_TamperedRejected(t *testing.T) {
 
 	// Write one valid signed message so the directory is non-empty.
 	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "valid-op"})
-	validMsg, err := message.NewMessage(priv, pub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	validMsg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating valid message: %v", err)
 	}
@@ -973,7 +973,7 @@ func TestReadConventionMessages_PerMessageSig_TamperedRejected(t *testing.T) {
 
 	// Write a second message with a corrupted (bit-flipped) signature.
 	tamperedPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "tampered-op"})
-	tamperedMsg, err := message.NewMessage(priv, pub, tamperedPayload, []string{convention.ConventionOperationTag}, nil)
+	tamperedMsg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), tamperedPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating tampered message: %v", err)
 	}
@@ -1022,7 +1022,7 @@ func TestReadConventionMessages_PerMessageSig_WrongKeyRejected(t *testing.T) {
 
 	// Write one valid message signed by the beacon key so the directory is non-empty.
 	declPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "valid-op"})
-	validMsg, err := message.NewMessage(beaconPriv, beaconPub, declPayload, []string{convention.ConventionOperationTag}, nil)
+	validMsg, err := message.NewMessage(message.MustNewEd25519Signer(beaconPriv, beaconPub), declPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating valid message: %v", err)
 	}
@@ -1032,7 +1032,7 @@ func TestReadConventionMessages_PerMessageSig_WrongKeyRejected(t *testing.T) {
 	// The signature is cryptographically valid for the attacker key, but the
 	// sender is not the beacon key — it must be rejected.
 	attackerPayload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": "injected-op"})
-	attackerMsg, err := message.NewMessage(attackerPriv, attackerPub, attackerPayload, []string{convention.ConventionOperationTag}, nil)
+	attackerMsg, err := message.NewMessage(message.MustNewEd25519Signer(attackerPriv, attackerPub), attackerPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating attacker message: %v", err)
 	}
@@ -1072,7 +1072,7 @@ func TestReadConventionMessages_PerMessageSig_AllValidAccepted(t *testing.T) {
 	const msgCount = 3
 	for i := 0; i < msgCount; i++ {
 		payload, _ := json.Marshal(map[string]any{"convention": "test", "version": "0.1", "operation": fmt.Sprintf("op-%d", i)})
-		msg, err := message.NewMessage(priv, pub, payload, []string{convention.ConventionOperationTag}, nil)
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), payload, []string{convention.ConventionOperationTag}, nil)
 		if err != nil {
 			t.Fatalf("creating message %d: %v", i, err)
 		}
@@ -1166,7 +1166,7 @@ func TestVerifySeedBeaconSignatures_NoValidMessages(t *testing.T) {
 
 	// Write a message tagged with something other than convention:operation.
 	otherPayload := []byte(`{"type":"other"}`)
-	otherMsg, err := message.NewMessage(priv, pub, otherPayload, []string{"other:tag"}, nil)
+	otherMsg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), otherPayload, []string{"other:tag"}, nil)
 	if err != nil {
 		t.Fatalf("creating other-tag message: %v", err)
 	}

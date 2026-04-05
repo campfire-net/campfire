@@ -144,7 +144,7 @@ func TestSeedCampfireFilesystem_WithSeedBeacon(t *testing.T) {
 		t.Fatalf("marshaling test declaration: %v", err)
 	}
 	// Sign with the campfire's own key so the sender matches CampfireID.
-	testMsg, err := message.NewMessage(seedCF.PrivateKey, seedCF.PublicKey, testPayload, []string{convention.ConventionOperationTag}, nil)
+	testMsg, err := message.NewMessage(message.MustNewEd25519Signer(seedCF.PrivateKey, seedCF.PublicKey), testPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating test message: %v", err)
 	}
@@ -466,7 +466,7 @@ func TestSeedCampfireFilesystem_RejectsDeniedTags(t *testing.T) {
 		t.Fatalf("marshaling bad declaration: %v", err)
 	}
 	// Sign with the campfire's own key so the sender matches CampfireID.
-	badMsg, err := message.NewMessage(seedCF.PrivateKey, seedCF.PublicKey, badPayload, []string{convention.ConventionOperationTag}, nil)
+	badMsg, err := message.NewMessage(message.MustNewEd25519Signer(seedCF.PrivateKey, seedCF.PublicKey), badPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating bad message: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestSeedCampfireFilesystem_RejectsDeniedTags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshaling good declaration: %v", err)
 	}
-	goodMsg, err := message.NewMessage(seedCF.PrivateKey, seedCF.PublicKey, goodPayload, []string{convention.ConventionOperationTag}, nil)
+	goodMsg, err := message.NewMessage(message.MustNewEd25519Signer(seedCF.PrivateKey, seedCF.PublicKey), goodPayload, []string{convention.ConventionOperationTag}, nil)
 	if err != nil {
 		t.Fatalf("creating good message: %v", err)
 	}

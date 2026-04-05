@@ -123,7 +123,7 @@ func TestViewTool_ValidMessageAppears(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating identity: %v", err)
 	}
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("hello"), []string{"status"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("hello"), []string{"status"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestViewTool_TamperedMessageRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating identity: %v", err)
 	}
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("legit"), []string{"status"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("legit"), []string{"status"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestViewTool_NoprovenanceMessageRejected(t *testing.T) {
 		t.Fatalf("generating identity: %v", err)
 	}
 	// NewMessage creates Provenance: []ProvenanceHop{} — intentionally empty.
-	msg, err := message.NewMessage(id.PrivateKey, id.PublicKey, []byte("no-hop"), []string{"status"}, nil)
+	msg, err := message.NewMessage(message.MustNewEd25519Signer(id.PrivateKey, id.PublicKey), []byte("no-hop"), []string{"status"}, nil)
 	if err != nil {
 		t.Fatalf("creating message: %v", err)
 	}

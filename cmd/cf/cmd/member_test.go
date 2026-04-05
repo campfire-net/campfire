@@ -171,15 +171,15 @@ func memberSetRoleCore(campfireID, targetPubkeyHex, newRole string, callerID *id
 		`{"member":%q,"previous_role":%q,"new_role":%q,"changed_at":%d}`,
 		targetPubkeyHex, previousRole, newRole, now,
 	)
-	sysMsg, err := message.NewMessage(
-		state.PrivateKey, state.PublicKey,
-		[]byte(payload),
-		[]string{"campfire:member-role-changed"},
-		nil,
-	)
+	cfSigner, err := message.NewEd25519Signer(state.PrivateKey, state.PublicKey)
 	if err != nil {
-		return fmt.Errorf("creating system message: %w", err)
+		return fmt.Errorf("creating signer: %w", err)
 	}
+	sysMsg, err := message.NewMessage(cfSigner, []byte(payload), []string{"campfire:member-role-changed"}, nil)
+	if err != nil {
+		return fmt.Errorf("creating role-change message: %w", err)
+	}
+
 
 	updatedMembers, _ := fsT.ListMembers(campfireID)
 	cf := campfireFromState(state, updatedMembers)

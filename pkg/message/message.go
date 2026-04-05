@@ -80,7 +80,7 @@ type HopSignInput struct {
 }
 
 // NewMessage creates a new signed message.
-func NewMessage(senderPriv ed25519.PrivateKey, senderPub ed25519.PublicKey, payload []byte, tags []string, antecedents []string) (*Message, error) {
+func NewMessage(signer Signer, payload []byte, tags []string, antecedents []string) (*Message, error) {
 	if tags == nil {
 		tags = []string{}
 	}
@@ -89,7 +89,7 @@ func NewMessage(senderPriv ed25519.PrivateKey, senderPub ed25519.PublicKey, payl
 	}
 	msg := &Message{
 		ID:          uuid.New().String(),
-		Sender:      senderPub,
+		Sender:      signer.PublicKey(),
 		Payload:     payload,
 		Tags:        tags,
 		Antecedents: antecedents,
@@ -108,7 +108,11 @@ func NewMessage(senderPriv ed25519.PrivateKey, senderPub ed25519.PublicKey, payl
 	if err != nil {
 		return nil, fmt.Errorf("encoding sign input: %w", err)
 	}
-	msg.Signature = ed25519.Sign(senderPriv, signBytes)
+	sig, err := signer.Sign(signBytes)
+	if err != nil {
+		return nil, fmt.Errorf("signing message: %w", err)
+	}
+	msg.Signature = sig
 
 	return msg, nil
 }
