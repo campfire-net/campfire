@@ -499,10 +499,20 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) []strin
 	}
 
 	// scope.campfires — list with optional "!replace" sentinel.
+	// Security: reject bare !replace (["!replace"] with no additional entries) when
+	// the global allowlist is non-empty. mergeList would produce an empty slice, and
+	// CheckCampfire treats empty as "allow all" — silently converting a restrictive
+	// allowlist into unrestricted access. Skip this layer field instead.
 	if len(raw.Scope.Campfires) > 0 {
-		merged := mergeList(dst.Scope.Campfires, raw.Scope.Campfires)
-		dst.Scope.Campfires = merged
-		contributed = append(contributed, "scope.campfires")
+		if len(dst.Scope.Campfires) > 0 && len(raw.Scope.Campfires) == 1 && raw.Scope.Campfires[0] == "!replace" {
+			// Bare !replace would discard the existing campfire allowlist, producing
+			// allow-all semantics. Treat as a no-op to prevent accidental privilege escalation.
+			// To extend the allowlist use ["!replace", "id1", ...] with at least one entry.
+		} else {
+			merged := mergeList(dst.Scope.Campfires, raw.Scope.Campfires)
+			dst.Scope.Campfires = merged
+			contributed = append(contributed, "scope.campfires")
+		}
 	}
 
 	// scope.operation_classes — list with optional "!replace" sentinel.
