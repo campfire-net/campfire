@@ -29,7 +29,9 @@ func TestVerificationCache_SetAndGet(t *testing.T) {
 	pub, _ := genKey(t)
 	homeID := validCampfireID
 
-	c.Set(pub, homeID, DefaultVerificationTTL)
+	if err := c.Set(pub, homeID, DefaultVerificationTTL); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	got, ok := c.Get(pub)
 	if !ok {
@@ -46,7 +48,9 @@ func TestVerificationCache_Expired(t *testing.T) {
 	pub, _ := genKey(t)
 
 	// Set with a TTL that has already elapsed.
-	c.Set(pub, validCampfireID, -1*time.Millisecond)
+	if err := c.Set(pub, validCampfireID, -1*time.Millisecond); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	got, ok := c.Get(pub)
 	if ok {
@@ -62,7 +66,9 @@ func TestVerificationCache_Invalidate(t *testing.T) {
 	c := NewVerificationCache()
 	pub, _ := genKey(t)
 
-	c.Set(pub, validCampfireID, DefaultVerificationTTL)
+	if err := c.Set(pub, validCampfireID, DefaultVerificationTTL); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 	c.Invalidate(pub)
 
 	_, ok := c.Get(pub)
@@ -79,8 +85,12 @@ func TestVerificationCache_Replace(t *testing.T) {
 
 	firstID := strings.Repeat("1", 64)
 	secondID := strings.Repeat("2", 64)
-	c.Set(pub, firstID, DefaultVerificationTTL)
-	c.Set(pub, secondID, DefaultVerificationTTL)
+	if err := c.Set(pub, firstID, DefaultVerificationTTL); err != nil {
+		t.Fatalf("Set firstID: %v", err)
+	}
+	if err := c.Set(pub, secondID, DefaultVerificationTTL); err != nil {
+		t.Fatalf("Set secondID: %v", err)
+	}
 
 	got, ok := c.Get(pub)
 	if !ok {
@@ -116,7 +126,7 @@ func TestVerificationCache_ConcurrentAccess(t *testing.T) {
 				pub := keys[i%len(keys)]
 				switch i % 3 {
 				case 0:
-					c.Set(pub, validCampfireID, DefaultVerificationTTL)
+					_ = c.Set(pub, validCampfireID, DefaultVerificationTTL)
 				case 1:
 					c.Get(pub) //nolint:errcheck
 				case 2:
@@ -145,7 +155,7 @@ func TestVerificationCache_NilPubkeyPanics(t *testing.T) {
 	}
 
 	assertPanics("Get(nil)", func() { c.Get(nil) })
-	assertPanics("Set(nil, ...)", func() { c.Set(nil, validCampfireID, time.Minute) })
+	assertPanics("Set(nil, ...)", func() { _ = c.Set(nil, validCampfireID, time.Minute) })
 	assertPanics("Invalidate(nil)", func() { c.Invalidate(nil) })
 }
 
@@ -155,7 +165,9 @@ func TestVerificationCache_ZeroTTL(t *testing.T) {
 	c := NewVerificationCache()
 	pub, _ := genKey(t)
 
-	c.Set(pub, validCampfireID, 0)
+	if err := c.Set(pub, validCampfireID, 0); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	_, ok := c.Get(pub)
 	if ok {
@@ -193,7 +205,9 @@ func TestVerificationCache_TTLClamped(t *testing.T) {
 	pub, _ := genKey(t)
 
 	// Supply a TTL far beyond the maximum.
-	c.Set(pub, validCampfireID, 24*time.Hour)
+	if err := c.Set(pub, validCampfireID, 24*time.Hour); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	// The entry must still be present immediately after Set.
 	id, ok := c.Get(pub)
@@ -205,40 +219,41 @@ func TestVerificationCache_TTLClamped(t *testing.T) {
 	}
 }
 
-// TestVerificationCache_InvalidCampfireIDPanics verifies that Set panics when
-// given a homeCampfireID that is not a 64-character lowercase hex string.
-func TestVerificationCache_InvalidCampfireIDPanics(t *testing.T) {
+// TestVerificationCache_Set_InvalidID verifies that Set returns a non-nil error
+// when homeCampfireID is not a 64-character lowercase hex string.
+func TestVerificationCache_Set_InvalidID(t *testing.T) {
 	c := NewVerificationCache()
 	pub, _ := genKey(t)
 
-	assertPanics := func(name string, fn func()) {
-		t.Helper()
-		defer func() {
-			if r := recover(); r == nil {
-				t.Errorf("%s: expected panic, got none", name)
-			}
-		}()
-		fn()
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"non-hex ID", "not-a-valid-campfire-id"},
+		{"uppercase hex ID", strings.Repeat("A", 64)},
+		{"short ID", strings.Repeat("a", 32)},
+		{"long ID", strings.Repeat("a", 65)},
+		{"empty ID", ""},
 	}
 
-	// Non-hex string should panic.
-	assertPanics("non-hex ID", func() {
-		c.Set(pub, "not-a-valid-campfire-id", time.Minute)
-	})
-	// Upper-case hex must panic (must be lowercase).
-	assertPanics("uppercase hex ID", func() {
-		c.Set(pub, strings.Repeat("A", 64), time.Minute)
-	})
-	// Too short should panic.
-	assertPanics("short ID", func() {
-		c.Set(pub, strings.Repeat("a", 32), time.Minute)
-	})
-	// Too long should panic.
-	assertPanics("long ID", func() {
-		c.Set(pub, strings.Repeat("a", 65), time.Minute)
-	})
-	// Empty string should panic.
-	assertPanics("empty ID", func() {
-		c.Set(pub, "", time.Minute)
-	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := c.Set(pub, tc.id, time.Minute)
+			if err == nil {
+				t.Errorf("Set(%q): expected non-nil error, got nil", tc.id)
+			}
+		})
+	}
+}
+
+// TestVerificationCache_Set_ValidID verifies that Set returns nil error for a
+// valid 64-character lowercase hex campfire ID.
+func TestVerificationCache_Set_ValidID(t *testing.T) {
+	c := NewVerificationCache()
+	pub, _ := genKey(t)
+
+	err := c.Set(pub, validCampfireID, time.Minute)
+	if err != nil {
+		t.Fatalf("Set with valid ID returned unexpected error: %v", err)
+	}
 }

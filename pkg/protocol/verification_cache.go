@@ -28,7 +28,9 @@ const MaxVerificationTTL = 1 * time.Hour
 type VerificationCache interface {
 	// Set stores a verified mapping: senderPubkey → homeCampfireID.
 	// Any prior entry for senderPubkey is replaced.
-	Set(senderPubkey ed25519.PublicKey, homeCampfireID string, ttl time.Duration)
+	// Returns an error if homeCampfireID is not a 64-character lowercase hex string.
+	// Panics if senderPubkey is nil (programmer contract).
+	Set(senderPubkey ed25519.PublicKey, homeCampfireID string, ttl time.Duration) error
 
 	// Get returns the verified home campfire ID for senderPubkey, or ("", false)
 	// if not found or expired.
@@ -67,10 +69,11 @@ func pubkeyHex(pub ed25519.PublicKey) string {
 // Set stores a verified mapping: senderPubkey → homeCampfireID with the given TTL.
 // TTL=0 means the entry expires immediately (Get will always miss).
 // TTL values exceeding MaxVerificationTTL are silently clamped.
-// homeCampfireID must be a 64-character lowercase hex string; Set panics otherwise.
-func (c *memVerificationCache) Set(senderPubkey ed25519.PublicKey, homeCampfireID string, ttl time.Duration) {
+// Returns an error if homeCampfireID is not a 64-character lowercase hex string.
+// Panics if senderPubkey is nil (programmer contract).
+func (c *memVerificationCache) Set(senderPubkey ed25519.PublicKey, homeCampfireID string, ttl time.Duration) error {
 	if !hexIDRe.MatchString(homeCampfireID) {
-		panic(fmt.Sprintf("verification_cache: invalid campfire ID %q", homeCampfireID))
+		return fmt.Errorf("verification_cache: invalid campfire ID %q", homeCampfireID)
 	}
 	if ttl > MaxVerificationTTL {
 		ttl = MaxVerificationTTL
@@ -82,6 +85,7 @@ func (c *memVerificationCache) Set(senderPubkey ed25519.PublicKey, homeCampfireI
 		expiresAt:      time.Now().Add(ttl),
 	}
 	c.mu.Unlock()
+	return nil
 }
 
 // Get returns the verified home campfire ID for senderPubkey.

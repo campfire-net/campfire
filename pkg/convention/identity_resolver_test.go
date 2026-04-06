@@ -59,7 +59,9 @@ func TestCacheIdentityResolver_Hit(t *testing.T) {
 	pub, _ := generateTestKey(t)
 
 	cache := protocol.NewVerificationCache()
-	cache.Set(pub, validCampfireID, 5*time.Minute)
+	if err := cache.Set(pub, validCampfireID, 5*time.Minute); err != nil {
+		t.Fatalf("cache.Set: %v", err)
+	}
 
 	resolver := convention.NewCacheIdentityResolver(cache)
 	info := resolver.Resolve(pub)
@@ -101,7 +103,7 @@ func TestCacheIdentityResolver_Miss(t *testing.T) {
 // simulating a cache that has an entry but with an empty campfire ID.
 type mockEmptyCache struct{}
 
-func (mockEmptyCache) Set(_ ed25519.PublicKey, _ string, _ time.Duration) {}
+func (mockEmptyCache) Set(_ ed25519.PublicKey, _ string, _ time.Duration) error { return nil }
 func (mockEmptyCache) Get(_ ed25519.PublicKey) (string, bool)              { return "", true }
 func (mockEmptyCache) Invalidate(_ ed25519.PublicKey)                      {}
 
@@ -320,7 +322,9 @@ func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
 	// This simulates the caller having completed identity verification out-of-band.
 	const expectedHomeID = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
 	cache := protocol.NewVerificationCache()
-	cache.Set(ed25519.PublicKey(callerID.PublicKey), expectedHomeID, 5*time.Minute)
+	if err := cache.Set(ed25519.PublicKey(callerID.PublicKey), expectedHomeID, 5*time.Minute); err != nil {
+		t.Fatalf("cache.Set: %v", err)
+	}
 
 	resolver := convention.NewCacheIdentityResolver(cache)
 
