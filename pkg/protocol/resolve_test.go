@@ -242,6 +242,28 @@ func TestResolveInput_CfURI_WithResolver_ReturnsError(t *testing.T) {
 	}
 }
 
+// TestResolveInput_CfURI_ErrorMessageFormat verifies that when a NamingResolver
+// returns an error, resolveInput wraps it with the cf:// URI context so the
+// returned error contains both the URI and the resolver's error message.
+// The format is: "resolving cf:// URI %q: %w".
+func TestResolveInput_CfURI_ErrorMessageFormat(t *testing.T) {
+	const uri = "cf://team.project"
+	resolver := &stubResolver{err: errors.New("NXDOMAIN")}
+
+	_, _, err := protocol.ResolveInputForTest(uri, resolver)
+	if err == nil {
+		t.Fatal("expected error when resolver returns error, got nil")
+	}
+
+	errStr := err.Error()
+	if !strings.Contains(errStr, "NXDOMAIN") {
+		t.Errorf("error %q does not contain resolver error text %q", errStr, "NXDOMAIN")
+	}
+	if !strings.Contains(errStr, uri) {
+		t.Errorf("error %q does not contain URI context %q", errStr, uri)
+	}
+}
+
 // TestResolveInput_CfURI_WithResolver_NonHexReturn documents the behavior when
 // the NamingResolver returns a non-hex string. resolveInput does NOT validate the
 // resolver's return value — it passes it through as-is. Callers that require a
