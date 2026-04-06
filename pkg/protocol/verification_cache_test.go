@@ -163,6 +163,29 @@ func TestVerificationCache_ZeroTTL(t *testing.T) {
 	}
 }
 
+// TestVerificationCache_ZeroTTL_AlwaysMisses verifies the >= expiry semantics:
+// when TTL=0, expiresAt == time.Now() at Set time. Get must treat an entry as
+// expired when time.Now() == expiresAt (i.e., !time.Before is the correct
+// predicate, not time.After which requires strictly greater-than).
+// This test exercises the real time.Before path — no sleep, no mock clock.
+func TestVerificationCache_ZeroTTL_AlwaysMisses(t *testing.T) {
+	c := NewVerificationCache()
+	pub, _ := genKey(t)
+
+	// Set with TTL=0: expiresAt = time.Now() at the moment of Set.
+	// Get must return ("", false) even if called in the same nanosecond,
+	// because the >= expiry predicate (!time.Before) treats equal times as expired.
+	c.Set(pub, validCampfireID, 0)
+
+	got, ok := c.Get(pub)
+	if ok {
+		t.Fatalf("Get returned ok=true immediately after Set with TTL=0, got %q; want (\"\", false)", got)
+	}
+	if got != "" {
+		t.Fatalf("Get returned non-empty string %q after TTL=0 Set", got)
+	}
+}
+
 // TestVerificationCache_TTLClamped verifies that a TTL exceeding MaxVerificationTTL
 // is silently clamped: the entry is stored and retrievable immediately.
 func TestVerificationCache_TTLClamped(t *testing.T) {

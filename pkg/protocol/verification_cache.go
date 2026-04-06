@@ -94,11 +94,11 @@ func (c *memVerificationCache) Get(senderPubkey ed25519.PublicKey) (string, bool
 	if !ok {
 		return "", false
 	}
-	if time.Now().After(e.expiresAt) {
+	if !time.Now().Before(e.expiresAt) {
 		// Lazy eviction: drop the expired entry under write lock.
 		c.mu.Lock()
 		// Re-check: another goroutine may have replaced the entry.
-		if e2, still := c.entries[key]; still && time.Now().After(e2.expiresAt) {
+		if e2, still := c.entries[key]; still && !time.Now().Before(e2.expiresAt) {
 			delete(c.entries, key)
 		}
 		c.mu.Unlock()
