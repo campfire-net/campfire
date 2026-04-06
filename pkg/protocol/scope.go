@@ -10,7 +10,10 @@ package protocol
 //	admin    — Join, Leave, Create, Disband, Admit, Evict, AddPeer, RemovePeer
 //	identity — cf home be / cf home be --revoke
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ScopeEnforcer checks operations against a ScopeConfig.
 type ScopeEnforcer struct {
@@ -38,12 +41,15 @@ func (e *ScopeEnforcer) CheckCampfire(campfireID string) error {
 
 // CheckOperation returns an error if opClass is not in the allowed classes.
 // Returns nil if operation_classes is empty (unrestricted).
+// Comparison is case-insensitive so configs with "Read" or "READ" behave
+// identically to "read".
 func (e *ScopeEnforcer) CheckOperation(opClass string) error {
 	if len(e.cfg.OperationClasses) == 0 {
 		return nil
 	}
+	normalized := strings.ToLower(opClass)
 	for _, class := range e.cfg.OperationClasses {
-		if class == opClass {
+		if strings.ToLower(class) == normalized {
 			return nil
 		}
 	}

@@ -79,6 +79,26 @@ func TestScopeEnforcer_DeniedOperation(t *testing.T) {
 	}
 }
 
+// TestScopeEnforcer_OperationClassCaseInsensitive verifies that CheckOperation
+// treats "Read", "READ", and "read" as equivalent.
+func TestScopeEnforcer_OperationClassCaseInsensitive(t *testing.T) {
+	cfg := ScopeConfig{
+		OperationClasses: []string{"Read", "WRITE"}, // mixed case in config
+	}
+	e := NewScopeEnforcer(cfg)
+	// All-lowercase queries should work
+	if err := e.CheckOperation("read"); err != nil {
+		t.Errorf("expected read to be allowed: %v", err)
+	}
+	if err := e.CheckOperation("write"); err != nil {
+		t.Errorf("expected write to be allowed: %v", err)
+	}
+	// admin is not in the list
+	if err := e.CheckOperation("admin"); err == nil {
+		t.Error("expected admin to be denied")
+	}
+}
+
 // TestLoadConfig_ScopeSection verifies that a [scope] block in TOML is parsed
 // correctly into Config.Scope.
 func TestLoadConfig_ScopeSection(t *testing.T) {
