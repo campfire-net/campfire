@@ -1,6 +1,6 @@
 package protocol_test
 
-// Tests for protocol.InitWithConfig() — campfire-agent-4gw and campfire-agent-y87.
+// Tests for protocol.InitWithConfig() — campfire-agent-4gw, campfire-agent-y87, campfire-agent-raj.
 //
 // Tests verify:
 //  1. Global config sets transport endpoint (TestInitWithConfig_GlobalConfig)
@@ -10,12 +10,15 @@ package protocol_test
 //  5. ConfigLayers reflects files examined (TestInitWithConfig_ConfigLayers)
 //  6. auto_join with real campfire → AutoJoined populated (TestInitWithConfig_AutoJoin_Success)
 //  7. auto_join when already a member → skipped (TestInitWithConfig_AutoJoin_AlreadyMember)
+//  8. CF_HOME env var sets the global config directory (TestInitWithConfig_CFHomeEnv)
+//  9. resolveGlobalDir branches covered directly (TestResolveGlobalDir_Branches)
 //
 // All tests use real temp dirs, real SQLite stores, and real Ed25519 keys.
 // No mocks. test-scope: targeted (pkg/protocol/... only).
 
 import (
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -656,5 +659,113 @@ auto_join = ["`+fakeCampfireID+`"]
 	// user can identify which campfire to join.
 	if !strings.Contains(autoJoinWarning, fakeCampfireID[:8]) {
 		t.Errorf("warning does not include short campfire ID %q: %q", fakeCampfireID[:8], autoJoinWarning)
+	}
+}
+
+// TestInitWithConfig_CFHomeEnv verifies that when CF_HOME is set in the
+// environment (and no WithConfigDir option is passed), resolveGlobalDir uses
+// CF_HOME as the global config directory.
+//
+// Uses t.Setenv so the variable is automatically restored after the test,
+// even on failure — providing full test isolation.
+func TestInitWithConfig_CFHomeEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CF_HOME", dir)
+
+	// No WithConfigDir — resolveGlobalDir must fall back to CF_HOME.
+	client, result, err := protocol.InitWithConfig()
+	if err != nil {
+		t.Fatalf("InitWithConfig with CF_HOME=%q: %v", dir, err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if result == nil {
+		t.Fatal("InitWithConfig returned nil *InitResult")
+	}
+
+	// IdentityPath must be rooted inside the CF_HOME directory, proving that
+	// resolveGlobalDir picked up the env var rather than falling back to ~/.cf.
+	if !strings.HasPrefix(result.IdentityPath, dir) {
+		t.Errorf("IdentityPath = %q, want prefix %q (CF_HOME branch not taken)", result.IdentityPath, dir)
+	}
+
+	// StorePath must also be rooted inside CF_HOME.
+	if !strings.HasPrefix(result.StorePath, dir) {
+		t.Errorf("StorePath = %q, want prefix %q (CF_HOME branch not taken)", result.StorePath, dir)
+	}
+}
+
+// TestResolveGlobalDir_Branches exercises all three priority branches in
+// resolveGlobalDir through the exported test helper:
+//
+//  1. configDir option → returned as-is (highest priority)
+//  2. CF_HOME env var  → used when no configDir option
+//  3. Default ~/.cf    → used when neither configDir nor CF_HOME is set
+//
+// Covering these branches via the exported helper avoids the overhead of
+// spinning up a full Client for each sub-case.
+func TestResolveGlobalDir_Branches(t *testing.T) {
+	t.Run("configDir_option", func(t *testing.T) {
+		dir := t.TempDir()
+		// Ensure CF_HOME is unset so we prove configDir wins regardless.
+		t.Setenv("CF_HOME", "")
+
+		got, err := protocol.ResolveGlobalDirForTest(dir)
+		if err != nil {
+			t.Fatalf("ResolveGlobalDirForTest(%q): %v", dir, err)
+		}
+		if got != dir {
+			t.Errorf("got %q, want %q", got, dir)
+		}
+	})
+
+	t.Run("cf_home_env", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("CF_HOME", dir)
+
+		got, err := protocol.ResolveGlobalDirForTest("") // no configDir option
+		if err != nil {
+			t.Fatalf("ResolveGlobalDirForTest with CF_HOME=%q: %v", dir, err)
+		}
+		if got != dir {
+			t.Errorf("got %q, want %q (CF_HOME branch)", got, dir)
+		}
+	})
+
+	t.Run("default_home_cf", func(t *testing.T) {
+		t.Setenv("CF_HOME", "") // ensure env is not set
+
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			t.Skipf("cannot determine home dir: %v", err)
+		}
+		want := filepath.Join(homeDir, ".cf")
+
+		got, err := protocol.ResolveGlobalDirForTest("") // no configDir option
+		if err != nil {
+			t.Fatalf("ResolveGlobalDirForTest default branch: %v", err)
+		}
+		if got != want {
+			t.Errorf("got %q, want %q (default ~/.cf branch)", got, want)
+		}
+	})
+}
+
+// TestResolveGlobalDir_UserHomeDirError verifies that resolveGlobalDir returns
+// a descriptive error when os.UserHomeDir fails (neither CF_HOME nor configDir
+// is set). This exercises the otherwise-unreachable error branch.
+func TestResolveGlobalDir_UserHomeDirError(t *testing.T) {
+	t.Setenv("CF_HOME", "") // ensure CF_HOME branch is not taken
+
+	protocol.SetUserHomeDirFnForTest(t, func() (string, error) {
+		return "", errors.New("simulated UserHomeDir failure")
+	})
+
+	_, err := protocol.ResolveGlobalDirForTest("")
+	if err == nil {
+		t.Fatal("expected error when UserHomeDir fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "resolving home directory") {
+		t.Errorf("error message = %q, want it to contain %q", err.Error(), "resolving home directory")
 	}
 }

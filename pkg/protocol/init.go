@@ -11,6 +11,10 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
+// userHomeDirFn is the function used to resolve the user's home directory.
+// It defaults to os.UserHomeDir and can be overridden in tests.
+var userHomeDirFn = os.UserHomeDir
+
 // resolveGlobalDir returns the global campfire home directory.
 // Order: WithConfigDir option > CF_HOME env var > ~/.cf
 func resolveGlobalDir(opts options) (string, error) {
@@ -28,7 +32,7 @@ func resolveGlobalDir(opts options) (string, error) {
 		}
 		return abs, nil
 	}
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFn()
 	if err != nil {
 		return "", fmt.Errorf("protocol.InitWithConfig: resolving home directory: %w", err)
 	}
