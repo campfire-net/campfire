@@ -591,3 +591,60 @@ auto_join = ["`+campfireID+`"]
 		}
 	}
 }
+
+// TestInitWithConfig_AutoJoin_FailureWarning verifies that when a campfire listed
+// in behavior.auto_join cannot be joined, the warning message is actionable:
+// it contains 'cf join' instructions so the user knows what to do next.
+func TestInitWithConfig_AutoJoin_FailureWarning(t *testing.T) {
+	globalDir := t.TempDir()
+
+	// Use a well-formed hex campfire ID that won't be reachable.
+	// InitWithConfig should attempt auto-join, fail, and produce an actionable warning.
+	fakeCampfireID := "deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234"
+	writeInitConfigFile(t,
+		filepath.Join(globalDir, "config.toml"),
+		`[behavior]
+auto_join = ["`+fakeCampfireID+`"]
+`)
+
+	client, result, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
+	if err != nil {
+		t.Fatalf("InitWithConfig: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if result == nil {
+		t.Fatal("InitWithConfig returned nil *InitResult")
+	}
+
+	// Join should fail for a nonexistent campfire — AutoJoined must be empty.
+	if len(result.AutoJoined) > 0 {
+		t.Skipf("auto_join unexpectedly succeeded for fake ID — skipping failure warning test")
+	}
+
+	// There must be at least one warning for the failed auto_join entry.
+	if len(result.Warnings) == 0 {
+		t.Fatal("expected at least one warning for failed auto_join, got none")
+	}
+
+	// The warning must be actionable: it must contain 'cf join' so the user
+	// knows how to recover.
+	var autoJoinWarning string
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "auto_join") {
+			autoJoinWarning = w
+			break
+		}
+	}
+	if autoJoinWarning == "" {
+		t.Fatalf("no auto_join warning found; warnings = %v", result.Warnings)
+	}
+	if !strings.Contains(autoJoinWarning, "cf join") {
+		t.Errorf("warning is not actionable (missing 'cf join' instructions): %q", autoJoinWarning)
+	}
+	// The short campfire ID (first 8 chars) must appear in the warning so the
+	// user can identify which campfire to join.
+	if !strings.Contains(autoJoinWarning, fakeCampfireID[:8]) {
+		t.Errorf("warning does not include short campfire ID %q: %q", fakeCampfireID[:8], autoJoinWarning)
+	}
+}

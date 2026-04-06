@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -42,6 +43,20 @@ func requireAgentAndStore() (*identity.Identity, store.Store, error) {
 		return nil, nil, fmt.Errorf("opening store: %w", err)
 	}
 	return agentID, s, nil
+}
+
+// printAutoJoinWarnings prints auto-join warnings from an InitResult to stderr.
+// Auto-join warnings are always printed (not gated on CF_VERBOSE) because they
+// are actionable: they tell the user which campfire failed and how to join manually.
+func printAutoJoinWarnings(result *protocol.InitResult) {
+	if result == nil {
+		return
+	}
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "auto_join") {
+			fmt.Fprintf(os.Stderr, "note: %s\n", w)
+		}
+	}
 }
 
 // populateProfileCacheFromStore loads identity:profile messages for a campfire from
