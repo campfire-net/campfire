@@ -874,3 +874,31 @@ operation_classes = ["!replace", "write", "admin"]
 		t.Error("read should be denied after !replace with [write admin]")
 	}
 }
+
+// TestLoadConfig_WalkUpFalseOverridesTrue verifies that a project-level
+// walk_up = false correctly overrides a global walk_up = true.
+// This is a regression test for the bug where bool zero-value (false) was
+// indistinguishable from "omitted", causing project false to be silently dropped.
+func TestLoadConfig_WalkUpFalseOverridesTrue(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	projectDir := filepath.Join(tmp, "project")
+
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[behavior]
+walk_up = true
+`)
+	writeConfig(t, filepath.Join(projectDir, cfDir, configFilename), `
+[behavior]
+walk_up = false
+`)
+
+	cfg, _, _, err := LoadConfig(globalDir, projectDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Behavior.WalkUp != false {
+		t.Errorf("walk_up: got %v, want false (project false must override global true)", cfg.Behavior.WalkUp)
+	}
+}
