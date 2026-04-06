@@ -351,7 +351,15 @@ func (c *Client) autoJoinEntry(addr string) (joined bool, warning string) {
 	}
 
 	if _, joinErr := c.Join(req); joinErr != nil {
-		return false, fmt.Sprintf("auto_join %q: %v", addr, joinErr)
+		// Produce an actionable message that tells the user how to join manually.
+		shortID := campfireID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		return false, fmt.Sprintf(
+			"auto_join %q: could not join (%v) — run 'cf join %s' to join manually",
+			addr, joinErr, shortID,
+		)
 	}
 	return true, ""
 }
