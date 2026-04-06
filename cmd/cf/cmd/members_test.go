@@ -11,7 +11,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
@@ -108,7 +107,7 @@ func setupMembersDisplayEnv(t *testing.T) (campfireID string, member1 *identity.
 // memberLineForPubkey returns the display line for a single member from
 // printMembersLines. It mirrors the display logic in members.go so tests
 // remain in sync with the implementation.
-func memberLineForPubkey(pubkeyHex string, role string, cache *protocol.SessionProfileCache) string {
+func memberLineForPubkey(pubkeyHex string, role string, cache *displayNameCache) string {
 	short := pubkeyHex
 	if len(short) > 8 {
 		short = short[:8]

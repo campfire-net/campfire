@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/message"
@@ -13,10 +14,62 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
-// sessionProfileCache is an in-memory display name cache for the current session.
+// displayNameCache is a session-local, in-memory map from sender pubkey hex to
+// self-declared display names. It is populated from identity:profile messages
+// encountered during read operations. Display names are UNVERIFIED.
+// Thread-safe.
+type displayNameCache struct {
+	mu      sync.RWMutex
+	entries map[string]string // pubkey hex → display_name
+}
+
+func newDisplayNameCache() *displayNameCache {
+	return &displayNameCache{entries: make(map[string]string)}
+}
+
+// Set stores a pubkey → display_name mapping. Empty key or name is a no-op.
+func (c *displayNameCache) Set(pubkeyHex, displayName string) {
+	if pubkeyHex == "" || displayName == "" {
+		return
+	}
+	c.mu.Lock()
+	c.entries[pubkeyHex] = displayName
+	c.mu.Unlock()
+}
+
+// Lookup returns the display name for pubkeyHex, or "" if not cached.
+func (c *displayNameCache) Lookup(pubkeyHex string) string {
+	c.mu.RLock()
+	name := c.entries[pubkeyHex]
+	c.mu.RUnlock()
+	return name
+}
+
+// LoadFromMessages scans a slice of messages for identity:profile tags and
+// populates the cache. Invalid payloads are silently skipped.
+func (c *displayNameCache) LoadFromMessages(messages []protocol.Message) {
+	for _, m := range messages {
+		for _, tag := range m.Tags {
+			if tag == "identity:profile" {
+				var payload struct {
+					DisplayName string `json:"display_name"`
+				}
+				if err := json.Unmarshal(m.Payload, &payload); err != nil {
+					continue
+				}
+				if payload.DisplayName != "" && m.Sender != "" {
+					c.Set(m.Sender, payload.DisplayName)
+				}
+				break
+			}
+		}
+	}
+}
+
+// sessionProfileCache is a session-local display name cache for the current CLI process.
 // It is populated from identity:profile messages encountered during read operations.
 // Display names are UNVERIFIED — self-declared by senders.
-var sessionProfileCache = protocol.NewSessionProfileCache()
+var sessionProfileCache = newDisplayNameCache()
 
 // validFieldNames is the set of field names accepted by --fields.
 var validFieldNames = map[string]bool{
