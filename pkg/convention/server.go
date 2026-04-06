@@ -21,6 +21,11 @@ type Request struct {
 	Args map[string]any
 	// Tags are the raw tags on the incoming message.
 	Tags []string
+	// Identity holds resolved identity information for the sender.
+	// MachineKey is always set when the sender pubkey is a valid hex Ed25519 key.
+	// Identity and IdentityVerified are set only when an IdentityResolver is
+	// attached to the Server and the sender has a verified VerificationCache entry.
+	Identity IdentityInfo
 }
 
 // Response holds the payload and tags to send back to the caller.
@@ -72,6 +77,10 @@ type Server struct {
 	// provenance is an optional checker used to enforce min_operator_level gates.
 	// When nil, any sender with a gated operation will be rejected (defaults to level 0).
 	provenance ProvenanceChecker
+
+	// resolver resolves sender pubkeys to IdentityInfo before handler dispatch.
+	// Defaults to NoopIdentityResolver{} when not set.
+	resolver IdentityResolver
 }
 
 // NewServer creates a Server for the given convention Declaration.
@@ -83,7 +92,17 @@ func NewServer(client *protocol.Client, decl *Declaration) *Server {
 		handlers:     make(map[string]HandlerFunc),
 		pollInterval: 2 * time.Second,
 		errFn:        func(err error) {},
+		resolver:     NoopIdentityResolver{},
 	}
+}
+
+// WithIdentityResolver attaches an IdentityResolver to the Server.
+// The resolver is called for each incoming message before dispatching to the
+// registered handler. The resolved IdentityInfo is available via req.Identity.
+// Defaults to NoopIdentityResolver{} when not set.
+func (s *Server) WithIdentityResolver(resolver IdentityResolver) *Server {
+	s.resolver = resolver
+	return s
 }
 
 // WithPollInterval sets the polling interval for Serve.
@@ -213,6 +232,7 @@ func (s *Server) dispatch(ctx context.Context, campfireID string, msg protocol.M
 		CampfireID: campfireID,
 		Args:       args,
 		Tags:       msg.Tags,
+		Identity:   resolveIdentity(msg.Sender, s.resolver),
 	}
 
 	resp, err := handler(ctx, req)
