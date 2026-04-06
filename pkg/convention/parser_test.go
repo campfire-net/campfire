@@ -803,3 +803,33 @@ func TestParse_DeprecationWarning_NoneWhenFieldsAbsent(t *testing.T) {
 		}
 	}
 }
+
+// TestParse_DeprecationWarning_PayloadRequiredFalseNoWarning verifies that
+// payload_required explicitly set to false does NOT emit a deprecation warning.
+// This is distinct from the field being absent (Go's omitempty) — it exercises
+// the JSON false value path. The deprecation warning is only for the deprecated
+// truthy usage.
+func TestParse_DeprecationWarning_PayloadRequiredFalseNoWarning(t *testing.T) {
+	payload := basePayload(map[string]any{"payload_required": false})
+	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, w := range result.Warnings {
+		if containsWarningSubstr(w, "payload_required") || containsWarningSubstr(w, "PayloadRequired") {
+			t.Errorf("unexpected deprecation warning for payload_required=false: %q", w)
+		}
+	}
+}
+
+// containsWarningSubstr returns true if s contains substr (case-sensitive substring match).
+func containsWarningSubstr(s, substr string) bool {
+	return len(substr) > 0 && len(s) >= len(substr) && func() bool {
+		for i := 0; i <= len(s)-len(substr); i++ {
+			if s[i:i+len(substr)] == substr {
+				return true
+			}
+		}
+		return false
+	}()
+}

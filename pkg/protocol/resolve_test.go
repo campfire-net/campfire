@@ -17,10 +17,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
+	cfcampfire "github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/protocol"
 )
@@ -224,6 +227,42 @@ func TestResolveInput_CfURI_WithResolver(t *testing.T) {
 	}
 }
 
+// TestResolveInput_CfURI_WithResolver_ReturnsError verifies that when the
+// NamingResolver returns an error, resolveInput wraps and propagates it.
+func TestResolveInput_CfURI_WithResolver_ReturnsError(t *testing.T) {
+	resolveErr := errors.New("name not found")
+	resolver := &stubResolver{err: resolveErr}
+
+	_, _, err := protocol.ResolveInputForTest("cf://team.project", resolver)
+	if err == nil {
+		t.Fatal("expected error when resolver returns error, got nil")
+	}
+	if !errors.Is(err, resolveErr) {
+		t.Errorf("error chain does not contain original resolver error: got %v", err)
+	}
+}
+
+// TestResolveInput_CfURI_WithResolver_NonHexReturn documents the behavior when
+// the NamingResolver returns a non-hex string. resolveInput does NOT validate the
+// resolver's return value — it passes it through as-is. Callers that require a
+// valid campfire ID must validate the returned string themselves.
+func TestResolveInput_CfURI_WithResolver_NonHexReturn(t *testing.T) {
+	resolver := &stubResolver{result: "not-a-valid-hex-id"}
+
+	campfireID, hint, err := protocol.ResolveInputForTest("cf://team.project", resolver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// resolveInput passes the resolver result through without validating it.
+	// This is intentional: the resolver is responsible for returning a valid ID.
+	if campfireID != "not-a-valid-hex-id" {
+		t.Errorf("expected resolver return passed through unchanged, got %q", campfireID)
+	}
+	if hint != nil {
+		t.Errorf("expected nil hint for named URI, got %+v", hint)
+	}
+}
+
 // TestClient_Send_AcceptsBeacon: integration test — client.Send with beacon string.
 // Uses a filesystem campfire so no network required.
 func TestClient_Send_AcceptsBeacon(t *testing.T) {
@@ -362,6 +401,100 @@ func TestClient_Send_StoredTransportWinsOverBeacon(t *testing.T) {
 	if !found {
 		t.Errorf("message not found after Send with beacon (got %d messages); stored transport should have been used",
 			len(readResult.Messages))
+	}
+}
+
+// TestClient_Send_StoredTransportWinsOverBeacon_WrongTransport verifies that
+// when a beacon encodes a wrong (HTTP) transport endpoint, Send() uses the
+// stored FS membership rather than the beacon hint, so the message is delivered
+// successfully. If Send() had used the beacon's transport hint it would attempt
+// an HTTP request to https://wrong.invalid:9999 and fail with a network error.
+func TestClient_Send_StoredTransportWinsOverBeacon_WrongTransport(t *testing.T) {
+	transportDir := t.TempDir()
+	beaconDir := t.TempDir()
+
+	// Create the campfire via FS transport.
+	configDirA := t.TempDir()
+	clientA, _, err := protocol.Init(configDirA)
+	if err != nil {
+		t.Fatalf("Init A: %v", err)
+	}
+	t.Cleanup(func() { clientA.Close() })
+
+	createResult, err := clientA.Create(protocol.CreateRequest{
+		Transport: protocol.FilesystemTransport{Dir: transportDir},
+		BeaconDir: beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	campfireID := createResult.CampfireID
+
+	// Read the campfire private key from campfire.cbor in the FS transport dir.
+	// The FS transport stores the campfire state at transportDir/<campfireID>/campfire.cbor.
+	statePath := filepath.Join(transportDir, campfireID, "campfire.cbor")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("reading campfire.cbor: %v", err)
+	}
+	var cfState cfcampfire.CampfireState
+	if err := cfencoding.Unmarshal(stateData, &cfState); err != nil {
+		t.Fatalf("decoding campfire state: %v", err)
+	}
+	campfirePriv := ed25519.PrivateKey(cfState.PrivateKey)
+	campfirePub := ed25519.PublicKey(cfState.PublicKey)
+
+	// Build a valid beacon (correct campfire ID, correct signature) that
+	// encodes an HTTP transport pointing to a nonexistent endpoint.
+	// If Send() used this beacon's transport hint, it would attempt an HTTP
+	// connection to wrong.invalid and fail. The test passes only if Send()
+	// ignores the hint and routes via the stored FS membership.
+	wrongBeacon, err := beacon.New(
+		campfirePub, campfirePriv,
+		"open",
+		nil,
+		beacon.TransportConfig{
+			Protocol: "http",
+			Config:   map[string]string{"endpoint": "https://wrong.invalid:9999"},
+		},
+		"wrong-transport beacon",
+	)
+	if err != nil {
+		t.Fatalf("creating wrong-transport beacon: %v", err)
+	}
+	raw, err := cfencoding.Marshal(wrongBeacon)
+	if err != nil {
+		t.Fatalf("marshaling wrong-transport beacon: %v", err)
+	}
+	wrongBeaconStr := "beacon:" + base64.RawURLEncoding.EncodeToString(raw)
+
+	// Send using the wrong-transport beacon string. The beacon decodes to
+	// the correct campfire ID; the stored FS membership is used — not the
+	// HTTP transport hint — so this must succeed.
+	_, err = clientA.Send(protocol.SendRequest{
+		CampfireID: wrongBeaconStr,
+		Payload:    []byte("stored transport wins over wrong beacon"),
+	})
+	if err != nil {
+		t.Fatalf("Send with wrong-transport beacon: %v (stored FS transport should have been used, not the HTTP hint)", err)
+	}
+
+	// Confirm message was delivered via the FS transport.
+	readResult, err := clientA.Read(protocol.ReadRequest{
+		CampfireID: campfireID,
+	})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	found := false
+	for _, msg := range readResult.Messages {
+		if string(msg.Payload) == "stored transport wins over wrong beacon" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("message not found (got %d messages); wrong-transport beacon hint should have been ignored", len(readResult.Messages))
 	}
 }
 
