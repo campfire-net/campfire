@@ -503,6 +503,40 @@ func TestHomeBe_RequiresLocalKey(t *testing.T) {
 	}
 }
 
+// TestHomeBe_RunE_RequiresLocalKey verifies that homeBeCmd.RunE returns an error
+// when the target campfire has no local private key. This exercises the actual
+// RunE code path (not just the helper) to prevent silent enforcement gaps if
+// the inline call is ever refactored.
+func TestHomeBe_RunE_RequiresLocalKey(t *testing.T) {
+	agentID, s, cfHomeDir, _, _ := setupHomeLinkEnv(t)
+	_ = s
+	_ = agentID
+
+	// Create a campfire without a private key.
+	transportBaseDir := t.TempDir()
+	remoteCampfireID := createTestCampfireNoPrivKey(t, agentID, s, transportBaseDir)
+
+	// CF_FORCE_INTERACTIVE bypasses the TTY check so RunE proceeds to the key check.
+	t.Setenv("CF_FORCE_INTERACTIVE", "1")
+	t.Setenv("CF_HOME", cfHomeDir)
+
+	// Feed "y" as confirmation input so the ceremony proceeds past the prompt.
+	var buf bytes.Buffer
+	homeBeCmd.ResetFlags()
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetIn(bytes.NewBufferString("y\n"))
+	rootCmd.SetArgs([]string{"home", "be", remoteCampfireID})
+	err := rootCmd.Execute()
+	rootCmd.SetOut(nil)
+	rootCmd.SetErr(nil)
+	rootCmd.SetIn(nil)
+
+	if err == nil {
+		t.Error("expected homeBeCmd.RunE to return error for campfire without local private key, got nil")
+	}
+}
+
 // TestHomeRevoke_RequiresAdminRole verifies that homeRevokeCmd returns an error
 // when the caller does not have admin or creator role in the home campfire.
 func TestHomeRevoke_RequiresAdminRole(t *testing.T) {

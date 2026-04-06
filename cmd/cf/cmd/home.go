@@ -308,23 +308,12 @@ identity.present_as in config.toml for automated configuration.`,
 			return fmt.Errorf("cannot link campfire to itself (%s)", homeID[:12])
 		}
 
-		// Verify membership in target campfire.
-		mTarget, err := s.GetMembership(targetID)
-		if err != nil || mTarget == nil {
-			return fmt.Errorf("not a member of campfire %s: join it first or have the admin admit you", targetID[:12])
-		}
-
 		// Require that campfire B is locally initialized — the caller must hold
 		// its private key. This proves key control before writing present_as.
 		// If campfire B is remote (no local private key), the caller cannot prove
 		// they control it; use 'cf home link' instead.
-		trTarget := fs.ForDir(mTarget.TransportDir)
-		stateTarget, err := trTarget.ReadState(targetID)
-		if err != nil {
-			return fmt.Errorf("reading campfire %s state: %w\n\nThe be ceremony requires a locally-initialized campfire where you hold the private key. Use 'cf home link' for remote campfires.", targetID[:12], err)
-		}
-		if len(stateTarget.PrivateKey) == 0 {
-			return fmt.Errorf("campfire %s has no local private key — cannot present as a remote campfire. Use 'cf home link' to perform the cross-campfire ceremony", targetID[:12])
+		if err := checkLocalCampfireKey(s, targetID); err != nil {
+			return err
 		}
 
 		client := protocol.New(s, agentID)
@@ -538,7 +527,11 @@ func configSetPresentAs(targetPath, value string) error {
 }
 
 // isInteractiveTTY returns true if stdin is an interactive terminal.
+// CF_FORCE_INTERACTIVE=1 bypasses the TTY check (test use only).
 func isInteractiveTTY() bool {
+	if os.Getenv("CF_FORCE_INTERACTIVE") == "1" {
+		return true
+	}
 	fi, err := os.Stdin.Stat()
 	if err != nil {
 		return false
