@@ -109,6 +109,9 @@ func printMessagesWithFields(allMessages []protocol.Message, s store.Store, fiel
 	// Populate profile cache from incoming messages before rendering.
 	sessionProfileCache.LoadFromMessages(allMessages)
 
+	// Load present_as once for the whole batch — it is a static per-process value.
+	presentAs := loadPresentAs()
+
 	// Default path: nil fields means all fields, use the original output format exactly.
 	if fields == nil {
 		for _, m := range allMessages {
@@ -119,8 +122,8 @@ func printMessagesWithFields(allMessages []protocol.Message, s store.Store, fiel
 				cfShort = cfShort[:6]
 			}
 			senderShort := m.Sender
-			if len(senderShort) > 6 {
-				senderShort = senderShort[:6]
+			if len(senderShort) > 8 {
+				senderShort = senderShort[:8]
 			}
 			var senderDisplay string
 			if m.SenderCampfireID != "" {
@@ -131,13 +134,24 @@ func printMessagesWithFields(allMessages []protocol.Message, s store.Store, fiel
 				senderDisplay = "@" + campfireShort + " (key: " + senderShort + ")"
 			} else if displayName := sessionProfileCache.Lookup(m.Sender); displayName != "" {
 				// Display name is UNVERIFIED — always show pubkey prefix alongside.
-				senderDisplay = displayName + " (agent:" + senderShort + ")"
+				senderDisplay = displayName + " (" + senderShort + ")"
 			} else {
-				senderDisplay = "agent:" + senderShort
+				senderDisplay = senderShort
 			}
 			if m.Instance != "" {
 				senderDisplay += " (" + m.Instance + ")"
 			}
+
+			// Super-identity: append home campfire and [unverified] when present_as is set.
+			// This reflects the LOCAL client's configured identity — not a per-message field.
+			if presentAs != "" {
+				homeShort := presentAs
+				if len(homeShort) > 8 {
+					homeShort = homeShort[:8]
+				}
+				senderDisplay += " (home: " + homeShort + ") [unverified]"
+			}
+
 			ts := time.Unix(0, m.Timestamp).Format("2006-01-02 15:04:05")
 
 			// Status markers (future/fulfilled) — appended to sender display.

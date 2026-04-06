@@ -1,10 +1,16 @@
 package cmd
 
-// Tests for sanitizePayload (formatter.go).
+// Tests for sanitizePayload and printMessagesWithFields (formatter.go).
 // workspace-pm9m.5.10: SWEEP-TEST — sanitizePayload terminal injection prevention has no unit tests.
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/campfire-net/campfire/pkg/protocol"
 )
 
 // TestSanitizePayload_ESCStripped verifies that the ESC byte (0x1B) is removed.
@@ -112,4 +118,100 @@ func containsByte(s []byte, b byte) bool {
 		}
 	}
 	return false
+}
+
+// makeReadTestMessage builds a minimal protocol.Message for formatter tests.
+func makeReadTestMessage(sender, payload string) protocol.Message {
+	return protocol.Message{
+		ID:         "testmsg000000001",
+		CampfireID: "cf0000000000000000000000000000000000000000000000000000000000000001",
+		Sender:     sender,
+		Payload:    []byte(payload),
+		Tags:       []string{"status"},
+		Timestamp:  1000000000,
+	}
+}
+
+// TestReadDisplay_UnverifiedTagWhenPresentAsSet verifies that when present_as is
+// configured in the local config, cf read output appends "(home: <short>) [unverified]"
+// to the sender display.
+func TestReadDisplay_UnverifiedTagWhenPresentAsSet(t *testing.T) {
+	cfHome := t.TempDir()
+	t.Setenv("CF_HOME", cfHome)
+
+	// Write a config file with identity.present_as set.
+	presentAsID := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	configContent := "[identity]\npresent_as = \"" + presentAsID + "\"\n"
+	if err := os.WriteFile(filepath.Join(cfHome, "config.toml"), []byte(configContent), 0600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	msg := makeReadTestMessage("aabbccddee112233", "hello world")
+
+	out := captureStdout(t, func() {
+		printMessagesWithFields([]protocol.Message{msg}, nil, nil)
+	})
+
+	if !strings.Contains(out, "[unverified]") {
+		t.Errorf("output should contain [unverified] when present_as is set; got:\n%s", out)
+	}
+	if !strings.Contains(out, "home: "+presentAsID[:8]) {
+		t.Errorf("output should contain home: %s; got:\n%s", presentAsID[:8], out)
+	}
+}
+
+// TestReadDisplay_NoUnverifiedTagWhenPresentAsNotSet verifies that when no
+// present_as is configured, the [unverified] tag does NOT appear in cf read output.
+func TestReadDisplay_NoUnverifiedTagWhenPresentAsNotSet(t *testing.T) {
+	cfHome := t.TempDir()
+	t.Setenv("CF_HOME", cfHome)
+	// No config.toml — present_as is not set.
+
+	msg := makeReadTestMessage("aabbccddee112233", "hello world")
+
+	out := captureStdout(t, func() {
+		printMessagesWithFields([]protocol.Message{msg}, nil, nil)
+	})
+
+	if strings.Contains(out, "[unverified]") {
+		t.Errorf("output should NOT contain [unverified] when present_as is not set; got:\n%s", out)
+	}
+	if strings.Contains(out, "home:") {
+		t.Errorf("output should NOT contain 'home:' when present_as is not set; got:\n%s", out)
+	}
+}
+
+// TestReadDisplay_DisplayNameFormat verifies that when the profile cache has an
+// entry for the sender, cf read shows "displayname (pubkey[:8])" format.
+func TestReadDisplay_DisplayNameFormat(t *testing.T) {
+	cfHome := t.TempDir()
+	t.Setenv("CF_HOME", cfHome)
+	// No config.toml — present_as not set, so [unverified] won't appear.
+
+	senderHex := "1122334455667788aabbccdd"
+	displayName := "bob@campfire"
+
+	// Seed the profile cache via an identity:profile message.
+	profilePayload, _ := json.Marshal(map[string]string{"display_name": displayName})
+	profileMsg := protocol.Message{
+		ID:         "profile000000001",
+		CampfireID: "cf0000000000000000000000000000000000000000000000000000000000000001",
+		Sender:     senderHex,
+		Payload:    profilePayload,
+		Tags:       []string{"identity:profile"},
+		Timestamp:  500000000,
+	}
+	regularMsg := makeReadTestMessage(senderHex, "from bob")
+
+	out := captureStdout(t, func() {
+		// Feed profile message first so cache is populated, then the regular message.
+		printMessagesWithFields([]protocol.Message{profileMsg, regularMsg}, nil, nil)
+	})
+
+	if !strings.Contains(out, displayName) {
+		t.Errorf("output should show display name %q; got:\n%s", displayName, out)
+	}
+	if !strings.Contains(out, senderHex[:8]) {
+		t.Errorf("output should show sender pubkey prefix %s alongside display name; got:\n%s", senderHex[:8], out)
+	}
 }

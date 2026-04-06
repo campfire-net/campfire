@@ -89,15 +89,21 @@ var membersCmd = &cobra.Command{
 		for _, mem := range members {
 			idHex := fmt.Sprintf("%x", mem.PublicKey)
 			short := idHex
-			if len(short) > 12 {
-				short = short[:12]
+			if len(short) > 8 {
+				short = short[:8]
 			}
-			line := short
+			role := mem.Role
+			if role == "" {
+				role = "full"
+			}
+			var line string
 			if name := sessionProfileCache.Lookup(idHex); name != "" {
-				// Display name is UNVERIFIED — show pubkey alongside.
+				// Display name is UNVERIFIED — show pubkey prefix alongside.
 				line = fmt.Sprintf("%s (%s)", name, short)
+			} else {
+				line = short
 			}
-			fmt.Printf("%s  joined %s\n", line, time.Unix(0, mem.JoinedAt).Format("2006-01-02 15:04:05"))
+			fmt.Printf("%s  %s\n", line, role)
 		}
 		return nil
 	},
