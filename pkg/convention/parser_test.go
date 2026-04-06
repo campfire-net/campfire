@@ -699,3 +699,107 @@ func TestParse_ResponseTimeoutValidPasses(t *testing.T) {
 		}
 	}
 }
+
+// TestParse_DeprecationWarning_PayloadRequired verifies that using payload_required
+// causes a 0.16 deprecation warning but still parses successfully (backward compat).
+func TestParse_DeprecationWarning_PayloadRequired(t *testing.T) {
+	payload := basePayload(map[string]any{"payload_required": true})
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid result, got invalid: %v", result.Warnings)
+	}
+	if !decl.PayloadRequired {
+		t.Error("expected PayloadRequired to be true (field still parses in 0.16)")
+	}
+	want := "PayloadRequired is deprecated in 0.16 and will be removed in 0.18. It has no effect — the executor never validates payloads. Remove this field."
+	found := false
+	for _, w := range result.Warnings {
+		if w == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected deprecation warning %q, got warnings: %v", want, result.Warnings)
+	}
+}
+
+// TestParse_DeprecationWarning_PayloadSchema verifies that using payload_schema
+// causes a 0.16 deprecation warning but still parses successfully (backward compat).
+func TestParse_DeprecationWarning_PayloadSchema(t *testing.T) {
+	payload := basePayload(map[string]any{"payload_schema": "https://example.com/schema.json"})
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid result, got invalid: %v", result.Warnings)
+	}
+	if decl.PayloadSchema != "https://example.com/schema.json" {
+		t.Errorf("expected PayloadSchema to be preserved, got %q", decl.PayloadSchema)
+	}
+	want := "PayloadSchema is deprecated in 0.16 and will be removed in 0.18. It has no effect — the executor never validates payloads. Remove this field."
+	found := false
+	for _, w := range result.Warnings {
+		if w == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected deprecation warning %q, got warnings: %v", want, result.Warnings)
+	}
+}
+
+// TestParse_DeprecationWarning_BothDeprecatedFields verifies both warnings are emitted
+// when both payload_required and payload_schema are present.
+func TestParse_DeprecationWarning_BothDeprecatedFields(t *testing.T) {
+	payload := basePayload(map[string]any{
+		"payload_required": true,
+		"payload_schema":   "https://example.com/schema.json",
+	})
+	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid result")
+	}
+	wantRequired := "PayloadRequired is deprecated in 0.16 and will be removed in 0.18. It has no effect — the executor never validates payloads. Remove this field."
+	wantSchema := "PayloadSchema is deprecated in 0.16 and will be removed in 0.18. It has no effect — the executor never validates payloads. Remove this field."
+	foundRequired, foundSchema := false, false
+	for _, w := range result.Warnings {
+		if w == wantRequired {
+			foundRequired = true
+		}
+		if w == wantSchema {
+			foundSchema = true
+		}
+	}
+	if !foundRequired {
+		t.Errorf("expected PayloadRequired warning, got: %v", result.Warnings)
+	}
+	if !foundSchema {
+		t.Errorf("expected PayloadSchema warning, got: %v", result.Warnings)
+	}
+}
+
+// TestParse_DeprecationWarning_NoneWhenFieldsAbsent verifies that no deprecation
+// warnings are emitted when neither payload_required nor payload_schema are present.
+func TestParse_DeprecationWarning_NoneWhenFieldsAbsent(t *testing.T) {
+	payload := basePayload(nil)
+	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantRequired := "PayloadRequired is deprecated in 0.16 and will be removed in 0.18. It has no effect — the executor never validates payloads. Remove this field."
+	wantSchema := "PayloadSchema is deprecated in 0.16 and will be removed in 0.18. It has no effect — the executor never validates payloads. Remove this field."
+	for _, w := range result.Warnings {
+		if w == wantRequired || w == wantSchema {
+			t.Errorf("unexpected deprecation warning: %q", w)
+		}
+	}
+}

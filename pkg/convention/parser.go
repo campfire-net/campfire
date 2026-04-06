@@ -39,16 +39,24 @@ type Declaration struct {
 	Args            []ArgDescriptor `json:"args,omitempty"`
 	ProducesTags    []TagRule       `json:"produces_tags,omitempty"`
 	Antecedents     string          `json:"antecedents,omitempty"`
-	PayloadRequired bool            `json:"payload_required,omitempty"`
-	PayloadSchema   string          `json:"payload_schema,omitempty"`
+	// Deprecated: PayloadRequired has no effect — the executor never validates payloads.
+	// Removed in 0.18. TODO(0.18): remove this field.
+	PayloadRequired bool   `json:"payload_required,omitempty"`
+	// Deprecated: PayloadSchema has no effect — the executor never validates payloads.
+	// Removed in 0.18. TODO(0.18): remove this field.
+	PayloadSchema string `json:"payload_schema,omitempty"`
 	Signing         string          `json:"signing"`
 	RateLimit       *RateLimit      `json:"rate_limit,omitempty"`
-	Steps           []Step          `json:"steps,omitempty"`
+	// Deprecated: steps is low-adoption implementation sugar. Use convention args
+	// and produces_tags for structured coordination. Deprecated in docs in 0.16.
+	Steps []Step `json:"steps,omitempty"`
 	// MinOperatorLevel is the minimum operator provenance level required to
 	// execute this operation. 0 means no restriction (default). The executor
 	// checks the sender's level against this value before dispatching.
 	// See Operator Provenance Convention v0.1 §8.
 	MinOperatorLevel int `json:"min_operator_level,omitempty"`
+	// Deprecated: views in declarations is deprecated in 0.16. Define views
+	// explicitly via campfire:view system messages instead.
 	// Views declares named views associated with this convention. When a
 	// declaration is loaded, views are auto-published as campfire:view messages
 	// and registered as callable MCP tools alongside the write operations.
@@ -259,6 +267,17 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*De
 		decl.ResponseTimeout = d
 	} else {
 		decl.ResponseTimeout = 30 * time.Second
+	}
+
+	// Check 2c: Deprecation warnings for 0.16 deprecated fields.
+	// 0.16: deprecate with warning. 0.17: warn (already done). 0.18: remove.
+	if decl.PayloadRequired {
+		result.Warnings = append(result.Warnings,
+			"PayloadRequired is deprecated in 0.16 and will be removed in 0.18. It has no effect — the executor never validates payloads. Remove this field.")
+	}
+	if decl.PayloadSchema != "" {
+		result.Warnings = append(result.Warnings,
+			"PayloadSchema is deprecated in 0.16 and will be removed in 0.18. It has no effect — the executor never validates payloads. Remove this field.")
 	}
 
 	// Check 3: Arg type validation.
