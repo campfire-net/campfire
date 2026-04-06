@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -78,6 +79,23 @@ func (sub *Subscription) setErr(err error) {
 //
 // Poll interval defaults to 500ms when not set in the request.
 func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) *Subscription {
+	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
+	// Subscribe returns a Subscription, not an error, so resolution errors surface
+	// via Subscription.Err() when the goroutine starts.
+	if resolvedID, _, resolveErr := resolveInput(req.CampfireID, c.opts.namingResolver); resolveErr != nil {
+		// Return a closed subscription with the error.
+		sub := &Subscription{
+			msgs: make(chan Message),
+			done: make(chan struct{}),
+			err:  fmt.Errorf("protocol.Client.Subscribe: resolving campfire address: %w", resolveErr),
+		}
+		close(sub.msgs)
+		close(sub.done)
+		return sub
+	} else {
+		req.CampfireID = resolvedID
+	}
+
 	interval := req.PollInterval
 	if interval <= 0 {
 		interval = 500 * time.Millisecond

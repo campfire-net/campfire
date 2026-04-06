@@ -77,6 +77,13 @@ func (c *Client) Evict(req EvictRequest) (*EvictResult, error) {
 		return nil, fmt.Errorf("protocol.Client.Evict: MemberPubKeyHex is required")
 	}
 
+	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
+	resolvedID, _, resolveErr := resolveInput(req.CampfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("protocol.Client.Evict: resolving campfire address: %w", resolveErr)
+	}
+	req.CampfireID = resolvedID
+
 	// Reject self-eviction.
 	if req.MemberPubKeyHex == c.identity.PublicKeyHex() {
 		return nil, fmt.Errorf("protocol.Client.Evict: cannot evict self")

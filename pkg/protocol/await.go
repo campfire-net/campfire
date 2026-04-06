@@ -68,6 +68,13 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 	if req.TargetMsgID == "" {
 		return nil, fmt.Errorf("protocol.Client.Await: TargetMsgID is required")
 	}
+
+	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
+	resolvedID, _, resolveErr := resolveInput(req.CampfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("protocol.Client.Await: resolving campfire address: %w", resolveErr)
+	}
+	req.CampfireID = resolvedID
 	// campfire-agent-kok: A negative timeout is a caller bug -- return an error
 	// immediately rather than silently waiting forever (which happened because
 	// the req.Timeout > 0 guard below skipped timer creation for negative values).

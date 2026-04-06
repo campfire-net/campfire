@@ -70,7 +70,7 @@ func TestMCPAddPeer(t *testing.T) {
 	t.Cleanup(func() { ssrfValidateEndpoint = origSSRF })
 
 	srv, st := newTestServerWithStore(t)
-	campfireID := "test-campfire-add-peer"
+	campfireID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 64-hex
 	addHTTPMembership(t, st, campfireID)
 
 	resp := srv.handleAddPeer("req-1", map[string]interface{}{
@@ -94,7 +94,7 @@ func TestMCPRemovePeer(t *testing.T) {
 	t.Cleanup(func() { ssrfValidateEndpoint = origSSRF })
 
 	srv, st := newTestServerWithStore(t)
-	campfireID := "test-campfire-remove-peer"
+	campfireID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" // 64-hex
 	pubkey := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	addHTTPMembership(t, st, campfireID)
 
@@ -142,7 +142,7 @@ func TestMCPPeers(t *testing.T) {
 	t.Cleanup(func() { ssrfValidateEndpoint = origSSRF })
 
 	srv, st := newTestServerWithStore(t)
-	campfireID := "test-campfire-list-peers"
+	campfireID := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" // 64-hex
 	addHTTPMembership(t, st, campfireID)
 
 	// Add two peers.
@@ -176,7 +176,7 @@ func TestMCPPeers(t *testing.T) {
 
 func TestMCPPeerNonHTTP(t *testing.T) {
 	srv, st := newTestServerWithStore(t)
-	campfireID := "test-campfire-fs-peer"
+	campfireID := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" // 64-hex
 	addFSMembership(t, st, campfireID, t.TempDir())
 
 	// AddPeer should fail on filesystem transport.

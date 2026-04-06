@@ -65,7 +65,7 @@ func (e *peeringEnv) addMembership(t *testing.T, campfireID, transportType strin
 // ErrTransportNotSupported when the campfire uses a filesystem transport.
 func TestPeeringNonHTTPError(t *testing.T) {
 	env := newPeeringEnv(t)
-	campfireID := "e2e-peering-fs-nohttperror"
+	campfireID := "1111111111111111111111111111111111111111111111111111111111111111" // 64-hex
 	env.addMembership(t, campfireID, "filesystem")
 
 	t.Run("AddPeer", func(t *testing.T) {
@@ -99,7 +99,7 @@ func TestPeeringNonHTTPError(t *testing.T) {
 // on a p2p-http membership backed by a real store.
 func TestPeeringStoreLifecycle(t *testing.T) {
 	env := newPeeringEnv(t)
-	campfireID := "e2e-peering-http-lifecycle"
+	campfireID := "2222222222222222222222222222222222222222222222222222222222222222" // 64-hex
 	env.addMembership(t, campfireID, "p2p-http")
 
 	// Initially no peers.
@@ -189,7 +189,7 @@ func TestPeeringStoreLifecycle(t *testing.T) {
 // public key updates the existing record rather than creating a duplicate.
 func TestPeeringStoreLifecycle_Upsert(t *testing.T) {
 	env := newPeeringEnv(t)
-	campfireID := "e2e-peering-http-upsert"
+	campfireID := "3333333333333333333333333333333333333333333333333333333333333333" // 64-hex
 	env.addMembership(t, campfireID, "p2p-http")
 
 	peer := protocol.PeerInfo{
@@ -223,7 +223,7 @@ func TestPeeringStoreLifecycle_Upsert(t *testing.T) {
 // TestPeeringValidation checks input validation for all peer operations.
 func TestPeeringValidation(t *testing.T) {
 	env := newPeeringEnv(t)
-	campfireID := "e2e-peering-http-validation"
+	campfireID := "4444444444444444444444444444444444444444444444444444444444444444" // 64-hex
 	env.addMembership(t, campfireID, "p2p-http")
 
 	t.Run("AddPeer_EmptyEndpoint", func(t *testing.T) {
@@ -284,7 +284,7 @@ func TestPeeringValidation(t *testing.T) {
 	})
 
 	t.Run("Peers_NotMember", func(t *testing.T) {
-		_, err := env.client.Peers("nonexistent-campfire-not-a-member")
+		_, err := env.client.Peers("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff") // 64-hex, not a member
 		if err == nil {
 			t.Error("expected error for non-member campfire")
 		}

@@ -14,7 +14,7 @@ import (
 // helperInitClient creates a real protocol.Client backed by a temp dir.
 func helperInitClient(t *testing.T) *protocol.Client {
 	t.Helper()
-	client,_, err := protocol.Init(t.TempDir())
+	client, _, err := protocol.Init(t.TempDir())
 	if err != nil {
 		t.Fatalf("protocol.Init: %v", err)
 	}
@@ -35,14 +35,23 @@ func helperStoreAndClient(t *testing.T) (store.Store, *protocol.Client) {
 	return s, protocol.New(s, id)
 }
 
+// validCampfireIDs provides distinct 64-hex campfire IDs for use in peer tests.
+// Each is a deterministic constant — not cryptographically significant.
+const (
+	campfireIDFSAddPeer    = "aa00000000000000000000000000000000000000000000000000000000000001"
+	campfireIDFSPeers      = "aa00000000000000000000000000000000000000000000000000000000000002"
+	campfireIDFSRemovePeer = "aa00000000000000000000000000000000000000000000000000000000000003"
+	campfireIDHTTPLifecyc  = "aa00000000000000000000000000000000000000000000000000000000000004"
+	campfireIDNotMember    = "aa00000000000000000000000000000000000000000000000000000000000099"
+)
+
 // TestAddPeerNoHTTPTransport verifies that AddPeer returns ErrTransportNotSupported
 // when the campfire uses a filesystem transport.
 func TestAddPeerNoHTTPTransport(t *testing.T) {
 	s, client := helperStoreAndClient(t)
 
-	campfireID := "test-campfire-fs-addpeer"
 	if err := s.AddMembership(store.Membership{
-		CampfireID:    campfireID,
+		CampfireID:    campfireIDFSAddPeer,
 		TransportDir:  t.TempDir(),
 		JoinProtocol:  "open",
 		Role:          campfire.RoleFull,
@@ -52,7 +61,7 @@ func TestAddPeerNoHTTPTransport(t *testing.T) {
 		t.Fatalf("AddMembership: %v", err)
 	}
 
-	err := client.AddPeer(campfireID, protocol.PeerInfo{
+	err := client.AddPeer(campfireIDFSAddPeer, protocol.PeerInfo{
 		Endpoint:     "http://peer:8080",
 		PublicKeyHex: "aabbccdd",
 	})
@@ -66,9 +75,8 @@ func TestAddPeerNoHTTPTransport(t *testing.T) {
 func TestPeersNoHTTPTransport(t *testing.T) {
 	s, client := helperStoreAndClient(t)
 
-	campfireID := "test-campfire-fs-peers"
 	if err := s.AddMembership(store.Membership{
-		CampfireID:    campfireID,
+		CampfireID:    campfireIDFSPeers,
 		TransportDir:  t.TempDir(),
 		JoinProtocol:  "open",
 		Role:          campfire.RoleFull,
@@ -78,7 +86,7 @@ func TestPeersNoHTTPTransport(t *testing.T) {
 		t.Fatalf("AddMembership: %v", err)
 	}
 
-	_, err := client.Peers(campfireID)
+	_, err := client.Peers(campfireIDFSPeers)
 	if !errors.Is(err, protocol.ErrTransportNotSupported) {
 		t.Errorf("expected ErrTransportNotSupported, got: %v", err)
 	}
@@ -89,9 +97,8 @@ func TestPeersNoHTTPTransport(t *testing.T) {
 func TestRemovePeerNoHTTPTransport(t *testing.T) {
 	s, client := helperStoreAndClient(t)
 
-	campfireID := "test-campfire-fs-removepeer"
 	if err := s.AddMembership(store.Membership{
-		CampfireID:    campfireID,
+		CampfireID:    campfireIDFSRemovePeer,
 		TransportDir:  t.TempDir(),
 		JoinProtocol:  "open",
 		Role:          campfire.RoleFull,
@@ -101,7 +108,7 @@ func TestRemovePeerNoHTTPTransport(t *testing.T) {
 		t.Fatalf("AddMembership: %v", err)
 	}
 
-	err := client.RemovePeer(campfireID, "aabbccdd")
+	err := client.RemovePeer(campfireIDFSRemovePeer, "aabbccdd")
 	if !errors.Is(err, protocol.ErrTransportNotSupported) {
 		t.Errorf("expected ErrTransportNotSupported, got: %v", err)
 	}
@@ -112,9 +119,8 @@ func TestRemovePeerNoHTTPTransport(t *testing.T) {
 func TestAddPeerRemovePeerWithHTTPTransport(t *testing.T) {
 	s, client := helperStoreAndClient(t)
 
-	campfireID := "test-campfire-http-lifecycle"
 	if err := s.AddMembership(store.Membership{
-		CampfireID:    campfireID,
+		CampfireID:    campfireIDHTTPLifecyc,
 		TransportDir:  t.TempDir(),
 		JoinProtocol:  "open",
 		Role:          campfire.RoleFull,
@@ -130,12 +136,12 @@ func TestAddPeerRemovePeerWithHTTPTransport(t *testing.T) {
 		PublicKeyHex:  "aabbccddeeff0011",
 		ParticipantID: "1",
 	}
-	if err := client.AddPeer(campfireID, peer); err != nil {
+	if err := client.AddPeer(campfireIDHTTPLifecyc, peer); err != nil {
 		t.Fatalf("AddPeer: %v", err)
 	}
 
 	// List peers — should contain the one we added.
-	peers, err := client.Peers(campfireID)
+	peers, err := client.Peers(campfireIDHTTPLifecyc)
 	if err != nil {
 		t.Fatalf("Peers: %v", err)
 	}
@@ -157,11 +163,11 @@ func TestAddPeerRemovePeerWithHTTPTransport(t *testing.T) {
 		Endpoint:     "http://peer-b:8080",
 		PublicKeyHex: "1122334455667788",
 	}
-	if err := client.AddPeer(campfireID, peer2); err != nil {
+	if err := client.AddPeer(campfireIDHTTPLifecyc, peer2); err != nil {
 		t.Fatalf("AddPeer (second): %v", err)
 	}
 
-	peers, err = client.Peers(campfireID)
+	peers, err = client.Peers(campfireIDHTTPLifecyc)
 	if err != nil {
 		t.Fatalf("Peers after second add: %v", err)
 	}
@@ -170,11 +176,11 @@ func TestAddPeerRemovePeerWithHTTPTransport(t *testing.T) {
 	}
 
 	// Remove the first peer.
-	if err := client.RemovePeer(campfireID, peer.PublicKeyHex); err != nil {
+	if err := client.RemovePeer(campfireIDHTTPLifecyc, peer.PublicKeyHex); err != nil {
 		t.Fatalf("RemovePeer: %v", err)
 	}
 
-	peers, err = client.Peers(campfireID)
+	peers, err = client.Peers(campfireIDHTTPLifecyc)
 	if err != nil {
 		t.Fatalf("Peers after remove: %v", err)
 	}
@@ -196,14 +202,15 @@ func TestAddPeerValidation(t *testing.T) {
 		t.Error("expected error for empty campfire ID")
 	}
 
-	// Empty pubkey.
-	err = client.AddPeer("some-id", protocol.PeerInfo{Endpoint: "http://x"})
+	// Empty pubkey (use a valid hex ID so we get past resolveInput).
+	const validID = "bb00000000000000000000000000000000000000000000000000000000000001"
+	err = client.AddPeer(validID, protocol.PeerInfo{Endpoint: "http://x"})
 	if err == nil {
 		t.Error("expected error for empty pubkey")
 	}
 
-	// Empty endpoint.
-	err = client.AddPeer("some-id", protocol.PeerInfo{PublicKeyHex: "aa"})
+	// Empty endpoint (use a valid hex ID).
+	err = client.AddPeer(validID, protocol.PeerInfo{PublicKeyHex: "aa"})
 	if err == nil {
 		t.Error("expected error for empty endpoint")
 	}
@@ -214,7 +221,7 @@ func TestAddPeerValidation(t *testing.T) {
 func TestPeersNotMember(t *testing.T) {
 	client := helperInitClient(t)
 
-	_, err := client.Peers("nonexistent-campfire-id")
+	_, err := client.Peers(campfireIDNotMember)
 	if err == nil {
 		t.Error("expected error for non-member campfire")
 	}
