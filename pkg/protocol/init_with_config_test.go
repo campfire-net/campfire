@@ -331,8 +331,8 @@ type = "http"
 }
 
 // makeFilesystemBeaconString creates a real filesystem campfire and returns
-// its beacon string and the transport base directory.
-func makeFilesystemBeaconString(t *testing.T) (beaconStr string, transportBaseDir string) {
+// its beacon string, the campfire ID (64-hex pubkey), and the transport base directory.
+func makeFilesystemBeaconString(t *testing.T) (beaconStr string, campfireID string, transportBaseDir string) {
 	t.Helper()
 
 	// Generate a campfire keypair.
@@ -371,14 +371,14 @@ func makeFilesystemBeaconString(t *testing.T) (beaconStr string, transportBaseDi
 	}
 
 	encoded := base64.StdEncoding.EncodeToString(raw)
-	return "beacon:" + encoded, baseDir
+	return "beacon:" + encoded, cf.PublicKeyHex(), baseDir
 }
 
 // TestInitWithConfig_AutoJoin_Success verifies that when behavior.auto_join
 // contains a valid filesystem campfire beacon string, InitWithConfig joins
 // the campfire and populates InitResult.AutoJoined.
 func TestInitWithConfig_AutoJoin_Success(t *testing.T) {
-	beaconStr, _ := makeFilesystemBeaconString(t)
+	beaconStr, campfireID, _ := makeFilesystemBeaconString(t)
 
 	globalDir := t.TempDir()
 	writeInitConfigFile(t,
@@ -412,13 +412,23 @@ auto_join = ["`+beaconStr+`"]
 			t.Errorf("unexpected auto_join warning: %q", w)
 		}
 	}
+
+	// Independently verify that the join actually occurred: the agent must be
+	// a member of the campfire according to its own store.
+	members, err := client.Members(campfireID)
+	if err != nil {
+		t.Fatalf("client.Members(%s): %v — join succeeded per AutoJoined but membership not recorded", campfireID[:8], err)
+	}
+	if len(members) == 0 {
+		t.Errorf("client.Members returned empty list after auto-join — join may have been silently skipped")
+	}
 }
 
 // TestInitWithConfig_AutoJoin_AlreadyMember verifies that when the agent is
 // already a member of a campfire listed in behavior.auto_join, the entry is
 // silently skipped (no duplicate join, no warning).
 func TestInitWithConfig_AutoJoin_AlreadyMember(t *testing.T) {
-	beaconStr, baseDir := makeFilesystemBeaconString(t)
+	beaconStr, _, baseDir := makeFilesystemBeaconString(t)
 
 	globalDir := t.TempDir()
 	writeInitConfigFile(t,
@@ -532,7 +542,7 @@ present_as = "`+configID+`"
 // store already has a membership record before InitWithConfig is called,
 // the auto-join entry is silently skipped without attempting a join.
 func TestInitWithConfig_AutoJoin_AlreadyMember_PreSeeded(t *testing.T) {
-	_, baseDir := makeFilesystemBeaconString(t)
+	_, _, baseDir := makeFilesystemBeaconString(t)
 
 	// Scan the transport dir to find the campfire ID.
 	entries, err := os.ReadDir(baseDir)
