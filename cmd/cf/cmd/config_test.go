@@ -322,6 +322,7 @@ func TestConfigSet_NamingRoot_GlobalAllowed(t *testing.T) {
 func TestConfigLayers_JSONOutput(t *testing.T) {
 	globalDir, _ := setupConfigTest(t)
 	cfHome = globalDir
+	t.Cleanup(func() { cfHome = "" })
 
 	if err := os.WriteFile(filepath.Join(globalDir, "config.toml"), []byte(`
 [transport]

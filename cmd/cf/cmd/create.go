@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/BurntSushi/toml"
 	"github.com/campfire-net/campfire/pkg/admission"
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
@@ -37,6 +38,7 @@ var createCmd = &cobra.Command{
 		createGitHubRepo, _ := cmd.Flags().GetString("github-repo")
 		createGitHubTokenEnv, _ := cmd.Flags().GetString("github-token-env")
 		createGitHubBaseURL, _ := cmd.Flags().GetString("github-base-url")
+		createNoConfig, _ := cmd.Flags().GetBool("no-config")
 
 		// Load agent identity
 		agentID, err := identity.Load(IdentityPath())
@@ -80,13 +82,17 @@ var createCmd = &cobra.Command{
 		case "p2p-http":
 			return createP2PHTTP(cf, agentID, s, createDescription, createListen, createTLSCert, createTLSKey, createParticipants)
 		default:
-			return createFilesystem(cf, agentID, s, createDescription)
+			return createFilesystemWithNoConfig(cf, agentID, s, createDescription, createNoConfig)
 		}
 	},
 }
 
 func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, description string) error {
-	return createFilesystemWithDesc(cf, agentID, s, fs.DefaultBaseDir(), description)
+	return createFilesystemWithNoConfig(cf, agentID, s, description, false)
+}
+
+func createFilesystemWithNoConfig(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, description string, noConfig bool) error {
+	return createFilesystemWithDescAndConfig(cf, agentID, s, fs.DefaultBaseDir(), description, noConfig)
 }
 
 // createFilesystemWithDesc is the testable core of createFilesystem.
@@ -95,6 +101,12 @@ func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s store
 //   - publishes a beacon to .campfire/beacons/ in the project dir
 //   - sends a campfire:sub-created announcement to the root campfire
 func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, baseDir string, description string) error {
+	return createFilesystemWithDescAndConfig(cf, agentID, s, baseDir, description, false)
+}
+
+// createFilesystemWithDescAndConfig is the core of createFilesystem.
+// noConfig=true skips writing the beacon to .cf/config.toml.
+func createFilesystemWithDescAndConfig(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, baseDir string, description string, noConfig bool) error {
 	// Set up filesystem transport.
 	// Sub-campfires created in a project context still use the base-dir model
 	// (they are not rooted in the project directory — only the swarm root is).
@@ -147,6 +159,22 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 	beaconDir := BeaconDir()
 	if err := beacon.Publish(beaconDir, b); err != nil {
 		return fmt.Errorf("publishing beacon: %w", err)
+	}
+
+	// Config-in-repo: write beacon to .cf/config.toml in the git root (best-effort).
+	if !noConfig {
+		if gitRoot, ok := detectGitRoot(); ok {
+			beaconStr := beaconString(b)
+			configPath := filepath.Join(gitRoot, ".cf", "config.toml")
+			if err := appendAutoJoin(configPath, beaconStr); err != nil {
+				// Non-fatal: warn and continue
+				fmt.Fprintf(os.Stderr, "warning: could not write beacon to .cf/config.toml: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "Wrote beacon to .cf/config.toml (behavior.auto_join). Share this repo — teammates auto-join on first cf command.\n")
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "note: not in a git repo — pass --config-dir to write auto-join config\n")
+		}
 	}
 
 	// Project mode: also publish beacon to .campfire/beacons/ and announce to root campfire
@@ -495,6 +523,114 @@ func buildThresholdShareProvider(s store.Store) cfhttp.ThresholdShareProvider {
 }
 
 
+// detectGitRoot returns the git root directory of the current working directory.
+// Returns ("", false) if not in a git repository.
+func detectGitRoot() (string, bool) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	// Walk up looking for a .git directory or file (worktrees use a file).
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", false
+}
+
+// beaconString encodes a Beacon as a portable "beacon:BASE64" string suitable
+// for behavior.auto_join in config.toml so teammates can resolve the campfire.
+func beaconString(b *beacon.Beacon) string {
+	data, err := cfencoding.Marshal(b)
+	if err != nil {
+		// Fallback: campfire ID hex (join won't resolve transport but records intent).
+		return fmt.Sprintf("%x", b.CampfireID)
+	}
+	return "beacon:" + encodeBase64Std(data)
+}
+
+// encodeBase64Std encodes data using standard base64 (same alphabet as encoding/base64.StdEncoding).
+// Implemented inline to avoid adding an import that goimports may remove if
+// the beacon encoding fails and falls back to hex.
+func encodeBase64Std(data []byte) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	out := make([]byte, (len(data)+2)/3*4)
+	for i, j := 0, 0; i < len(data); i, j = i+3, j+4 {
+		var v uint32
+		v = uint32(data[i]) << 16
+		if i+1 < len(data) {
+			v |= uint32(data[i+1]) << 8
+		}
+		if i+2 < len(data) {
+			v |= uint32(data[i+2])
+		}
+		out[j] = alphabet[v>>18&0x3F]
+		out[j+1] = alphabet[v>>12&0x3F]
+		if i+1 < len(data) {
+			out[j+2] = alphabet[v>>6&0x3F]
+		} else {
+			out[j+2] = '='
+		}
+		if i+2 < len(data) {
+			out[j+3] = alphabet[v&0x3F]
+		} else {
+			out[j+3] = '='
+		}
+	}
+	return string(out)
+}
+
+// appendAutoJoin reads behavior.auto_join from the TOML config at configPath,
+// appends beaconStr if not already present, and writes back.
+// Creates the file and parent directories if needed.
+func appendAutoJoin(configPath, beaconStr string) error {
+	// Read existing list (empty if file absent or field missing).
+	existing := readAutoJoinList(configPath)
+
+	// Deduplicate: don't add if already present.
+	for _, entry := range existing {
+		if entry == beaconStr {
+			return nil // already in list
+		}
+	}
+	existing = append(existing, beaconStr)
+
+	// Serialise as JSON array for configSetValue.
+	jsonArr := `[`
+	for i, e := range existing {
+		if i > 0 {
+			jsonArr += ","
+		}
+		jsonArr += `"` + e + `"`
+	}
+	jsonArr += `]`
+	return configSetValue(configPath, "behavior.auto_join", jsonArr)
+}
+
+// readAutoJoinList returns the current behavior.auto_join list from a TOML file.
+// Returns nil (empty) on any error.
+func readAutoJoinList(configPath string) []string {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+	var raw struct {
+		Behavior struct {
+			AutoJoin []string `toml:"auto_join"`
+		} `toml:"behavior"`
+	}
+	if _, err := toml.Decode(string(data), &raw); err != nil {
+		return nil
+	}
+	return raw.Behavior.AutoJoin
+}
+
 func init() {
 	createCmd.Flags().String("protocol", "", "join protocol: open, invite-only (default: inherit parent campfire, or open if none)")
 	createCmd.Flags().StringSlice("require", nil, "reception requirements (tags)")
@@ -505,6 +641,7 @@ func init() {
 	createCmd.Flags().String("tls-cert", "", "TLS certificate file (PEM) for p2p-http transport; enables https:// endpoint")
 	createCmd.Flags().String("tls-key", "", "TLS private key file (PEM) for p2p-http transport; must be paired with --tls-cert")
 	createCmd.Flags().Uint("participants", 0, "total number of DKG participants for threshold>1 (default: equals threshold)")
+	createCmd.Flags().Bool("no-config", false, "skip writing beacon to .cf/config.toml in git root")
 	// GitHub transport flags.
 	createCmd.Flags().String("github-repo", "", "coordination repository for GitHub transport (owner/repo)")
 	createCmd.Flags().String("github-token-env", "", "name of env var containing GitHub token (default: GITHUB_TOKEN)")

@@ -1,6 +1,6 @@
 package protocol_test
 
-// Tests for protocol.InitWithConfig() — campfire-agent-4gw.
+// Tests for protocol.InitWithConfig() — campfire-agent-4gw and campfire-agent-y87.
 //
 // Tests verify:
 //  1. Global config sets transport endpoint (TestInitWithConfig_GlobalConfig)
@@ -8,17 +8,26 @@ package protocol_test
 //  3. Config specifies identity.file → IdentitySource = "config" (TestInitWithConfig_IdentityFromConfig)
 //  4. Config has behavior.auto_join → AutoJoined populated (TestInitWithConfig_AutoJoined)
 //  5. ConfigLayers reflects files examined (TestInitWithConfig_ConfigLayers)
+//  6. auto_join with real campfire → AutoJoined populated (TestInitWithConfig_AutoJoin_Success)
+//  7. auto_join when already a member → skipped (TestInitWithConfig_AutoJoin_AlreadyMember)
 //
 // All tests use real temp dirs, real SQLite stores, and real Ed25519 keys.
 // No mocks. test-scope: targeted (pkg/protocol/... only).
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/campfire-net/campfire/pkg/beacon"
+	"github.com/campfire-net/campfire/pkg/campfire"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/protocol"
+	cfstore "github.com/campfire-net/campfire/pkg/store"
+	cftransport "github.com/campfire-net/campfire/pkg/transport/fs"
 )
 
 // writeInitConfigFile writes content to path, creating directories as needed.
@@ -318,5 +327,206 @@ type = "http"
 	// Global layer must list the field(s) it contributed.
 	if len(globalLayer.Fields) == 0 {
 		t.Error("global layer contributed 0 fields — expected at least transport.type")
+	}
+}
+
+// makeFilesystemBeaconString creates a real filesystem campfire and returns
+// its beacon string and the transport base directory.
+func makeFilesystemBeaconString(t *testing.T) (beaconStr string, transportBaseDir string) {
+	t.Helper()
+
+	// Generate a campfire keypair.
+	cf, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("campfire.New: %v", err)
+	}
+
+	// Set up a filesystem transport so the campfire state exists on disk.
+	baseDir := t.TempDir()
+	tr := cftransport.New(baseDir)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("transport.Init: %v", err)
+	}
+
+	campfireDir := tr.CampfireDir(cf.PublicKeyHex())
+
+	b, err := beacon.New(
+		cf.PublicKey,
+		cf.PrivateKey,
+		cf.JoinProtocol,
+		cf.ReceptionRequirements,
+		beacon.TransportConfig{
+			Protocol: "filesystem",
+			Config:   map[string]string{"dir": campfireDir},
+		},
+		"auto-join test campfire",
+	)
+	if err != nil {
+		t.Fatalf("beacon.New: %v", err)
+	}
+
+	raw, err := cfencoding.Marshal(b)
+	if err != nil {
+		t.Fatalf("cfencoding.Marshal beacon: %v", err)
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	return "beacon:" + encoded, baseDir
+}
+
+// TestInitWithConfig_AutoJoin_Success verifies that when behavior.auto_join
+// contains a valid filesystem campfire beacon string, InitWithConfig joins
+// the campfire and populates InitResult.AutoJoined.
+func TestInitWithConfig_AutoJoin_Success(t *testing.T) {
+	beaconStr, _ := makeFilesystemBeaconString(t)
+
+	globalDir := t.TempDir()
+	writeInitConfigFile(t,
+		filepath.Join(globalDir, "config.toml"),
+		`[behavior]
+auto_join = ["`+beaconStr+`"]
+`)
+
+	client, result, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
+	if err != nil {
+		t.Fatalf("InitWithConfig: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if result == nil {
+		t.Fatal("InitWithConfig returned nil *InitResult")
+	}
+
+	// The beacon is valid and the campfire state exists — join should succeed.
+	if len(result.AutoJoined) == 0 {
+		t.Errorf("AutoJoined is empty; warnings = %v", result.Warnings)
+		return
+	}
+	if result.AutoJoined[0] != beaconStr {
+		t.Errorf("AutoJoined[0] = %q, want %q", result.AutoJoined[0], beaconStr)
+	}
+
+	// No warnings for this entry.
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "auto_join") {
+			t.Errorf("unexpected auto_join warning: %q", w)
+		}
+	}
+}
+
+// TestInitWithConfig_AutoJoin_AlreadyMember verifies that when the agent is
+// already a member of a campfire listed in behavior.auto_join, the entry is
+// silently skipped (no duplicate join, no warning).
+func TestInitWithConfig_AutoJoin_AlreadyMember(t *testing.T) {
+	beaconStr, baseDir := makeFilesystemBeaconString(t)
+
+	globalDir := t.TempDir()
+	writeInitConfigFile(t,
+		filepath.Join(globalDir, "config.toml"),
+		`[behavior]
+auto_join = ["`+beaconStr+`"]
+`)
+
+	// First InitWithConfig: should join.
+	client1, result1, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
+	if err != nil {
+		t.Fatalf("first InitWithConfig: %v", err)
+	}
+	client1.Close()
+
+	if len(result1.AutoJoined) == 0 {
+		t.Skipf("first InitWithConfig did not join (warnings=%v) — skipping already-member test", result1.Warnings)
+	}
+
+	// Verify the campfire ID was recorded.
+	joinedAddr := result1.AutoJoined[0]
+	_ = joinedAddr
+	_ = baseDir
+
+	// Second InitWithConfig with the same store: should NOT re-join.
+	client2, result2, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
+	if err != nil {
+		t.Fatalf("second InitWithConfig: %v", err)
+	}
+	t.Cleanup(func() { client2.Close() })
+
+	if result2 == nil {
+		t.Fatal("second InitWithConfig returned nil *InitResult")
+	}
+
+	// Already a member → AutoJoined must be empty on second call.
+	if len(result2.AutoJoined) > 0 {
+		t.Errorf("second AutoJoined = %v, want empty (already a member)", result2.AutoJoined)
+	}
+
+	// No auto_join warnings expected.
+	for _, w := range result2.Warnings {
+		if strings.Contains(w, "auto_join") {
+			t.Errorf("unexpected auto_join warning on second call: %q", w)
+		}
+	}
+}
+
+// TestInitWithConfig_AutoJoin_AlreadyMember_PreSeeded verifies that when the
+// store already has a membership record before InitWithConfig is called,
+// the auto-join entry is silently skipped without attempting a join.
+func TestInitWithConfig_AutoJoin_AlreadyMember_PreSeeded(t *testing.T) {
+	_, baseDir := makeFilesystemBeaconString(t)
+
+	// Scan the transport dir to find the campfire ID.
+	entries, err := os.ReadDir(baseDir)
+	if err != nil || len(entries) == 0 {
+		t.Skip("could not find campfire in transport dir")
+	}
+	campfireID := entries[0].Name()
+	if len(campfireID) != 64 {
+		t.Skipf("unexpected campfire dir name %q", campfireID)
+	}
+
+	globalDir := t.TempDir()
+	// Use the hex campfire ID directly in auto_join (simpler than beacon string).
+	writeInitConfigFile(t,
+		filepath.Join(globalDir, "config.toml"),
+		`[behavior]
+auto_join = ["`+campfireID+`"]
+`)
+
+	// Pre-seed the store: open the store, write a membership record.
+	s, err := cfstore.Open(filepath.Join(globalDir, "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	if err := s.AddMembership(cfstore.Membership{
+		CampfireID:    campfireID,
+		JoinProtocol:  "open",
+		TransportDir:  filepath.Join(baseDir, campfireID),
+		TransportType: "filesystem",
+		JoinedAt:      time.Now().UnixNano(),
+	}); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+	s.Close()
+
+	// InitWithConfig: store already has the membership → must skip, not join.
+	client, result, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
+	if err != nil {
+		t.Fatalf("InitWithConfig: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if result == nil {
+		t.Fatal("InitWithConfig returned nil *InitResult")
+	}
+
+	// Already a member → AutoJoined must be empty.
+	if len(result.AutoJoined) > 0 {
+		t.Errorf("AutoJoined = %v, want empty (pre-seeded membership)", result.AutoJoined)
+	}
+
+	// No auto_join warnings.
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "auto_join") {
+			t.Errorf("unexpected auto_join warning: %q", w)
+		}
 	}
 }

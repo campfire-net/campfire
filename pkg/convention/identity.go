@@ -18,6 +18,11 @@ const (
 	// Senders post {"display_name":"..."} payloads tagged identity:profile when
 	// joining or creating a campfire. Display names are UNVERIFIED — treat as hints.
 	IdentityProfileTag = "identity:profile"
+
+	// IdentityRevokedTag is the tag for revocation messages posted by cf home revoke.
+	// Relying parties poll for this tag to learn about revoked presentation claims.
+	// TTL-bounded: default 1h before cache expiry closes the revocation gap.
+	IdentityRevokedTag = "identity:revoked"
 )
 
 // IntroduceMeDeclaration returns the "introduce-me" operation declaration for
