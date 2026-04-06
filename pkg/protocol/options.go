@@ -14,6 +14,10 @@ type options struct {
 	// walkUp controls whether Init walks up parent directories looking for
 	// an existing center campfire. Default is false (walk-up opt-in).
 	walkUp bool
+
+	// configDir, when non-empty, overrides the global config directory used by
+	// InitWithConfig(). Useful for testing or non-standard home layouts.
+	configDir string
 }
 
 // defaultOptions returns the options struct with all defaults applied.
@@ -51,6 +55,16 @@ func WithRemote(url string) Option {
 func WithWalkUp() Option {
 	return func(o *options) {
 		o.walkUp = true
+	}
+}
+
+// WithConfigDir overrides the global config directory used by InitWithConfig().
+// By default InitWithConfig() uses ~/.cf (or the CF_HOME environment variable).
+// This option is an escape hatch for testing and non-standard home layouts.
+// It has no effect on Init(), which takes configDir as an explicit argument.
+func WithConfigDir(dir string) Option {
+	return func(o *options) {
+		o.configDir = dir
 	}
 }
 
