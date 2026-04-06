@@ -701,3 +701,90 @@ endpoint = "https://fake.example.com"
 			cfg.Transport.Endpoint, defaultTransportEndpoint)
 	}
 }
+
+// TestLoadConfig_ScopeCampfiresBareReplaceSentinel_Rejected verifies that a project
+// config using ["!replace"] alone (no entries) cannot empty a global campfire allowlist.
+// An empty allowlist means "allow all", so bare !replace would convert a restrictive
+// allowlist into unrestricted access — this must be rejected (treated as a no-op).
+func TestLoadConfig_ScopeCampfiresBareReplaceSentinel_Rejected(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	projectDir := filepath.Join(tmp, "project")
+
+	globalID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	// Global config defines a campfire allowlist.
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[scope]
+campfires = ["`+globalID+`"]
+`)
+	// Project config uses bare !replace — no entries — attempting to clear the allowlist.
+	writeConfig(t, filepath.Join(projectDir, cfDir, configFilename), `
+[scope]
+campfires = ["!replace"]
+`)
+
+	if err := os.MkdirAll(globalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, _, err := LoadConfig(globalDir, projectDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The global allowlist must be preserved — bare !replace is a no-op.
+	if len(cfg.Scope.Campfires) != 1 {
+		t.Errorf("scope.campfires: got %v, want [%s] (bare !replace must not empty allowlist)", cfg.Scope.Campfires, globalID)
+	}
+	if len(cfg.Scope.Campfires) == 1 && cfg.Scope.Campfires[0] != globalID {
+		t.Errorf("scope.campfires[0]: got %q, want %q", cfg.Scope.Campfires[0], globalID)
+	}
+
+	// Verify the enforcer still denies campfires not in the allowlist.
+	e := NewScopeEnforcer(cfg.Scope)
+	if err := e.CheckCampfire(globalID); err != nil {
+		t.Errorf("allowlisted campfire should be permitted after bare !replace attempt, got: %v", err)
+	}
+	if err := e.CheckCampfire("not-in-list"); err == nil {
+		t.Error("campfire not in allowlist should be denied; bare !replace must not have cleared the list")
+	}
+}
+
+// TestLoadConfig_ScopeCampfiresReplaceWithEntries_Allowed verifies that !replace
+// with at least one entry (["!replace", "id1"]) works correctly — it replaces the
+// existing allowlist with the specified entries.
+func TestLoadConfig_ScopeCampfiresReplaceWithEntries_Allowed(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	projectDir := filepath.Join(tmp, "project")
+
+	globalID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	replacementID := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[scope]
+campfires = ["`+globalID+`"]
+`)
+	writeConfig(t, filepath.Join(projectDir, cfDir, configFilename), `
+[scope]
+campfires = ["!replace", "`+replacementID+`"]
+`)
+
+	if err := os.MkdirAll(globalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, _, err := LoadConfig(globalDir, projectDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// !replace with entries should replace the list with only replacementID.
+	if len(cfg.Scope.Campfires) != 1 {
+		t.Errorf("scope.campfires: got %v, want [%s]", cfg.Scope.Campfires, replacementID)
+	}
+	if len(cfg.Scope.Campfires) == 1 && cfg.Scope.Campfires[0] != replacementID {
+		t.Errorf("scope.campfires[0]: got %q, want %q", cfg.Scope.Campfires[0], replacementID)
+	}
+}
