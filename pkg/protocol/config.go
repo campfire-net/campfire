@@ -529,10 +529,18 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 	}
 
 	// scope.operation_classes — list with optional "!replace" sentinel.
+	// Security: same bare-!replace guard as scope.campfires — a bare ["!replace"] from a
+	// project config would silently discard an inherited operation-class allowlist and
+	// produce unrestricted access. Treat as a no-op when dst already has an allowlist.
 	if len(raw.Scope.OperationClasses) > 0 {
-		merged := mergeList(dst.Scope.OperationClasses, raw.Scope.OperationClasses)
-		dst.Scope.OperationClasses = merged
-		contributed = append(contributed, "scope.operation_classes")
+		if len(dst.Scope.OperationClasses) > 0 && len(raw.Scope.OperationClasses) == 1 && raw.Scope.OperationClasses[0] == "!replace" {
+			// Bare !replace would discard the existing operation-class allowlist.
+			// To replace the list, use ["!replace", "read", ...] with at least one entry.
+		} else {
+			merged := mergeList(dst.Scope.OperationClasses, raw.Scope.OperationClasses)
+			dst.Scope.OperationClasses = merged
+			contributed = append(contributed, "scope.operation_classes")
+		}
 	}
 
 	return contributed, nil

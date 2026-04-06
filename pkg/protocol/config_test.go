@@ -788,3 +788,89 @@ campfires = ["!replace", "`+replacementID+`"]
 		t.Errorf("scope.campfires[0]: got %q, want %q", cfg.Scope.Campfires[0], replacementID)
 	}
 }
+
+// TestLoadConfig_ScopeOperationClassesBareReplaceSentinel_Rejected verifies that a bare
+// ["!replace"] in scope.operation_classes cannot silently discard an inherited allowlist.
+// This mirrors the campfire-allowlist guard and closes the symmetric security gap.
+func TestLoadConfig_ScopeOperationClassesBareReplaceSentinel_Rejected(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	projectDir := filepath.Join(tmp, "project")
+
+	// Global config restricts operations to "read" only.
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[scope]
+operation_classes = ["read"]
+`)
+	// Project config uses bare !replace — attempting to clear the operation class allowlist.
+	writeConfig(t, filepath.Join(projectDir, cfDir, configFilename), `
+[scope]
+operation_classes = ["!replace"]
+`)
+
+	if err := os.MkdirAll(globalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, _, err := LoadConfig(globalDir, projectDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The global allowlist must be preserved — bare !replace is a no-op.
+	if len(cfg.Scope.OperationClasses) != 1 {
+		t.Errorf("scope.operation_classes: got %v, want [read] (bare !replace must not empty allowlist)", cfg.Scope.OperationClasses)
+	}
+	if len(cfg.Scope.OperationClasses) == 1 && cfg.Scope.OperationClasses[0] != "read" {
+		t.Errorf("scope.operation_classes[0]: got %q, want \"read\"", cfg.Scope.OperationClasses[0])
+	}
+
+	// Verify the enforcer still denies operations not in the allowlist.
+	e := NewScopeEnforcer(cfg.Scope)
+	if err := e.CheckOperation("read"); err != nil {
+		t.Errorf("allowed operation should be permitted after bare !replace attempt, got: %v", err)
+	}
+	if err := e.CheckOperation("write"); err == nil {
+		t.Error("write should be denied; bare !replace must not have cleared the operation class allowlist")
+	}
+}
+
+// TestLoadConfig_ScopeOperationClassesReplaceWithEntries_Allowed verifies that
+// ["!replace", "write", "admin"] correctly replaces an inherited operation class list.
+func TestLoadConfig_ScopeOperationClassesReplaceWithEntries_Allowed(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	projectDir := filepath.Join(tmp, "project")
+
+	// Global config allows "read" only.
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[scope]
+operation_classes = ["read"]
+`)
+	// Project config replaces with "write" + "admin".
+	writeConfig(t, filepath.Join(projectDir, cfDir, configFilename), `
+[scope]
+operation_classes = ["!replace", "write", "admin"]
+`)
+
+	if err := os.MkdirAll(globalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, _, err := LoadConfig(globalDir, projectDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// !replace with entries should replace the list with write+admin (no "read").
+	if len(cfg.Scope.OperationClasses) != 2 {
+		t.Errorf("scope.operation_classes: got %v, want [write admin]", cfg.Scope.OperationClasses)
+	}
+	e := NewScopeEnforcer(cfg.Scope)
+	if err := e.CheckOperation("write"); err != nil {
+		t.Errorf("write should be allowed after !replace with entries, got: %v", err)
+	}
+	if err := e.CheckOperation("read"); err == nil {
+		t.Error("read should be denied after !replace with [write admin]")
+	}
+}
