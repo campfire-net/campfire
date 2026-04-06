@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -547,38 +548,7 @@ func beaconString(b *beacon.Beacon) string {
 		// Fallback: campfire ID hex (join won't resolve transport but records intent).
 		return fmt.Sprintf("%x", b.CampfireID)
 	}
-	return "beacon:" + encodeBase64Std(data)
-}
-
-// encodeBase64Std encodes data using standard base64 (same alphabet as encoding/base64.StdEncoding).
-// Implemented inline to avoid adding an import that goimports may remove if
-// the beacon encoding fails and falls back to hex.
-func encodeBase64Std(data []byte) string {
-	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	out := make([]byte, (len(data)+2)/3*4)
-	for i, j := 0, 0; i < len(data); i, j = i+3, j+4 {
-		var v uint32
-		v = uint32(data[i]) << 16
-		if i+1 < len(data) {
-			v |= uint32(data[i+1]) << 8
-		}
-		if i+2 < len(data) {
-			v |= uint32(data[i+2])
-		}
-		out[j] = alphabet[v>>18&0x3F]
-		out[j+1] = alphabet[v>>12&0x3F]
-		if i+1 < len(data) {
-			out[j+2] = alphabet[v>>6&0x3F]
-		} else {
-			out[j+2] = '='
-		}
-		if i+2 < len(data) {
-			out[j+3] = alphabet[v&0x3F]
-		} else {
-			out[j+3] = '='
-		}
-	}
-	return string(out)
+	return "beacon:" + base64.StdEncoding.EncodeToString(data)
 }
 
 // appendAutoJoin reads behavior.auto_join from the TOML config at configPath,
