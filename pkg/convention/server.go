@@ -101,6 +101,9 @@ func NewServer(client *protocol.Client, decl *Declaration) *Server {
 // registered handler. The resolved IdentityInfo is available via req.Identity.
 // Defaults to NoopIdentityResolver{} when not set.
 func (s *Server) WithIdentityResolver(resolver IdentityResolver) *Server {
+	if resolver == nil {
+		resolver = NoopIdentityResolver{}
+	}
 	s.resolver = resolver
 	return s
 }

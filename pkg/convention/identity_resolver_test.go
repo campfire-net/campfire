@@ -125,15 +125,25 @@ func TestCacheIdentityResolver_NilFromCache(t *testing.T) {
 	}
 }
 
-// TestServer_DispatchPopulatesIdentityInfo verifies the full path:
-// WithIdentityResolver → Server.dispatch → req.Identity populated → handler receives it.
-//
-// This test constructs a real Server with a CacheIdentityResolver backed by a
-// VerificationCache that has a verified entry for the caller's public key. It then
-// delivers a message via Server.Serve and asserts that the handler sees
-// req.Identity.IdentityVerified == true and req.Identity.Identity == expectedHomeID.
-func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
-	// Build a minimal two-party campfire environment (server + caller).
+// setupResolverTestEnvFull creates a minimal server+caller pair for resolver integration tests
+// and also returns the callerID so tests can pre-populate the VerificationCache.
+func setupResolverTestEnvFull(t *testing.T) (serverClient *protocol.Client, callerClient *protocol.Client, cfID string, callerID *identity.Identity) {
+	t.Helper()
+	serverClient, callerClient, cfID, callerID = setupResolverTestEnvImpl(t)
+	return
+}
+
+// setupResolverTestEnv creates a minimal server+caller pair for resolver integration tests.
+func setupResolverTestEnv(t *testing.T) (serverClient *protocol.Client, callerClient *protocol.Client, cfID string) {
+	t.Helper()
+	serverClient, callerClient, cfID, _ = setupResolverTestEnvImpl(t)
+	return
+}
+
+// setupResolverTestEnvImpl is the shared implementation for both setupResolverTestEnv variants.
+func setupResolverTestEnvImpl(t *testing.T) (serverClient *protocol.Client, callerClient *protocol.Client, cfID string, callerID *identity.Identity) {
+	t.Helper()
+
 	storeDir := t.TempDir()
 	transportDir := t.TempDir()
 
@@ -141,17 +151,17 @@ func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating server identity: %v", err)
 	}
-	callerID, err := identity.Generate()
+	callerID, err = identity.Generate()
 	if err != nil {
 		t.Fatalf("generating caller identity: %v", err)
 	}
-	cfID, err := identity.Generate()
+	campfireIdentity, err := identity.Generate()
 	if err != nil {
 		t.Fatalf("generating campfire identity: %v", err)
 	}
-	campfireID := cfID.PublicKeyHex()
+	cfID = campfireIdentity.PublicKeyHex()
 
-	cfDir := filepath.Join(transportDir, campfireID)
+	cfDir := filepath.Join(transportDir, cfID)
 	for _, sub := range []string{"members", "messages"} {
 		if err := os.MkdirAll(filepath.Join(cfDir, sub), 0755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
@@ -159,8 +169,8 @@ func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
 	}
 
 	state := &campfire.CampfireState{
-		PublicKey:             cfID.PublicKey,
-		PrivateKey:            cfID.PrivateKey,
+		PublicKey:             campfireIdentity.PublicKey,
+		PrivateKey:            campfireIdentity.PrivateKey,
 		JoinProtocol:          "open",
 		ReceptionRequirements: []string{},
 		CreatedAt:             time.Now().UnixNano(),
@@ -175,7 +185,7 @@ func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
 
 	tr := fs.New(transportDir)
 	for _, id := range []*identity.Identity{serverID, callerID} {
-		if err := tr.WriteMember(campfireID, campfire.MemberRecord{
+		if err := tr.WriteMember(cfID, campfire.MemberRecord{
 			PublicKey: id.PublicKey,
 			JoinedAt:  time.Now().UnixNano(),
 			Role:      campfire.RoleFull,
@@ -197,8 +207,8 @@ func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
 	t.Cleanup(func() { callerStore.Close() })
 
 	membership := store.Membership{
-		CampfireID:    campfireID,
-		TransportDir:  tr.CampfireDir(campfireID),
+		CampfireID:    cfID,
+		TransportDir:  tr.CampfireDir(cfID),
 		JoinProtocol:  "open",
 		Role:          campfire.RoleFull,
 		JoinedAt:      time.Now().UnixNano(),
@@ -212,8 +222,99 @@ func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
 		t.Fatalf("caller store add membership: %v", err)
 	}
 
-	serverClient := protocol.New(serverStore, serverID)
-	callerClient := protocol.New(callerStore, callerID)
+	return protocol.New(serverStore, serverID), protocol.New(callerStore, callerID), cfID, callerID
+}
+
+// TestWithIdentityResolver_Nil_FallsBackToNoop verifies that passing nil to
+// WithIdentityResolver does not leave the server's resolver as nil. The server
+// must dispatch a message without panicking, and the handler must receive
+// IdentityVerified=false (NoopIdentityResolver behaviour).
+func TestWithIdentityResolver_Nil_FallsBackToNoop(t *testing.T) {
+	serverClient, callerClient, campfireID := setupResolverTestEnv(t)
+
+	decl := &convention.Declaration{
+		Convention: "resolver-nil-test",
+		Operation:  "ping",
+		Signing:    "member_key",
+		Args: []convention.ArgDescriptor{
+			{Name: "msg", Type: "string", Required: true, MaxLength: 256},
+		},
+		ProducesTags: []convention.TagRule{
+			{Tag: "resolver-nil-test:ping", Cardinality: "exactly_one"},
+		},
+		Antecedents: "none",
+	}
+
+	var mu sync.Mutex
+	var gotIdentityVerified bool
+	var dispatched bool
+
+	srv := convention.NewServer(serverClient, decl).
+		WithPollInterval(50 * time.Millisecond).
+		WithIdentityResolver(nil) // must not panic; should fall back to NoopIdentityResolver
+
+	srv.RegisterHandler("ping", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotIdentityVerified = req.Identity.IdentityVerified
+		dispatched = true
+		return nil, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srv.Serve(ctx, campfireID) //nolint:errcheck
+	}()
+
+	// Give the server a moment to start polling.
+	time.Sleep(100 * time.Millisecond)
+
+	if _, err := callerClient.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Tags:       []string{"resolver-nil-test:ping"},
+		Payload:    []byte(`{"msg":"hello"}`),
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := dispatched
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !dispatched {
+		t.Fatal("handler was never dispatched — nil resolver may have caused a panic or message was not received")
+	}
+	if gotIdentityVerified {
+		t.Error("expected IdentityVerified=false with NoopIdentityResolver fallback, got true")
+	}
+}
+
+// TestServer_DispatchPopulatesIdentityInfo verifies the full path:
+// WithIdentityResolver → Server.dispatch → req.Identity populated → handler receives it.
+//
+// A real CacheIdentityResolver backed by a VerificationCache with a verified entry
+// for the caller's public key is attached to the Server. After delivering a message,
+// the handler must observe req.Identity.IdentityVerified == true and
+// req.Identity.Identity == expectedHomeID.
+func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
+	serverClient, callerClient, campfireID, callerID := setupResolverTestEnvFull(t)
 
 	// Pre-populate the VerificationCache with a verified entry for the caller.
 	// This simulates the caller having completed identity verification out-of-band.
@@ -236,7 +337,6 @@ func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
 		Antecedents: "none",
 	}
 
-	// Capture the IdentityInfo the handler receives.
 	var mu sync.Mutex
 	var capturedIdentity convention.IdentityInfo
 
@@ -261,10 +361,8 @@ func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
 		srv.Serve(ctx, campfireID) //nolint:errcheck
 	}()
 
-	// Give the server a moment to start polling.
 	time.Sleep(20 * time.Millisecond)
 
-	// Send a convention operation message from the caller.
 	if _, err := callerClient.Send(protocol.SendRequest{
 		CampfireID: campfireID,
 		Payload:    []byte(`{"text":"identity test"}`),
@@ -273,7 +371,6 @@ func TestServer_DispatchPopulatesIdentityInfo(t *testing.T) {
 		t.Fatalf("caller Send: %v", err)
 	}
 
-	// Wait for the server to dispatch the message to the handler.
 	deadline := time.Now().Add(4 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()

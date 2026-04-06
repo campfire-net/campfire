@@ -26,6 +26,10 @@ type IdentityInfo struct {
 // IdentityResolver resolves sender pubkeys to IdentityInfo.
 // The convention Server calls it for each incoming message before dispatching
 // to the registered handler.
+//
+// The trustworthiness of IdentityVerified=true is entirely determined by the
+// resolver implementation. Only use CacheIdentityResolver with a cache populated
+// by the verified echo ceremony (cf home be / homeLinkCmd).
 type IdentityResolver interface {
 	// Resolve returns IdentityInfo for the given sender pubkey.
 	Resolve(senderPubkey ed25519.PublicKey) IdentityInfo
