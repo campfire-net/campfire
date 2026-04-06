@@ -71,6 +71,15 @@ func (c *Client) Join(req JoinRequest) (*JoinResult, error) {
 		return nil, fmt.Errorf("protocol.Client.Join: CampfireID is required")
 	}
 
+	// Resolve beacon strings and cf:// URIs to canonical hex IDs.
+	// For Join, the TransportHint may be used to fill in transport details
+	// when the caller has not provided an explicit transport config.
+	resolvedID, _, resolveErr := resolveInput(req.CampfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("protocol.Client.Join: resolving campfire address: %w", resolveErr)
+	}
+	req.CampfireID = resolvedID
+
 	switch t := req.Transport.(type) {
 	case *P2PHTTPTransport:
 		return c.joinP2PHTTP(req.CampfireID, t)
@@ -371,6 +380,13 @@ func (c *Client) Admit(req AdmitRequest) error {
 	if req.MemberPubKeyHex == "" {
 		return fmt.Errorf("protocol.Client.Admit: MemberPubKeyHex is required")
 	}
+
+	// Resolve beacon strings and cf:// URIs. Hint is discarded — Admit uses stored transport.
+	resolvedID, _, resolveErr := resolveInput(req.CampfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return fmt.Errorf("protocol.Client.Admit: resolving campfire address: %w", resolveErr)
+	}
+	req.CampfireID = resolvedID
 
 	var transportDir string
 	switch t := req.Transport.(type) {

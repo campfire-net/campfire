@@ -83,6 +83,13 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 		return nil, fmt.Errorf("protocol.Client.Read: CampfireID is required")
 	}
 
+	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
+	resolvedID, _, resolveErr := resolveInput(req.CampfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("protocol.Client.Read: resolving campfire address: %w", resolveErr)
+	}
+	req.CampfireID = resolvedID
+
 	// Sync-before-query for filesystem-transport campfires.
 	if !req.SkipSync {
 		if err := c.syncIfFilesystem(req.CampfireID); err != nil {

@@ -18,6 +18,10 @@ type options struct {
 	// configDir, when non-empty, overrides the global config directory used by
 	// InitWithConfig(). Useful for testing or non-standard home layouts.
 	configDir string
+
+	// namingResolver, when non-nil, enables cf:// URI resolution in all SDK
+	// methods. Injected via WithNamingResolver.
+	namingResolver NamingResolver
 }
 
 // defaultOptions returns the options struct with all defaults applied.

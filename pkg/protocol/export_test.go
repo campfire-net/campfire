@@ -13,3 +13,9 @@ func (c *Client) ClientStore() store.Store { return c.store }
 
 // ClientIdentity returns the underlying identity for use in tests.
 func (c *Client) ClientIdentity() *identity.Identity { return c.identity }
+
+// ResolveInputForTest exposes the internal resolveInput function for unit testing.
+// This export is test-only — resolveInput is an internal function.
+func ResolveInputForTest(s string, resolver NamingResolver) (campfireID string, hint *TransportHint, err error) {
+	return resolveInput(s, resolver)
+}
