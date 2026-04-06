@@ -188,7 +188,10 @@ func LoadConfig(globalDir, projectDir string) (*Config, []ConfigLayer, []string,
 		}
 		layers = append(layers, layer)
 		if !layer.Skipped {
-			contributed := mergeLayer(&merged, raw, globalPath, true)
+			contributed, err := mergeLayer(&merged, raw, globalPath, true)
+			if err != nil {
+				return nil, nil, nil, err
+			}
 			layers[len(layers)-1].Fields = contributed
 		}
 	}
@@ -207,7 +210,10 @@ func LoadConfig(globalDir, projectDir string) (*Config, []ConfigLayer, []string,
 		}
 		layers = append(layers, layer)
 		if !layer.Skipped {
-			contributed := mergeLayer(&merged, raw, path, false)
+			contributed, err := mergeLayer(&merged, raw, path, false)
+			if err != nil {
+				return nil, nil, nil, err
+			}
 			layers[len(layers)-1].Fields = contributed
 		}
 	}
@@ -225,7 +231,10 @@ func LoadConfig(globalDir, projectDir string) (*Config, []ConfigLayer, []string,
 				}
 				layers = append(layers, layer)
 				if !layer.Skipped {
-					contributed := mergeLayer(&merged, raw, projectPath, false)
+					contributed, err := mergeLayer(&merged, raw, projectPath, false)
+					if err != nil {
+						return nil, nil, nil, err
+					}
 					layers[len(layers)-1].Fields = contributed
 				}
 			}
@@ -418,10 +427,11 @@ func isOwnerTrusted(dirPath string) bool {
 
 // mergeLayer applies a parsed rawConfig into the current merged Config.
 // isGlobal controls whether naming.root is applied.
-// Returns the list of field names that were contributed by this layer.
-func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) []string {
+// Returns the list of field names that were contributed by this layer, or an
+// error if a field value fails format validation.
+func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]string, error) {
 	if raw == nil {
-		return nil
+		return nil, nil
 	}
 
 	var contributed []string
@@ -441,6 +451,9 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) []strin
 	// identity.present_as — scalar (deepest wins; empty string clears).
 	// Set by cf home be, cleared by cf home be --self.
 	if raw.Identity.PresentAs != "" {
+		if !hexIDRe.MatchString(raw.Identity.PresentAs) {
+			return nil, fmt.Errorf("config %s: identity.present_as %q is not a valid campfire ID (expected 64 lowercase hex characters)", path, raw.Identity.PresentAs)
+		}
 		dst.Identity.PresentAs = raw.Identity.PresentAs
 		contributed = append(contributed, "identity.present_as")
 	}
@@ -522,7 +535,7 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) []strin
 		contributed = append(contributed, "scope.operation_classes")
 	}
 
-	return contributed
+	return contributed, nil
 }
 
 // mergeList merges a new list into an existing list.
