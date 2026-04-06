@@ -109,8 +109,20 @@ func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
 		configOpts = append(configOpts, WithWalkUp())
 	}
 
+	// identity.present_as → WithPresentAs
+	if cfg.Identity.PresentAs != "" {
+		configOpts = append(configOpts, WithPresentAs(cfg.Identity.PresentAs))
+	}
+
 	// Build final option list: config-derived first, then caller overrides.
 	finalOpts := append(configOpts, optFuncs...)
+
+	// Resolve the merged options so we can read fields (e.g. presentAs) that
+	// Init() consumes but does not surface in *InitResult.
+	mergedOpts := defaultOptions()
+	for _, fn := range finalOpts {
+		fn(&mergedOpts)
+	}
 
 	// Delegate to the existing Init() using the globalDir as configDir.
 	client, result, err := Init(globalDir, finalOpts...)
@@ -122,6 +134,7 @@ func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
 	result.ConfigLayers = layers
 	result.IdentitySource = identitySource
 	result.Warnings = append(result.Warnings, cfgWarnings...)
+	result.PresentAs = mergedOpts.presentAs
 
 	// Auto-join campfires listed in behavior.auto_join.
 	for _, addr := range cfg.Behavior.AutoJoin {
@@ -188,6 +201,13 @@ type InitResult struct {
 	// because they appeared in behavior.auto_join in the config cascade.
 	// Populated only by InitWithConfig(); empty when Init() is called directly.
 	AutoJoined []string
+
+	// PresentAs is the campfire ID this agent presents as, sourced from
+	// identity.present_as in the config cascade (or WithPresentAs option).
+	// Empty when not configured. In 0.16 the value is preserved but the
+	// signing behavior it enables is deferred to 0.17+.
+	// Populated only by InitWithConfig(); empty when Init() is called directly.
+	PresentAs string
 }
 
 // Init opens or creates a fully-functional *Client backed by an Ed25519

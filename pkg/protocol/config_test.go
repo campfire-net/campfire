@@ -657,3 +657,47 @@ root = "abc123def456abc123def456abc123def456abc123def456abc123def456abc123"
 		t.Error("naming.root should be set from global config")
 	}
 }
+
+// TestLoadConfig_UntrustedOwner_Skipped verifies that S1 (UID ownership check) causes
+// a layer to be skipped when the containing directory is not owned by the current user.
+// Because creating files owned by a different UID requires root, we inject a fake
+// ownerTrustedFn that always returns false to exercise the code path directly.
+func TestLoadConfig_UntrustedOwner_Skipped(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test owner check as root (root owns everything)")
+	}
+
+	// Inject a fake owner check that always reports untrusted.
+	orig := ownerTrustedFn
+	ownerTrustedFn = func(string) bool { return false }
+	defer func() { ownerTrustedFn = orig }()
+
+	// Create a real config file — the owner check is the only gate we're injecting.
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `[transport]
+endpoint = "https://fake.example.com"
+`)
+
+	cfg, layers, _, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The layer must be skipped with SkipReason == "ownership".
+	skipped := false
+	for _, l := range layers {
+		if l.Skipped && strings.Contains(l.SkipReason, "ownership") {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Errorf("expected S1 ownership skip; layers = %+v", layers)
+	}
+
+	// The endpoint must NOT have been applied (skipped layer contributes nothing).
+	if cfg.Transport.Endpoint != defaultTransportEndpoint {
+		t.Errorf("endpoint = %q, want default %q (untrusted layer must not contribute)",
+			cfg.Transport.Endpoint, defaultTransportEndpoint)
+	}
+}

@@ -22,6 +22,11 @@ type options struct {
 	// namingResolver, when non-nil, enables cf:// URI resolution in all SDK
 	// methods. Injected via WithNamingResolver.
 	namingResolver NamingResolver
+
+	// presentAs, when non-empty, is the campfire ID this agent presents as.
+	// Stored for 0.17+ "present as" signing behavior; 0.16 preserves it but
+	// does not act on it yet.
+	presentAs string
 }
 
 // defaultOptions returns the options struct with all defaults applied.
@@ -81,5 +86,14 @@ func WithConfigDir(dir string) Option {
 func WithNoWalkUp() Option {
 	return func(o *options) {
 		o.walkUp = false
+	}
+}
+
+// WithPresentAs sets the campfire ID this agent presents as. The value is
+// stored in InitResult.PresentAs and forwarded to the client for 0.17+ signing
+// support. In 0.16 the field is preserved but not yet acted upon.
+func WithPresentAs(campfireID string) Option {
+	return func(o *options) {
+		o.presentAs = campfireID
 	}
 }

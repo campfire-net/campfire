@@ -370,9 +370,14 @@ func loadAndCheck(path string, source string, isGlobal bool) (ConfigLayer, *rawC
 	return layer, &raw, nil, nil
 }
 
-// isOwnerTrusted checks that the directory at dirPath is owned by the current UID.
-// On non-Unix platforms, returns true (check is skipped with a warning from the caller).
-func isOwnerTrusted(dirPath string) bool {
+// ownerTrustedFn is the package-level owner-check function used by loadAndCheck.
+// Tests may replace this variable to inject a fake owner check without
+// creating files owned by a different UID (which requires root).
+var ownerTrustedFn = defaultOwnerTrusted
+
+// defaultOwnerTrusted checks that the directory at dirPath is owned by the
+// current UID. On non-Unix platforms it returns true (check is skipped).
+func defaultOwnerTrusted(dirPath string) bool {
 	info, err := os.Stat(dirPath)
 	if err != nil {
 		return false
@@ -383,6 +388,12 @@ func isOwnerTrusted(dirPath string) bool {
 		return true
 	}
 	return stat.Uid == uint32(os.Getuid())
+}
+
+// isOwnerTrusted is the exported-name alias kept for call sites. It delegates
+// to ownerTrustedFn so test injection works transparently.
+func isOwnerTrusted(dirPath string) bool {
+	return ownerTrustedFn(dirPath)
 }
 
 // mergeLayer applies a parsed rawConfig into the current merged Config.
