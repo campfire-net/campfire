@@ -602,15 +602,11 @@ func appendAutoJoin(configPath, beaconStr string) error {
 	existing = append(existing, beaconStr)
 
 	// Serialise as JSON array for configSetValue.
-	jsonArr := `[`
-	for i, e := range existing {
-		if i > 0 {
-			jsonArr += ","
-		}
-		jsonArr += `"` + e + `"`
+	data, err := json.Marshal(existing)
+	if err != nil {
+		return fmt.Errorf("serialising auto_join list: %w", err)
 	}
-	jsonArr += `]`
-	return configSetValue(configPath, "behavior.auto_join", jsonArr)
+	return configSetValue(configPath, "behavior.auto_join", string(data))
 }
 
 // readAutoJoinList returns the current behavior.auto_join list from a TOML file.
