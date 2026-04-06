@@ -41,7 +41,11 @@ func TestFindFulfillment(t *testing.T) {
 	}
 	defer s.Close()
 
-	campfireID := "await-test-campfire"
+	cfID, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireID := cfID.PublicKeyHex()
 	id, err := identity.Generate()
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +115,11 @@ func TestFindFulfillmentWrongTarget(t *testing.T) {
 	}
 	defer s.Close()
 
-	campfireID := "await-wrong-target"
+	cfID2, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireID := cfID2.PublicKeyHex()
 	id, err := identity.Generate()
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +180,11 @@ func TestAwaitCmdExists(t *testing.T) {
 // TestAwaitTimeout verifies that await exits with error on timeout.
 func TestAwaitTimeout(t *testing.T) {
 	tmpDir := t.TempDir()
-	campfireID := "await-timeout-test"
+	cfID3, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	campfireID := cfID3.PublicKeyHex()
 
 	s, err := store.Open(filepath.Join(tmpDir, "store.db"))
 	if err != nil {
