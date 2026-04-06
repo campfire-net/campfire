@@ -57,6 +57,14 @@ func (c *Client) Disband(campfireID string) error {
 	}
 	campfireID = resolvedID
 
+	// Scope enforcement: campfire allowlist + admin operation class.
+	if err := c.checkCampfire(campfireID); err != nil {
+		return err
+	}
+	if err := c.checkOperation("admin"); err != nil {
+		return err
+	}
+
 	// Look up the caller's membership to find the transport dir and verify
 	// creator status.
 	m, err := c.store.GetMembership(campfireID)

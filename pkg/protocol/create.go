@@ -70,6 +70,12 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 		return nil, fmt.Errorf("identity required to create a campfire")
 	}
 
+	// Scope enforcement: admin operation class. No campfire ID to check yet —
+	// Create generates a new campfire, so there is no pre-existing ID to allowlist.
+	if err := c.checkOperation("admin"); err != nil {
+		return nil, err
+	}
+
 	if req.JoinProtocol == "" {
 		req.JoinProtocol = "open"
 	}

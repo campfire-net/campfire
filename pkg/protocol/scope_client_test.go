@@ -148,6 +148,98 @@ func TestClient_ScopeEnforcer_AdminOperations(t *testing.T) {
 	}
 }
 
+// TestClient_ScopeEnforcer_AwaitBlockedByScope verifies that Await() is subject
+// to scope enforcement — calling it with a campfire not in the allowlist returns
+// ErrScopeDenied before any store or transport access.
+func TestClient_ScopeEnforcer_AwaitBlockedByScope(t *testing.T) {
+	agentID, s, transportDir := setupTestEnv(t)
+	allowedID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
+	blockedID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
+
+	client := protocol.New(s, agentID)
+	client.SetScope(protocol.ScopeConfig{
+		Campfires: []string{allowedID},
+	})
+
+	// Await on a blocked campfire should return ErrScopeDenied immediately.
+	_, err := client.Await(t.Context(), protocol.AwaitRequest{
+		CampfireID:  blockedID,
+		TargetMsgID: "some-msg-id",
+	})
+	if err == nil {
+		t.Fatal("Await on blocked campfire: expected ErrScopeDenied, got nil")
+	}
+	if !errors.Is(err, protocol.ErrScopeDenied) {
+		t.Errorf("Await on blocked campfire: expected errors.Is(err, ErrScopeDenied), got: %v", err)
+	}
+}
+
+// TestClient_ScopeEnforcer_AwaitBlockedByOperation verifies that Await() is
+// denied when the operation class "read" is not in the scope allowlist.
+func TestClient_ScopeEnforcer_AwaitBlockedByOperation(t *testing.T) {
+	agentID, s, transportDir := setupTestEnv(t)
+	campfireID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
+
+	client := protocol.New(s, agentID)
+	client.SetScope(protocol.ScopeConfig{
+		OperationClasses: []string{"write"},
+	})
+
+	_, err := client.Await(t.Context(), protocol.AwaitRequest{
+		CampfireID:  campfireID,
+		TargetMsgID: "some-msg-id",
+	})
+	if err == nil {
+		t.Fatal("Await with write-only scope: expected ErrScopeDenied, got nil")
+	}
+	if !errors.Is(err, protocol.ErrScopeDenied) {
+		t.Errorf("Await with write-only scope: expected errors.Is(err, ErrScopeDenied), got: %v", err)
+	}
+}
+
+// TestClient_ScopeEnforcer_DisbandBlockedByScope verifies that Disband() returns
+// ErrScopeDenied when the operation class restricts admin operations.
+func TestClient_ScopeEnforcer_DisbandBlockedByScope(t *testing.T) {
+	agentID, s, transportDir := setupTestEnv(t)
+	campfireID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
+
+	// Restrict to read-only (no admin).
+	client := protocol.New(s, agentID)
+	client.SetScope(protocol.ScopeConfig{
+		OperationClasses: []string{"read"},
+	})
+
+	err := client.Disband(campfireID)
+	if err == nil {
+		t.Fatal("Disband with read-only scope: expected ErrScopeDenied, got nil")
+	}
+	if !errors.Is(err, protocol.ErrScopeDenied) {
+		t.Errorf("Disband with read-only scope: expected errors.Is(err, ErrScopeDenied), got: %v", err)
+	}
+}
+
+// TestClient_ScopeEnforcer_CreateBlockedByScope verifies that Create() returns
+// ErrScopeDenied when the operation class restricts admin operations.
+func TestClient_ScopeEnforcer_CreateBlockedByScope(t *testing.T) {
+	agentID, s, transportDir := setupTestEnv(t)
+
+	// Restrict to read-only (no admin).
+	client := protocol.New(s, agentID)
+	client.SetScope(protocol.ScopeConfig{
+		OperationClasses: []string{"read"},
+	})
+
+	_, err := client.Create(protocol.CreateRequest{
+		Transport: protocol.FilesystemTransport{Dir: transportDir},
+	})
+	if err == nil {
+		t.Fatal("Create with read-only scope: expected ErrScopeDenied, got nil")
+	}
+	if !errors.Is(err, protocol.ErrScopeDenied) {
+		t.Errorf("Create with read-only scope: expected errors.Is(err, ErrScopeDenied), got: %v", err)
+	}
+}
+
 // TestClient_ScopeEnforcer_MembersBlockedByScope verifies that Members() is
 // subject to scope enforcement (campfire allowlist + read op class).
 func TestClient_ScopeEnforcer_MembersBlockedByScope(t *testing.T) {
