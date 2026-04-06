@@ -49,6 +49,14 @@ func (c *Client) Members(campfireID string) ([]MemberRecord, error) {
 	}
 	campfireID = resolvedID
 
+	// Scope enforcement: campfire allowlist + read operation class.
+	if err := c.checkCampfire(campfireID); err != nil {
+		return nil, err
+	}
+	if err := c.checkOperation("read"); err != nil {
+		return nil, err
+	}
+
 	m, err := c.store.GetMembership(campfireID)
 	if err != nil {
 		return nil, fmt.Errorf("protocol.Client.Members: querying membership: %w", err)
@@ -121,6 +129,14 @@ func (c *Client) Leave(campfireID string) error {
 		return fmt.Errorf("protocol.Client.Leave: resolving campfire address: %w", resolveErr)
 	}
 	campfireID = resolvedID
+
+	// Scope enforcement: campfire allowlist + admin operation class.
+	if err := c.checkCampfire(campfireID); err != nil {
+		return err
+	}
+	if err := c.checkOperation("admin"); err != nil {
+		return err
+	}
 
 	// Check that the caller is currently a member (store record present).
 	m, err := c.store.GetMembership(campfireID)

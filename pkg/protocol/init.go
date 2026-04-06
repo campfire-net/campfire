@@ -136,6 +136,12 @@ func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
 	result.Warnings = append(result.Warnings, cfgWarnings...)
 	result.PresentAs = mergedOpts.presentAs
 
+	// Apply scope config from the merged config cascade when no WithScope was
+	// provided. WithScope wins because it flows through Init() via opts.scope.
+	if len(mergedOpts.scope.Campfires) == 0 && len(mergedOpts.scope.OperationClasses) == 0 {
+		client.applyEnforcer(cfg.Scope)
+	}
+
 	// Auto-join campfires listed in behavior.auto_join.
 	for _, addr := range cfg.Behavior.AutoJoin {
 		joined, warn := client.autoJoinEntry(addr)
@@ -277,6 +283,7 @@ func Init(configDir string, optFuncs ...Option) (*Client, *InitResult, error) {
 	c := New(s, id)
 	c.opts = opts
 	c.configDir = configDir
+	c.applyEnforcer(opts.scope)
 
 	// Collect WalkUpPath when walk-up is enabled.
 	if opts.walkUp {

@@ -94,12 +94,54 @@ type Client struct {
 	opts          options
 	configDir     string            // set by Init(); empty when using New() directly
 	httpTransport *cfhttp.Transport // optional; enables PollBroker-driven Await in HTTP mode
+	enforcer      *ScopeEnforcer    // nil when no scope restrictions apply
 }
 
 // New creates a Client wrapping the given store.
 // identity may be nil for read-only clients that do not need to sign messages.
 func New(s store.Store, id *identity.Identity) *Client {
 	return &Client{store: s, identity: id, opts: defaultOptions()}
+}
+
+// SetScope installs (or replaces) the scope enforcer on the client.
+// When cfg.Campfires and cfg.OperationClasses are both empty, the enforcer is
+// removed (unrestricted access). Designed for clients created with New() that
+// need scope enforcement applied after construction.
+func (c *Client) SetScope(cfg ScopeConfig) {
+	if len(cfg.Campfires) == 0 && len(cfg.OperationClasses) == 0 {
+		c.enforcer = nil
+		return
+	}
+	c.enforcer = NewScopeEnforcer(cfg)
+}
+
+// applyEnforcer installs a ScopeEnforcer on the client from cfg.
+// Called by Init() and InitWithConfig() after building the options.
+// Only installs if cfg has any restrictions — an all-empty ScopeConfig means
+// unrestricted, so no enforcer is installed (nil enforcer = allow all).
+func (c *Client) applyEnforcer(cfg ScopeConfig) {
+	if len(cfg.Campfires) == 0 && len(cfg.OperationClasses) == 0 {
+		return // unrestricted
+	}
+	c.enforcer = NewScopeEnforcer(cfg)
+}
+
+// checkCampfire checks the campfire ID against the scope enforcer.
+// Returns nil when no enforcer is set (unrestricted).
+func (c *Client) checkCampfire(campfireID string) error {
+	if c.enforcer == nil {
+		return nil
+	}
+	return c.enforcer.CheckCampfire(campfireID)
+}
+
+// checkOperation checks the operation class against the scope enforcer.
+// Returns nil when no enforcer is set (unrestricted).
+func (c *Client) checkOperation(opClass string) error {
+	if c.enforcer == nil {
+		return nil
+	}
+	return c.enforcer.CheckOperation(opClass)
 }
 
 // WithHTTPTransport attaches an HTTP transport to the client, enabling
@@ -144,6 +186,14 @@ func (c *Client) Send(req SendRequest) (*message.Message, error) {
 		return nil, fmt.Errorf("resolving campfire address: %w", err)
 	}
 	req.CampfireID = resolvedID
+
+	// Scope enforcement: campfire allowlist + write operation class.
+	if err := c.checkCampfire(req.CampfireID); err != nil {
+		return nil, err
+	}
+	if err := c.checkOperation("write"); err != nil {
+		return nil, err
+	}
 
 	m, err := c.store.GetMembership(req.CampfireID)
 	if err != nil {

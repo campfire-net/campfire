@@ -27,6 +27,10 @@ type options struct {
 	// Stored for 0.17+ "present as" signing behavior; 0.16 preserves it but
 	// does not act on it yet.
 	presentAs string
+
+	// scope, when set (non-zero Campfires or OperationClasses), restricts which
+	// campfires and operation classes this client may access.
+	scope ScopeConfig
 }
 
 // defaultOptions returns the options struct with all defaults applied.
@@ -95,5 +99,14 @@ func WithNoWalkUp() Option {
 func WithPresentAs(campfireID string) Option {
 	return func(o *options) {
 		o.presentAs = campfireID
+	}
+}
+
+// WithScope restricts this client to the campfires and operation classes in cfg.
+// When cfg.Campfires and cfg.OperationClasses are both empty, no restriction is
+// applied (unrestricted access — same as not calling WithScope at all).
+func WithScope(cfg ScopeConfig) Option {
+	return func(o *options) {
+		o.scope = cfg
 	}
 }
