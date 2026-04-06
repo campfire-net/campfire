@@ -3,10 +3,14 @@ package protocol
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// validCampfireID is a valid 64-character lowercase hex string for use in tests.
+const validCampfireID = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 
 // genKey generates a fresh Ed25519 key pair for testing.
 func genKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
@@ -23,7 +27,7 @@ func genKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 func TestVerificationCache_SetAndGet(t *testing.T) {
 	c := NewVerificationCache()
 	pub, _ := genKey(t)
-	homeID := "abc123campfire"
+	homeID := validCampfireID
 
 	c.Set(pub, homeID, DefaultVerificationTTL)
 
@@ -42,7 +46,7 @@ func TestVerificationCache_Expired(t *testing.T) {
 	pub, _ := genKey(t)
 
 	// Set with a TTL that has already elapsed.
-	c.Set(pub, "home-campfire", -1*time.Millisecond)
+	c.Set(pub, validCampfireID, -1*time.Millisecond)
 
 	got, ok := c.Get(pub)
 	if ok {
@@ -58,7 +62,7 @@ func TestVerificationCache_Invalidate(t *testing.T) {
 	c := NewVerificationCache()
 	pub, _ := genKey(t)
 
-	c.Set(pub, "some-home", DefaultVerificationTTL)
+	c.Set(pub, validCampfireID, DefaultVerificationTTL)
 	c.Invalidate(pub)
 
 	_, ok := c.Get(pub)
@@ -73,15 +77,17 @@ func TestVerificationCache_Replace(t *testing.T) {
 	c := NewVerificationCache()
 	pub, _ := genKey(t)
 
-	c.Set(pub, "first-home", DefaultVerificationTTL)
-	c.Set(pub, "second-home", DefaultVerificationTTL)
+	firstID := strings.Repeat("1", 64)
+	secondID := strings.Repeat("2", 64)
+	c.Set(pub, firstID, DefaultVerificationTTL)
+	c.Set(pub, secondID, DefaultVerificationTTL)
 
 	got, ok := c.Get(pub)
 	if !ok {
 		t.Fatal("Get returned ok=false, want ok=true")
 	}
-	if got != "second-home" {
-		t.Fatalf("Get returned %q, want %q", got, "second-home")
+	if got != secondID {
+		t.Fatalf("Get returned %q, want %q", got, secondID)
 	}
 }
 
@@ -110,7 +116,7 @@ func TestVerificationCache_ConcurrentAccess(t *testing.T) {
 				pub := keys[i%len(keys)]
 				switch i % 3 {
 				case 0:
-					c.Set(pub, "home-"+string(rune('A'+id%26)), DefaultVerificationTTL)
+					c.Set(pub, validCampfireID, DefaultVerificationTTL)
 				case 1:
 					c.Get(pub) //nolint:errcheck
 				case 2:
@@ -139,7 +145,7 @@ func TestVerificationCache_NilPubkeyPanics(t *testing.T) {
 	}
 
 	assertPanics("Get(nil)", func() { c.Get(nil) })
-	assertPanics("Set(nil, ...)", func() { c.Set(nil, "some-id", time.Minute) })
+	assertPanics("Set(nil, ...)", func() { c.Set(nil, validCampfireID, time.Minute) })
 	assertPanics("Invalidate(nil)", func() { c.Invalidate(nil) })
 }
 
@@ -149,10 +155,67 @@ func TestVerificationCache_ZeroTTL(t *testing.T) {
 	c := NewVerificationCache()
 	pub, _ := genKey(t)
 
-	c.Set(pub, "home-campfire", 0)
+	c.Set(pub, validCampfireID, 0)
 
 	_, ok := c.Get(pub)
 	if ok {
 		t.Fatal("Get returned ok=true with TTL=0, want ok=false (immediate expiry)")
 	}
+}
+
+// TestVerificationCache_TTLClamped verifies that a TTL exceeding MaxVerificationTTL
+// is silently clamped: the entry is stored and retrievable immediately.
+func TestVerificationCache_TTLClamped(t *testing.T) {
+	c := NewVerificationCache()
+	pub, _ := genKey(t)
+
+	// Supply a TTL far beyond the maximum.
+	c.Set(pub, validCampfireID, 24*time.Hour)
+
+	// The entry must still be present immediately after Set.
+	id, ok := c.Get(pub)
+	if !ok {
+		t.Fatal("expected entry to be present after TTL clamp")
+	}
+	if id != validCampfireID {
+		t.Fatalf("Get returned %q, want %q", id, validCampfireID)
+	}
+}
+
+// TestVerificationCache_InvalidCampfireIDPanics verifies that Set panics when
+// given a homeCampfireID that is not a 64-character lowercase hex string.
+func TestVerificationCache_InvalidCampfireIDPanics(t *testing.T) {
+	c := NewVerificationCache()
+	pub, _ := genKey(t)
+
+	assertPanics := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("%s: expected panic, got none", name)
+			}
+		}()
+		fn()
+	}
+
+	// Non-hex string should panic.
+	assertPanics("non-hex ID", func() {
+		c.Set(pub, "not-a-valid-campfire-id", time.Minute)
+	})
+	// Upper-case hex must panic (must be lowercase).
+	assertPanics("uppercase hex ID", func() {
+		c.Set(pub, strings.Repeat("A", 64), time.Minute)
+	})
+	// Too short should panic.
+	assertPanics("short ID", func() {
+		c.Set(pub, strings.Repeat("a", 32), time.Minute)
+	})
+	// Too long should panic.
+	assertPanics("long ID", func() {
+		c.Set(pub, strings.Repeat("a", 65), time.Minute)
+	})
+	// Empty string should panic.
+	assertPanics("empty ID", func() {
+		c.Set(pub, "", time.Minute)
+	})
 }
