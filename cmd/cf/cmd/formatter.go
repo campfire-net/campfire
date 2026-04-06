@@ -16,7 +16,7 @@ import (
 // sessionProfileCache is an in-memory display name cache for the current session.
 // It is populated from identity:profile messages encountered during read operations.
 // Display names are UNVERIFIED — self-declared by senders.
-var sessionProfileCache = protocol.NewProfileCache()
+var sessionProfileCache = protocol.NewSessionProfileCache()
 
 // validFieldNames is the set of field names accepted by --fields.
 var validFieldNames = map[string]bool{

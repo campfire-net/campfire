@@ -8,7 +8,7 @@ import (
 )
 
 func TestProfileCache_SetAndLookup(t *testing.T) {
-	c := NewProfileCache()
+	c := NewSessionProfileCache()
 	c.Set("abc123", "Alice")
 	if got := c.Lookup("abc123"); got != "Alice" {
 		t.Errorf("Lookup returned %q, want %q", got, "Alice")
@@ -16,14 +16,14 @@ func TestProfileCache_SetAndLookup(t *testing.T) {
 }
 
 func TestProfileCache_LookupMiss(t *testing.T) {
-	c := NewProfileCache()
+	c := NewSessionProfileCache()
 	if got := c.Lookup("notfound"); got != "" {
 		t.Errorf("expected empty string for miss, got %q", got)
 	}
 }
 
 func TestProfileCache_SetEmptySkipped(t *testing.T) {
-	c := NewProfileCache()
+	c := NewSessionProfileCache()
 	c.Set("", "Alice")  // empty pubkey — ignored
 	c.Set("abc", "")    // empty name — ignored
 	if got := c.Lookup("abc"); got != "" {
@@ -32,7 +32,7 @@ func TestProfileCache_SetEmptySkipped(t *testing.T) {
 }
 
 func TestProfileCache_LoadFromMessages(t *testing.T) {
-	c := NewProfileCache()
+	c := NewSessionProfileCache()
 
 	payload, _ := json.Marshal(map[string]string{"display_name": "Bob"})
 	msgs := []Message{
@@ -58,7 +58,7 @@ func TestProfileCache_LoadFromMessages(t *testing.T) {
 }
 
 func TestProfileCache_LoadFromMessages_InvalidPayloadSkipped(t *testing.T) {
-	c := NewProfileCache()
+	c := NewSessionProfileCache()
 	msgs := []Message{
 		{
 			Sender:  "pubkey003",
@@ -117,7 +117,7 @@ func TestLoadProfile_InvalidJSON(t *testing.T) {
 }
 
 func TestProfileCache_Overwrite(t *testing.T) {
-	c := NewProfileCache()
+	c := NewSessionProfileCache()
 	c.Set("abc", "Alice")
 	c.Set("abc", "Alice2")
 	if got := c.Lookup("abc"); got != "Alice2" {
