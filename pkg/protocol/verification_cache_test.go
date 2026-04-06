@@ -123,6 +123,26 @@ func TestVerificationCache_ConcurrentAccess(t *testing.T) {
 	// No assertions — the race detector is the oracle.
 }
 
+// TestVerificationCache_NilPubkeyPanics verifies that passing a nil pubkey to
+// any cache method panics rather than silently colliding on the "" map key.
+func TestVerificationCache_NilPubkeyPanics(t *testing.T) {
+	c := NewVerificationCache()
+
+	assertPanics := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("%s: expected panic, got none", name)
+			}
+		}()
+		fn()
+	}
+
+	assertPanics("Get(nil)", func() { c.Get(nil) })
+	assertPanics("Set(nil, ...)", func() { c.Set(nil, "some-id", time.Minute) })
+	assertPanics("Invalidate(nil)", func() { c.Invalidate(nil) })
+}
+
 // TestVerificationCache_ZeroTTL verifies that TTL=0 means immediate expiry:
 // Get always misses.
 func TestVerificationCache_ZeroTTL(t *testing.T) {
