@@ -268,6 +268,55 @@ type = "fs"
 	}
 }
 
+// TestConfigSet_NamingRoot_ProjectRejected verifies that setting naming.root in a
+// project/local config file returns an error (fail-fast before write).
+// naming.root is global-only (LoadConfig S6 check); cf config set should reject
+// the write rather than writing a value that will fail at read time.
+func TestConfigSet_NamingRoot_ProjectRejected(t *testing.T) {
+	globalDir, projectDir := setupConfigTest(t)
+	cfHome = globalDir
+
+	projectConfigPath := filepath.Join(projectDir, ".cf", "config.toml")
+
+	err := configSetValue(projectConfigPath, "naming.root", "c1a62854df1b")
+	if err == nil {
+		t.Fatal("expected error when setting naming.root in project config, got nil")
+	}
+	if !strings.Contains(err.Error(), "naming.root") {
+		t.Errorf("error %q does not mention 'naming.root'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "global") {
+		t.Errorf("error %q does not mention 'global'", err.Error())
+	}
+
+	// The file must not have been written (fail-fast: no partial writes).
+	if _, statErr := os.Stat(projectConfigPath); statErr == nil {
+		t.Error("project config file was written even though the operation should have been rejected")
+	}
+}
+
+// TestConfigSet_NamingRoot_GlobalAllowed verifies that naming.root IS allowed
+// in the global config file.
+func TestConfigSet_NamingRoot_GlobalAllowed(t *testing.T) {
+	globalDir, _ := setupConfigTest(t)
+	cfHome = globalDir
+
+	globalConfigPath := filepath.Join(globalDir, "config.toml")
+
+	err := configSetValue(globalConfigPath, "naming.root", "c1a62854df1b")
+	if err != nil {
+		t.Fatalf("expected no error when setting naming.root in global config, got: %v", err)
+	}
+
+	data, err := os.ReadFile(globalConfigPath)
+	if err != nil {
+		t.Fatalf("reading global config: %v", err)
+	}
+	if !strings.Contains(string(data), "naming") {
+		t.Errorf("expected 'naming' section in global config, got:\n%s", data)
+	}
+}
+
 // TestConfigLayers_JSONOutput verifies that configFieldsWithOrigin returns
 // valid JSON-serializable output.
 func TestConfigLayers_JSONOutput(t *testing.T) {

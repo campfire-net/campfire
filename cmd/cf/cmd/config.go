@@ -296,6 +296,15 @@ func configSetValue(targetPath, key, value string) error {
 		return fmt.Errorf("config key %q is immutable; scope is set by the operator, not by cf config set", key)
 	}
 
+	// Reject naming.root in non-global (project/local) config files.
+	// naming.root may only appear in the global config (~/.cf/config.toml).
+	// LoadConfig's S6 check rejects it at read time; fail fast here at write time
+	// to give clear feedback before the file is written.
+	globalConfigPath := filepath.Join(CFHome(), "config.toml")
+	if key == "naming.root" && targetPath != globalConfigPath {
+		return fmt.Errorf("naming.root may only be set in the global config. Use --global flag.")
+	}
+
 	// Read existing TOML or start with empty map.
 	raw := make(map[string]interface{})
 	if data, err := os.ReadFile(targetPath); err == nil {
