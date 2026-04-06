@@ -1,6 +1,9 @@
 package protocol
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -144,10 +147,48 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 		out[i] = MessageFromRecord(r)
 	}
 
+	// Populate the disk-persisting profile cache from identity:profile messages.
+	// Display names are self-declared (unverified) — we persist them as learned-at
+	// hints only, never for access control decisions.
+	if c.profileCache != nil {
+		for _, m := range out {
+			if !hasTag(m.Tags, "identity:profile") {
+				continue
+			}
+			if m.Sender == "" {
+				continue
+			}
+			var payload struct {
+				DisplayName string `json:"display_name"`
+			}
+			if err := json.Unmarshal(m.Payload, &payload); err != nil || payload.DisplayName == "" {
+				continue
+			}
+			pubBytes, decErr := hex.DecodeString(m.Sender)
+			if decErr != nil || len(pubBytes) != ed25519.PublicKeySize {
+				continue
+			}
+			// Persist best-effort: errors are logged but do not fail Read().
+			if setErr := c.profileCache.Set(ed25519.PublicKey(pubBytes), payload.DisplayName); setErr != nil {
+				log.Printf("campfire: profileCache.Set(%s): %v", m.Sender[:8], setErr)
+			}
+		}
+	}
+
 	return &ReadResult{
 		Messages:     out,
 		MaxTimestamp: maxTS,
 	}, nil
+}
+
+// hasTag reports whether tags contains the given tag.
+func hasTag(tags []string, tag string) bool {
+	for _, t := range tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // syncIfFilesystem syncs messages from the filesystem transport into the store

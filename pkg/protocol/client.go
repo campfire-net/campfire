@@ -95,6 +95,14 @@ type Client struct {
 	configDir     string            // set by Init(); empty when using New() directly
 	httpTransport *cfhttp.Transport // optional; enables PollBroker-driven Await in HTTP mode
 	enforcer      *ScopeEnforcer    // nil when no scope restrictions apply
+	profileCache  *ProfileCache     // disk-persisting display name cache; nil when using New() directly
+}
+
+// ProfileCache returns the disk-persisting display name cache for this client.
+// Returns nil when the client was created via New() rather than Init().
+// Callers may use Get() to look up display names learned from identity:profile messages.
+func (c *Client) ProfileCache() *ProfileCache {
+	return c.profileCache
 }
 
 // New creates a Client wrapping the given store.

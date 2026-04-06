@@ -284,6 +284,7 @@ func Init(configDir string, optFuncs ...Option) (*Client, *InitResult, error) {
 	c.opts = opts
 	c.configDir = configDir
 	c.applyEnforcer(opts.scope)
+	c.profileCache = NewProfileCache(configDir)
 
 	// Collect WalkUpPath when walk-up is enabled.
 	if opts.walkUp {
