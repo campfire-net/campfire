@@ -202,4 +202,10 @@ func TestProfileCache_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 	// No assertions — the race detector is the oracle.
+
+	// Verify no temp files were orphaned during concurrent Set() calls.
+	orphans, _ := filepath.Glob(dir + "/*.tmp")
+	if len(orphans) > 0 {
+		t.Errorf("orphaned temp files after concurrent Set(): %v", orphans)
+	}
 }
