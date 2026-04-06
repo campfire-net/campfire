@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -60,6 +61,25 @@ func TestProfileCache_Persists(t *testing.T) {
 	}
 	if name != "Bob" {
 		t.Fatalf("Get returned %q, want %q", name, "Bob")
+	}
+
+	// Verify atomic write: no temp files should remain after Set completes.
+	tmpFiles, err := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	if err != nil {
+		t.Fatalf("Glob for temp files: %v", err)
+	}
+	if len(tmpFiles) > 0 {
+		t.Errorf("temp files remain after Set: %v", tmpFiles)
+	}
+
+	// Verify the written file is valid JSON that round-trips correctly.
+	rawBytes, err := os.ReadFile(filepath.Join(dir, "profiles.json"))
+	if err != nil {
+		t.Fatalf("reading profiles.json: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(rawBytes, &parsed); err != nil {
+		t.Errorf("profiles.json is not valid JSON: %v\ncontent: %s", err, rawBytes)
 	}
 }
 
