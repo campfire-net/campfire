@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -57,6 +58,22 @@ func populateProfileCacheFromStore(s store.Store, campfireID string) {
 		msgs[i] = protocol.MessageFromRecord(r)
 	}
 	sessionProfileCache.LoadFromMessages(msgs)
+}
+
+// loadPresentAs returns the identity.present_as value from the config cascade,
+// or "" if not configured or the config cannot be loaded. Best-effort — errors
+// are silently ignored so display callers always get a usable (possibly empty) value.
+func loadPresentAs() string {
+	cfHome := CFHome()
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = cfHome
+	}
+	cfg, _, _, err := protocol.LoadConfig(cfHome, cwd)
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return cfg.Identity.PresentAs
 }
 
 // maybeSendProfileMessage auto-sends an identity:profile message to campfireID
