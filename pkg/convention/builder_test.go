@@ -126,6 +126,36 @@ func TestSimpleConvention_PassesLint(t *testing.T) {
 	}
 }
 
+func TestSimpleConvention_WithProducesTag(t *testing.T) {
+	decl := SimpleConvention("status", "1.0", "report", "Report agent status").
+		ProducesTag("status", "exactly_one").
+		Build()
+
+	if len(decl.ProducesTags) != 1 {
+		t.Fatalf("ProducesTags: got %d, want 1", len(decl.ProducesTags))
+	}
+	if decl.ProducesTags[0].Tag != "status" {
+		t.Errorf("ProducesTags[0].Tag: got %q, want %q", decl.ProducesTags[0].Tag, "status")
+	}
+	if decl.ProducesTags[0].Cardinality != "exactly_one" {
+		t.Errorf("ProducesTags[0].Cardinality: got %q, want %q", decl.ProducesTags[0].Cardinality, "exactly_one")
+	}
+}
+
+func TestSimpleConvention_MultipleProducesTags(t *testing.T) {
+	decl := SimpleConvention("status", "1.0", "report", "Report agent status").
+		ProducesTag("status", "exactly_one").
+		ProducesTag("result", "zero_or_more").
+		Build()
+
+	if len(decl.ProducesTags) != 2 {
+		t.Fatalf("ProducesTags: got %d, want 2", len(decl.ProducesTags))
+	}
+	if decl.ProducesTags[1].Tag != "result" {
+		t.Errorf("ProducesTags[1].Tag: got %q, want %q", decl.ProducesTags[1].Tag, "result")
+	}
+}
+
 func TestDeclarationBuilder_Chaining(t *testing.T) {
 	// Verify the builder returns itself for method chaining.
 	b := SimpleConvention("conv", "1.0", "op", "desc")

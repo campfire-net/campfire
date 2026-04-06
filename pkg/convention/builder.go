@@ -50,6 +50,14 @@ func (b *DeclarationBuilder) RequiredArg(name, typ, description string) *Declara
 	return b
 }
 
+// ProducesTag adds an entry to the produces_tags list for this convention.
+// tag is the tag name (e.g. "status", "convention:operation") and cardinality
+// is one of the standard cardinality values (e.g. "exactly_one", "zero_or_more").
+func (b *DeclarationBuilder) ProducesTag(tag, cardinality string) *DeclarationBuilder {
+	b.decl.ProducesTags = append(b.decl.ProducesTags, TagRule{Tag: tag, Cardinality: cardinality})
+	return b
+}
+
 // Build returns the final Declaration.
 func (b *DeclarationBuilder) Build() Declaration {
 	return b.decl

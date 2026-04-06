@@ -189,36 +189,41 @@ seeds = ["beacon:project-seed"]
 			}
 		}
 	}
-	// Should have global + ancestor + project layers (≥3 non-skipped).
+	// Should have global + ancestor + project layers (exactly 3 non-skipped).
 	nonSkipped := 0
 	for _, l := range layers {
 		if !l.Skipped {
 			nonSkipped++
 		}
 	}
-	if nonSkipped < 2 {
-		t.Errorf("expected ≥2 non-skipped layers, got %d: %v", nonSkipped, layers)
+	if nonSkipped != 3 {
+		t.Errorf("expected exactly 3 non-skipped layers (global + ancestor + project), got %d: %v", nonSkipped, layers)
 	}
 }
 
-// TestLoadConfig_OwnershipFail verifies that a directory with wrong ownership is skipped.
-func TestLoadConfig_OwnershipFail(t *testing.T) {
+// TestLoadConfig_WorldWritableSkip_Project verifies that a world-writable project
+// config file is skipped (S2 check). This test is distinct from
+// TestLoadConfig_WorldWritableSkip which tests the global config.
+//
+// Note: UID mismatch (S1) cannot be directly tested without chown(2) and root
+// access. S1 is covered by code review only (see isOwnerTrusted in config.go).
+func TestLoadConfig_WorldWritableSkip_Project(t *testing.T) {
 	if os.Getuid() == 0 {
-		t.Skip("cannot test ownership check as root")
+		t.Skip("cannot test world-writable check as root")
 	}
 
 	tmp := t.TempDir()
 	globalDir := filepath.Join(tmp, "global")
 	projectDir := filepath.Join(tmp, "project")
 
-	// Create project config directory owned by different user — simulate via chmod
-	// to world-writable (triggers S2 check instead, since we can't chown in tests).
+	// Create project config directory. We can't chown in tests (requires root),
+	// so we trigger the S2 (world-writable) check instead.
 	cfPath := filepath.Join(projectDir, cfDir, configFilename)
 	writeConfig(t, cfPath, `
 [transport]
 type = "fs"
 `)
-	// Make file world-writable to trigger a security skip (S2, since we can't chown).
+	// Make file world-writable to trigger S2 skip.
 	if err := os.Chmod(cfPath, 0666); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
@@ -321,12 +326,18 @@ type = "fs"
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// The symlink resolves to realDir which is in /tmp — should be fine on most
-	// systems. The test verifies the mechanism works without panicking and that
-	// the layer is processed (skip or not based on whether realDir is under home).
-	// What we care about: no panic, proper layer structure returned.
-	_ = layer
-	_ = raw
+	// The symlink resolves to realDir which is in /tmp — /tmp is outside the
+	// user home tree (/home/...), so the symlink-outside-home check (S3) should
+	// skip the layer with SkipReason "symlink".
+	if !layer.Skipped {
+		t.Errorf("expected layer to be skipped (symlink resolves outside home), got Skipped=false")
+	}
+	if layer.SkipReason != "symlink" {
+		t.Errorf("expected SkipReason %q, got %q", "symlink", layer.SkipReason)
+	}
+	if raw != nil {
+		t.Error("expected nil rawConfig for skipped layer")
+	}
 	_ = warns
 }
 
@@ -475,6 +486,31 @@ func TestValidateIdentityPath(t *testing.T) {
 		if !tc.wantErr && err != nil {
 			t.Errorf("ValidateIdentityPath(%q): unexpected error: %v", tc.path, err)
 		}
+	}
+}
+
+// TestLoadConfig_IdentityFileRelativePath verifies that identity.file = "keys/identity.json"
+// in a config file resolves to an absolute path relative to the config file's directory.
+func TestLoadConfig_IdentityFileRelativePath(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity]
+file = "keys/identity.json"
+`)
+
+	cfg, _, _, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// identity.file should be resolved to an absolute path relative to globalDir.
+	wantPath := filepath.Join(globalDir, "keys", "identity.json")
+	if cfg.Identity.File != wantPath {
+		t.Errorf("identity.File: got %q, want %q", cfg.Identity.File, wantPath)
+	}
+	if !filepath.IsAbs(cfg.Identity.File) {
+		t.Errorf("identity.File should be absolute, got: %q", cfg.Identity.File)
 	}
 }
 
