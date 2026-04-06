@@ -80,6 +80,14 @@ func (c *Client) Join(req JoinRequest) (*JoinResult, error) {
 	}
 	req.CampfireID = resolvedID
 
+	// Scope enforcement: campfire allowlist + admin operation class.
+	if err := c.checkCampfire(req.CampfireID); err != nil {
+		return nil, err
+	}
+	if err := c.checkOperation("admin"); err != nil {
+		return nil, err
+	}
+
 	switch t := req.Transport.(type) {
 	case *P2PHTTPTransport:
 		return c.joinP2PHTTP(req.CampfireID, t)
@@ -387,6 +395,14 @@ func (c *Client) Admit(req AdmitRequest) error {
 		return fmt.Errorf("protocol.Client.Admit: resolving campfire address: %w", resolveErr)
 	}
 	req.CampfireID = resolvedID
+
+	// Scope enforcement: campfire allowlist + admin operation class.
+	if err := c.checkCampfire(req.CampfireID); err != nil {
+		return err
+	}
+	if err := c.checkOperation("admin"); err != nil {
+		return err
+	}
 
 	var transportDir string
 	switch t := req.Transport.(type) {

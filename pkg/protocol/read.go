@@ -90,6 +90,14 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 	}
 	req.CampfireID = resolvedID
 
+	// Scope enforcement: campfire allowlist + read operation class.
+	if err := c.checkCampfire(req.CampfireID); err != nil {
+		return nil, err
+	}
+	if err := c.checkOperation("read"); err != nil {
+		return nil, err
+	}
+
 	// Sync-before-query for filesystem-transport campfires.
 	if !req.SkipSync {
 		if err := c.syncIfFilesystem(req.CampfireID); err != nil {

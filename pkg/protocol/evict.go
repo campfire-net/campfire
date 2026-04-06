@@ -84,6 +84,14 @@ func (c *Client) Evict(req EvictRequest) (*EvictResult, error) {
 	}
 	req.CampfireID = resolvedID
 
+	// Scope enforcement: campfire allowlist + admin operation class.
+	if err := c.checkCampfire(req.CampfireID); err != nil {
+		return nil, err
+	}
+	if err := c.checkOperation("admin"); err != nil {
+		return nil, err
+	}
+
 	// Reject self-eviction.
 	if req.MemberPubKeyHex == c.identity.PublicKeyHex() {
 		return nil, fmt.Errorf("protocol.Client.Evict: cannot evict self")

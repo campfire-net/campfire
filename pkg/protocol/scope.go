@@ -1,7 +1,7 @@
 package protocol
 
 // scope.go — ScopeEnforcer checks campfire and operation-class access against
-// a ScopeConfig. Pure data structure; not wired into Client (follow-on item).
+// a ScopeConfig. Wired into Client methods (campfire-agent-fie).
 //
 // Operation class mapping:
 //
@@ -11,9 +11,14 @@ package protocol
 //	identity — cf home be / cf home be --revoke
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// ErrScopeDenied is returned by Client methods when a campfire ID or operation
+// class is not permitted by the client's ScopeConfig. Use errors.Is to check.
+var ErrScopeDenied = errors.New("scope denied")
 
 // ScopeEnforcer checks operations against a ScopeConfig.
 type ScopeEnforcer struct {
@@ -36,7 +41,7 @@ func (e *ScopeEnforcer) CheckCampfire(campfireID string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("scope: campfire %q is not in the allowlist", campfireID)
+	return fmt.Errorf("scope: campfire %q is not in the allowlist: %w", campfireID, ErrScopeDenied)
 }
 
 // CheckOperation returns an error if opClass is not in the allowed classes.
@@ -53,5 +58,5 @@ func (e *ScopeEnforcer) CheckOperation(opClass string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("scope: operation class %q is not permitted", opClass)
+	return fmt.Errorf("scope: operation class %q is not permitted: %w", opClass, ErrScopeDenied)
 }
