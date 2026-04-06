@@ -13,6 +13,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
@@ -239,9 +240,9 @@ var homeBeCmd = &cobra.Command{
   cf home be --self          clear identity.present_as (revert to machine identity)
 
 The echo ceremony verifies write access to both the local home campfire and the
-target campfire. For person-to-machine linking (same person owns both), this
-succeeds automatically. For machine-to-team linking, the team admin must have
-admitted your identity first.
+target campfire. Campfire B must be a locally-initialized campfire — you must
+hold its private key. If you do not hold campfire B's private key, use
+'cf home link' to perform the cross-campfire ceremony with an admin who does.
 
 This command requires an interactive TTY for confirmation. Non-interactive
 environments (CI, cron) will fail with an explicit error — use
@@ -313,6 +314,19 @@ identity.present_as in config.toml for automated configuration.`,
 			return fmt.Errorf("not a member of campfire %s: join it first or have the admin admit you", targetID[:12])
 		}
 
+		// Require that campfire B is locally initialized — the caller must hold
+		// its private key. This proves key control before writing present_as.
+		// If campfire B is remote (no local private key), the caller cannot prove
+		// they control it; use 'cf home link' instead.
+		trTarget := fs.ForDir(mTarget.TransportDir)
+		stateTarget, err := trTarget.ReadState(targetID)
+		if err != nil {
+			return fmt.Errorf("reading campfire %s state: %w\n\nThe be ceremony requires a locally-initialized campfire where you hold the private key. Use 'cf home link' for remote campfires.", targetID[:12], err)
+		}
+		if len(stateTarget.PrivateKey) == 0 {
+			return fmt.Errorf("campfire %s has no local private key — cannot present as a remote campfire. Use 'cf home link' to perform the cross-campfire ceremony", targetID[:12])
+		}
+
 		client := protocol.New(s, agentID)
 
 		// Echo ceremony: post a challenge to the target, read it back.
@@ -374,6 +388,17 @@ from any campfire where the key was admitted on your behalf.`,
 		homeID, err := resolveCampfireID("home", s)
 		if err != nil {
 			return fmt.Errorf("resolving home campfire: %w\n\nSet the 'home' alias with: cf alias set home <campfire-id>", err)
+		}
+
+		// Check caller has admin or creator role in the home campfire.
+		// Use the store membership record, which preserves the original role
+		// assigned at join/create time (e.g. "creator").
+		homeMembership, err := s.GetMembership(homeID)
+		if err != nil || homeMembership == nil {
+			return fmt.Errorf("checking home campfire membership: not a member of home campfire %s", homeID[:12])
+		}
+		if homeMembership.Role != "creator" && homeMembership.Role != "admin" {
+			return fmt.Errorf("cf home revoke requires admin or creator role in the campfire (current role: %q)", homeMembership.Role)
 		}
 
 		client := protocol.New(s, agentID)
@@ -519,6 +544,28 @@ func isInteractiveTTY() bool {
 		return false
 	}
 	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// checkLocalCampfireKey verifies that campfireID is locally initialized and
+// its private key is present in the store. This proves the caller controls
+// campfire B before allowing present_as to be set.
+// Returns nil if the campfire has a local private key, or a descriptive error.
+func checkLocalCampfireKey(s interface {
+	GetMembership(string) (*store.Membership, error)
+}, campfireID string) error {
+	m, err := s.GetMembership(campfireID)
+	if err != nil || m == nil {
+		return fmt.Errorf("not a member of campfire %s", campfireID[:12])
+	}
+	tr := fs.ForDir(m.TransportDir)
+	state, err := tr.ReadState(campfireID)
+	if err != nil {
+		return fmt.Errorf("reading campfire %s state: %w — the be ceremony requires a locally-initialized campfire where you hold the private key. Use 'cf home link' for remote campfires", campfireID[:12], err)
+	}
+	if len(state.PrivateKey) == 0 {
+		return fmt.Errorf("campfire %s has no local private key — cannot present as a remote campfire. Use 'cf home link' to perform the cross-campfire ceremony", campfireID[:12])
+	}
+	return nil
 }
 
 func init() {

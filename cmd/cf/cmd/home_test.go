@@ -415,6 +415,182 @@ func TestHomeDisplay_ShowsCurrentIdentity(t *testing.T) {
 	}
 }
 
+// createTestCampfireNoPrivKey creates a campfire membership without a local private key,
+// simulating a remote campfire the agent is a member of but does not control.
+func createTestCampfireNoPrivKey(t *testing.T, agentID *identity.Identity, s store.Store, transportBaseDir string) string {
+	t.Helper()
+
+	// Generate campfire keypair — but only store the public key in the state.
+	cfPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating campfire keypair: %v", err)
+	}
+	campfireID := hex.EncodeToString(cfPub)
+
+	// Create campfire directory structure.
+	cfDir := filepath.Join(transportBaseDir, campfireID)
+	for _, sub := range []string{"members", "messages"} {
+		if err := os.MkdirAll(filepath.Join(cfDir, sub), 0755); err != nil {
+			t.Fatalf("creating directory: %v", err)
+		}
+	}
+
+	// Write campfire state WITHOUT private key (remote campfire — we don't control it).
+	state := &campfire.CampfireState{
+		PublicKey:             cfPub,
+		PrivateKey:            nil, // no private key — caller does not hold it
+		JoinProtocol:          "invite-only",
+		ReceptionRequirements: []string{},
+		CreatedAt:             time.Now().UnixNano(),
+		Threshold:             1,
+	}
+	stateData, err := cfencoding.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshalling state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfDir, "campfire.cbor"), stateData, 0644); err != nil {
+		t.Fatalf("writing campfire state: %v", err)
+	}
+
+	// Write agent member record.
+	tr := fs.New(transportBaseDir)
+	if err := tr.WriteMember(campfireID, campfire.MemberRecord{
+		PublicKey: agentID.PublicKey,
+		JoinedAt:  time.Now().UnixNano(),
+		Role:      campfire.RoleFull,
+	}); err != nil {
+		t.Fatalf("writing member record: %v", err)
+	}
+
+	// Add membership to store.
+	if err := s.AddMembership(store.Membership{
+		CampfireID:    campfireID,
+		TransportDir:  tr.CampfireDir(campfireID),
+		JoinProtocol:  "invite-only",
+		Role:          "full", // member role, not creator
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	return campfireID
+}
+
+// TestHomeBe_RequiresLocalKey verifies that checkLocalCampfireKey returns an error
+// when campfire B has no local private key (remote campfire the caller does not control).
+func TestHomeBe_RequiresLocalKey(t *testing.T) {
+	agentID, s, cfHomeDir, _, _ := setupHomeLinkEnv(t)
+	t.Setenv("CF_HOME", cfHomeDir)
+
+	// Create a campfire without a private key (remote — caller does not control it).
+	transportBaseDir := t.TempDir()
+	remoteCampfireID := createTestCampfireNoPrivKey(t, agentID, s, transportBaseDir)
+
+	// checkLocalCampfireKey should return an error for a campfire with no private key.
+	err := checkLocalCampfireKey(s, remoteCampfireID)
+	if err == nil {
+		t.Error("expected checkLocalCampfireKey to return error for campfire without private key, got nil")
+	}
+
+	// Also verify it succeeds for a campfire with a local private key.
+	localTransportBaseDir := t.TempDir()
+	localCampfireID := createTestCampfire(t, agentID, s, localTransportBaseDir)
+	err = checkLocalCampfireKey(s, localCampfireID)
+	if err != nil {
+		t.Errorf("expected checkLocalCampfireKey to succeed for campfire with private key, got: %v", err)
+	}
+}
+
+// TestHomeRevoke_RequiresAdminRole verifies that homeRevokeCmd returns an error
+// when the caller does not have admin or creator role in the home campfire.
+func TestHomeRevoke_RequiresAdminRole(t *testing.T) {
+	agentID, s, cfHomeDir, _, _ := setupHomeLinkEnv(t)
+	_ = agentID
+
+	// Create a new campfire where the agent has "full" (non-admin) role,
+	// and set it as the home alias — simulating a campfire the agent joined
+	// but does not administrate.
+	transportBaseDir := t.TempDir()
+
+	// Create a campfire with non-admin role.
+	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating campfire keypair: %v", err)
+	}
+	nonAdminCampfireID := hex.EncodeToString(cfPub)
+	cfDir := filepath.Join(transportBaseDir, nonAdminCampfireID)
+	for _, sub := range []string{"members", "messages"} {
+		if err := os.MkdirAll(filepath.Join(cfDir, sub), 0755); err != nil {
+			t.Fatalf("creating directory: %v", err)
+		}
+	}
+	state := &campfire.CampfireState{
+		PublicKey:             cfPub,
+		PrivateKey:            cfPriv,
+		JoinProtocol:          "invite-only",
+		ReceptionRequirements: []string{},
+		CreatedAt:             time.Now().UnixNano(),
+		Threshold:             1,
+	}
+	stateData, err := cfencoding.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshalling state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfDir, "campfire.cbor"), stateData, 0644); err != nil {
+		t.Fatalf("writing campfire state: %v", err)
+	}
+	tr := fs.New(transportBaseDir)
+	if err := tr.WriteMember(nonAdminCampfireID, campfire.MemberRecord{
+		PublicKey: agentID.PublicKey,
+		JoinedAt:  time.Now().UnixNano(),
+		Role:      campfire.RoleFull,
+	}); err != nil {
+		t.Fatalf("writing member record: %v", err)
+	}
+	// Store membership with a non-admin role ("full" = regular member).
+	if err := s.AddMembership(store.Membership{
+		CampfireID:    nonAdminCampfireID,
+		TransportDir:  tr.CampfireDir(nonAdminCampfireID),
+		JoinProtocol:  "invite-only",
+		Role:          "full", // NOT creator or admin
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	// Override the home alias to point to the non-admin campfire.
+	aliasStore := naming.NewAliasStore(cfHomeDir)
+	if err := aliasStore.Set("home", nonAdminCampfireID); err != nil {
+		t.Fatalf("setting home alias: %v", err)
+	}
+
+	// Generate a fake key to revoke.
+	fakePub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating fake key: %v", err)
+	}
+	fakeKeyHex := hex.EncodeToString(fakePub)
+
+	var buf bytes.Buffer
+	homeRevokeCmd.ResetFlags()
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+
+	t.Setenv("CF_HOME", cfHomeDir)
+	rootCmd.SetArgs([]string{"home", "revoke", fakeKeyHex})
+	err = rootCmd.Execute()
+	rootCmd.SetOut(nil)
+	rootCmd.SetErr(nil)
+
+	if err == nil {
+		t.Errorf("expected homeRevokeCmd to return error for non-admin caller, got nil\nOutput: %s", buf.String())
+	}
+}
+
 // TestHomeRevoke_PostsRevokeMessage verifies that homeRevokeCmd posts an identity:revoked message.
 func TestHomeRevoke_PostsRevokeMessage(t *testing.T) {
 	agentID, s, cfHomeDir, campfireAID, _ := setupHomeLinkEnv(t)
