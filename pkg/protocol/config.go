@@ -41,9 +41,15 @@ type rawConfig struct {
 	Transport rawTransportConfig `toml:"transport"`
 	Naming    rawNamingConfig    `toml:"naming"`
 	Behavior  rawBehaviorConfig  `toml:"behavior"`
+	Scope     rawScopeConfig     `toml:"scope"`
 	// Prohibited sections — detected by custom decoder.
 	Trust interface{} `toml:"trust"`
 	Roles interface{} `toml:"roles"`
+}
+
+type rawScopeConfig struct {
+	Campfires        []string `toml:"campfires"`
+	OperationClasses []string `toml:"operation_classes"`
 }
 
 type rawIdentityConfig struct {
@@ -72,6 +78,19 @@ type rawBehaviorConfig struct {
 	AutoJoin []string `toml:"auto_join"`
 }
 
+// ScopeConfig limits which campfires and operation classes an agent may access.
+// All fields are optional — omitting scope means unrestricted.
+type ScopeConfig struct {
+	// Campfires is an explicit allowlist of campfire IDs (64-hex) the agent
+	// may interact with. Empty = allow all.
+	Campfires []string `toml:"campfires"`
+
+	// OperationClasses lists which SDK operation classes are permitted.
+	// Values: "read", "write", "admin", "identity".
+	// Empty = allow all.
+	OperationClasses []string `toml:"operation_classes"`
+}
+
 // Config is the resolved, merged configuration after cascade application.
 // All fields are ready to use — security-checked and merged from all layers.
 type Config struct {
@@ -80,6 +99,7 @@ type Config struct {
 	Transport TransportConfig
 	Naming    NamingConfig
 	Behavior  BehaviorConfig
+	Scope     ScopeConfig
 }
 
 // IdentityConfig holds identity-related configuration.
@@ -476,6 +496,20 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) []strin
 		merged := mergeList(dst.Behavior.AutoJoin, raw.Behavior.AutoJoin)
 		dst.Behavior.AutoJoin = merged
 		contributed = append(contributed, "behavior.auto_join")
+	}
+
+	// scope.campfires — list with optional "!replace" sentinel.
+	if len(raw.Scope.Campfires) > 0 {
+		merged := mergeList(dst.Scope.Campfires, raw.Scope.Campfires)
+		dst.Scope.Campfires = merged
+		contributed = append(contributed, "scope.campfires")
+	}
+
+	// scope.operation_classes — list with optional "!replace" sentinel.
+	if len(raw.Scope.OperationClasses) > 0 {
+		merged := mergeList(dst.Scope.OperationClasses, raw.Scope.OperationClasses)
+		dst.Scope.OperationClasses = merged
+		contributed = append(contributed, "scope.operation_classes")
 	}
 
 	return contributed
