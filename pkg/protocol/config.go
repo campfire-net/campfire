@@ -74,7 +74,7 @@ type rawNamingConfig struct {
 }
 
 type rawBehaviorConfig struct {
-	WalkUp   bool     `toml:"walk_up"`
+	WalkUp   *bool    `toml:"walk_up"`
 	AutoJoin []string `toml:"auto_join"`
 }
 
@@ -495,12 +495,12 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 		contributed = append(contributed, "naming.seeds")
 	}
 
-	// behavior.walk_up — scalar (explicit false is still a setting, so always apply
-	// if the section was set; we can't distinguish omitted from false in raw TOML
-	// without a custom decoder, so we apply if any behavior field is set).
-	// Since zero value of bool is false and default is false, only apply if true.
-	if raw.Behavior.WalkUp {
-		dst.Behavior.WalkUp = true
+	// behavior.walk_up — scalar pointer: apply only when the key was present in TOML.
+	// Using *bool allows distinguishing "walk_up = false" (pointer to false) from
+	// "key absent" (nil pointer), so a project-level false correctly overrides a
+	// global true.
+	if raw.Behavior.WalkUp != nil {
+		dst.Behavior.WalkUp = *raw.Behavior.WalkUp
 		contributed = append(contributed, "behavior.walk_up")
 	}
 
