@@ -17,8 +17,8 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/threshold"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 	"github.com/spf13/cobra"
 )
 
@@ -509,15 +509,14 @@ func buildThresholdShareProvider(s store.Store) cfhttp.ThresholdShareProvider {
 		}
 		if share == nil {
 			shortID := campfireID
-		if len(shortID) > shortIDLen {
-			shortID = shortID[:shortIDLen]
-		}
-		return 0, nil, fmt.Errorf("no threshold share found for campfire %s", shortID)
+			if len(shortID) > shortIDLen {
+				shortID = shortID[:shortIDLen]
+			}
+			return 0, nil, fmt.Errorf("no threshold share found for campfire %s", shortID)
 		}
 		return share.ParticipantID, share.SecretShare, nil
 	}
 }
-
 
 // detectGitRoot returns the git root directory of the current working directory.
 // Returns ("", false) if not in a git repository.
