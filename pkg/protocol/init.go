@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/projection"
@@ -108,8 +109,20 @@ func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
 		configOpts = append(configOpts, WithWalkUp())
 	}
 
+	// identity.present_as → WithPresentAs
+	if cfg.Identity.PresentAs != "" {
+		configOpts = append(configOpts, WithPresentAs(cfg.Identity.PresentAs))
+	}
+
 	// Build final option list: config-derived first, then caller overrides.
 	finalOpts := append(configOpts, optFuncs...)
+
+	// Resolve the merged options so we can read fields (e.g. presentAs) that
+	// Init() consumes but does not surface in *InitResult.
+	mergedOpts := defaultOptions()
+	for _, fn := range finalOpts {
+		fn(&mergedOpts)
+	}
 
 	// Delegate to the existing Init() using the globalDir as configDir.
 	client, result, err := Init(globalDir, finalOpts...)
@@ -121,15 +134,17 @@ func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
 	result.ConfigLayers = layers
 	result.IdentitySource = identitySource
 	result.Warnings = append(result.Warnings, cfgWarnings...)
+	result.PresentAs = mergedOpts.presentAs
 
 	// Auto-join campfires listed in behavior.auto_join.
 	for _, addr := range cfg.Behavior.AutoJoin {
-		if _, joinErr := client.Join(JoinRequest{CampfireID: addr}); joinErr != nil {
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("auto_join %q: %v", addr, joinErr))
-			continue
+		joined, warn := client.autoJoinEntry(addr)
+		if warn != "" {
+			result.Warnings = append(result.Warnings, warn)
 		}
-		result.AutoJoined = append(result.AutoJoined, addr)
+		if joined {
+			result.AutoJoined = append(result.AutoJoined, addr)
+		}
 	}
 
 	return client, result, nil
@@ -186,6 +201,13 @@ type InitResult struct {
 	// because they appeared in behavior.auto_join in the config cascade.
 	// Populated only by InitWithConfig(); empty when Init() is called directly.
 	AutoJoined []string
+
+	// PresentAs is the campfire ID this agent presents as, sourced from
+	// identity.present_as in the config cascade (or WithPresentAs option).
+	// Empty when not configured. In 0.16 the value is preserved but the
+	// signing behavior it enables is deferred to 0.17+.
+	// Populated only by InitWithConfig(); empty when Init() is called directly.
+	PresentAs string
 }
 
 // Init opens or creates a fully-functional *Client backed by an Ed25519
@@ -293,6 +315,70 @@ func Init(configDir string, optFuncs ...Option) (*Client, *InitResult, error) {
 	}
 
 	return c, result, nil
+}
+
+// autoJoinEntry attempts to auto-join the campfire identified by addr.
+// addr may be a 64-hex ID, a "beacon:BASE64" string, or a cf:// URI.
+//
+// Returns (true, "") on success, (false, warning) on failure.
+// Returns (false, "") when addr is already a member (skip, no warning).
+func (c *Client) autoJoinEntry(addr string) (joined bool, warning string) {
+	// Resolve the campfire ID (and extract transport hint for beacons).
+	campfireID, hint, resolveErr := resolveInput(addr, c.opts.namingResolver)
+	if resolveErr != nil {
+		return false, fmt.Sprintf("auto_join %q: resolving address: %v", addr, resolveErr)
+	}
+
+	// Skip if already a member — idempotent across sessions.
+	if m, _ := c.store.GetMembership(campfireID); m != nil {
+		return false, ""
+	}
+
+	// Build a JoinRequest with the appropriate transport from the beacon hint.
+	req := JoinRequest{CampfireID: campfireID}
+	if hint != nil {
+		switch hint.Transport {
+		case "p2p-http", "http":
+			if hint.Endpoint != "" {
+				req.Transport = P2PHTTPTransport{PeerEndpoint: hint.Endpoint}
+			}
+		case "filesystem", "fs", "":
+			// Filesystem beacons carry the dir in the config map, not in hint.Endpoint.
+			if dir := extractFSDir(addr); dir != "" {
+				req.Transport = FilesystemTransport{Dir: dir}
+			}
+		}
+	}
+
+	if _, joinErr := c.Join(req); joinErr != nil {
+		return false, fmt.Sprintf("auto_join %q: %v", addr, joinErr)
+	}
+	return true, ""
+}
+
+// extractFSDir attempts to extract the filesystem transport directory from a
+// beacon string. Returns "" on any error or if the transport is not filesystem.
+func extractFSDir(addr string) string {
+	lower := strings.ToLower(addr)
+	var beaconData string
+	if strings.HasPrefix(lower, "beacon:") {
+		beaconData = addr[len("beacon:"):]
+	} else if strings.HasPrefix(lower, "cf+beacon://") {
+		beaconData = addr[len("cf+beacon://"):]
+	} else {
+		return ""
+	}
+	b, err := decodeBeaconBase64(beaconData)
+	if err != nil {
+		return ""
+	}
+	if b.Transport.Protocol != "filesystem" {
+		return ""
+	}
+	if d, ok := b.Transport.Config["dir"]; ok {
+		return d
+	}
+	return ""
 }
 
 // collectWalkUpPath returns the sequence of directories examined during a

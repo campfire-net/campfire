@@ -225,6 +225,7 @@ func configFieldsWithOrigin(cfg *protocol.Config, layers []protocol.ConfigLayer)
 	entries := []entry{
 		{"identity.file", cfg.Identity.File},
 		{"identity.display_name", cfg.Identity.DisplayName},
+		{"identity.present_as", cfg.Identity.PresentAs},
 		{"store.file", cfg.Store.File},
 		{"transport.type", cfg.Transport.Type},
 		{"transport.endpoint", cfg.Transport.Endpoint},
@@ -255,6 +256,8 @@ func configGetValue(cfg *protocol.Config, key string) (string, error) {
 		return cfg.Identity.File, nil
 	case "identity.display_name":
 		return cfg.Identity.DisplayName, nil
+	case "identity.present_as":
+		return cfg.Identity.PresentAs, nil
 	case "store.file":
 		return cfg.Store.File, nil
 	case "transport.type":
@@ -272,7 +275,7 @@ func configGetValue(cfg *protocol.Config, key string) (string, error) {
 	case "behavior.auto_join":
 		return formatStringSlice(cfg.Behavior.AutoJoin), nil
 	default:
-		return "", fmt.Errorf("unknown config key %q; valid keys: identity.file, identity.display_name, store.file, transport.type, transport.endpoint, transport.dir, naming.root, naming.seeds, behavior.walk_up, behavior.auto_join", key)
+		return "", fmt.Errorf("unknown config key %q; valid keys: identity.file, identity.display_name, identity.present_as, store.file, transport.type, transport.endpoint, transport.dir, naming.root, naming.seeds, behavior.walk_up, behavior.auto_join", key)
 	}
 }
 
@@ -281,7 +284,7 @@ func configGetValue(cfg *protocol.Config, key string) (string, error) {
 func configSetValue(targetPath, key, value string) error {
 	// Validate key before touching the file.
 	validKeys := map[string]bool{
-		"identity.file": true, "identity.display_name": true,
+		"identity.file": true, "identity.display_name": true, "identity.present_as": true,
 		"store.file":        true,
 		"transport.type":    true, "transport.endpoint": true, "transport.dir": true,
 		"naming.root":       true, "naming.seeds": true,

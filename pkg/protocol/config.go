@@ -49,6 +49,7 @@ type rawConfig struct {
 type rawIdentityConfig struct {
 	File        string `toml:"file"`
 	DisplayName string `toml:"display_name"`
+	PresentAs   string `toml:"present_as"`
 }
 
 type rawStoreConfig struct {
@@ -87,6 +88,9 @@ type IdentityConfig struct {
 	File string
 	// DisplayName is the human-readable name sent as identity:profile on join.
 	DisplayName string
+	// PresentAs is the campfire ID to present as (set by cf home be, cleared by cf home be --self).
+	// When non-empty, the agent presents as this campfire identity rather than its machine key.
+	PresentAs string
 }
 
 // StoreConfig holds store-related configuration.
@@ -285,10 +289,15 @@ func loadAndCheck(path string, source string, isGlobal bool) (ConfigLayer, *rawC
 
 	// S3: Symlink resolves outside home tree check.
 	homeDir, _ := os.UserHomeDir()
-	if homeDir != "" && !strings.HasPrefix(resolved, homeDir) && resolved != path {
-		layer.Skipped = true
-		layer.SkipReason = "symlink"
-		return layer, nil, []string{fmt.Sprintf("skipping %s: symlink resolves outside home directory", path)}, nil
+	if homeDir != "" && resolved != path {
+		// Use HasPrefix with trailing separator to prevent sibling directory bypass.
+		// e.g. /home/baron must not match /home/baronmalicious/...
+		inHome := strings.HasPrefix(resolved, homeDir+string(os.PathSeparator)) || resolved == homeDir
+		if !inHome {
+			layer.Skipped = true
+			layer.SkipReason = "symlink"
+			return layer, nil, []string{fmt.Sprintf("skipping %s: symlink resolves outside home directory", path)}, nil
+		}
 	}
 
 	// S1: UID ownership check on containing directory.
@@ -310,6 +319,14 @@ func loadAndCheck(path string, source string, isGlobal bool) (ConfigLayer, *rawC
 		layer.Skipped = true
 		layer.SkipReason = "world-writable"
 		return layer, nil, []string{fmt.Sprintf("skipping %s: file is world-writable", path)}, nil
+	}
+
+	// S2: World-writable check on the containing directory.
+	dirInfo, err := os.Stat(filepath.Dir(resolved))
+	if err != nil || dirInfo.Mode().Perm()&0o002 != 0 {
+		layer.Skipped = true
+		layer.SkipReason = "world-writable-dir"
+		return layer, nil, []string{fmt.Sprintf("skipping %s: containing directory is world-writable", path)}, nil
 	}
 
 	// Parse TOML.
@@ -342,12 +359,25 @@ func loadAndCheck(path string, source string, isGlobal bool) (ConfigLayer, *rawC
 		)
 	}
 
+	// S4: Validate identity.file on the raw TOML value, before resolveRelativePath
+	// converts it to an absolute path. This catches traversal attempts like "../../etc/passwd".
+	if raw.Identity.File != "" {
+		if err := ValidateIdentityPath(raw.Identity.File); err != nil {
+			return layer, nil, nil, fmt.Errorf("config %s: identity.file: %w", path, err)
+		}
+	}
+
 	return layer, &raw, nil, nil
 }
 
-// isOwnerTrusted checks that the directory at dirPath is owned by the current UID.
-// On non-Unix platforms, returns true (check is skipped with a warning from the caller).
-func isOwnerTrusted(dirPath string) bool {
+// ownerTrustedFn is the package-level owner-check function used by loadAndCheck.
+// Tests may replace this variable to inject a fake owner check without
+// creating files owned by a different UID (which requires root).
+var ownerTrustedFn = defaultOwnerTrusted
+
+// defaultOwnerTrusted checks that the directory at dirPath is owned by the
+// current UID. On non-Unix platforms it returns true (check is skipped).
+func defaultOwnerTrusted(dirPath string) bool {
 	info, err := os.Stat(dirPath)
 	if err != nil {
 		return false
@@ -358,6 +388,12 @@ func isOwnerTrusted(dirPath string) bool {
 		return true
 	}
 	return stat.Uid == uint32(os.Getuid())
+}
+
+// isOwnerTrusted is the exported-name alias kept for call sites. It delegates
+// to ownerTrustedFn so test injection works transparently.
+func isOwnerTrusted(dirPath string) bool {
+	return ownerTrustedFn(dirPath)
 }
 
 // mergeLayer applies a parsed rawConfig into the current merged Config.
@@ -380,6 +416,13 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) []strin
 	if raw.Identity.DisplayName != "" {
 		dst.Identity.DisplayName = raw.Identity.DisplayName
 		contributed = append(contributed, "identity.display_name")
+	}
+
+	// identity.present_as — scalar (deepest wins; empty string clears).
+	// Set by cf home be, cleared by cf home be --self.
+	if raw.Identity.PresentAs != "" {
+		dst.Identity.PresentAs = raw.Identity.PresentAs
+		contributed = append(contributed, "identity.present_as")
 	}
 
 	// store.file — scalar.

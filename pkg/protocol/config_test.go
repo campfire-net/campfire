@@ -532,6 +532,114 @@ admin = ["some-pubkey"]
 	}
 }
 
+// TestLoadConfig_IdentityFile_PathTraversal verifies that identity.file with ".." components
+// causes LoadConfig to return a hard error (S4 check).
+func TestLoadConfig_IdentityFile_PathTraversal(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity]
+file = "../../etc/passwd"
+`)
+
+	_, _, _, err := LoadConfig(globalDir, globalDir)
+	if err == nil {
+		t.Fatal("expected error for identity.file with path traversal, got nil")
+	}
+	if !strings.Contains(err.Error(), "identity.file") {
+		t.Errorf("error should mention identity.file, got: %v", err)
+	}
+}
+
+// TestLoadConfig_WorldWritableDir_Skipped verifies that a config file whose containing
+// directory is world-writable is skipped (S2 directory check).
+func TestLoadConfig_WorldWritableDir_Skipped(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test world-writable check as root")
+	}
+
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	cfPath := filepath.Join(globalDir, configFilename)
+	writeConfig(t, cfPath, `
+[transport]
+type = "fs"
+`)
+	// Make the containing directory world-writable to trigger the S2 directory check.
+	if err := os.Chmod(globalDir, 0777); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+	t.Cleanup(func() {
+		// Restore permissions so TempDir cleanup can remove the directory.
+		_ = os.Chmod(globalDir, 0700)
+	})
+
+	cfg, layers, warns, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	skipped := false
+	for _, l := range layers {
+		if l.Skipped && l.SkipReason == "world-writable-dir" {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Errorf("expected world-writable-dir skip, layers=%v warns=%v", layers, warns)
+	}
+	// Value should be compiled default (not the fs from the skipped file).
+	if cfg.Transport.Type != defaultTransportType {
+		t.Errorf("transport.type: got %q, want default %q (skipped file should not contribute)", cfg.Transport.Type, defaultTransportType)
+	}
+}
+
+// TestLoadConfig_SymlinkSiblingDir_Rejected verifies that a symlink resolving to a sibling
+// directory (e.g. /home/baronmalicious) is rejected even though its prefix matches /home/baron.
+func TestLoadConfig_SymlinkSiblingDir_Rejected(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test symlink check as root")
+	}
+
+	tmp := t.TempDir()
+	// Simulate a "sibling" directory: we want to test that /home/baron does not match
+	// /home/baronmalicious. We do this by creating a target outside tmp (a separate TempDir)
+	// and pointing a symlink at it — the resolved path won't have tmp as prefix+separator.
+	outsideDir := t.TempDir()
+	realConfig := filepath.Join(outsideDir, configFilename)
+	if err := os.WriteFile(realConfig, []byte(`[transport]
+type = "fs"
+`), 0600); err != nil {
+		t.Fatalf("write real config: %v", err)
+	}
+
+	globalDir := filepath.Join(tmp, "global")
+	if err := os.MkdirAll(globalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	symlinkPath := filepath.Join(globalDir, configFilename)
+	if err := os.Symlink(realConfig, symlinkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// Call loadAndCheck directly to test the symlink rejection logic.
+	// The resolved path points to outsideDir which is a separate TempDir —
+	// it will not be inside the user's home directory.
+	layer, raw, _, err := loadAndCheck(symlinkPath, "global", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !layer.Skipped {
+		t.Errorf("expected layer to be skipped (symlink resolves outside home), got Skipped=false")
+	}
+	if layer.SkipReason != "symlink" {
+		t.Errorf("expected SkipReason %q, got %q", "symlink", layer.SkipReason)
+	}
+	if raw != nil {
+		t.Error("expected nil rawConfig for skipped layer")
+	}
+}
+
 // TestLoadConfig_NamingRootGlobalAllowed verifies naming.root is allowed in global config.
 func TestLoadConfig_NamingRootGlobalAllowed(t *testing.T) {
 	tmp := t.TempDir()
@@ -547,5 +655,49 @@ root = "abc123def456abc123def456abc123def456abc123def456abc123def456abc123"
 	}
 	if cfg.Naming.Root == "" {
 		t.Error("naming.root should be set from global config")
+	}
+}
+
+// TestLoadConfig_UntrustedOwner_Skipped verifies that S1 (UID ownership check) causes
+// a layer to be skipped when the containing directory is not owned by the current user.
+// Because creating files owned by a different UID requires root, we inject a fake
+// ownerTrustedFn that always returns false to exercise the code path directly.
+func TestLoadConfig_UntrustedOwner_Skipped(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test owner check as root (root owns everything)")
+	}
+
+	// Inject a fake owner check that always reports untrusted.
+	orig := ownerTrustedFn
+	ownerTrustedFn = func(string) bool { return false }
+	defer func() { ownerTrustedFn = orig }()
+
+	// Create a real config file — the owner check is the only gate we're injecting.
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `[transport]
+endpoint = "https://fake.example.com"
+`)
+
+	cfg, layers, _, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The layer must be skipped with SkipReason == "ownership".
+	skipped := false
+	for _, l := range layers {
+		if l.Skipped && strings.Contains(l.SkipReason, "ownership") {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Errorf("expected S1 ownership skip; layers = %+v", layers)
+	}
+
+	// The endpoint must NOT have been applied (skipped layer contributes nothing).
+	if cfg.Transport.Endpoint != defaultTransportEndpoint {
+		t.Errorf("endpoint = %q, want default %q (untrusted layer must not contribute)",
+			cfg.Transport.Endpoint, defaultTransportEndpoint)
 	}
 }

@@ -320,3 +320,161 @@ func TestHomeLinkCmd_NotMemberOfB(t *testing.T) {
 		t.Error("expected error when not a member of campfire B, got nil")
 	}
 }
+
+// TestHomeBe_WritesConfigField verifies that configSetPresentAs writes identity.present_as to config.
+func TestHomeBe_WritesConfigField(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	globalConfigPath := filepath.Join(cfHomeDir, "config.toml")
+	campfireID := "aabbccdd" + "0000000000000000000000000000000000000000000000000000000000000000"
+	campfireID = campfireID[:64]
+
+	if err := configSetPresentAs(globalConfigPath, campfireID); err != nil {
+		t.Fatalf("configSetPresentAs: %v", err)
+	}
+
+	data, err := os.ReadFile(globalConfigPath)
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+	if !bytes.Contains(data, []byte("present_as")) {
+		t.Errorf("config does not contain 'present_as': %s", data)
+	}
+	if !bytes.Contains(data, []byte(campfireID)) {
+		t.Errorf("config does not contain campfire ID %s: %s", campfireID, data)
+	}
+}
+
+// TestHomeBe_Self_ClearsConfig verifies that configSetPresentAs with empty value clears identity.present_as.
+func TestHomeBe_Self_ClearsConfig(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	globalConfigPath := filepath.Join(cfHomeDir, "config.toml")
+	campfireID := "aabbccdd" + "0000000000000000000000000000000000000000000000000000000000000000"
+	campfireID = campfireID[:64]
+
+	// First set it.
+	if err := configSetPresentAs(globalConfigPath, campfireID); err != nil {
+		t.Fatalf("configSetPresentAs (set): %v", err)
+	}
+
+	// Then clear it.
+	if err := configSetPresentAs(globalConfigPath, ""); err != nil {
+		t.Fatalf("configSetPresentAs (clear): %v", err)
+	}
+
+	data, err := os.ReadFile(globalConfigPath)
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+	if bytes.Contains(data, []byte("present_as")) {
+		t.Errorf("config still contains 'present_as' after clearing: %s", data)
+	}
+}
+
+// TestHomeDisplay_ShowsCurrentIdentity verifies that homeDisplayCmd prints the current presentation state.
+func TestHomeDisplay_ShowsCurrentIdentity(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+
+	// Generate and save agent identity.
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	if err := agentID.Save(filepath.Join(cfHomeDir, "identity.json")); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	campfireID := "ccddee00" + "0000000000000000000000000000000000000000000000000000000000000000"
+	campfireID = campfireID[:64]
+
+	// Write identity.present_as to config.
+	globalConfigPath := filepath.Join(cfHomeDir, "config.toml")
+	if err := configSetPresentAs(globalConfigPath, campfireID); err != nil {
+		t.Fatalf("configSetPresentAs: %v", err)
+	}
+
+	var buf bytes.Buffer
+	homeDisplayCmd.ResetFlags()
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"home", "display"})
+	err = rootCmd.Execute()
+	rootCmd.SetOut(nil)
+	rootCmd.SetErr(nil)
+
+	if err != nil {
+		t.Fatalf("home display command failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	out := buf.String()
+	if !bytes.Contains([]byte(out), []byte("Presenting as:")) {
+		t.Errorf("output missing 'Presenting as:': %s", out)
+	}
+	if !bytes.Contains([]byte(out), []byte(campfireID[:12])) {
+		t.Errorf("output missing campfire ID prefix %s: %s", campfireID[:12], out)
+	}
+}
+
+// TestHomeRevoke_PostsRevokeMessage verifies that homeRevokeCmd posts an identity:revoked message.
+func TestHomeRevoke_PostsRevokeMessage(t *testing.T) {
+	agentID, s, cfHomeDir, campfireAID, _ := setupHomeLinkEnv(t)
+	_ = agentID
+
+	// Get the store for message verification.
+	mA, err := s.GetMembership(campfireAID)
+	if err != nil || mA == nil {
+		t.Fatalf("getting campfire A membership: %v", err)
+	}
+	trA := fs.ForDir(mA.TransportDir)
+
+	// Generate a fake key to revoke.
+	fakePub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating fake key: %v", err)
+	}
+	fakeKeyHex := hex.EncodeToString(fakePub)
+
+	// Write a fake member record so Evict() finds the member.
+	tr := fs.New(filepath.Dir(mA.TransportDir))
+	if err := tr.WriteMember(campfireAID, campfire.MemberRecord{
+		PublicKey: fakePub,
+		JoinedAt:  time.Now().UnixNano(),
+		Role:      campfire.RoleFull,
+	}); err != nil {
+		t.Fatalf("writing fake member record: %v", err)
+	}
+
+	var buf bytes.Buffer
+	homeRevokeCmd.ResetFlags()
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+
+	t.Setenv("CF_HOME", cfHomeDir)
+	rootCmd.SetArgs([]string{"home", "revoke", fakeKeyHex})
+	err = rootCmd.Execute()
+	rootCmd.SetOut(nil)
+	rootCmd.SetErr(nil)
+
+	if err != nil {
+		t.Fatalf("home revoke command failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	// Verify that an identity:revoked message was posted to the home campfire.
+	msgs, err := trA.ListMessages(campfireAID)
+	if err != nil {
+		t.Fatalf("reading messages from home campfire: %v", err)
+	}
+
+	var found bool
+	for _, m := range msgs {
+		for _, tag := range m.Tags {
+			if tag == convention.IdentityRevokedTag {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no identity:revoked message found in home campfire after revoke")
+	}
+}
