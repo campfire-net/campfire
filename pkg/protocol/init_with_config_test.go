@@ -15,6 +15,7 @@ package protocol_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/protocol"
@@ -66,6 +67,13 @@ endpoint = "`+customEndpoint+`"
 	}
 	if !foundGlobal {
 		t.Errorf("no non-skipped global layer in ConfigLayers: %+v", result.ConfigLayers)
+	}
+
+	// Finding 1 fix: assert the config endpoint was actually applied to the client.
+	// WithRemote is only applied when the endpoint differs from the compiled default,
+	// so RemoteURL() must equal the custom endpoint we set in config.
+	if got := client.RemoteURL(); got != customEndpoint {
+		t.Errorf("client.RemoteURL() = %q, want %q (config endpoint not applied to client)", got, customEndpoint)
 	}
 }
 
@@ -163,19 +171,99 @@ auto_join = ["`+fakeCampfireID+`"]
 	}
 
 	// The join attempt should fail (campfire not in store), so AutoJoined should be empty
-	// but a warning should be present.
+	// but a warning referencing the specific campfire ID must be present.
 	// This verifies that the auto_join field is read and an attempt is made.
 	// A successful join would populate AutoJoined; a failed one produces a Warning.
-	warned := false
-	for _, w := range result.Warnings {
-		if len(w) > 0 {
-			warned = true
+	if len(result.AutoJoined) > 0 {
+		// If join succeeded (unlikely with a fake ID), the ID must be the expected one.
+		found := false
+		for _, id := range result.AutoJoined {
+			if id == fakeCampfireID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("AutoJoined = %v, want it to contain %q", result.AutoJoined, fakeCampfireID)
+		}
+	} else {
+		// Join failed — a warning containing the campfire ID must be present.
+		warnedWithID := false
+		for _, w := range result.Warnings {
+			if strings.Contains(w, fakeCampfireID) {
+				warnedWithID = true
+				break
+			}
+		}
+		if !warnedWithID {
+			t.Errorf("auto_join failed but no warning contains campfire ID %q; warnings = %v",
+				fakeCampfireID, result.Warnings)
+		}
+	}
+}
+
+// TestInitWithConfig_CWDCascade verifies that InitWithConfig discovers and applies
+// a .cf/config.toml from the current working directory without requiring WithConfigDir.
+// This tests the distinguishing behavior of InitWithConfig over Init(): the CWD-based
+// cascade walk.
+func TestInitWithConfig_CWDCascade(t *testing.T) {
+	// Create a temp directory representing a "project directory".
+	projectDir := t.TempDir()
+
+	// Write a .cf/config.toml inside the project dir with a recognizable setting.
+	projectEndpoint := "https://project-override.test"
+	cfDir := filepath.Join(projectDir, ".cf")
+	if err := os.MkdirAll(cfDir, 0700); err != nil {
+		t.Fatalf("mkdir %s: %v", cfDir, err)
+	}
+	cfgPath := filepath.Join(cfDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`[transport]
+endpoint = "`+projectEndpoint+`"
+`), 0600); err != nil {
+		t.Fatalf("write %s: %v", cfgPath, err)
+	}
+
+	// Use an empty temp dir as global config dir so the global layer doesn't
+	// interfere with the assertion.
+	globalDir := t.TempDir()
+
+	// Change CWD to the project dir — InitWithConfig uses os.Getwd() for cascade walk.
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) }) //nolint:errcheck
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir %s: %v", projectDir, err)
+	}
+
+	// Call InitWithConfig with WithConfigDir pointing to the empty global dir.
+	// The cascade walk should discover projectDir/.cf/config.toml via CWD.
+	client, result, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
+	if err != nil {
+		t.Fatalf("InitWithConfig: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if result == nil {
+		t.Fatal("InitWithConfig returned nil *InitResult")
+	}
+
+	// A project layer must appear in ConfigLayers.
+	foundProject := false
+	for _, l := range result.ConfigLayers {
+		if l.Source == "project" && !l.Skipped {
+			foundProject = true
 			break
 		}
 	}
-	// Either AutoJoined has the ID or a warning was produced — one of these must be true.
-	if len(result.AutoJoined) == 0 && !warned {
-		t.Errorf("auto_join was set in config but AutoJoined is empty and no warnings were produced")
+	if !foundProject {
+		t.Errorf("no non-skipped project layer in ConfigLayers: %+v", result.ConfigLayers)
+	}
+
+	// The project config endpoint must have been applied to the client.
+	if got := client.RemoteURL(); got != projectEndpoint {
+		t.Errorf("client.RemoteURL() = %q, want %q (project config endpoint not applied)", got, projectEndpoint)
 	}
 }
 
