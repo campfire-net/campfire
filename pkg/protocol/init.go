@@ -10,6 +10,131 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 )
 
+// resolveGlobalDir returns the global campfire home directory.
+// Order: WithConfigDir option > CF_HOME env var > ~/.cf
+func resolveGlobalDir(opts options) (string, error) {
+	if opts.configDir != "" {
+		abs, err := filepath.Abs(opts.configDir)
+		if err != nil {
+			return "", fmt.Errorf("protocol.InitWithConfig: resolving configDir: %w", err)
+		}
+		return abs, nil
+	}
+	if env := os.Getenv("CF_HOME"); env != "" {
+		abs, err := filepath.Abs(env)
+		if err != nil {
+			return "", fmt.Errorf("protocol.InitWithConfig: resolving CF_HOME: %w", err)
+		}
+		return abs, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("protocol.InitWithConfig: resolving home directory: %w", err)
+	}
+	return filepath.Join(home, ".cf"), nil
+}
+
+// InitWithConfig discovers and merges config files from the cascade (global
+// ~/.cf/config.toml, ancestor .cf/config.toml files, and CWD .cf/config.toml),
+// translates the merged config into Option values, and delegates to Init().
+//
+// This is the recommended entry point for 0.16+ callers. The older Init(configDir)
+// signature continues to work without modification.
+//
+// Option precedence (highest wins):
+//  1. opts passed to InitWithConfig() — explicit always wins
+//  2. Config files in the cascade
+//  3. Compiled-in defaults
+//
+// The returned *InitResult is extended with ConfigLayers, IdentitySource, and
+// AutoJoined compared to Init(). All other InitResult fields behave identically.
+func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
+	// Build options to read WithConfigDir and any caller-supplied overrides.
+	opts := defaultOptions()
+	for _, fn := range optFuncs {
+		fn(&opts)
+	}
+
+	// Resolve global config directory.
+	globalDir, err := resolveGlobalDir(opts)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// CWD as project dir for cascade walk.
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = globalDir
+	}
+
+	// Load and merge the config cascade.
+	cfg, layers, cfgWarnings, err := LoadConfig(globalDir, cwd)
+	if err != nil {
+		return nil, nil, fmt.Errorf("protocol.InitWithConfig: loading config: %w", err)
+	}
+
+	// Determine IdentitySource: did any config layer contribute identity.file?
+	identitySource := "default"
+	for _, l := range layers {
+		if !l.Skipped {
+			for _, f := range l.Fields {
+				if f == "identity.file" {
+					identitySource = "config"
+					break
+				}
+			}
+		}
+		if identitySource == "config" {
+			break
+		}
+	}
+	// CF_HOME / env resolution qualifies as "env".
+	if identitySource == "default" && (opts.configDir != "" || os.Getenv("CF_HOME") != "") {
+		identitySource = "env"
+	}
+
+	// Translate config into options, but only when the caller has NOT already
+	// set the same option explicitly. We achieve this by applying config-derived
+	// options first, then re-applying the caller's opts on top.
+	var configOpts []Option
+
+	// transport.endpoint → WithRemote (only when set in config and non-default)
+	if cfg.Transport.Endpoint != "" && cfg.Transport.Endpoint != defaultTransportEndpoint {
+		configOpts = append(configOpts, WithRemote(cfg.Transport.Endpoint))
+	}
+
+	// behavior.walk_up → WithWalkUp
+	if cfg.Behavior.WalkUp {
+		configOpts = append(configOpts, WithWalkUp())
+	}
+
+	// Build final option list: config-derived first, then caller overrides.
+	finalOpts := append(configOpts, optFuncs...)
+
+	// Delegate to the existing Init() using the globalDir as configDir.
+	client, result, err := Init(globalDir, finalOpts...)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Populate extended InitResult fields.
+	result.ConfigLayers = layers
+	result.IdentitySource = identitySource
+	result.Warnings = append(result.Warnings, cfgWarnings...)
+
+	// Auto-join campfires listed in behavior.auto_join.
+	for _, addr := range cfg.Behavior.AutoJoin {
+		if _, joinErr := client.Join(JoinRequest{CampfireID: addr}); joinErr != nil {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("auto_join %q: %v", addr, joinErr))
+			continue
+		}
+		result.AutoJoined = append(result.AutoJoined, addr)
+	}
+
+	return client, result, nil
+}
+
 const identityFilename = "identity.json"
 
 // InitResult reports what protocol.Init() did during initialization.
@@ -44,6 +169,23 @@ type InitResult struct {
 
 	// Warnings contains non-fatal diagnostic messages produced during Init().
 	Warnings []string
+
+	// ConfigLayers lists every config file examined during the cascade,
+	// including files that were found but skipped (Skipped=true + SkipReason).
+	// Populated only by InitWithConfig(); empty when Init() is called directly.
+	ConfigLayers []ConfigLayer
+
+	// IdentitySource describes how the identity path was determined.
+	// "config" — identity.file was set in a config file.
+	// "env"    — identity path was derived from CF_HOME or an env override.
+	// "default" — compiled-in default was used (no config file set it).
+	// Populated only by InitWithConfig(); empty when Init() is called directly.
+	IdentitySource string
+
+	// AutoJoined contains the campfire IDs that were auto-joined during Init()
+	// because they appeared in behavior.auto_join in the config cascade.
+	// Populated only by InitWithConfig(); empty when Init() is called directly.
+	AutoJoined []string
 }
 
 // Init opens or creates a fully-functional *Client backed by an Ed25519
