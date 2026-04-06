@@ -53,6 +53,9 @@ func NewVerificationCache() VerificationCache {
 }
 
 func pubkeyHex(pub ed25519.PublicKey) string {
+	if pub == nil {
+		panic("verification_cache: nil pubkey")
+	}
 	return hex.EncodeToString(pub)
 }
 
