@@ -338,24 +338,39 @@ func TestDispatcher_Tier1_FulfillmentPosted(t *testing.T) {
 	}
 
 	// Verify the fulfillment message was actually posted to the campfire.
-	result, err := env.callerClient.Read(protocol.ReadRequest{
-		CampfireID: env.campfireID,
-		Tags:       []string{"fulfills"},
-	})
-	if err != nil {
-		t.Fatalf("callerClient.Read: %v", err)
-	}
-	found := false
-	for _, m := range result.Messages {
-		for _, ant := range m.Antecedents {
-			if ant == sentMsg.ID {
-				found = true
-			}
-		}
-	}
+	// The dispatch store marks "fulfilled" before sendFulfillment completes, so we
+	// must poll until the message appears rather than reading once immediately.
+	found := waitForFulfillmentMessage(t, env.callerClient, env.campfireID, sentMsg.ID, 2*time.Second)
 	if !found {
 		t.Fatal("no fulfillment message found with correct antecedent")
 	}
+}
+
+// waitForFulfillmentMessage polls callerClient.Read until a message tagged
+// "fulfills" with the given antecedent ID appears, or the timeout elapses.
+// The dispatch store marks "fulfilled" before sendFulfillment completes, so
+// a one-shot read immediately after waitForDispatch is racy.
+func waitForFulfillmentMessage(t *testing.T, client *protocol.Client, campfireID, antecedentID string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		result, err := client.Read(protocol.ReadRequest{
+			CampfireID: campfireID,
+			Tags:       []string{"fulfills"},
+		})
+		if err != nil {
+			t.Fatalf("callerClient.Read: %v", err)
+		}
+		for _, m := range result.Messages {
+			for _, ant := range m.Antecedents {
+				if ant == antecedentID {
+					return true
+				}
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
 }
 
 func TestDispatcher_Tier1_HandlerError_SendsErrorFulfillment(t *testing.T) {
