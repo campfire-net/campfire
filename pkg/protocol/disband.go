@@ -50,6 +50,13 @@ func (c *Client) Disband(campfireID string) error {
 		return fmt.Errorf("identity required to disband a campfire")
 	}
 
+	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
+	resolvedID, _, resolveErr := resolveInput(campfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return fmt.Errorf("protocol.Client.Disband: resolving campfire address: %w", resolveErr)
+	}
+	campfireID = resolvedID
+
 	// Look up the caller's membership to find the transport dir and verify
 	// creator status.
 	m, err := c.store.GetMembership(campfireID)

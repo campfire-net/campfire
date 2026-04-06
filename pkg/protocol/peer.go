@@ -42,6 +42,13 @@ func (c *Client) AddPeer(campfireID string, peer PeerInfo) error {
 		return fmt.Errorf("protocol.Client.AddPeer: Endpoint is required")
 	}
 
+	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
+	resolvedID, _, resolveErr := resolveInput(campfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return fmt.Errorf("protocol.Client.AddPeer: resolving campfire address: %w", resolveErr)
+	}
+	campfireID = resolvedID
+
 	m, err := c.store.GetMembership(campfireID)
 	if err != nil {
 		return fmt.Errorf("protocol.Client.AddPeer: querying membership: %w", err)
@@ -82,6 +89,13 @@ func (c *Client) RemovePeer(campfireID string, publicKeyHex string) error {
 		return fmt.Errorf("protocol.Client.RemovePeer: publicKeyHex is required")
 	}
 
+	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
+	resolvedID, _, resolveErr := resolveInput(campfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return fmt.Errorf("protocol.Client.RemovePeer: resolving campfire address: %w", resolveErr)
+	}
+	campfireID = resolvedID
+
 	m, err := c.store.GetMembership(campfireID)
 	if err != nil {
 		return fmt.Errorf("protocol.Client.RemovePeer: querying membership: %w", err)
@@ -104,6 +118,13 @@ func (c *Client) Peers(campfireID string) ([]PeerInfo, error) {
 	if campfireID == "" {
 		return nil, fmt.Errorf("protocol.Client.Peers: CampfireID is required")
 	}
+
+	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
+	resolvedID, _, resolveErr := resolveInput(campfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("protocol.Client.Peers: resolving campfire address: %w", resolveErr)
+	}
+	campfireID = resolvedID
 
 	m, err := c.store.GetMembership(campfireID)
 	if err != nil {

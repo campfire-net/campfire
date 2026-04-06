@@ -137,6 +137,14 @@ func (c *Client) Send(req SendRequest) (*message.Message, error) {
 		return nil, fmt.Errorf("identity required to send messages")
 	}
 
+	// Resolve beacon strings and cf:// URIs to canonical hex IDs.
+	// For existing memberships, the stored transport is used — the hint is discarded.
+	resolvedID, _, err := resolveInput(req.CampfireID, c.opts.namingResolver)
+	if err != nil {
+		return nil, fmt.Errorf("resolving campfire address: %w", err)
+	}
+	req.CampfireID = resolvedID
+
 	m, err := c.store.GetMembership(req.CampfireID)
 	if err != nil {
 		return nil, fmt.Errorf("querying membership: %w", err)

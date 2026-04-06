@@ -42,6 +42,13 @@ func (c *Client) Members(campfireID string) ([]MemberRecord, error) {
 		return nil, fmt.Errorf("protocol.Client.Members: campfireID is required")
 	}
 
+	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
+	resolvedID, _, resolveErr := resolveInput(campfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("protocol.Client.Members: resolving campfire address: %w", resolveErr)
+	}
+	campfireID = resolvedID
+
 	m, err := c.store.GetMembership(campfireID)
 	if err != nil {
 		return nil, fmt.Errorf("protocol.Client.Members: querying membership: %w", err)
@@ -107,6 +114,13 @@ func (c *Client) Leave(campfireID string) error {
 	if campfireID == "" {
 		return fmt.Errorf("protocol.Client.Leave: campfireID is required")
 	}
+
+	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
+	resolvedID, _, resolveErr := resolveInput(campfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return fmt.Errorf("protocol.Client.Leave: resolving campfire address: %w", resolveErr)
+	}
+	campfireID = resolvedID
 
 	// Check that the caller is currently a member (store record present).
 	m, err := c.store.GetMembership(campfireID)
