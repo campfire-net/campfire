@@ -27,6 +27,11 @@ jobs:
       - name: Run tests
         run: go test ./...
 
+      - name: Run tests with race detector
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./pkg/protocol/... ./pkg/convention/... -timeout 300s
+
       - name: Run Azurite integration tests
         run: go test -tags azurite -v ./pkg/store/aztable/...
 
