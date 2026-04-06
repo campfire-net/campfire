@@ -68,6 +68,12 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 	if req.TargetMsgID == "" {
 		return nil, fmt.Errorf("protocol.Client.Await: TargetMsgID is required")
 	}
+	if err := c.checkCampfire(req.CampfireID); err != nil {
+		return nil, err
+	}
+	if err := c.checkOperation("read"); err != nil {
+		return nil, err
+	}
 
 	// Resolve beacon strings and cf:// URIs. Hint discarded — uses stored transport.
 	resolvedID, _, resolveErr := resolveInput(req.CampfireID, c.opts.namingResolver)
