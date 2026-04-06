@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -157,6 +159,49 @@ func TestProfileCache_All(t *testing.T) {
 	}
 	if got := c.All(); len(got) != 2 {
 		t.Errorf("All() after mutating snapshot returned %d entries, want 2", len(got))
+	}
+}
+
+// TestProfileCache_PersistFailure_ReadOnlyDir verifies that Set returns a non-nil error
+// when the cache directory is read-only, causing os.CreateTemp to fail.
+func TestProfileCache_PersistFailure_ReadOnlyDir(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+	dir := t.TempDir()
+	c := NewProfileCache(dir)
+	// Make the dir read-only so os.CreateTemp fails.
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0700) // restore for cleanup
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Set(pub, "Alice")
+	if err == nil {
+		t.Error("expected error when persist dir is read-only, got nil")
+	}
+}
+
+// TestProfileCache_PersistFailure_RenameBlocked verifies that Set returns a non-nil error
+// when the destination path for the atomic rename is a directory (rename fails with EISDIR).
+func TestProfileCache_PersistFailure_RenameBlocked(t *testing.T) {
+	dir := t.TempDir()
+	c := NewProfileCache(dir)
+	// Block the rename by placing a directory at the profiles.json path.
+	// os.CreateTemp will still succeed (it writes to dir), but os.Rename will fail.
+	if err := os.Mkdir(filepath.Join(dir, "profiles.json"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Set(pub, "Bob")
+	if err == nil {
+		t.Error("expected error when rename destination is a directory, got nil")
 	}
 }
 
