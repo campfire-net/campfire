@@ -3,6 +3,7 @@ package protocol
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -10,6 +11,10 @@ import (
 // DefaultVerificationTTL is the default TTL for super-identity verification entries.
 // Callers should use this when invoking Set unless a custom TTL is required.
 const DefaultVerificationTTL = 5 * time.Minute
+
+// MaxVerificationTTL is the maximum allowed TTL for a cache entry.
+// Callers supplying a larger TTL are silently clamped to this value.
+const MaxVerificationTTL = 1 * time.Hour
 
 // VerificationCache maps sender Ed25519 pubkeys to verified home campfire IDs.
 // Entries expire after their individual TTL. Thread-safe.
@@ -61,7 +66,15 @@ func pubkeyHex(pub ed25519.PublicKey) string {
 
 // Set stores a verified mapping: senderPubkey → homeCampfireID with the given TTL.
 // TTL=0 means the entry expires immediately (Get will always miss).
+// TTL values exceeding MaxVerificationTTL are silently clamped.
+// homeCampfireID must be a 64-character lowercase hex string; Set panics otherwise.
 func (c *memVerificationCache) Set(senderPubkey ed25519.PublicKey, homeCampfireID string, ttl time.Duration) {
+	if !hexIDRe.MatchString(homeCampfireID) {
+		panic(fmt.Sprintf("verification_cache: invalid campfire ID %q", homeCampfireID))
+	}
+	if ttl > MaxVerificationTTL {
+		ttl = MaxVerificationTTL
+	}
 	key := pubkeyHex(senderPubkey)
 	c.mu.Lock()
 	c.entries[key] = verificationEntry{
