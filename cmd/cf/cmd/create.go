@@ -87,15 +87,11 @@ var createCmd = &cobra.Command{
 	},
 }
 
-func createFilesystem(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, description string) error {
-	return createFilesystemWithNoConfig(cf, agentID, s, description, false)
-}
-
 func createFilesystemWithNoConfig(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, description string, noConfig bool) error {
 	return createFilesystemWithDescAndConfig(cf, agentID, s, fs.DefaultBaseDir(), description, noConfig)
 }
 
-// createFilesystemWithDesc is the testable core of createFilesystem.
+// createFilesystemWithDesc is the testable core of createFilesystemWithNoConfig.
 // It accepts an explicit baseDir (for tests) and description.
 // In project mode (.campfire/root exists) it also:
 //   - publishes a beacon to .campfire/beacons/ in the project dir
@@ -104,7 +100,7 @@ func createFilesystemWithDesc(cf *campfire.Campfire, agentID *identity.Identity,
 	return createFilesystemWithDescAndConfig(cf, agentID, s, baseDir, description, false)
 }
 
-// createFilesystemWithDescAndConfig is the core of createFilesystem.
+// createFilesystemWithDescAndConfig is the core implementation for filesystem campfire creation.
 // noConfig=true skips writing the beacon to .cf/config.toml.
 func createFilesystemWithDescAndConfig(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, baseDir string, description string, noConfig bool) error {
 	// Set up filesystem transport.
