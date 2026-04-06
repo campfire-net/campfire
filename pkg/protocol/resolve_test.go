@@ -498,6 +498,144 @@ func TestClient_Send_StoredTransportWinsOverBeacon_WrongTransport(t *testing.T) 
 	}
 }
 
+// TestResolveInput_EmptyAddress verifies that an empty string returns a "required" error.
+func TestResolveInput_EmptyAddress(t *testing.T) {
+	_, _, err := protocol.ResolveInputForTest("", nil)
+	if err == nil {
+		t.Fatal("expected error for empty address, got nil")
+	}
+	if !containsString(err.Error(), "required") {
+		t.Errorf("error %q does not contain %q", err.Error(), "required")
+	}
+}
+
+// TestResolveInput_UnknownFormat verifies that an unrecognized address format
+// returns an error containing "unrecognized".
+func TestResolveInput_UnknownFormat(t *testing.T) {
+	_, _, err := protocol.ResolveInputForTest("not-a-valid-address", nil)
+	if err == nil {
+		t.Fatal("expected error for unrecognized address format, got nil")
+	}
+	if !containsString(err.Error(), "unrecognized") {
+		t.Errorf("error %q does not contain %q", err.Error(), "unrecognized")
+	}
+}
+
+// TestResolveInput_CfBeaconURIScheme verifies that "cf+beacon://<base64>" resolves
+// identically to "beacon:<base64>" for the same beacon payload.
+func TestResolveInput_CfBeaconURIScheme(t *testing.T) {
+	// Build a valid beacon: string, then convert to cf+beacon:// form.
+	beaconStr, wantID := makeValidBeaconString(t)
+
+	// beaconStr is "beacon:<base64>"; strip the prefix and re-attach cf+beacon://.
+	const beaconPrefix = "beacon:"
+	if !strings.HasPrefix(beaconStr, beaconPrefix) {
+		t.Fatalf("makeValidBeaconString returned unexpected format: %q", beaconStr)
+	}
+	base64Part := beaconStr[len(beaconPrefix):]
+	cfBeaconStr := "cf+beacon://" + base64Part
+
+	campfireID, hint, err := protocol.ResolveInputForTest(cfBeaconStr, nil)
+	if err != nil {
+		t.Fatalf("unexpected error for cf+beacon:// input: %v", err)
+	}
+	if campfireID != wantID {
+		t.Errorf("got campfire ID %q, want %q", campfireID, wantID)
+	}
+	if hint == nil {
+		t.Fatal("expected non-nil hint for cf+beacon:// input")
+	}
+	if !hint.Tainted {
+		t.Error("hint.Tainted must always be true for beacon-derived hints")
+	}
+}
+
+// TestResolveInput_BeaconEmptyData verifies that "beacon:" (empty payload after prefix)
+// returns ErrBeaconVerificationFailed wrapping an "empty beacon data" error.
+func TestResolveInput_BeaconEmptyData(t *testing.T) {
+	_, _, err := protocol.ResolveInputForTest("beacon:", nil)
+	if err == nil {
+		t.Fatal("expected error for empty beacon data, got nil")
+	}
+	if !errors.Is(err, protocol.ErrBeaconVerificationFailed) {
+		t.Errorf("expected ErrBeaconVerificationFailed, got: %v", err)
+	}
+	if !containsString(err.Error(), "empty beacon data") {
+		t.Errorf("error %q does not contain %q", err.Error(), "empty beacon data")
+	}
+}
+
+// TestInitWithConfig_WithNamingResolver_CfURI verifies that WithNamingResolver wires
+// the resolver into the client so that cf:// URIs are resolved end-to-end.
+// Uses Init() since both Init and InitWithConfig thread opts.namingResolver through
+// to resolveInput.
+func TestInitWithConfig_WithNamingResolver_CfURI(t *testing.T) {
+	transportDir := t.TempDir()
+	beaconDir := t.TempDir()
+
+	// Create a real campfire so we have a valid campfire ID to map to.
+	configDirA := t.TempDir()
+	clientA, _, err := protocol.Init(configDirA)
+	if err != nil {
+		t.Fatalf("Init A: %v", err)
+	}
+	t.Cleanup(func() { clientA.Close() })
+
+	createResult, err := clientA.Create(protocol.CreateRequest{
+		Transport: protocol.FilesystemTransport{Dir: transportDir},
+		BeaconDir: beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	campfireID := createResult.CampfireID
+
+	// Build a client with a stub NamingResolver that maps "cf://test-name" → campfireID.
+	configDirB := t.TempDir()
+	resolver := &stubResolver{result: campfireID}
+	clientB, _, err := protocol.Init(configDirB, protocol.WithNamingResolver(resolver))
+	if err != nil {
+		t.Fatalf("Init B with WithNamingResolver: %v", err)
+	}
+	t.Cleanup(func() { clientB.Close() })
+
+	// Join the campfire using the hex ID so clientB has a membership.
+	// The FilesystemTransport.Dir must point to the campfire-specific subdirectory.
+	campfireDir := filepath.Join(transportDir, campfireID)
+	if _, err := clientB.Join(protocol.JoinRequest{
+		CampfireID: campfireID,
+		Transport:  &protocol.FilesystemTransport{Dir: campfireDir},
+	}); err != nil {
+		t.Fatalf("Join via hex ID: %v", err)
+	}
+
+	// Now Send using a cf:// URI — the stub resolver should map it to campfireID.
+	// If the naming resolver was not wired, this would fail with "naming resolver not configured".
+	_, err = clientB.Send(protocol.SendRequest{
+		CampfireID: "cf://test-name",
+		Payload:    []byte("hello via cf:// URI"),
+	})
+	if err != nil {
+		t.Fatalf("Send with cf:// URI (WithNamingResolver should have resolved it): %v", err)
+	}
+
+	// Verify the message arrived.
+	readResult, err := clientA.Read(protocol.ReadRequest{CampfireID: campfireID})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	found := false
+	for _, msg := range readResult.Messages {
+		if string(msg.Payload) == "hello via cf:// URI" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("message sent via cf:// URI not found in campfire (got %d messages)", len(readResult.Messages))
+	}
+}
+
 // containsString returns true if s contains substr.
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && func() bool {
