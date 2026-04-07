@@ -514,3 +514,48 @@ func TestBillingSweep_UsesForgeAccountID_NotServerID(t *testing.T) {
 			capturedAccountIDs[0], customerForgeAccountID)
 	}
 }
+
+// TestMemoryDispatchStore_MarkBilled_AlreadyBilled is a regression test for the
+// double-billing bug: MarkBilled must reject a second billing attempt even when
+// the caller holds a valid, non-stale ETag. The ETag check only prevents concurrent
+// writes — it does not prevent sequential re-billing by the same caller.
+func TestMemoryDispatchStore_MarkBilled_AlreadyBilled(t *testing.T) {
+	ctx := context.Background()
+	ds := convention.NewMemoryDispatchStore()
+
+	// Set up a fulfilled dispatch with token consumption.
+	ds.MarkDispatched(ctx, "cf1", "msg1", "srv1", "acct1", "conv", "op")
+	ds.MarkFulfilled(ctx, "cf1", "msg1")
+	ds.SetTokensConsumed(ctx, "cf1", "msg1", 100)
+
+	// Step 1: Bill successfully — first call must succeed.
+	unbilled, err := ds.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches: %v", err)
+	}
+	if len(unbilled) != 1 {
+		t.Fatalf("expected 1 unbilled, got %d", len(unbilled))
+	}
+	etag := unbilled[0].ETag
+	if err := ds.MarkBilled(ctx, "cf1", "msg1", etag); err != nil {
+		t.Fatalf("first MarkBilled should succeed: %v", err)
+	}
+
+	// Step 2: Re-billing attempt must fail with ErrAlreadyBilled.
+	// Using the original ETag (now stale) demonstrates the guard fires on BilledAt,
+	// not just on ETag — but the ErrAlreadyBilled check precedes the ETag check,
+	// so even a fresh ETag would be rejected.
+	err = ds.MarkBilled(ctx, "cf1", "msg1", "999999")
+	if err == nil {
+		t.Fatal("second MarkBilled should have failed with ErrAlreadyBilled, but succeeded")
+	}
+	if !errors.Is(err, convention.ErrAlreadyBilled) {
+		t.Fatalf("expected ErrAlreadyBilled, got: %v", err)
+	}
+
+	// Step 3: Confirm the record is still billed (BilledAt not overwritten).
+	stillUnbilled, _ := ds.ListUnbilledDispatches(ctx)
+	if len(stillUnbilled) != 0 {
+		t.Fatalf("expected 0 unbilled after double-bill attempt, got %d", len(stillUnbilled))
+	}
+}

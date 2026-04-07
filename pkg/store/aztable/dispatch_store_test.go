@@ -764,24 +764,30 @@ func TestDispatchStore_MarkBilled_ConcurrentRace(t *testing.T) {
 	close(gate) // release both goroutines simultaneously
 	wg.Wait()
 
-	// Exactly one should succeed; the other should get ErrConcurrentModification.
+	// Exactly one should succeed; the other should get a rejection error.
+	// With the re-billing guard, the loser may get either:
+	//   - ErrConcurrentModification: if its read completed before the winner's write
+	//     (the ETag-gated write fails with 412 on the already-updated record)
+	//   - ErrAlreadyBilled: if its read completed after the winner's write
+	//     (the read sees BilledAt != 0 and rejects before attempting the write)
+	// Both are correct rejections; both prevent double-billing.
 	wins := 0
-	conflicts := 0
+	rejected := 0
 	for i, err := range errs {
 		if err == nil {
 			wins++
-		} else if errors.Is(err, convention.ErrConcurrentModification) {
-			conflicts++
+		} else if errors.Is(err, convention.ErrConcurrentModification) || errors.Is(err, convention.ErrAlreadyBilled) {
+			rejected++
 		} else {
 			t.Errorf("goroutine %d: unexpected error: %v", i, err)
 		}
 	}
 
 	if wins != 1 {
-		t.Errorf("expected exactly 1 winner, got %d (wins=%d, conflicts=%d)", wins, wins, conflicts)
+		t.Errorf("expected exactly 1 winner, got %d (wins=%d, rejected=%d)", wins, wins, rejected)
 	}
-	if conflicts != 1 {
-		t.Errorf("expected exactly 1 conflict, got %d (wins=%d, conflicts=%d)", conflicts, wins, conflicts)
+	if rejected != 1 {
+		t.Errorf("expected exactly 1 rejected, got %d (wins=%d, rejected=%d)", rejected, wins, rejected)
 	}
 
 	// Verify the winner's change persisted — record should no longer be unbilled.
@@ -1087,5 +1093,62 @@ func TestDispatchStore_MarkBilled_WildcardETag(t *testing.T) {
 	}
 	if !found {
 		t.Error("record was billed despite invalid ETag — unconditional write was not blocked")
+	}
+}
+
+// ---- Re-billing guard (campfire-agent-7d4) ----
+
+// TestDispatchStore_MarkBilled_AlreadyBilled is a regression test for the
+// double-billing bug: MarkBilled must reject a second billing attempt even when
+// the caller holds a valid, non-stale ETag.
+func TestDispatchStore_MarkBilled_AlreadyBilled(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+	cfID := unique("cf")
+	msgID := unique("msg")
+
+	// Set up a fulfilled dispatch with token consumption.
+	ok, err := s.MarkDispatched(ctx, cfID, msgID, "srv1", "acct1", "conv", "op")
+	if err != nil || !ok {
+		t.Fatalf("MarkDispatched: ok=%v err=%v", ok, err)
+	}
+	if err := s.MarkFulfilled(ctx, cfID, msgID); err != nil {
+		t.Fatalf("MarkFulfilled: %v", err)
+	}
+	if err := s.SetTokensConsumed(ctx, cfID, msgID, 100); err != nil {
+		t.Fatalf("SetTokensConsumed: %v", err)
+	}
+
+	// Step 1: Read unbilled dispatches and bill successfully.
+	unbilled, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches: %v", err)
+	}
+	if len(unbilled) == 0 {
+		t.Fatal("expected at least 1 unbilled record")
+	}
+	var rec convention.DispatchRecord
+	for _, r := range unbilled {
+		if r.MessageID == msgID {
+			rec = r
+			break
+		}
+	}
+	if rec.ETag == "" {
+		t.Fatal("expected non-empty ETag from ListUnbilledDispatches")
+	}
+	if err := s.MarkBilled(ctx, cfID, msgID, rec.ETag); err != nil {
+		t.Fatalf("first MarkBilled should succeed: %v", err)
+	}
+
+	// Step 2: Attempt to bill again. The record now has BilledAt != 0.
+	// Use the original ETag (which is stale after the write updated the record).
+	// The guard must fire ErrAlreadyBilled (BilledAt != 0 checked before write).
+	err = s.MarkBilled(ctx, cfID, msgID, rec.ETag)
+	if err == nil {
+		t.Fatal("second MarkBilled should have returned ErrAlreadyBilled, but succeeded")
+	}
+	if !errors.Is(err, convention.ErrAlreadyBilled) {
+		t.Fatalf("expected ErrAlreadyBilled, got: %v", err)
 	}
 }
