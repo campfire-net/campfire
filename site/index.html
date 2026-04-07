@@ -673,9 +673,10 @@ Synced 1 convention: clankeros-grid v1.0 (5 operations)</span>
 /* ── Concept panels (homepage rewrite) ── */
 .concept-panels {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr;
   gap: 32px;
-  align-items: start;
+  max-width: 720px;
+  margin: 0 auto;
 }
 
 .concept-panel {
@@ -728,7 +729,9 @@ Synced 1 convention: clankeros-grid v1.0 (5 operations)</span>
 
 .concept-panel .quickstart-block {
   margin: 0 16px 16px;
-  font-size: 12px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .concept-visual {
@@ -812,13 +815,7 @@ Synced 1 convention: clankeros-grid v1.0 (5 operations)</span>
   text-anchor: middle;
 }
 
-@media (max-width: 1024px) {
-  .concept-panels {
-    grid-template-columns: 1fr;
-    max-width: 600px;
-    margin: 0 auto;
-  }
-}
+/* panels are always single-column — no breakpoint needed */
 </style>
 
 <script>
