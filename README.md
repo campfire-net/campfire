@@ -1,6 +1,6 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://go.dev)
-[![Protocol](https://img.shields.io/badge/protocol-draft%20v0.3-green.svg)](docs/protocol-spec.md)
+[![Go](https://img.shields.io/badge/go-1.25+-00ADD8.svg)](https://go.dev)
+[![Protocol](https://img.shields.io/badge/protocol-draft%20v0.4-green.svg)](docs/protocol-spec.md)
 [![Release](https://img.shields.io/github/v/release/campfire-net/campfire)](https://github.com/campfire-net/campfire/releases)
 
 # Campfire
@@ -27,34 +27,50 @@ Three integration paths, in order of power:
 
 ---
 
-## Go SDK — build a convention server in 30 lines
+## Go SDK — build a convention server in 20 lines
 
 ```go
-client, _ := protocol.Init("~/.campfire")         // generate or load identity, open store
+client, _, _ := protocol.InitWithConfig()          // config cascade: ~/.cf/config.toml → ancestor .cf/ → CWD .cf/
 result, _ := client.Create(protocol.CreateRequest{ // create a campfire
-    Transport: protocol.FilesystemTransport{Dir: "~/.campfire/rooms"},
+    Transport: protocol.FilesystemTransport{Dir: "~/.cf/rooms"},
 })
 campfireID := result.CampfireID
 
-// Send, read, subscribe — msg is *protocol.Message
-client.Send(protocol.SendRequest{CampfireID: campfireID, Payload: []byte("hello"), Tags: []string{"status"}})
-sub := client.Subscribe(ctx, protocol.SubscribeRequest{CampfireID: campfireID, Tags: []string{"status"}})
-for msg := range sub.Messages() { fmt.Println(string(msg.Payload)) }
-
-// Or build a convention server — handles typed operations, auto-threads responses
+// Convention server — handles typed operations, auto-threads responses
 srv := convention.NewServer(client, myDeclaration)
 srv.RegisterHandler("submit-result", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
-    return &convention.Response{Payload: []byte(`{"status":"ok"}`)}, nil
+    return &convention.Response{Payload: map[string]any{"status": "ok"}}, nil
 })
 srv.Serve(ctx, campfireID)
 ```
 
+For lower-level access, the client exposes the full lifecycle directly:
+
+```go
+client.Send(protocol.SendRequest{CampfireID: campfireID, Payload: []byte("hello"), Tags: []string{"status"}})
+sub := client.Subscribe(ctx, protocol.SubscribeRequest{CampfireID: campfireID, Tags: []string{"status"}})
+for msg := range sub.Messages() { fmt.Println(string(msg.Payload)) }
+```
+
+**InitWithConfig vs Init:** `InitWithConfig` (0.16+) discovers and merges config files from a cascade (global `~/.cf/config.toml`, ancestor `.cf/config.toml` files, CWD `.cf/config.toml`), handles auto-join, and resolves display names. Use `Init(configDir)` when you manage config yourself.
+
 Full lifecycle: Init, Create, Join, Leave, Admit, Evict, Disband, Members, Send, Read, Get, GetByPrefix, Await, Subscribe. `PublicKeyHex()` returns the client's identity key.
+
+### Session tokens — zero-ceremony multi-agent coordination
+
+```go
+sess, token, _ := client.NewSession(2 * time.Hour)  // creator gets a Session + bearer token
+// hand token to sub-agents out-of-band
+joined, _ := protocol.JoinSession(token, creatorPub) // joiner decodes token, gets a Session
+joined.Send("hello from sub-agent")
+```
+
+Sessions are ephemeral campfires identified by a bearer token. No `cf init` or `CF_HOME` required for joiners. All participants share the same signing key — no per-sender attribution.
 
 ### Naming — register and discover services
 
 ```go
-client, _ := protocol.Init("~/.myapp/campfire")
+client, _, _ := protocol.Init("~/.cf")
 defer client.Close()
 
 // Create a namespace campfire
@@ -78,11 +94,14 @@ Full SDK reference: [`docs/convention-sdk.md`](docs/convention-sdk.md)
 ## CLI — for agents and operators
 
 ```bash
-cf init                          # generate identity
-cf discover                      # find campfires via beacons
-cf join <id>                     # join a campfire (conventions auto-discovered)
-cf <campfire> <operation> [args] # call a convention operation directly
-cf swarm start --description "..." # anchor a root campfire for multi-agent work
+cf init                              # generate identity
+cf init --display-name "My Agent"    # with a human-readable display name
+cf discover                          # find campfires via beacons
+cf join <id>                         # join a campfire (conventions auto-discovered)
+cf <campfire> <operation> [args]     # call a convention operation directly
+cf share <campfire>                  # output portable beacon string
+cf join beacon:BASE64...             # join from beacon string
+cf swarm start --description "..."   # anchor a root campfire for multi-agent work
 ```
 
 Full CLI reference: [`docs/cli-conventions.md`](docs/cli-conventions.md)
@@ -196,6 +215,8 @@ pkg/naming/          cf:// URI resolution, TOFU pinning, service discovery
 pkg/trust/           Trust chain walker, authority resolver, safety envelope, pin store
 pkg/crypto/          E2E encryption, hybrid key exchange, key wrapping
 pkg/threshold/       FROST threshold signatures (DKG + signing)
+pkg/session/         Session tokens (bearer-credential ephemeral campfires)
+pkg/projection/      Named filter projection views (on-write + lazy delta)
 pkg/ratelimit/       Per-operation rate limiting
 pkg/predicate/       Message filter predicate grammar
 pkg/meter/           Azure Marketplace metering API
@@ -226,7 +247,7 @@ Convention layering: `pkg/convention/` → `pkg/protocol/` → `pkg/transport/`
 | **What** | The protocol definition | One implementation in Go |
 | **Where** | `docs/protocol-spec.md` | `cmd/`, `pkg/` |
 | **Changes** | Open an issue first. During Draft phase, spec changes are at maintainer discretion. See [CONTRIBUTING.md](CONTRIBUTING.md). | Standard PR flow. We welcome implementation improvements, bug fixes, new transports, better tests. |
-| **Versioning** | Protocol version (draft v0.3) | Implementation version (semver) |
+| **Versioning** | Protocol version (draft v0.4) | Implementation version (semver) |
 
 ---
 

@@ -302,11 +302,14 @@
         <div class="cmd-header"><span class="cmd-name">cf init</span></div>
         <div class="cmd-body">
           <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf init --display-name "your name"</span></div>
-          <div class="cmd-line"><span class="cmd-out">Identity: 7f3a2c4d... (your name)</span></div>
-          <div class="cmd-line"><span class="cmd-out">Config:   ~/.cf/config.toml</span></div>
+          <div class="cmd-line"><span class="cmd-out">Your identity campfire: 7f3a2c4d... Share it like any beacon.</span></div>
+          <div class="cmd-line"><span class="cmd-out"></span></div>
+          <div class="cmd-line"><span class="cmd-out">Next: cf discover    find campfires</span></div>
+          <div class="cmd-line"><span class="cmd-out">      cf create      start one</span></div>
+          <div class="cmd-line"><span class="cmd-out">      cf join &lt;id&gt;   join one</span></div>
         </div>
       </div>
-      <p>Generates an Ed25519 keypair, writes <code>~/.cf/identity.json</code>, and creates <code>~/.cf/config.toml</code> with sensible defaults. That hex prefix is your public key &mdash; your permanent identity in the network. Set <code>naming.root</code> in <code>config.toml</code> to use <code>cf://</code> URIs. <a href="/docs/naming-trust-federation.html">Config details.</a></p>
+      <p>Generates an Ed25519 keypair, writes <code>~/.campfire/identity.json</code>, creates an identity campfire, and drops a <code>CONTEXT.md</code> protocol briefing alongside it. If <code>--display-name</code> is provided, a <code>profile.json</code> is also saved. The identity campfire ID is your permanent address in the network &mdash; share it like any beacon. <a href="/docs/naming-trust-federation.html">Naming details.</a></p>
 
       <div class="step-label">3. Join a campfire</div>
       <div class="cmd-block">

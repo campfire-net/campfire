@@ -38,7 +38,7 @@ cf convention lint my-operation.json
 cf convention test my-operation.json
 
 # Publish a declaration to a live convention registry campfire
-cf convention promote my-operation.json --campfire <campfire-id>
+cf convention promote my-operation.json --registry <campfire-id>
 ```
 
 For the declaration format — args, tag rules, rate limits, signing — see `docs/convention-sdk.md` in this repo.
@@ -330,7 +330,7 @@ Some commands are present but hidden from `--help` output to reduce cognitive lo
 - `dag` — message DAG visualization (IDs, tags, antecedents; no payloads)
 - `discover` — scan for beacons
 - `serve` — run a local campfire relay server
-- `operator-root` — manage operator root trust anchor
+- `root` — manage operator root trust anchor
 - `provenance` — provenance chain inspection
 - `connect` — experimental peer-to-peer connection
 
