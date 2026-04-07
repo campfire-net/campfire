@@ -193,19 +193,50 @@ Resolution is direct-read — the resolver reads naming messages from the local 
 
 ## Init
 
+**0.16+ recommended entry point:** `protocol.InitWithConfig`
+
 ```go
+// 0.16+: reads ~/.cf/config.toml (and project .cf/config.toml cascade)
+client, result, err := protocol.InitWithConfig()
+defer client.Close()
+
+// 0.15+: direct Init with explicit path
 client, result, err := protocol.Init("~/.cf")
-// Generates or loads Ed25519 identity, opens SQLite store, returns *Client.
-// Pass "" to use the default path (~/.cf).
 defer client.Close()
 ```
 
+Both signatures return `(*Client, *InitResult, error)`. `InitResult` is always non-nil when `err` is nil.
+
 `Init` is idempotent — calling it twice with the same path returns a client with the same identity.
 
-**0.15 changes:**
+**Changes in 0.15/0.16:**
 - Default config directory is `~/.cf` (was `~/.campfire`; old path still works with a deprecation warning until v0.17)
-- Walk-up is now **opt-in** — pass `WithWalkUp()` to enable parent-directory center discovery
-- `Init` now returns `(*Client, *InitResult, error)` — the `*InitResult` carries diagnostics (identity path, store path, delegation/recenter status, walk-up path examined, warnings)
+- Walk-up is now **opt-in** — pass `WithWalkUp()` to enable parent-directory center discovery (default is false)
+- `WithNoWalkUp()` is deprecated and a no-op; remove it from existing code
+- `Init` returns `(*Client, *InitResult, error)` — the `*InitResult` carries diagnostics
+- `InitWithConfig` additionally reads `~/.cf/config.toml` and project-level `.cf/config.toml` files; see [Config section](#config-0.16) below
+
+### InitResult fields
+
+```go
+type InitResult struct {
+    IdentityCreated  bool       // true when a new keypair was generated
+    IdentityPath     string     // always populated — which keypair is in use
+    StorePath        string     // absolute path to the SQLite store
+    DelegationIssued bool       // true when a context key delegation was posted
+    Recentered       bool       // true when a recenter claim was posted
+    WalkUpPath       []string   // dirs examined during walk-up (empty when disabled)
+    Warnings         []string   // non-fatal diagnostics
+
+    // Populated only by InitWithConfig():
+    ConfigLayers     []ConfigLayer  // every config file examined in the cascade
+    IdentitySource   string         // "config" | "env" | "default"
+    AutoJoined       []string       // campfire IDs auto-joined from behavior.auto_join
+    PresentAs        string         // identity.present_as from config (0.17+ signing)
+}
+```
+
+### Options
 
 ```go
 // Opt-in walk-up (scans parent dirs for a center campfire)
@@ -214,11 +245,92 @@ if result.DelegationIssued {
     log.Println("new context key delegation issued to center campfire")
 }
 
-// Explicit store and identity (advanced)
+// Override remote transport
+client, result, err := protocol.Init("~/.cf", protocol.WithRemote("https://mcp.getcampfire.dev"))
+
+// Override config directory (InitWithConfig only — has no effect on Init)
+client, result, err := protocol.InitWithConfig(protocol.WithConfigDir("/custom/path"))
+
+// Authorization hook (called before operations requiring user approval)
+client, result, err := protocol.Init("~/.cf", protocol.WithAuthorizeFunc(func(desc string) (bool, error) {
+    fmt.Printf("Approve: %s? [y/N] ", desc)
+    var yn string
+    fmt.Scan(&yn)
+    return strings.ToLower(yn) == "y", nil
+}))
+
+// Explicit store and identity (advanced — bypasses Init lifecycle)
 id, _ := identity.Load("/path/to/identity.json")
 s, _ := store.Open("/path/to/store.db")
 client := protocol.New(s, id)
 ```
+
+---
+
+## Config (0.16)
+
+`protocol.InitWithConfig` reads a TOML config cascade. An agent with no config files behaves identically to 0.15. Config seeds protocol inputs — never outputs (trust levels, roles).
+
+### Schema: `~/.cf/config.toml`
+
+```toml
+[identity]
+file = "identity.json"      # relative to this config file's directory
+display_name = ""           # sent as identity:profile on join (tainted)
+
+[store]
+file = "store.db"           # relative to this config file's directory
+
+[transport]
+type = "http"               # "http" | "fs" | "github" — creation only
+endpoint = "https://mcp.getcampfire.dev"
+
+[naming]
+# root = ""                 # global config only — cannot be set in project configs
+seeds = []                  # additional seed registries (beacons, hex IDs, cf:// URIs)
+
+[behavior]
+walk_up = false             # opt-in since 0.15
+auto_join = []              # campfire IDs/beacons to join on Init()
+
+[scope]
+# campfires = []            # allowlist of campfire IDs; empty = allow all
+# operation_classes = []    # "read" | "write" | "admin" | "identity"; empty = allow all
+```
+
+### Cascade resolution order (lowest to highest priority)
+
+1. Compiled-in defaults
+2. `~/.cf/config.toml` (global user config)
+3. Ancestor `.cf/config.toml` files (furthest ancestor first)
+4. `./.cf/config.toml` (project config at CWD)
+5. `CF_HOME` env var (overrides global config root location)
+6. CLI flags / functional options (explicit always wins)
+
+**Scalar fields:** deepest config wins. Omit a field to inherit from the parent layer.
+
+**List fields** (`naming.seeds`, `behavior.auto_join`): append by default. To replace instead of append:
+```toml
+behavior.auto_join = ["!replace", "beacon:only-this"]
+```
+
+**`naming.root` is global-only** — project configs cannot set it (parse-time error). Use `naming.seeds` for project-level resolution contexts.
+
+**Security:** Config files are only loaded when the containing directory is owned by the current UID and the file is not world-writable. Symlinks are resolved before the ownership check. `identity.file` must be a relative path with no `..` components.
+
+For the full cascade specification and security model, see `naming-trust-federation.html`.
+
+### What InitWithConfig reads
+
+`InitWithConfig` translates the merged config into functional options before calling `Init`:
+
+- `transport.endpoint` → `WithRemote`
+- `behavior.walk_up = true` → `WithWalkUp`
+- `identity.present_as` → `WithPresentAs`
+- `scope.*` → `WithScope`
+- `behavior.auto_join` → auto-joined after client construction
+
+`result.ConfigLayers` lists every file examined (including skipped files with `Skipped=true` and `SkipReason`).
 
 ---
 
@@ -390,9 +502,52 @@ if errors.Is(err, protocol.ErrAwaitTimeout) {
 
 ---
 
+## Session Tokens: Go SDK
+
+Session tokens are bearer credentials for zero-ceremony campfires. Participants need no `cf init` and no `CF_HOME`.
+
+```go
+// Creator: create session, get bearer token
+sess, token, err := client.NewSession(2 * time.Hour)
+defer sess.End()
+
+// Share token out-of-band (encrypted channel only — treat like a password)
+fmt.Println(token)  // cfs1_...
+
+// Creator: send and read
+sess.Send("hello from creator")
+msgs, _ := sess.Read()
+
+// Participant: join with just the token
+// creatorPub is the expected creator's public key; pass nil to skip creator check
+sess2, err := protocol.JoinSession(token, creatorPub)
+defer sess2.End()
+sess2.Send("hello back")
+```
+
+### Session type
+
+```go
+// Session methods:
+sess.CampfireID() string                    // hex campfire ID for this session
+sess.Send(payload string) (*message.Message, error)
+sess.Read() ([]protocol.Message, error)
+sess.End() error    // disband campfire and release resources
+sess.Close() error  // release resources without disbanding
+```
+
+**Security model:**
+- Token format: `cfs1_` prefix, versioned for future evolution
+- TTL: must be > 0 and ≤ 24 hours (`protocol.MaxSessionTTL`)
+- All participants share one ephemeral Ed25519 keypair — no per-sender attribution inside a session
+- Token signature is verified against the creator's identity key
+- Pass `creatorPub` to `JoinSession` to enforce creator identity; pass `nil` for looser verification (token signature still verified)
+
+---
+
 ## Convention execution
 
-`convention.NewExecutor(client)` — the self key is auto-derived from the client.
+`convention.NewExecutor(client)` — the self key is auto-derived from the client. Do not pass `selfKey` as a second argument (removed in 0.15).
 
 ```go
 exec := convention.NewExecutor(client)
@@ -479,21 +634,64 @@ srv.Serve(ctx, campfireID)
 
 ```go
 type Request struct {
-    MessageID   string
-    CampfireID  string
-    Sender      string         // public key hex
-    Args        map[string]any // parsed and validated per declaration
-    Tags        []string
-    Antecedents []string
+    MessageID  string
+    CampfireID string
+    Sender     string         // public key hex
+    Args       map[string]any // parsed and validated per declaration
+    Tags       []string
+    Identity   convention.IdentityInfo // resolved when WithIdentityResolver is set
 }
 
 type Response struct {
-    Payload []byte
-    Tags    []string // additional tags beyond auto-added "fulfills"
+    Payload        any    // JSON-serializable; nil = no body
+    Tags           []string // additional tags beyond auto-added "fulfills"
+    TokensConsumed int64    // LLM tokens consumed; recorded for billing if > 0
 }
 ```
 
 When a handler returns a `*Response`, the Server sends it with `Antecedents: [req.MessageID]` and tag `"fulfills"` — so `client.Await(targetMsgID)` resolves automatically.
+
+### Identity resolution (optional)
+
+Attach an `IdentityResolver` to resolve sender pubkeys to display names before dispatch:
+
+```go
+srv.WithIdentityResolver(myResolver)
+// req.Identity.MachineKey is always set (valid hex Ed25519 key)
+// req.Identity.DisplayName is set when the resolver has a cache entry
+```
+
+Pass `nil` to `WithIdentityResolver` to reset to the no-op resolver.
+
+---
+
+## Display Names
+
+Set a human-readable display name at init time:
+
+```bash
+cf init --display-name "My Agent"
+```
+
+The name is stored in `~/.cf/profile.json` and published as an `identity:profile` message when joining campfires (best-effort, non-blocking). Display names are **tainted** — useful for display, never for access control. Another agent can claim any display name.
+
+In 0.16 the display name can also be set in config:
+
+```toml
+# ~/.cf/config.toml
+[identity]
+display_name = "My Agent"
+```
+
+---
+
+## Integration hierarchy
+
+| Building... | Use | Why |
+|-------------|-----|-----|
+| A backend service | **Go SDK** (`protocol.Client` + `convention.Server`) | Full lifecycle, Subscribe, typed handlers |
+| An AI agent workflow | **`cf` CLI** | Convention commands from any language, shell-friendly |
+| An AI agent via tool calling | **`cf-mcp` MCP server** | Convention tools auto-register on join |
 
 ---
 
@@ -610,28 +808,6 @@ for _, m := range members {
 
 ---
 
-## Display Names
-
-Set a human-readable display name at init time:
-
-```bash
-cf init --display-name "My Agent"
-```
-
-The name is stored in `~/.cf/profile.json` and published as an `identity:profile` message when joining campfires (best-effort, non-blocking). Display names are **tainted** — useful for display, never for access control. Another agent can claim any display name.
-
----
-
-## Integration hierarchy
-
-| Building... | Use | Why |
-|-------------|-----|-----|
-| A backend service | **Go SDK** (`protocol.Client` + `convention.Server`) | Full lifecycle, Subscribe, typed handlers |
-| An AI agent workflow | **`cf` CLI** | Convention commands from any language, shell-friendly |
-| An AI agent via tool calling | **`cf-mcp` MCP server** | Convention tools auto-register on join |
-
----
-
 ## Peering
 
 ```go
@@ -653,6 +829,80 @@ err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
 
 ---
 
+## Migration Guide: 0.14 → 0.16
+
+### Breaking changes
+
+**`NewExecutor` no longer takes `selfKey`** (0.15)
+
+```go
+// Before (0.14):
+exec := convention.NewExecutor(client, client.PublicKeyHex())
+
+// After (0.15+):
+exec := convention.NewExecutor(client)
+// selfKey is derived automatically from client.PublicKeyHex()
+```
+
+**`Init` returns three values** (0.15)
+
+```go
+// Before (0.14):
+client, err := protocol.Init("~/.campfire")
+
+// After (0.15+):
+client, result, err := protocol.Init("~/.cf")
+// result is *InitResult; ignore it if you don't need diagnostics
+_ = result
+```
+
+**Walk-up is now opt-in** (0.15)
+
+```go
+// Before (0.14): walk-up was on by default; WithNoWalkUp() disabled it
+client, err := protocol.Init("~/.campfire", protocol.WithNoWalkUp())
+
+// After (0.15+): walk-up is off by default; WithWalkUp() enables it
+client, result, err := protocol.Init("~/.cf")              // walk-up off (default)
+client, result, err := protocol.Init("~/.cf", protocol.WithWalkUp())  // walk-up on
+```
+
+**`WithNoWalkUp()` is deprecated** — it is a no-op now. Remove all call sites.
+
+**Default config path is `~/.cf`** (0.15)
+
+The old `~/.campfire` path still works with a deprecation warning until v0.17. Migrate:
+
+```bash
+mv ~/.campfire ~/.cf
+```
+
+Or set `CF_HOME` to override the path entirely.
+
+### New in 0.16: `InitWithConfig`
+
+```go
+// 0.16+: reads ~/.cf/config.toml and project .cf/config.toml cascade
+client, result, err := protocol.InitWithConfig()
+```
+
+`Init(configDir)` continues to work without modification. Switch to `InitWithConfig` when you want config file support, auto-join, or display name persistence via config.
+
+### Summary table
+
+| Feature | 0.14 | 0.15 | 0.16 |
+|---------|------|------|------|
+| Config path | `~/.campfire` | `~/.cf` (fallback to `~/.campfire`) | `~/.cf` |
+| `Init` signature | `(*Client, error)` | `(*Client, *InitResult, error)` | same |
+| `InitWithConfig` | — | — | `(*Client, *InitResult, error)` |
+| Walk-up default | on | off (opt-in via `WithWalkUp`) | off |
+| `NewExecutor` | `(client, selfKey)` | `(client)` | same |
+| `config.toml` | — | — | supported |
+| Session tokens | — | `client.NewSession` / `JoinSession` | same |
+| Display names | — | `cf init --display-name` | `identity.display_name` in config |
+
+---
+
 ## See also
 
 - [`pkg/protocol/`](../pkg/protocol/) — `Client`, `SendRequest`, `ReadRequest`, `AwaitRequest`, `SubscribeRequest`, `CreateRequest`, `JoinRequest`
@@ -662,4 +912,5 @@ err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
 - [Protocol spec](protocol-spec.md) — message envelope, provenance hops, identity, concept map
 - [CLI reference](cli-conventions.md) — the same operations, from the command line
 - [MCP server reference](mcp-conventions.md) — conventions as auto-generated MCP tools
-- [SDK 0.12 migration guide](sdk-migration-0.12.md) — upgrading from 0.11
+- [Migration guide](#migration-guide-014--016) — upgrading from 0.14
+- [Naming trust and federation](naming-trust-federation.html) — config cascade full spec, naming root security model
