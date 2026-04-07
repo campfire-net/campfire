@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.16.1 — Documentation Overhaul & Domain-Based Naming (2026-04-07)
+
+### Naming
+
+- **Domain-based naming resolution**: `naming.root` and `naming.seeds` in config now accept domain names (e.g., `getcampfire.dev`) in addition to raw campfire IDs. Domain names are resolved via `.well-known/campfire` discovery at runtime.
+
+### Documentation
+
+- **Homepage rewrite**: Rewrote the campfire homepage for clarity and accuracy.
+- **New pages**: Created Conventions reference page and Naming/Trust/Federation architecture page.
+- **Updated references**: Rewrote SDK, CLI, and MCP reference docs to reflect current API surfaces.
+- **README refresh**: Updated README with current install paths, commands, and architecture overview.
+- **Agent onboarding**: Added `llms.txt` and `AGENTS.md` to the site root for LLM/agent discovery and onboarding.
+- **Hallucination fixes**: Corrected fabricated app operations, wrong provenance model descriptions, fake `cf init` output, and stale path references (`~/.campfire` → `~/.cf`).
+- **Versioned snapshot**: Added v0.16 documentation snapshot to `site/docs/v0.16/`.
+- **Navigation**: Added Reference sidebar links across case study and reference pages.
+
+---
+
 ## v0.14.0 — Identity as Infrastructure (2026-04-01)
 
 v0.14 introduces the operator identity model: every operator has a **center campfire** that anchors their identity and authority. Delegation flows outward from the center. The SDK handles everything — apps register one hook and move on.
