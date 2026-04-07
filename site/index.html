@@ -143,20 +143,17 @@ Synced 1 convention: ready v1.0 (12 operations)</span>
           <span class="comment"># .cf/config.toml — drop in any project directory</span>
 
 <span class="comment">[naming]</span>
-<span class="comment">seeds = ["cf://registry.3dl.dev"]</span>
+<span class="comment">root = "beacon:R2xvYmFsUm9vdC4uLg..."</span>
 
 <span class="comment">[behavior]</span>
-<span class="comment">auto_join = ["cf://team.tasks", "cf://team.alerts"]</span>
+<span class="comment">auto_join = ["cf://team.tasks"]</span>
 
 <span class="prompt">$ </span><span class="cmd">cf init</span>
-<span class="output">Identity: 7f3a2c4d... (baron@workstation)
-Auto-joined cf://team.tasks
-Auto-joined cf://team.alerts</span>
+<span class="output">Identity: 7f3a2c4d...
+Auto-joined cf://team.tasks (via naming root)</span>
 
 <span class="prompt">$ </span><span class="cmd">cf name lookup team.tasks</span>
-<span class="output">cf://team.tasks
-  → registry.3dl.dev (TTL 3600s)
-  → 4b8e1d9c3f7a2e6b...</span></div>
+<span class="output">cf://team.tasks → 4b8e1d9c3f7a2e6b...</span></div>
       </div>
 
       <!-- Panel 3: Federation -->
@@ -232,10 +229,10 @@ Auto-joined cf://team.alerts</span>
         <div class="quickstart-block" style="margin-top:1rem">
           <span class="comment"># Two orgs, two registries. Seeds add foreign roots.</span>
 <span class="comment">[naming]</span>
-<span class="comment">seeds = ["cf://registry.partnerorg.dev"]</span>
+<span class="comment">seeds = ["beacon:UGFydG5lck9yZy4uLg..."]</span>
 
 <span class="prompt">$ </span><span class="cmd">cf join cf://partnerorg.incidents</span>
-<span class="output">Joined cf://partnerorg.incidents (via registry.partnerorg.dev)
+<span class="output">Joined cf://partnerorg.incidents (via seed)
 Synced 1 convention: incidents v2.1 (8 operations)</span></div>
       </div>
 
