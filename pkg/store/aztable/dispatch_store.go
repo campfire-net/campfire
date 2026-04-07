@@ -509,6 +509,14 @@ func (s *TableDispatchStore) ListUnbilledDispatches(ctx context.Context) ([]conv
 // Returns convention.ErrConcurrentModification on ETag mismatch (412).
 // No-op (returns nil) if the record does not exist.
 func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, messageID, callerETag string) error {
+	// Reject wildcard and empty ETags before any Azure call.
+	// Azure Table Storage treats IfMatch:"*" as an unconditional write,
+	// which would bypass the stale-ETag guard entirely.
+	// An empty ETag is similarly invalid — it is not a real optimistic-concurrency token.
+	if callerETag == "*" || callerETag == "" {
+		return fmt.Errorf("%w: invalid ETag %q passed to MarkBilled", convention.ErrConcurrentModification, callerETag)
+	}
+
 	pk := encodeKey(campfireID)
 	rk := encodeKey(messageID)
 
