@@ -550,6 +550,8 @@ func (s *errOnFulfilledCASStore) MarkFulfilledCAS(ctx context.Context, campfireI
 // TestDispatcher_Tier2_MarkFulfilledCAS_Error_MarkedFailed verifies the casErr != nil
 // path in dispatchTier2 (line 523-525): when MarkFulfilledCAS returns a real error
 // (not nil, not the sentinel), the dispatch reports "failed" without panicking.
+// The casErr path returns "failed" — invokeHandler still fires MeteringHook and
+// advances the cursor, giving us observable state to assert against.
 func TestDispatcher_Tier2_MarkFulfilledCAS_Error_MarkedFailed(t *testing.T) {
 	injectedErr := fmt.Errorf("injected store error")
 	inner := convention.NewMemoryDispatchStore()
@@ -558,6 +560,17 @@ func TestDispatcher_Tier2_MarkFulfilledCAS_Error_MarkedFailed(t *testing.T) {
 		casErr:              injectedErr,
 	}
 	d := convention.NewConventionDispatcher(ds, nil)
+
+	// MeteringHook fires when invokeHandler dispatches the result. Use it as a
+	// completion signal — the casErr path returns "failed", which is not "stale"
+	// or "not_found", so metering and cursor advancement still execute.
+	meterDone := make(chan convention.ConventionMeterEvent, 1)
+	d.MeteringHook = func(_ context.Context, ev convention.ConventionMeterEvent) {
+		select {
+		case meterDone <- ev:
+		default:
+		}
+	}
 
 	requestReceived := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -595,10 +608,26 @@ func TestDispatcher_Tier2_MarkFulfilledCAS_Error_MarkedFailed(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for HTTP handler")
 	}
-	// Allow goroutine to complete — casErr path returns "failed" but the record
-	// was not marked in the store (the store error prevented it).
-	time.Sleep(150 * time.Millisecond)
-	// Test passes as long as no panic occurred. The casErr path logs and returns "failed".
+
+	// Wait for the metering hook — signals invokeHandler completed with "failed".
+	var ev convention.ConventionMeterEvent
+	select {
+	case ev = <-meterDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for MeteringHook (casErr path should return 'failed')")
+	}
+	if ev.Status != "failed" {
+		t.Errorf("expected metering status 'failed', got %q", ev.Status)
+	}
+
+	// Cursor must advance — invokeHandler calls AdvanceCursor after metering.
+	cursor, err := inner.GetCursor(ctx, serverID, campfireID)
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cursor == 0 {
+		t.Errorf("expected cursor to advance after casErr 'failed' dispatch, got 0")
+	}
 }
 
 // errOnFailedCASStore wraps MemoryDispatchStore and makes MarkFailedCAS return an error.
@@ -618,14 +647,19 @@ func (s *errOnFailedCASStore) MarkFailedCAS(ctx context.Context, campfireID, mes
 // TestDispatcher_Tier2_BadURL_NotFound verifies the not_found sub-path in the bad-URL
 // branch of dispatchTier2. The dispatch record is deleted before MarkFailedCAS runs,
 // so MarkFailedCAS returns notFound=true and the function returns "not_found".
+// The "not_found" path causes invokeHandler to return early: metering and cursor
+// advancement are skipped. We assert cursor == 0, synchronized via a done channel.
 func TestDispatcher_Tier2_BadURL_NotFound(t *testing.T) {
 	inner := convention.NewMemoryDispatchStore()
-	// notFoundOnMarkFailedCASStoreT2 makes MarkFailedCAS return notFound=true.
-	ds := &notFoundOnMarkFailedCASStoreT2{MemoryDispatchStore: inner}
+	// notFoundOnMarkFailedCASStoreT2 makes MarkFailedCAS return notFound=true and
+	// closes a done channel once called, so the test can synchronize.
+	done := make(chan struct{})
+	ds := &notFoundOnMarkFailedCASStoreT2{MemoryDispatchStore: inner, done: done}
 	d := convention.NewConventionDispatcher(ds, nil)
 
 	invalidURL := "http://\x00bad-notfound"
-	d.RegisterTier2Handler("cf-bu-nf", "myconv", "myop", invalidURL, nil, "server-bu-nf", "")
+	const serverID = "server-bu-nf"
+	d.RegisterTier2Handler("cf-bu-nf", "myconv", "myop", invalidURL, nil, serverID, "")
 
 	msg := &store.MessageRecord{
 		ID:         "msg-bu-nf",
@@ -640,23 +674,43 @@ func TestDispatcher_Tier2_BadURL_NotFound(t *testing.T) {
 	if !dispatched {
 		t.Fatal("expected Dispatch to return true")
 	}
-	time.Sleep(150 * time.Millisecond)
+
+	// Wait for MarkFailedCAS to be called — signals dispatchTier2 reached the store op.
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for MarkFailedCAS (notFound path)")
+	}
+
+	// "not_found" causes invokeHandler to return early: metering and cursor are skipped.
+	cursor, err := inner.GetCursor(context.Background(), serverID, "cf-bu-nf")
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cursor != 0 {
+		t.Errorf("expected cursor 0 for not_found dispatch (metering/cursor skipped), got %d", cursor)
+	}
 }
 
 // notFoundOnMarkFailedCASStoreT2 makes MarkFailedCAS return (false, true, nil) —
 // simulating the dispatch record being deleted before MarkFailedCAS runs.
+// done is closed once MarkFailedCAS is called, allowing the test to synchronize.
 type notFoundOnMarkFailedCASStoreT2 struct {
 	*convention.MemoryDispatchStore
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 func (s *notFoundOnMarkFailedCASStoreT2) MarkFailedCAS(_ context.Context, campfireID, messageID string, _ int) (bool, bool, error) {
 	s.MemoryDispatchStore.DeleteDispatch(campfireID, messageID)
+	s.doneOnce.Do(func() { close(s.done) })
 	return false, true, nil
 }
 
 // TestDispatcher_Tier2_BadURL_MarkFailedCAS_Error verifies the casErr != nil
 // sub-path in the bad-URL error branch of dispatchTier2. When both request construction
-// fails AND MarkFailedCAS returns a store error, the function logs and continues.
+// fails AND MarkFailedCAS returns a store error, the function logs and falls through to
+// return "failed". invokeHandler then fires MeteringHook and advances the cursor.
 func TestDispatcher_Tier2_BadURL_MarkFailedCAS_Error(t *testing.T) {
 	inner := convention.NewMemoryDispatchStore()
 	ds := &errOnFailedCASStore{
@@ -665,8 +719,18 @@ func TestDispatcher_Tier2_BadURL_MarkFailedCAS_Error(t *testing.T) {
 	}
 	d := convention.NewConventionDispatcher(ds, nil)
 
+	// MeteringHook fires when invokeHandler completes with "failed" status.
+	meterDone := make(chan convention.ConventionMeterEvent, 1)
+	d.MeteringHook = func(_ context.Context, ev convention.ConventionMeterEvent) {
+		select {
+		case meterDone <- ev:
+		default:
+		}
+	}
+
 	invalidURL := "http://\x00bad-and-cas-error"
-	d.RegisterTier2Handler("cf-badurl-caserr", "myconv", "myop", invalidURL, nil, "server-bu-caserr", "")
+	const serverID = "server-bu-caserr"
+	d.RegisterTier2Handler("cf-badurl-caserr", "myconv", "myop", invalidURL, nil, serverID, "")
 
 	msg := &store.MessageRecord{
 		ID:         "msg-bu-caserr",
@@ -681,12 +745,32 @@ func TestDispatcher_Tier2_BadURL_MarkFailedCAS_Error(t *testing.T) {
 	if !dispatched {
 		t.Fatal("expected Dispatch to return true")
 	}
-	// Let the goroutine run. The test passes as long as there's no panic.
-	time.Sleep(150 * time.Millisecond)
+
+	// Wait for metering — signals invokeHandler completed with "failed".
+	var ev convention.ConventionMeterEvent
+	select {
+	case ev = <-meterDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for MeteringHook (casErr bad-URL path should return 'failed')")
+	}
+	if ev.Status != "failed" {
+		t.Errorf("expected metering status 'failed', got %q", ev.Status)
+	}
+
+	// Cursor must advance after "failed" result.
+	cursor, err := inner.GetCursor(context.Background(), serverID, "cf-badurl-caserr")
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cursor == 0 {
+		t.Errorf("expected cursor to advance after casErr bad-URL 'failed' dispatch, got 0")
+	}
 }
 
 // TestDispatcher_Tier2_NetworkFailure_MarkFailedCAS_Error verifies the casErr != nil
-// sub-path in the network-failure error branch of dispatchTier2.
+// sub-path in the network-failure error branch of dispatchTier2. When the HTTP connection
+// is dropped AND MarkFailedCAS returns a store error, the function logs and falls through
+// to return "failed". invokeHandler then fires MeteringHook and advances the cursor.
 func TestDispatcher_Tier2_NetworkFailure_MarkFailedCAS_Error(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hj, ok := w.(http.Hijacker)
@@ -703,7 +787,18 @@ func TestDispatcher_Tier2_NetworkFailure_MarkFailedCAS_Error(t *testing.T) {
 		casErr:              fmt.Errorf("injected mark-failed-cas error for network failure"),
 	}
 	d := convention.NewConventionDispatcher(ds, nil)
-	d.RegisterTier2Handler("cf-nf-caserr", "myconv", "myop", server.URL, nil, "server-nf-caserr", "")
+
+	// MeteringHook fires when invokeHandler completes with "failed" status.
+	meterDone := make(chan convention.ConventionMeterEvent, 1)
+	d.MeteringHook = func(_ context.Context, ev convention.ConventionMeterEvent) {
+		select {
+		case meterDone <- ev:
+		default:
+		}
+	}
+
+	const serverID = "server-nf-caserr"
+	d.RegisterTier2Handler("cf-nf-caserr", "myconv", "myop", server.URL, nil, serverID, "")
 
 	msg := &store.MessageRecord{
 		ID:         "msg-nf-caserr",
@@ -718,11 +813,32 @@ func TestDispatcher_Tier2_NetworkFailure_MarkFailedCAS_Error(t *testing.T) {
 	if !dispatched {
 		t.Fatal("expected Dispatch to return true")
 	}
-	time.Sleep(150 * time.Millisecond)
+
+	// Wait for metering — signals invokeHandler completed with "failed".
+	var ev convention.ConventionMeterEvent
+	select {
+	case ev = <-meterDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for MeteringHook (casErr network-failure path should return 'failed')")
+	}
+	if ev.Status != "failed" {
+		t.Errorf("expected metering status 'failed', got %q", ev.Status)
+	}
+
+	// Cursor must advance after "failed" result.
+	cursor, err := inner.GetCursor(context.Background(), serverID, "cf-nf-caserr")
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cursor == 0 {
+		t.Errorf("expected cursor to advance after casErr network-failure 'failed' dispatch, got 0")
+	}
 }
 
 // TestDispatcher_Tier2_Non202_MarkFailedCAS_Error verifies the casErr != nil
-// sub-path in the non-202 branch of dispatchTier2.
+// sub-path in the non-202 branch of dispatchTier2. When the server returns a non-202
+// status AND MarkFailedCAS returns a store error, the function logs and falls through
+// to return "failed". invokeHandler then fires MeteringHook and advances the cursor.
 func TestDispatcher_Tier2_Non202_MarkFailedCAS_Error(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -735,7 +851,18 @@ func TestDispatcher_Tier2_Non202_MarkFailedCAS_Error(t *testing.T) {
 		casErr:              fmt.Errorf("injected mark-failed-cas error for non-202"),
 	}
 	d := convention.NewConventionDispatcher(ds, nil)
-	d.RegisterTier2Handler("cf-non202-caserr", "myconv", "myop", server.URL, nil, "server-non202-caserr", "")
+
+	// MeteringHook fires when invokeHandler completes with "failed" status.
+	meterDone := make(chan convention.ConventionMeterEvent, 1)
+	d.MeteringHook = func(_ context.Context, ev convention.ConventionMeterEvent) {
+		select {
+		case meterDone <- ev:
+		default:
+		}
+	}
+
+	const serverID = "server-non202-caserr"
+	d.RegisterTier2Handler("cf-non202-caserr", "myconv", "myop", server.URL, nil, serverID, "")
 
 	msg := &store.MessageRecord{
 		ID:         "msg-non202-caserr",
@@ -750,7 +877,26 @@ func TestDispatcher_Tier2_Non202_MarkFailedCAS_Error(t *testing.T) {
 	if !dispatched {
 		t.Fatal("expected Dispatch to return true")
 	}
-	time.Sleep(150 * time.Millisecond)
+
+	// Wait for metering — signals invokeHandler completed with "failed".
+	var ev convention.ConventionMeterEvent
+	select {
+	case ev = <-meterDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for MeteringHook (casErr non-202 path should return 'failed')")
+	}
+	if ev.Status != "failed" {
+		t.Errorf("expected metering status 'failed', got %q", ev.Status)
+	}
+
+	// Cursor must advance after "failed" result.
+	cursor, err := inner.GetCursor(context.Background(), serverID, "cf-non202-caserr")
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cursor == 0 {
+		t.Errorf("expected cursor to advance after casErr non-202 'failed' dispatch, got 0")
+	}
 }
 
 // ---- Declaration helpers for coverage gap tests ----
