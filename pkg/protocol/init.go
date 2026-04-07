@@ -78,6 +78,15 @@ func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
 		return nil, nil, fmt.Errorf("protocol.InitWithConfig: loading config: %w", err)
 	}
 
+	// Resolve domain references in naming config (naming.root, naming.seeds).
+	// This must happen before the config is consumed, so downstream code sees
+	// canonical 64-hex campfire IDs.
+	namingWarnings, err := resolveNamingConfig(&cfg.Naming)
+	if err != nil {
+		return nil, nil, fmt.Errorf("protocol.InitWithConfig: %w", err)
+	}
+	cfgWarnings = append(cfgWarnings, namingWarnings...)
+
 	// Determine IdentitySource: did any config layer contribute identity.file?
 	identitySource := "default"
 	for _, l := range layers {
