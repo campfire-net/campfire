@@ -355,3 +355,114 @@ func TestClient_ScopeEnforcer_SubscribeBlockedByOperation(t *testing.T) {
 		t.Errorf("Subscribe with write-only scope: expected errors.Is(err, ErrScopeDenied), got: %v", err)
 	}
 }
+
+// TestClient_ScopeEnforcer_GetBlockedByCampfire verifies that Get() and
+// GetByPrefix() enforce the campfire allowlist — a scope-restricted session
+// cannot fetch messages from campfires outside its allowed list via these methods.
+//
+// This is a regression test for campfire-agent-ei3: Get() and GetByPrefix()
+// previously bypassed scope enforcement entirely (unlike Read() which checked
+// the campfire allowlist on every call).
+func TestClient_ScopeEnforcer_GetBlockedByCampfire(t *testing.T) {
+	agentID, s, transportDir := setupTestEnv(t)
+
+	// Create two campfires: one allowed, one blocked.
+	allowedID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
+	blockedID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
+
+	// Use an unrestricted client to send a message to the blocked campfire.
+	unrestricted := protocol.New(s, agentID)
+	sent, err := unrestricted.Send(protocol.SendRequest{
+		CampfireID: blockedID,
+		Payload:    []byte("message in blocked campfire"),
+		Tags:       []string{"status"},
+	})
+	if err != nil {
+		t.Fatalf("Send to blocked campfire (setup): %v", err)
+	}
+
+	// Build a restricted client: only allowedID is permitted.
+	restricted := protocol.New(s, agentID)
+	restricted.SetScope(protocol.ScopeConfig{
+		Campfires: []string{allowedID},
+	})
+
+	// Get() on a message from the blocked campfire must return ErrScopeDenied.
+	_, err = restricted.Get(sent.ID)
+	if err == nil {
+		t.Fatal("Get on message from blocked campfire: expected ErrScopeDenied, got nil")
+	}
+	if !errors.Is(err, protocol.ErrScopeDenied) {
+		t.Errorf("Get on blocked campfire message: expected errors.Is(err, ErrScopeDenied), got: %v", err)
+	}
+
+	// GetByPrefix() on a prefix of the blocked message must also return ErrScopeDenied.
+	prefix := sent.ID[:8]
+	_, err = restricted.GetByPrefix(prefix)
+	if err == nil {
+		t.Fatal("GetByPrefix on message from blocked campfire: expected ErrScopeDenied, got nil")
+	}
+	if !errors.Is(err, protocol.ErrScopeDenied) {
+		t.Errorf("GetByPrefix on blocked campfire message: expected errors.Is(err, ErrScopeDenied), got: %v", err)
+	}
+
+	// Get() on a message from the allowed campfire must succeed.
+	sentAllowed, err := unrestricted.Send(protocol.SendRequest{
+		CampfireID: allowedID,
+		Payload:    []byte("message in allowed campfire"),
+	})
+	if err != nil {
+		t.Fatalf("Send to allowed campfire (setup): %v", err)
+	}
+	got, err := restricted.Get(sentAllowed.ID)
+	if err != nil {
+		t.Fatalf("Get on allowed campfire message: unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Get on allowed campfire message: expected message, got nil")
+	}
+	if got.ID != sentAllowed.ID {
+		t.Errorf("Get on allowed campfire message: ID mismatch: got %q, want %q", got.ID, sentAllowed.ID)
+	}
+}
+
+// TestClient_ScopeEnforcer_GetBlockedByOperation verifies that Get() and
+// GetByPrefix() are denied when the "read" operation class is not in the scope.
+func TestClient_ScopeEnforcer_GetBlockedByOperation(t *testing.T) {
+	agentID, s, transportDir := setupTestEnv(t)
+	campfireID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
+
+	// Send a message with an unrestricted client.
+	unrestricted := protocol.New(s, agentID)
+	sent, err := unrestricted.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("op-class-test message"),
+	})
+	if err != nil {
+		t.Fatalf("Send (setup): %v", err)
+	}
+
+	// Restrict to write-only (no read).
+	restricted := protocol.New(s, agentID)
+	restricted.SetScope(protocol.ScopeConfig{
+		OperationClasses: []string{"write"},
+	})
+
+	// Get() must be denied.
+	_, err = restricted.Get(sent.ID)
+	if err == nil {
+		t.Fatal("Get with write-only scope: expected ErrScopeDenied, got nil")
+	}
+	if !errors.Is(err, protocol.ErrScopeDenied) {
+		t.Errorf("Get with write-only scope: expected ErrScopeDenied, got: %v", err)
+	}
+
+	// GetByPrefix() must be denied.
+	_, err = restricted.GetByPrefix(sent.ID[:8])
+	if err == nil {
+		t.Fatal("GetByPrefix with write-only scope: expected ErrScopeDenied, got nil")
+	}
+	if !errors.Is(err, protocol.ErrScopeDenied) {
+		t.Errorf("GetByPrefix with write-only scope: expected ErrScopeDenied, got: %v", err)
+	}
+}
