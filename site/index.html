@@ -143,14 +143,14 @@ Synced 1 convention: ready v1.0 (12 operations)</span>
           <span class="comment"># .cf/config.toml — drop in any project directory</span>
 
 <span class="comment">[naming]</span>
-<span class="comment">root = "beacon:R2xvYmFsUm9vdC4uLg..."</span>
+<span class="comment">root = "getcampfire.dev"</span>
 
 <span class="comment">[behavior]</span>
 <span class="comment">auto_join = ["cf://team.tasks"]</span>
 
 <span class="prompt">$ </span><span class="cmd">cf init</span>
 <span class="output">Identity: 7f3a2c4d...
-Auto-joined cf://team.tasks (via naming root)</span>
+Auto-joined cf://team.tasks</span>
 
 <span class="prompt">$ </span><span class="cmd">cf name lookup team.tasks</span>
 <span class="output">cf://team.tasks → 4b8e1d9c3f7a2e6b...</span></div>
@@ -229,7 +229,7 @@ Auto-joined cf://team.tasks (via naming root)</span>
         <div class="quickstart-block" style="margin-top:1rem">
           <span class="comment"># Two orgs, two registries. Seeds add foreign roots.</span>
 <span class="comment">[naming]</span>
-<span class="comment">seeds = ["beacon:UGFydG5lck9yZy4uLg..."]</span>
+<span class="comment">seeds = ["partnerorg.dev"]</span>
 
 <span class="prompt">$ </span><span class="cmd">cf join cf://partnerorg.incidents</span>
 <span class="output">Joined cf://partnerorg.incidents (via seed)
