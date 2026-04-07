@@ -229,13 +229,21 @@ func (s *Server) dispatch(ctx context.Context, campfireID string, msg protocol.M
 		return
 	}
 
+	identity := resolveIdentity(msg.Sender, s.resolver)
+	if identity.MachineKey == nil {
+		// Malformed sender hex — signature validation should have caught this upstream,
+		// but guard here so handlers can rely on MachineKey being non-nil.
+		s.errFn(fmt.Errorf("convention server: malformed sender hex in msg %s, skipping", msg.ID))
+		return
+	}
+
 	req := &Request{
 		MessageID:  msg.ID,
 		Sender:     msg.Sender,
 		CampfireID: campfireID,
 		Args:       args,
 		Tags:       msg.Tags,
-		Identity:   resolveIdentity(msg.Sender, s.resolver),
+		Identity:   identity,
 	}
 
 	resp, err := handler(ctx, req)

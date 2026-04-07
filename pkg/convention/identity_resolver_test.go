@@ -99,8 +99,16 @@ func TestCacheIdentityResolver_Miss(t *testing.T) {
 	}
 }
 
+// Compile-time assertion: mockEmptyCache must implement protocol.VerificationCache.
+// If the interface changes, this fails to compile — catching interface mismatches
+// before the mock can silently diverge.
+var _ protocol.VerificationCache = mockEmptyCache{}
+
 // mockEmptyCache is a VerificationCache that returns ("", true) for any lookup,
 // simulating a cache that has an entry but with an empty campfire ID.
+// This is an edge case (semantically invalid state) not producible with the real
+// VerificationCache, so a mock is appropriate here. Integration coverage using the
+// real cache is in TestCacheIdentityResolver_Integration_* below.
 type mockEmptyCache struct{}
 
 func (mockEmptyCache) Set(_ ed25519.PublicKey, _ string, _ time.Duration) error { return nil }

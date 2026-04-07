@@ -1,7 +1,11 @@
 package convention
 
 import (
+	"context"
+	"errors"
 	"testing"
+
+	"github.com/campfire-net/campfire/pkg/protocol"
 )
 
 // TestWithIdentityResolver_Nil_FallsBackToNoop verifies that passing nil to
@@ -19,6 +23,51 @@ func TestWithIdentityResolver_Nil_FallsBackToNoop(t *testing.T) {
 	}
 	if _, ok := srv.resolver.(NoopIdentityResolver); !ok {
 		t.Errorf("expected NoopIdentityResolver after nil guard, got %T", srv.resolver)
+	}
+}
+
+// TestDispatch_MalformedSenderHex_SkipsHandler verifies that the server dispatch
+// guards against nil MachineKey — a message with a malformed sender hex must not
+// reach the handler, preventing potential nil pointer panics in handler code.
+func TestDispatch_MalformedSenderHex_SkipsHandler(t *testing.T) {
+	handlerCalled := false
+	var errReceived error
+
+	srv := &Server{
+		handlers: map[string]HandlerFunc{
+			"ping": func(_ context.Context, _ *Request) (*Response, error) {
+				handlerCalled = true
+				return nil, nil
+			},
+		},
+		decl: &Declaration{
+			Convention: "test",
+			Operation:  "ping",
+		},
+		resolver: NoopIdentityResolver{},
+		errFn: func(err error) {
+			errReceived = err
+		},
+	}
+
+	msg := protocol.Message{
+		ID:      "msg-001",
+		Sender:  "not-valid-hex",
+		Payload: []byte(`{}`),
+		Tags:    []string{"convention:test:ping"},
+	}
+
+	srv.dispatch(context.Background(), "cf-abc123", msg)
+
+	if handlerCalled {
+		t.Error("handler must not be called when sender hex is malformed (nil MachineKey)")
+	}
+	if errReceived == nil {
+		t.Error("expected errFn to be called with malformed sender error")
+	}
+	if errReceived != nil && !errors.Is(errReceived, errReceived) {
+		// Always true — just confirms err is non-nil (used for structure).
+		t.Errorf("unexpected error: %v", errReceived)
 	}
 }
 
