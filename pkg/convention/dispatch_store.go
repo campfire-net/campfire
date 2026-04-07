@@ -18,6 +18,11 @@ var ErrConcurrentModification = errors.New("concurrent modification: record chan
 // dispatch record does not exist.
 var ErrDispatchNotFound = errors.New("dispatch record not found")
 
+// ErrAlreadyBilled is returned by MarkBilled when the dispatch record has
+// already been billed (BilledAt != 0). This prevents double-billing even when
+// the caller holds a valid, non-stale ETag.
+var ErrAlreadyBilled = errors.New("dispatch record already billed")
+
 // DispatchStore abstracts cursor and dispatch-marker storage for the
 // ConventionDispatcher. The aztable implementation (in cf-mcp) and an
 // in-memory implementation (for local/testing) both satisfy this interface.
@@ -331,6 +336,12 @@ func (s *MemoryDispatchStore) MarkBilled(_ context.Context, campfireID, messageI
 	rec, exists := s.dispatches[k]
 	if !exists {
 		return nil
+	}
+	// Check BilledAt before ETag: a caller with a valid (non-stale) ETag must not
+	// be able to overwrite an already-billed record. BilledAt is a logical invariant;
+	// ETag is a concurrency guard — the invariant takes precedence.
+	if rec.BilledAt != 0 {
+		return fmt.Errorf("%w: campfireID=%q messageID=%q", ErrAlreadyBilled, campfireID, messageID)
 	}
 	currentETag := strconv.FormatInt(s.versions[k], 10)
 	if etag != currentETag {

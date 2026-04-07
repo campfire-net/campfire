@@ -520,13 +520,32 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 	pk := encodeKey(campfireID)
 	rk := encodeKey(messageID)
 
+	// Read the current entity to check BilledAt before writing. A caller with a
+	// valid non-stale ETag can otherwise overwrite BilledAt with a new timestamp,
+	// creating a double-billing record (the ETag check only prevents concurrent
+	// writes — it does not prevent sequential re-billing by the same caller).
+	resp, err := s.dispatched.GetEntity(ctx, pk, rk, nil)
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil
+		}
+		return fmt.Errorf("aztable: DispatchStore.MarkBilled: get: %w", err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(resp.Value, &current); err != nil {
+		return fmt.Errorf("aztable: DispatchStore.MarkBilled: unmarshal: %w", err)
+	}
+	if billedAt := toInt64(current["BilledAt"]); billedAt != 0 {
+		return fmt.Errorf("%w: campfireID=%q messageID=%q", convention.ErrAlreadyBilled, campfireID, messageID)
+	}
+
 	// Minimal merge entity — only sets BilledAt; leaves all other fields untouched.
-	m := map[string]any{
+	patch := map[string]any{
 		"PartitionKey": pk,
 		"RowKey":       rk,
 		"BilledAt":     time.Now().UnixNano(),
 	}
-	data, err := json.Marshal(m)
+	data, err := json.Marshal(patch)
 	if err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: marshal: %w", err)
 	}
