@@ -18,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/BurntSushi/toml"
 )
@@ -410,20 +409,7 @@ func loadAndCheck(path string, source string, isGlobal bool) (ConfigLayer, *rawC
 // creating files owned by a different UID (which requires root).
 var ownerTrustedFn = defaultOwnerTrusted
 
-// defaultOwnerTrusted checks that the directory at dirPath is owned by the
-// current UID. On non-Unix platforms it returns true (check is skipped).
-func defaultOwnerTrusted(dirPath string) bool {
-	info, err := os.Stat(dirPath)
-	if err != nil {
-		return false
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		// Non-Unix: skip check.
-		return true
-	}
-	return stat.Uid == uint32(os.Getuid())
-}
+// defaultOwnerTrusted is platform-specific — see config_unix.go and config_windows.go.
 
 // isOwnerTrusted is the exported-name alias kept for call sites. It delegates
 // to ownerTrustedFn so test injection works transparently.
