@@ -1035,3 +1035,57 @@ func TestDispatchStore_MarkFailedCAS_NotFound(t *testing.T) {
 		t.Error("MarkFailedCAS on absent record: expected updated=false, got true")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// MarkBilled wildcard ETag rejection (campfire-agent-n3r)
+// ---------------------------------------------------------------------------
+
+// TestDispatchStore_MarkBilled_WildcardETag verifies that MarkBilled rejects
+// the wildcard ETag "*" and an empty ETag before making any Azure call.
+// Azure Table Storage treats IfMatch:"*" as an unconditional write, which
+// would bypass the stale-ETag guard. Both must return ErrConcurrentModification.
+func TestDispatchStore_MarkBilled_WildcardETag(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+	cfID := unique("cf")
+	msgID := unique("msg")
+	serverID := unique("server")
+
+	// Create a real record so a real Azure call could theoretically succeed.
+	if _, err := s.MarkDispatched(ctx, cfID, msgID, serverID, "", "conv", "op"); err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+	if err := s.MarkFulfilled(ctx, cfID, msgID); err != nil {
+		t.Fatalf("MarkFulfilled: %v", err)
+	}
+	if err := s.SetTokensConsumed(ctx, cfID, msgID, 100); err != nil {
+		t.Fatalf("SetTokensConsumed: %v", err)
+	}
+
+	for _, badETag := range []string{"*", ""} {
+		err := s.MarkBilled(ctx, cfID, msgID, badETag)
+		if err == nil {
+			t.Errorf("MarkBilled(%q): expected error, got nil (unconditional write allowed)", badETag)
+			continue
+		}
+		if !errors.Is(err, convention.ErrConcurrentModification) {
+			t.Errorf("MarkBilled(%q): expected ErrConcurrentModification, got: %v", badETag, err)
+		}
+	}
+
+	// Confirm the record was NOT billed (guard fired before Azure call).
+	unbilled, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches: %v", err)
+	}
+	found := false
+	for _, r := range unbilled {
+		if r.CampfireID == cfID && r.MessageID == msgID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("record was billed despite invalid ETag — unconditional write was not blocked")
+	}
+}
