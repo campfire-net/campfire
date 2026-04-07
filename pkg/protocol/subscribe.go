@@ -96,6 +96,30 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) *Subscript
 		req.CampfireID = resolvedID
 	}
 
+	// Scope enforcement: campfire allowlist + read operation class.
+	// Must happen BEFORE syncIfFilesystem — otherwise a denied caller can probe
+	// campfire existence on the filesystem via sync errors (campfire-agent-znj).
+	if err := c.checkCampfire(req.CampfireID); err != nil {
+		sub := &Subscription{
+			msgs: make(chan Message),
+			done: make(chan struct{}),
+			err:  err,
+		}
+		close(sub.msgs)
+		close(sub.done)
+		return sub
+	}
+	if err := c.checkOperation("read"); err != nil {
+		sub := &Subscription{
+			msgs: make(chan Message),
+			done: make(chan struct{}),
+			err:  err,
+		}
+		close(sub.msgs)
+		close(sub.done)
+		return sub
+	}
+
 	interval := req.PollInterval
 	if interval <= 0 {
 		interval = 500 * time.Millisecond
