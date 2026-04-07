@@ -6,9 +6,11 @@ package protocol_test
 // Tests use a real filesystem transport — no mock enforcer, no mock transport.
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/protocol"
@@ -265,5 +267,91 @@ func TestClient_ScopeEnforcer_MembersBlockedByScope(t *testing.T) {
 	}
 	if !errors.Is(err, protocol.ErrScopeDenied) {
 		t.Errorf("Members on blocked campfire: expected ErrScopeDenied, got: %v", err)
+	}
+}
+
+// TestClient_ScopeEnforcer_SubscribeBlockedByCampfire is the regression test for
+// campfire-agent-znj: Subscribe() must check the scope allowlist BEFORE calling
+// syncIfFilesystem. A scope-denied Subscribe must return a closed channel with
+// ErrScopeDenied immediately — without syncing the campfire from disk, which
+// would leak whether the campfire exists on the filesystem.
+func TestClient_ScopeEnforcer_SubscribeBlockedByCampfire(t *testing.T) {
+	agentID, s, transportDir := setupTestEnv(t)
+	allowedID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
+	blockedID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
+
+	// Build a client restricted to allowedID only.
+	client := protocol.New(s, agentID)
+	client.SetScope(protocol.ScopeConfig{
+		Campfires: []string{allowedID},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Subscribe to blockedID must return immediately with a closed channel.
+	sub := client.Subscribe(ctx, protocol.SubscribeRequest{
+		CampfireID:   blockedID,
+		PollInterval: 50 * time.Millisecond,
+	})
+
+	// The Messages() channel must be closed immediately (no goroutine started).
+	select {
+	case _, ok := <-sub.Messages():
+		if ok {
+			t.Fatal("Subscribe on blocked campfire: expected closed channel, got open message channel")
+		}
+		// Channel closed — correct.
+	case <-time.After(1 * time.Second):
+		t.Fatal("Subscribe on blocked campfire: Messages() channel did not close immediately")
+	}
+
+	// Err() must be ErrScopeDenied.
+	err := sub.Err()
+	if err == nil {
+		t.Fatal("Subscribe on blocked campfire: expected ErrScopeDenied from Err(), got nil")
+	}
+	if !errors.Is(err, protocol.ErrScopeDenied) {
+		t.Errorf("Subscribe on blocked campfire: expected errors.Is(err, ErrScopeDenied), got: %v", err)
+	}
+}
+
+// TestClient_ScopeEnforcer_SubscribeBlockedByOperation verifies that Subscribe()
+// is denied when the read operation class is not in the scope allowlist.
+func TestClient_ScopeEnforcer_SubscribeBlockedByOperation(t *testing.T) {
+	agentID, s, transportDir := setupTestEnv(t)
+	campfireID := setupFilesystemCampfire(t, agentID, s, transportDir, campfire.RoleFull)
+
+	// Restrict to write-only (no read).
+	client := protocol.New(s, agentID)
+	client.SetScope(protocol.ScopeConfig{
+		OperationClasses: []string{"write"},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sub := client.Subscribe(ctx, protocol.SubscribeRequest{
+		CampfireID:   campfireID,
+		PollInterval: 50 * time.Millisecond,
+	})
+
+	// The Messages() channel must be closed immediately.
+	select {
+	case _, ok := <-sub.Messages():
+		if ok {
+			t.Fatal("Subscribe with write-only scope: expected closed channel, got open channel")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Subscribe with write-only scope: Messages() channel did not close immediately")
+	}
+
+	// Err() must be ErrScopeDenied.
+	err := sub.Err()
+	if err == nil {
+		t.Fatal("Subscribe with write-only scope: expected ErrScopeDenied from Err(), got nil")
+	}
+	if !errors.Is(err, protocol.ErrScopeDenied) {
+		t.Errorf("Subscribe with write-only scope: expected errors.Is(err, ErrScopeDenied), got: %v", err)
 	}
 }
