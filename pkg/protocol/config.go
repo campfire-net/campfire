@@ -179,6 +179,12 @@ func LoadConfig(globalDir, projectDir string) (*Config, []ConfigLayer, []string,
 	var warnings []string
 
 	// 1. Global config.
+	// Note: os.Stat here followed by loadAndCheck (which calls EvalSymlinks internally)
+	// creates a narrow TOCTOU window. The risk is acceptable: exploiting the race
+	// requires write access to the config directory, which the S1 ownership check
+	// (directory must be owned by current UID) already prevents for untrusted paths.
+	// An attacker with write access to an owned directory could write a malicious
+	// config.toml directly without needing a race.
 	globalPath := filepath.Join(globalDir, configFilename)
 	if _, err := os.Stat(globalPath); err == nil {
 		layer, raw, warn, err := loadAndCheck(globalPath, "global", true)
