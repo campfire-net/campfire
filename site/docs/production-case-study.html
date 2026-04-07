@@ -92,9 +92,16 @@
         <li><a href="/docs/swarm-case-study.html">Swarm Case Study</a></li>
         <li><a href="/docs/emergence-case-study.html">Emergence Case Study</a></li>
         <li><a href="/docs/committee-case-study.html">Founding Committee Case Study</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Reference</div>
+      <ul class="sidebar-links">
+        <li><a href="/docs/conventions.html">Conventions</a></li>
+        <li><a href="/docs/naming-trust-federation.html">Naming &amp; Trust</a></li>
         <li><a href="/docs/">Protocol Spec</a></li>
-        <li><a href="/docs/getting-started.html">Get Started</a></li>
         <li><a href="/docs/cli.html">CLI Reference</a></li>
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
       </ul>
     </div>
   </aside>
@@ -168,6 +175,16 @@
     <p>
       Three campfire-recipes patterns, combined into a standing coordination layer:
     </p>
+
+    <div class="doc-note">
+      <p>
+        <strong>Convention-first.</strong> When a campfire has convention declarations,
+        <code>cf &lt;campfire&gt; &lt;operation&gt;</code> is the primary interface &mdash;
+        typed, validated, auto-discovered. The examples below use <code>cf send</code> and
+        <code>cf read</code> for swarm coordination &mdash; raw primitives appropriate when
+        no declared convention covers the operation. See <a href="/docs/conventions.html">Conventions</a>.
+      </p>
+    </div>
 
     <h3>1. Standing architect</h3>
     <p>

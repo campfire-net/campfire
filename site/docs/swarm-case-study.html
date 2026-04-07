@@ -91,9 +91,16 @@
       <ul class="sidebar-links">
         <li><a href="/docs/emergence-case-study.html">Emergence Case Study</a></li>
         <li><a href="/docs/committee-case-study.html">Founding Committee Case Study</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Reference</div>
+      <ul class="sidebar-links">
+        <li><a href="/docs/conventions.html">Conventions</a></li>
+        <li><a href="/docs/naming-trust-federation.html">Naming &amp; Trust</a></li>
         <li><a href="/docs/">Protocol Spec</a></li>
-        <li><a href="/docs/getting-started.html">Get Started</a></li>
         <li><a href="/docs/cli.html">CLI Reference</a></li>
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
       </ul>
     </div>
   </aside>
@@ -187,6 +194,16 @@
       sending or reading from a project campfire automatically joins it. There is no manual
       admission step for open campfires.
     </p>
+
+    <div class="doc-note">
+      <p>
+        <strong>Convention-first.</strong> When a campfire has convention declarations,
+        <code>cf &lt;campfire&gt; &lt;operation&gt;</code> is the primary interface &mdash;
+        typed, validated, and auto-discovered. <code>cf send</code> and <code>cf read</code>
+        are raw primitives: use them for swarm coordination messages and edge cases that no
+        declared convention covers. See <a href="/docs/conventions.html">Conventions</a>.
+      </p>
+    </div>
 
     <hr class="doc-divider">
 
