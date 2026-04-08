@@ -146,6 +146,7 @@ type server struct {
 	fallbackSweep            *convention.Sweeper                 // non-nil when convention dispatching is enabled; runs on-demand via /sweep
 	conventionServerStore    aztable.ConventionServerStore       // non-nil when Azure Table Storage is available (T4)
 	operatorSessionIdx  *operatorSessionIndex // bidirectional map of operator account IDs ↔ session tokens (forge-tk- auth)
+	mcpPath             string                // path advertised to SSE clients for POSTing; default "/mcp", override via CF_MCP_ENDPOINT_PATH
 }
 
 func (s *server) identityPath() string {
@@ -4037,7 +4038,7 @@ func (s *server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	// Send the MCP endpoint event so clients know where to POST.
-	fmt.Fprintf(w, "event: endpoint\ndata: /mcp\n\n")
+	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", s.mcpPath)
 	flusher.Flush()
 
 	// Keep the connection alive until the client disconnects.
@@ -4663,11 +4664,17 @@ func main() {
 		rotationGracePeriod = d
 	}
 
+	mcpPath := os.Getenv("CF_MCP_ENDPOINT_PATH")
+	if mcpPath == "" {
+		mcpPath = "/mcp"
+	}
+
 	srv := &server{
 		cfHome:           cfHome,
 		beaconDir:        beaconDir,
 		cfHomeExplicit:   cfHomeExplicit,
 		exposePrimitives: exposePrimitives,
+		mcpPath:          mcpPath,
 	}
 	// M8: Wire convention metering hook on the ConventionDispatcher.
 	// wireConventionMetering is a no-op when forgeEmitter is nil (development / stdio mode).

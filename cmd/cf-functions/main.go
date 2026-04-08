@@ -24,6 +24,10 @@
 //	CF_DOMAIN                        public domain for external address (sets CF_EXTERNAL_URL on cf-mcp)
 //	CF_SESSIONS_DIR                  override sessions directory (default: $TMPDIR/cf-sessions)
 //	CF_MCP_BIN                       path to cf-mcp binary (default: same dir as this binary, then PATH)
+//
+// cf-mcp child env vars set by this wrapper:
+//
+//	CF_MCP_ENDPOINT_PATH  set to /api/mcp so SSE clients receive the correct Azure Functions path
 package main
 
 import (
@@ -130,6 +134,7 @@ func run() error {
 	childEnv := inheritEnv(
 		"CF_EXTERNAL_URL", externalAddr,
 		"CF_SESSIONS_DIR", sessionsDir,
+		"CF_MCP_ENDPOINT_PATH", "/api/mcp",
 	)
 	if azConnStr != "" {
 		// cf-mcp reads AZURE_STORAGE_CONNECTION_STRING directly for aztable backend.
