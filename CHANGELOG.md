@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.16.4 — cross-instance shared state for Azure Functions (2026-04-08)
+
+### Bug Fixes
+
+- **Cross-instance p2p-http**: Campfires created via MCP on one Azure Functions instance were invisible to p2p-http join/deliver/sync on other instances (404 "campfire not found"). TransportRouter now falls back to a shared (non-namespaced) Azure Table Storage store and reconstructs the transport on demand.
+
+- **Auto-provisioned campfires**: `campfire_init` auto-provision path did not write to the global store, making those campfires also invisible cross-instance. Fixed.
+
+- **Invite-only join cross-instance**: `LookupInviteAcrossAllStores` only searched locally registered transports. Invite codes created on another instance returned "not found". Now falls back to the global store.
+
+- **Convention dispatch dedup**: `MemoryDispatchStore` was per-process, allowing double-dispatch and double-billing across instances. Now uses `aztable.TableDispatchStore` when Azure Storage is configured.
+
+- **Token revocation propagation**: Cross-instance token revocations were invisible until restart. Reaper cycle now refreshes revocation status from Azure Table Storage (~15 min propagation).
+
+- **`cf read` silent empty**: `cf read <campfire-id>` on a non-member campfire returned empty results without error. Now returns "not a member of campfire ..." error when an explicit ID is given.
+
+---
+
 ## v0.16.3 — invite-only campfires actually work (2026-04-08)
 
 ### Bug Fixes
