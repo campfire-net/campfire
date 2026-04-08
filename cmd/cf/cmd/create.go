@@ -20,6 +20,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
 
@@ -205,6 +206,19 @@ func createFilesystemWithDescAndConfig(cf *campfire.Campfire, agentID *identity.
 	// Auto-send identity:profile if the agent has a display name (best-effort).
 	maybeSendProfileMessage(cf.PublicKeyHex(), agentID, s)
 
+	// Generate a default invite code so the creator can share it immediately.
+	inviteCode := uuid.New().String()
+	if err := s.CreateInvite(store.InviteRecord{
+		CampfireID: cf.PublicKeyHex(),
+		InviteCode: inviteCode,
+		CreatedBy:  agentID.PublicKeyHex(),
+		CreatedAt:  store.NowNano(),
+		Label:      "default",
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not create invite code: %v\n", err)
+		inviteCode = ""
+	}
+
 	if jsonOutput {
 		out := map[string]interface{}{
 			"campfire_id":            cf.PublicKeyHex(),
@@ -212,6 +226,7 @@ func createFilesystemWithDescAndConfig(cf *campfire.Campfire, agentID *identity.
 			"reception_requirements": cf.ReceptionRequirements,
 			"threshold":              cf.Threshold,
 			"transport_dir":          transport.CampfireDir(cf.PublicKeyHex()),
+			"invite_code":            inviteCode,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -219,6 +234,9 @@ func createFilesystemWithDescAndConfig(cf *campfire.Campfire, agentID *identity.
 	}
 
 	fmt.Println(cf.PublicKeyHex())
+	if inviteCode != "" {
+		fmt.Fprintf(os.Stderr, "invite code: %s\n", inviteCode)
+	}
 	return nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/threshold"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/google/uuid"
 )
 
 // CreateRequest holds all parameters for Client.Create().
@@ -56,6 +57,10 @@ type CreateResult struct {
 
 	// BeaconPath is the absolute path of the published beacon file.
 	BeaconPath string
+
+	// InviteCode is the default invite code generated for this campfire.
+	// Always set — callers should share it with agents they want to admit.
+	InviteCode string
 }
 
 // Create generates a new campfire keypair, initializes the transport, admits
@@ -166,11 +171,24 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 
 	beaconPath := filepath.Join(beaconDir, fmt.Sprintf("%x.beacon", cf.PublicKey))
 
+	// Generate a default invite code so callers don't need a separate step.
+	inviteCode := uuid.New().String()
+	if err := c.store.CreateInvite(store.InviteRecord{
+		CampfireID: campfireID,
+		InviteCode: inviteCode,
+		CreatedBy:  c.identity.PublicKeyHex(),
+		CreatedAt:  store.NowNano(),
+		Label:      "default",
+	}); err != nil {
+		return nil, fmt.Errorf("creating default invite code: %w", err)
+	}
+
 	return &CreateResult{
 		CampfireID: campfireID,
 		BeaconID:   campfireID,
 		Beacon:     b,
 		BeaconPath: beaconPath,
+		InviteCode: inviteCode,
 	}, nil
 }
 
