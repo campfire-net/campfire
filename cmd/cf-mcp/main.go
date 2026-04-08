@@ -450,7 +450,7 @@ Use 'encrypted: true' to create an E2E encrypted campfire. When encrypted, the h
 			InputSchema: mustJSON(map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"protocol": map[string]interface{}{
+					"join_protocol": map[string]interface{}{
 						"type":        "string",
 						"description": "Join protocol: 'open' (anyone can join, default) or 'invite-only' (members must be explicitly admitted).",
 						"enum":        []string{"open", "invite-only"},
@@ -1354,7 +1354,12 @@ func (s *server) handleID(id interface{}, _ map[string]interface{}) jsonRPCRespo
 }
 
 func (s *server) handleCreate(id interface{}, params map[string]interface{}) jsonRPCResponse {
-	protocol := getStr(params, "protocol")
+	// Accept "join_protocol" (canonical name matching all response fields) and
+	// "protocol" (legacy name from the original schema) for backward compat.
+	protocol := getStr(params, "join_protocol")
+	if protocol == "" {
+		protocol = getStr(params, "protocol")
+	}
 	if protocol == "" {
 		protocol = "open"
 	}
