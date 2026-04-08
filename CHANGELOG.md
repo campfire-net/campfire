@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.16.3 — invite-only campfires actually work (2026-04-08)
+
+### Bug Fixes
+
+- **`join_protocol` parameter ignored**: `campfire_create` schema used `"protocol"` as the parameter name but all response fields use `"join_protocol"`. Agents passing `"join_protocol"` had the value silently ignored, so all campfires were created as `"open"` regardless of intent. Schema renamed to `"join_protocol"`; `"protocol"` still accepted as a fallback for backward compat.
+
+---
+
 ## v0.16.2 — Hosted MCP & Invite Code Fixes (2026-04-08)
 
 ### Bug Fixes
