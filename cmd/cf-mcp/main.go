@@ -4038,7 +4038,11 @@ func (s *server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	// Send the MCP endpoint event so clients know where to POST.
-	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", s.mcpPath)
+	mcpPath := s.mcpPath
+	if mcpPath == "" {
+		mcpPath = "/mcp"
+	}
+	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", mcpPath)
 	flusher.Flush()
 
 	// Keep the connection alive until the client disconnects.
