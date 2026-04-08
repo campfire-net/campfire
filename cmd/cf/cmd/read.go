@@ -67,6 +67,13 @@ func resolveCampfireEntries(args []string, agentID *identity.Identity, s store.S
 		}
 		entries = append(entries, campfireEntry{id: cfID, membership: m})
 	}
+
+	// When the caller explicitly provided a campfire ID but no membership was
+	// found, return an error instead of silently returning empty results.
+	if len(args) > 0 && len(entries) == 0 {
+		return nil, nil, fmt.Errorf("not a member of campfire %s", campfireIDs[0][:min(shortIDLen, len(campfireIDs[0]))])
+	}
+
 	return campfireIDs, entries, nil
 }
 

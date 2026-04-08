@@ -19,10 +19,13 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/forge"
+	"github.com/campfire-net/campfire/pkg/store/aztable"
 )
 
 // sessionForgeAccountKey is the context key used to thread the operator's Forge
@@ -92,6 +95,9 @@ func buildConventionMeteringHook(emitter *forge.ForgeEmitter) convention.Meterin
 // backed by the given ForgeEmitter and sets it on the server.
 // If emitter is nil, no dispatcher is wired and convention metering is disabled.
 //
+// When azConnStr is non-empty, uses aztable.TableDispatchStore for cross-instance
+// dedup and billing sweep. Falls back to MemoryDispatchStore for local dev.
+//
 // Also saves the DispatchStore on s.conventionDispatchStore so wireBillingSweep
 // can share the same store (dispatch records must be visible to both).
 //
@@ -100,7 +106,18 @@ func (s *server) wireConventionMetering(emitter *forge.ForgeEmitter) {
 	if emitter == nil {
 		return
 	}
-	ds := convention.NewMemoryDispatchStore()
+	var ds convention.DispatchStore
+	if azConnStr := os.Getenv("AZURE_STORAGE_CONNECTION_STRING"); azConnStr != "" {
+		azDS, azErr := aztable.NewDispatchStore(azConnStr)
+		if azErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: aztable dispatch store init failed (%v); falling back to in-memory\n", azErr)
+			ds = convention.NewMemoryDispatchStore()
+		} else {
+			ds = azDS
+		}
+	} else {
+		ds = convention.NewMemoryDispatchStore()
+	}
 	d := convention.NewConventionDispatcher(ds, nil)
 	d.MeteringHook = buildConventionMeteringHook(emitter)
 	s.conventionDispatcher = d

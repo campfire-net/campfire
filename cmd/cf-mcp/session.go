@@ -1042,6 +1042,44 @@ func (m *SessionManager) reaper() {
 				}
 				return true
 			})
+
+			// Refresh token revocation status from cloud so cross-instance
+			// revocations propagate within one reaper cycle (~15 min).
+			m.refreshRevocationsFromCloud()
+		}
+	}
+}
+
+// refreshRevocationsFromCloud syncs revocation status from Azure Table Storage
+// into the in-memory TokenRegistry. When instance A revokes a token, instance B
+// sees the revocation at the next reaper tick instead of requiring a restart.
+func (m *SessionManager) refreshRevocationsFromCloud() {
+	if m.sessionStore == nil {
+		return
+	}
+	entries, err := m.sessionStore.LoadAllTokenEntries()
+	if err != nil {
+		return // best-effort; will retry next cycle
+	}
+	m.registry.mu.Lock()
+	defer m.registry.mu.Unlock()
+	for _, e := range entries {
+		local, ok := m.registry.tokens[e.Token]
+		if !ok {
+			// Token exists in cloud but not locally — add it so we can
+			// validate requests that were issued on another instance.
+			m.registry.tokens[e.Token] = &tokenEntry{
+				internalID:       e.InternalID,
+				issuedAt:         e.IssuedAt,
+				revoked:          e.Revoked,
+				gracePeriodUntil: e.GracePeriodUntil,
+			}
+			continue
+		}
+		// Cloud says revoked but local doesn't know yet — propagate.
+		if e.Revoked && !local.revoked {
+			local.revoked = true
+			local.gracePeriodUntil = e.GracePeriodUntil
 		}
 	}
 }

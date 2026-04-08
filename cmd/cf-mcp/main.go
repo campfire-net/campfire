@@ -1334,6 +1334,27 @@ func (s *server) autoProvisionCampfire(id interface{}, campfireID string, agentI
 	if s.httpTransport != nil {
 		if s.transportRouter != nil {
 			s.transportRouter.RegisterForSession(cf.PublicKeyHex(), s.sessionToken, s.httpTransport)
+
+			// Write to global store for cross-instance p2p-http (same as handleCreateHTTP).
+			if gs := s.transportRouter.GlobalStore(); gs != nil {
+				gs.AddMembership(store.Membership{ //nolint:errcheck
+					CampfireID:      cf.PublicKeyHex(),
+					TransportDir:    s.externalAddr,
+					JoinProtocol:    "open",
+					Role:            campfire.RoleFull,
+					JoinedAt:        store.NowNano(),
+					Threshold:       1,
+					Description:     fmt.Sprintf("auto-provisioned from campfire_init (requested: %s)", campfireID),
+					CreatorPubkey:   agentID.PublicKeyHex(),
+					TransportType:   "p2p-http",
+					CampfirePrivKey: fmt.Sprintf("%x", cf.PrivateKey),
+				})
+				gs.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+					CampfireID:   cf.PublicKeyHex(),
+					MemberPubkey: agentID.PublicKeyHex(),
+					Endpoint:     s.externalAddr,
+				})
+			}
 		}
 	}
 
@@ -1601,18 +1622,50 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 	// RegisterForSession so UnregisterSession can clean up on reap.
 	if s.transportRouter != nil {
 		s.transportRouter.RegisterForSession(cf.PublicKeyHex(), s.sessionToken, s.httpTransport)
+
+		// Write to the global (non-namespaced) store so other Azure Functions
+		// instances can reconstruct the transport for this campfire. This fixes
+		// cross-instance p2p-http join/deliver (campfire-bf6, campfire-b2e).
+		if gs := s.transportRouter.GlobalStore(); gs != nil {
+			gs.AddMembership(store.Membership{ //nolint:errcheck
+				CampfireID:      cf.PublicKeyHex(),
+				TransportDir:    s.externalAddr,
+				JoinProtocol:    cf.JoinProtocol,
+				Role:            serviceRole,
+				JoinedAt:        store.NowNano(),
+				Threshold:       1,
+				Description:     description,
+				CreatorPubkey:   agentID.PublicKeyHex(),
+				TransportType:   "p2p-http",
+				CampfirePrivKey: fmt.Sprintf("%x", cf.PrivateKey),
+			})
+			// Register the creator as a peer so checkMembership passes
+			// and joiners get the relay's endpoint in the join response.
+			gs.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+				CampfireID:   cf.PublicKeyHex(),
+				MemberPubkey: agentID.PublicKeyHex(),
+				Endpoint:     s.externalAddr,
+			})
+		}
 	}
 
 	// Generate a default invite code for this campfire (security model §5.a).
 	inviteCode := uuid.New().String()
-	if err := st.CreateInvite(store.InviteRecord{
+	inviteRecord := store.InviteRecord{
 		CampfireID: cf.PublicKeyHex(),
 		InviteCode: inviteCode,
 		CreatedBy:  agentID.PublicKeyHex(),
 		CreatedAt:  store.NowNano(),
 		Label:      "default",
-	}); err != nil {
+	}
+	if err := st.CreateInvite(inviteRecord); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
+	}
+	// Mirror invite to global store so cross-instance invite-only join works.
+	if s.transportRouter != nil {
+		if gs := s.transportRouter.GlobalStore(); gs != nil {
+			gs.CreateInvite(inviteRecord) //nolint:errcheck
+		}
 	}
 
 	// Audit: record create action for HTTP mode (§5.e).
@@ -3520,15 +3573,22 @@ func (s *server) handleCreateInvite(id interface{}, params map[string]interface{
 	}
 
 	inviteCode := uuid.New().String()
-	if err := st.CreateInvite(store.InviteRecord{
+	inviteRec := store.InviteRecord{
 		CampfireID: campfireID,
 		InviteCode: inviteCode,
 		CreatedBy:  agentID.PublicKeyHex(),
 		CreatedAt:  store.NowNano(),
 		MaxUses:    maxUses,
 		Label:      label,
-	}); err != nil {
+	}
+	if err := st.CreateInvite(inviteRec); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("creating invite code: %v", err))
+	}
+	// Mirror invite to global store for cross-instance invite-only join.
+	if s.transportRouter != nil {
+		if gs := s.transportRouter.GlobalStore(); gs != nil {
+			gs.CreateInvite(inviteRec) //nolint:errcheck
+		}
 	}
 
 	// Audit: record invite action (§5.e).
@@ -4755,6 +4815,16 @@ func main() {
 			srv.sessManager = sm
 			srv.transportRouter = router
 			srv.operatorSessionIdx = newOperatorSessionIndex()
+
+			// Wire global (non-namespaced) store to the transport router so
+			// p2p-http requests can find campfires created on other instances.
+			if azConnStr := os.Getenv("AZURE_STORAGE_CONNECTION_STRING"); azConnStr != "" {
+				if gs, gsErr := aztable.NewTableStore(azConnStr); gsErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: global store init failed (%v); cross-instance p2p-http disabled\n", gsErr)
+				} else {
+					router.SetGlobalStore(gs, externalAddr)
+				}
+			}
 
 			// T5: Propagate the ConventionDispatcher to the SessionManager so that
 			// per-session transports can wire the OnMessageDelivered hook for P2P delivery.
