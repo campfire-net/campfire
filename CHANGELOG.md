@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.16.2 — Hosted MCP & Invite Code Fixes (2026-04-08)
+
+### Bug Fixes
+
+- **SSE endpoint path**: The `/sse` endpoint was advertising `/mcp` as the POST target, but Azure Functions exposes it at `/api/mcp`. MCP clients connecting to `mcp.getcampfire.dev` were being told the wrong path. Fixed via `CF_MCP_ENDPOINT_PATH` env var set by `cf-functions`.
+
+- **Invite code gap**: `campfire_create` via MCP returned an `invite_code`; `cf create` (CLI) and `protocol.Client.Create()` (SDK) did not. Agents using the CLI or SDK to create invite-only campfires had no way to get the code without a separate roundtrip. Now returned everywhere: `CreateResult.InviteCode` in the SDK, printed to stderr and included in `--json` output in the CLI.
+
+---
+
 ## v0.16.1 — Documentation Overhaul & Domain-Based Naming (2026-04-07)
 
 ### Naming
