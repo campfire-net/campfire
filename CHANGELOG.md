@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.17.3 — relay campfire creation from CLI (2026-04-09)
+
+CLI agents can now create campfires on hosted relays via `cf create --relay URL`. The relay handles ECDH key exchange, stores the campfire, and returns a beacon. Other agents join with `cf join <id> --via URL` as before.
+
+### Features
+
+- **`cf create --relay URL`**: Registers a new campfire on an HTTP relay via POST /campfire/create. The relay's static X25519 key encrypts the campfire private key during transfer. (campfireagent-b9d)
+- **POST /campfire/create endpoint**: Relay-side handler decrypts the campfire private key, registers the campfire, and returns a beacon + endpoint. Includes nonce replay protection. (campfireagent-99ea, campfireagent-67f)
+- **`transport.relay` config field**: Set a default relay URL in config.toml so `cf create` auto-registers without `--relay` flag. (campfireagent-081)
+- **Auto-generated X25519 key**: cf-mcp generates a static X25519 keypair on startup for ECDH relay registration.
+
+### Bug Fixes
+
+- **Relay send path**: `cf send` now works for relay-created campfires. Campfire state is stored locally during `registerOnRelay` so provenance signing works. (campfireagent-0b0)
+- **State file layout**: `sendP2PHTTP` reads `campfire.cbor` (fs layout) before falling back to flat `{id}.cbor` layout.
+- **SSRF validation layer**: Moved SSRF protection from HTTP transport to endpoint acceptance layer. Operator-configured endpoints (`--via`, `--relay`) including loopback now work. Peer-supplied endpoints are still validated at acceptance time.
+- **Nonce pruner leak**: `Unregister()` now calls `StopNoncePruner()` on the transport. (campfireagent-0b0)
+- **Store error handling**: `AddMembership`, `UpsertPeerEndpoint`, `CreateInvite` in global store paths now check errors. (campfireagent-0b0)
+- **Beacon config key**: Unified to "endpoint" across all beacon transport configs. (campfireagent-792)
+
+### Tests
+
+- Relay E2E round-trip test (campfireagent-4d2)
+- Nonce pruner goroutine leak test
+- Demo 09 (local relay) updated and passing
+
 ## v0.17.1 — cross-transport CLI fixes (2026-04-09)
 
 Fixes four root causes that prevented `cf join --via` (relay-only, no endpoint) from working correctly. Agents joining via relay are now fully recognized members with working reads, syncs, and member listing.
