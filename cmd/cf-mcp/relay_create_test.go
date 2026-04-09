@@ -375,6 +375,91 @@ func TestRelayCreate_BadSignature(t *testing.T) {
 	}
 }
 
+// TestRelayCreate_NonceReplay verifies that replaying the exact same signed
+// request (same nonce) within the timestamp window is rejected with 401.
+// This is the nonce replay protection for POST /campfire/create (campfireagent-67f).
+func TestRelayCreate_NonceReplay(t *testing.T) {
+	router, _ := newRelayTestServer(t)
+
+	relayPriv, relayPubHex := generateRelayX25519Key(t)
+	router.SetStaticX25519Key(relayPriv)
+
+	creatorID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating creator identity: %v", err)
+	}
+	cf1, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("campfire.New: %v", err)
+	}
+	cf2, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("campfire.New (second): %v", err)
+	}
+
+	body1 := buildCreateRequest(t, creatorID, cf1.PrivateKey, cf1.PublicKey, relayPubHex, "open")
+	body2 := buildCreateRequest(t, creatorID, cf2.PrivateKey, cf2.PublicKey, relayPubHex, "open")
+
+	// Build the first request and capture its nonce/timestamp/signature.
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("generating nonce: %v", err)
+	}
+	nonceHex := hex.EncodeToString(nonce)
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+
+	var payload []byte
+	payload = append(payload, []byte(ts)...)
+	payload = append(payload, '\n')
+	payload = append(payload, []byte(nonceHex)...)
+	payload = append(payload, '\n')
+	payload = append(payload, body1...)
+	sig := ed25519.Sign(creatorID.PrivateKey, payload)
+	sigB64 := base64.StdEncoding.EncodeToString(sig)
+
+	// First request with this nonce — should succeed.
+	req1 := httptest.NewRequest(http.MethodPost, "/campfire/create", bytes.NewReader(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("X-Campfire-Sender", creatorID.PublicKeyHex())
+	req1.Header.Set("X-Campfire-Nonce", nonceHex)
+	req1.Header.Set("X-Campfire-Timestamp", ts)
+	req1.Header.Set("X-Campfire-Signature", sigB64)
+
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(w1.Result().Body)
+		t.Fatalf("first request: expected 201, got %d: %s", w1.Code, string(bodyBytes))
+	}
+
+	// Second request — different campfire body but SAME nonce — must be rejected as replay.
+	// Re-sign with the same nonce but over body2 to get a valid signature.
+	var payload2 []byte
+	payload2 = append(payload2, []byte(ts)...)
+	payload2 = append(payload2, '\n')
+	payload2 = append(payload2, []byte(nonceHex)...)
+	payload2 = append(payload2, '\n')
+	payload2 = append(payload2, body2...)
+	sig2 := ed25519.Sign(creatorID.PrivateKey, payload2)
+	sigB642 := base64.StdEncoding.EncodeToString(sig2)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/campfire/create", bytes.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-Campfire-Sender", creatorID.PublicKeyHex())
+	req2.Header.Set("X-Campfire-Nonce", nonceHex) // same nonce — replay
+	req2.Header.Set("X-Campfire-Timestamp", ts)
+	req2.Header.Set("X-Campfire-Signature", sigB642)
+
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusUnauthorized {
+		t.Errorf("replay: expected 401, got %d: %s", w2.Code, w2.Body.String())
+	}
+	if !strings.Contains(w2.Body.String(), "replay detected") {
+		t.Errorf("replay: expected 'replay detected' in body, got %q", w2.Body.String())
+	}
+}
+
 // TestRelayCreate_MissingSignatureHeaders verifies that a request without
 // Ed25519 signature headers returns 401 Unauthorized.
 func TestRelayCreate_MissingSignatureHeaders(t *testing.T) {
