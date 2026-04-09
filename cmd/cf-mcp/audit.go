@@ -14,6 +14,7 @@ package main
 // written by a background goroutine so the main request path is not blocked.
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -189,6 +190,15 @@ func (aw *AuditWriter) CampfireID() string {
 	return aw.campfireID
 }
 
+// globalStore returns the global (non-namespaced) store for cross-instance
+// campfire state lookup, or nil if one is not configured.
+func (aw *AuditWriter) globalStore() store.Store {
+	if aw.srv == nil || aw.srv.transportRouter == nil {
+		return nil
+	}
+	return aw.srv.transportRouter.GlobalStore()
+}
+
 // Dropped returns the total number of audit entries dropped due to channel overflow.
 func (aw *AuditWriter) Dropped() int64 {
 	return aw.dropped.Load()
@@ -309,13 +319,37 @@ func (aw *AuditWriter) writeEntry(entry AuditEntry) {
 // postMessage sends a message to the audit campfire signed by the agent's key.
 func (aw *AuditWriter) postMessage(payload string, tags []string) error {
 	fsT := aw.srv.fsTransport()
-	state, err := fsT.ReadState(aw.campfireID)
-	if err != nil {
-		return fmt.Errorf("reading audit campfire state: %w", err)
+	state, stateErr := fsT.ReadState(aw.campfireID)
+	if stateErr != nil {
+		// Local CBOR not found — try global store for cross-instance cold-start recovery.
+		// This mirrors the KeyProvider fallback in session.go (lines 871–885).
+		if gs := aw.globalStore(); gs != nil {
+			if gm, gerr := gs.GetMembership(aw.campfireID); gerr == nil && gm != nil && gm.CampfirePrivKey != "" {
+				pk, decErr := hex.DecodeString(gm.CampfirePrivKey)
+				if decErr == nil && len(pk) == ed25519.PrivateKeySize {
+					pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)
+					state = &campfire.CampfireState{
+						PublicKey:    pub,
+						PrivateKey:   pk,
+						JoinProtocol: "open",
+						Threshold:    1,
+					}
+					stateErr = nil
+				}
+			}
+		}
+		if stateErr != nil {
+			return fmt.Errorf("reading audit campfire state: %w", stateErr)
+		}
 	}
 	members, err := fsT.ListMembers(aw.campfireID)
 	if err != nil {
-		return fmt.Errorf("listing audit campfire members: %w", err)
+		// Tolerate missing local members when state was reconstructed from global store.
+		// The audit campfire has a single member (the agent identity).
+		members = []campfire.MemberRecord{{
+			PublicKey: aw.agentID.PublicKey,
+			JoinedAt:  store.NowNano(),
+		}}
 	}
 
 	auditSigner, err := message.NewEd25519Signer(aw.agentID.PrivateKey, aw.agentID.PublicKey)
@@ -420,10 +454,18 @@ func computeMerkleRoot(entries []AuditEntry) string {
 // auditCampfireIDFile is the filename within cfHome where the audit campfire ID is persisted.
 const auditCampfireIDFile = "audit-campfire-id"
 
-// loadOrCreateAuditCampfire loads the audit campfire ID from disk, or creates
-// a new audit campfire and persists its ID.
+// loadOrCreateAuditCampfire loads the audit campfire ID using a three-level lookup:
+//  1. Local file (cfHome/audit-campfire-id) — fast path for the same instance.
+//  2. Cloud SessionStore (Azure Table Storage) — for cold starts on a new instance.
+//  3. Create a new audit campfire and persist to both local file and cloud.
+//
+// When a new campfire is created, it is also registered in the global store
+// (if available) with CampfirePrivKey set, so that other instances can reconstruct
+// the campfire state and post audit messages without holding local CBOR.
 func loadOrCreateAuditCampfire(srv *server, agentID *identity.Identity, st store.Store) (string, error) {
 	idPath := srv.cfHome + "/" + auditCampfireIDFile
+
+	// Level 1: local file.
 	if data, err := os.ReadFile(idPath); err == nil {
 		campfireID := string(data)
 		if campfireID != "" {
@@ -431,7 +473,16 @@ func loadOrCreateAuditCampfire(srv *server, agentID *identity.Identity, st store
 		}
 	}
 
-	// Create a new campfire for audit logs.
+	// Level 2: cloud SessionStore.
+	if ss := sessionStoreFrom(srv); ss != nil {
+		if id, ok, err := ss.LoadAuditCampfireID(agentID.PublicKeyHex()); err == nil && ok && id != "" {
+			// Found in cloud — write to local file so subsequent lookups are fast.
+			_ = os.WriteFile(idPath, []byte(id), 0600)
+			return id, nil
+		}
+	}
+
+	// Level 3: create a new campfire for audit logs.
 	cf, err := campfire.New("open", nil, 1)
 	if err != nil {
 		return "", fmt.Errorf("creating audit campfire: %w", err)
@@ -462,13 +513,59 @@ func loadOrCreateAuditCampfire(srv *server, agentID *identity.Identity, st store
 		return "", fmt.Errorf("recording audit campfire membership: %w", err)
 	}
 
-	// Persist the audit campfire ID so subsequent sessions reuse the same campfire.
-	if err := os.WriteFile(idPath, []byte(cf.PublicKeyHex()), 0600); err != nil {
-		// Non-fatal: we have the ID in memory.
-		_ = err
+	campfireID := cf.PublicKeyHex()
+	campfirePrivKeyHex := fmt.Sprintf("%x", cf.PrivateKey)
+
+	// Persist to local file.
+	_ = os.WriteFile(idPath, []byte(campfireID), 0600)
+
+	// Persist to cloud SessionStore so other instances can find the campfire.
+	if ss := sessionStoreFrom(srv); ss != nil {
+		_ = ss.SaveAuditCampfireID(agentID.PublicKeyHex(), campfireID)
 	}
 
-	return cf.PublicKeyHex(), nil
+	// Register in global store with CampfirePrivKey so other instances can
+	// reconstruct the campfire state for postMessage (global store fallback path).
+	if gs := globalStoreFrom(srv); gs != nil {
+		_ = gs.AddMembership(store.Membership{
+			CampfireID:      campfireID,
+			TransportDir:    srv.externalAddr,
+			JoinProtocol:    "open",
+			Role:            campfire.RoleFull,
+			JoinedAt:        now,
+			Threshold:       1,
+			Description:     "audit log",
+			CreatorPubkey:   agentID.PublicKeyHex(),
+			CampfirePrivKey: campfirePrivKeyHex,
+		})
+	}
+
+	return campfireID, nil
+}
+
+// sessionStoreFrom returns the SessionStore from srv, or nil if not available.
+// The SessionStore is only present in hosted HTTP mode with Azure Table Storage.
+func sessionStoreFrom(srv *server) interface {
+	SaveAuditCampfireID(agentKey, campfireID string) error
+	LoadAuditCampfireID(agentKey string) (string, bool, error)
+} {
+	if srv == nil || srv.sessManager == nil {
+		return nil
+	}
+	ss := srv.sessManager.sessionStore
+	if ss == nil {
+		return nil
+	}
+	return ss
+}
+
+// globalStoreFrom returns the global (non-namespaced) store from the transport
+// router, or nil if not configured.
+func globalStoreFrom(srv *server) store.Store {
+	if srv == nil || srv.transportRouter == nil {
+		return nil
+	}
+	return srv.transportRouter.GlobalStore()
 }
 
 // ---------------------------------------------------------------------------

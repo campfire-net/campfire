@@ -3386,6 +3386,28 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 
 		state, stateErr := transport.ReadState(campfireID)
 		if stateErr != nil {
+			// Cross-instance fallback: reconstruct CampfireState from global store
+			// when local filesystem transport doesn't have the DM campfire state
+			// (campfireagent-ecd — the campfire was created on a different instance).
+			if s.transportRouter != nil {
+				if gs := s.transportRouter.GlobalStore(); gs != nil {
+					if gm, gsErr := gs.GetMembership(campfireID); gsErr == nil && gm != nil && gm.CampfirePrivKey != "" {
+						privKeyBytes, hexErr := hex.DecodeString(gm.CampfirePrivKey)
+						if hexErr == nil && len(privKeyBytes) == ed25519.PrivateKeySize {
+							pubKey := ed25519.PrivateKey(privKeyBytes).Public().(ed25519.PublicKey)
+							state = &campfire.CampfireState{
+								PublicKey:    pubKey,
+								PrivateKey:   privKeyBytes,
+								JoinProtocol: gm.JoinProtocol,
+								Threshold:    gm.Threshold,
+							}
+							stateErr = nil
+						}
+					}
+				}
+			}
+		}
+		if stateErr != nil {
 			return errResponse(id, -32000, fmt.Sprintf("reading campfire state: %v", stateErr))
 		}
 

@@ -1057,28 +1057,23 @@ func TestAttestations_ColdStart_Survive(t *testing.T) {
 		t.Fatalf("saving identity: %v", err)
 	}
 
-	// --- Phase 1: Write attestations via loadProvenanceStore (with cloud). ---
+	// --- Phase 1: Write attestations via loadProvenanceStore (with cloud override). ---
 
-	srv1 := &server{
-		cfHome:    cfHome,
-		beaconDir: beaconDir,
-		sess:      sess,
-		// sessionStore is *aztable.SessionStore but our cloud is memAttestationStore.
-		// We bypass the typed field and test via loadProvenanceStore directly using
-		// a server with a custom cloudOverride (see phase below).
-	}
-
-	// Build the dual-write store manually for phase 1.
 	attestationPath := filepath.Join(cfHome, "attestations.json")
-	fileStore1, err := provenance.NewFileStore(attestationPath, provenance.DefaultConfig())
-	if err != nil {
-		t.Fatalf("creating file store: %v", err)
+	srv1 := &server{
+		cfHome:                   cfHome,
+		beaconDir:                beaconDir,
+		sess:                     sess,
+		cloudAttestationOverride: cloud,
 	}
-	dw := &dualWriteProvenanceStore{
-		inner:      fileStore1,
-		filePath:   attestationPath,
-		cloud:      cloud,
-		internalID: testInternalID,
+
+	ps1 := srv1.loadProvenanceStore(attestationPath)
+
+	// loadProvenanceStore returns a dualWriteProvenanceStore when cloud is set.
+	// Type-assert to call SetSelfClaimed (not part of the AttestationStore interface).
+	dw, ok := ps1.(*dualWriteProvenanceStore)
+	if !ok {
+		t.Fatalf("expected *dualWriteProvenanceStore, got %T", ps1)
 	}
 
 	// Set self-claimed (level 1) — this should dual-write to cloud.
@@ -1087,54 +1082,51 @@ func TestAttestations_ColdStart_Survive(t *testing.T) {
 	}
 
 	// Verify level is 1 before cold start.
-	if got := dw.Level(agentID.PublicKeyHex()); got != provenance.LevelClaimed {
+	if got := ps1.Level(agentID.PublicKeyHex()); got != provenance.LevelClaimed {
 		t.Fatalf("expected LevelClaimed (1) before cold start, got %v", got)
 	}
 
-	// Verify cloud has data.
-	if _, ok, _ := cloud.LoadAttestations(testInternalID); !ok {
+	// Verify cloud has the serialized attestation data.
+	if _, hasData, _ := cloud.LoadAttestations(testInternalID); !hasData {
 		t.Fatal("expected cloud to have attestation data after SetSelfClaimed")
 	}
 
-	// --- Phase 2: Simulate cold start — delete local file. ---
+	// --- Phase 2: Simulate cold start — delete local attestations.json. ---
 
 	if err := os.Remove(attestationPath); err != nil {
 		t.Fatalf("removing attestation file: %v", err)
 	}
-
-	// Confirm the file is gone.
 	if _, statErr := os.Stat(attestationPath); !os.IsNotExist(statErr) {
-		t.Fatal("attestation file should be gone to simulate cold start")
+		t.Fatal("attestation file should be gone after removal (cold start precondition)")
 	}
 
-	// --- Phase 3: Load from cloud fallback. ---
-	// We use a server with a cloudOverrideForTest to inject the memAttestationStore.
-	// Since sessionStore is *aztable.SessionStore (concrete), we test via the
-	// cloudAttestationPersisterFunc hook exposed by the test helper.
+	// --- Phase 3: New server instance — local file gone, cloud has the data. ---
+
 	srv2 := &server{
-		cfHome:    cfHome,
-		beaconDir: beaconDir,
-		sess:      sess,
-		// sessionStore left nil; we use the cloud-override test path below.
+		cfHome:                   cfHome,
+		beaconDir:                beaconDir,
+		sess:                     sess, // same session, same internalID
+		cloudAttestationOverride: cloud,
 	}
-	_ = srv1 // srv1 used for phase 1 setup only
 
-	// loadProvenanceStore with cloud — inject via cloudOverrideForTest.
-	recovered := loadProvenanceStoreWithCloud(srv2, attestationPath, cloud)
-	if recovered == nil {
-		t.Fatal("loadProvenanceStoreWithCloud returned nil")
-	}
+	// loadProvenanceStore should fall back to cloud and reconstitute the local file.
+	ps2 := srv2.loadProvenanceStore(attestationPath)
 
 	// --- Phase 4: Verify level 1 is preserved after cold start. ---
-	if got := recovered.Level(agentID.PublicKeyHex()); got != provenance.LevelClaimed {
+	if got := ps2.Level(agentID.PublicKeyHex()); got != provenance.LevelClaimed {
 		t.Errorf("cold start: expected LevelClaimed (1), got %v (%d)", got, int(got))
+	}
+
+	// Verify the local file was reconstituted (cloud fallback wrote it back).
+	if _, statErr := os.Stat(attestationPath); os.IsNotExist(statErr) {
+		t.Error("attestation file was not reconstituted from cloud during cold-start recovery")
 	}
 
 	// --- Phase 5: Verify min_operator_level=1 gate passes post-recovery. ---
 	// The gate uses a provenanceCheckerAdapter wrapping the recovered store.
-	checker := &provenanceCheckerAdapter{store: recovered}
+	checker := &provenanceCheckerAdapter{store: ps2}
 	if checker.Level(agentID.PublicKeyHex()) < 1 {
-		t.Errorf("min_operator_level gate: level %d < 1, gate would reject (cold start broke provenance)",
+		t.Errorf("min_operator_level gate: level %d < 1, cold start broke provenance enforcement",
 			checker.Level(agentID.PublicKeyHex()))
 	}
 }

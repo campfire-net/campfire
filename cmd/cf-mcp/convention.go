@@ -10,6 +10,7 @@ import (
 	ioPkg "io"
 	"log"
 	httpPkg "net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -928,6 +929,157 @@ type storeReaderAdapter struct {
 
 func (a storeReaderAdapter) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
 	return a.st.ListMessages(campfireID, afterTimestamp, filter...)
+}
+
+// attestationPersister is the interface the dualWriteProvenanceStore requires
+// for cloud persistence. *aztable.SessionStore satisfies this interface; tests
+// can provide a lightweight in-memory stub.
+type attestationPersister interface {
+	SaveAttestations(internalID string, data []byte) error
+	LoadAttestations(internalID string) ([]byte, bool, error)
+}
+
+// dualWriteProvenanceStore wraps a provenance.FileStore and mirrors every
+// mutation to cloud storage via an attestationPersister. This allows
+// attestations to survive cold starts: when a new instance handles a request
+// for a session whose cfHome has been reset, loadProvenanceStore loads the
+// attestation state from cloud and reconstitutes the local file.
+//
+// Read operations (Level, Attestations) delegate to the inner FileStore
+// without cloud interaction — cloud is write-only (mutations push up) and
+// read-on-cold-start (fallback during load).
+type dualWriteProvenanceStore struct {
+	inner      *provenance.FileStore
+	filePath   string
+	cloud      attestationPersister
+	internalID string
+}
+
+func (d *dualWriteProvenanceStore) AddAttestation(a *provenance.Attestation) error {
+	err := d.inner.AddAttestation(a)
+	// ErrNotCoSigned means the attestation was stored at reduced trust — still sync.
+	if err == nil || err.Error() == provenance.ErrNotCoSigned.Error() {
+		d.syncToCloud()
+	}
+	return err
+}
+
+func (d *dualWriteProvenanceStore) Revoke(attestationID string) error {
+	if err := d.inner.Revoke(attestationID); err != nil {
+		return err
+	}
+	d.syncToCloud()
+	return nil
+}
+
+func (d *dualWriteProvenanceStore) Level(key string) provenance.Level {
+	return d.inner.Level(key)
+}
+
+func (d *dualWriteProvenanceStore) Attestations(key string) []*provenance.Attestation {
+	return d.inner.Attestations(key)
+}
+
+// SetSelfClaimed mirrors self-claimed mutations to cloud. This method is not
+// part of the provenance.AttestationStore interface but is called via
+// type-assert where callers need to set level-1 (claimed) provenance directly.
+func (d *dualWriteProvenanceStore) SetSelfClaimed(key string) error {
+	if err := d.inner.SetSelfClaimed(key); err != nil {
+		return err
+	}
+	d.syncToCloud()
+	return nil
+}
+
+// syncToCloud reads the local attestation file and uploads it to cloud storage.
+// Called after every mutation. Best-effort: errors are logged but not returned
+// (cloud sync failure must not break local operation).
+func (d *dualWriteProvenanceStore) syncToCloud() {
+	if d.cloud == nil || d.internalID == "" {
+		return
+	}
+	data, readErr := os.ReadFile(d.filePath)
+	if readErr != nil {
+		log.Printf("provenance: sync to cloud: read local file: %v", readErr)
+		return
+	}
+	if saveErr := d.cloud.SaveAttestations(d.internalID, data); saveErr != nil {
+		log.Printf("provenance: sync to cloud: save failed: %v", saveErr)
+	}
+}
+
+// loadProvenanceStore opens (or creates) the attestation store for a server.
+//
+// Load order:
+//  1. Try to open the local file (storePath). If present, use it.
+//  2. If the file is absent and a cloud session store is available, fetch
+//     the attestation state from cloud, write it to the local file, then
+//     open the FileStore from the freshly written file (cold-start recovery).
+//  3. If both fail, fall back to an in-memory store (anonymous — level 0).
+//
+// When a cloud session store is wired, the returned store is wrapped in
+// dualWriteProvenanceStore so that future mutations are mirrored to cloud.
+func (s *server) loadProvenanceStore(storePath string) provenance.AttestationStore {
+	cloud := s.cloudAttestationPersister()
+
+	// Determine whether the local file exists.
+	// provenance.NewFileStore succeeds even when the file is absent (creates an
+	// empty store backed by a new file on the first mutation). We must check
+	// existence explicitly to distinguish:
+	//   - "file present with data" — load from disk
+	//   - "file absent, cloud has data" — cold-start recovery (re-hydrate from cloud)
+	//   - "file absent, no cloud data" — new session; create FileStore (will write on first mutation)
+	_, statErr := os.Stat(storePath)
+	localExists := statErr == nil
+
+	// Cold-start recovery: local file is absent but cloud has data — re-hydrate.
+	if !localExists && cloud != nil && s.sess != nil {
+		data, ok, loadErr := cloud.LoadAttestations(s.sess.internalID)
+		if loadErr == nil && ok && len(data) > 0 {
+			// Write cloud data to local file so NewFileStore can read it.
+			if writeErr := os.WriteFile(storePath, data, 0o600); writeErr == nil {
+				localExists = true // file now exists
+			}
+		}
+	}
+
+	// Open the local FileStore (existing or freshly written from cloud).
+	// NewFileStore always succeeds — it creates an empty store when file is absent.
+	fileStore, fileErr := provenance.NewFileStore(storePath, provenance.DefaultConfig())
+	if fileErr == nil {
+		// Wrap with dual-write when cloud is wired so mutations go to both file and cloud.
+		if cloud != nil {
+			return &dualWriteProvenanceStore{
+				inner:      fileStore,
+				filePath:   storePath,
+				cloud:      cloud,
+				internalID: s.sess.internalID,
+			}
+		}
+		return fileStore
+	}
+
+	// FileStore failed (e.g., corrupt file, permissions). Degrade gracefully.
+	log.Printf("provenance: loadProvenanceStore: file store open failed: %v; using in-memory store", fileErr)
+	return provenance.NewStore(provenance.DefaultConfig())
+}
+
+// cloudAttestationPersister returns the cloud attestation backend when both
+// a session store and a session (with internalID) are wired. Returns nil when
+// the server is running in standalone mode (no cloud configured).
+//
+// cloudAttestationOverride takes precedence over sessionStore — used in tests
+// to inject in-memory stubs without requiring a real Azure Table Storage connection.
+func (s *server) cloudAttestationPersister() attestationPersister {
+	// Test override takes precedence.
+	if s.cloudAttestationOverride != nil && s.sess != nil && s.sess.internalID != "" {
+		return s.cloudAttestationOverride
+	}
+	// Production path: use the real SessionStore.
+	if s.sessionStore != nil && s.sess != nil && s.sess.internalID != "" {
+		return s.sessionStore
+	}
+	return nil
 }
 
 // sendCampfireKeySignedMessage creates a message signed with the campfire's own

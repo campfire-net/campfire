@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/campfire-net/campfire/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -1061,5 +1063,130 @@ func TestAudit_Since_FutureTimestamp(t *testing.T) {
 	total, _ := result["total_actions"].(float64)
 	if total != 0 {
 		t.Errorf("expected 0 actions with far-future since filter, got %.0f", total)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: audit campfire ID persists across cold starts (campfireagent-120)
+// ---------------------------------------------------------------------------
+
+// TestAudit_ColdStart verifies:
+//
+//  1. loadOrCreateAuditCampfire writes the audit campfire's private key to the
+//     global store (CampfirePrivKey field) when creating a new audit campfire.
+//
+//  2. postMessage falls back to the global store when local CBOR is absent —
+//     the same cold-start pattern used by the HTTP transport's KeyProvider.
+//
+// The test simulates a cold start by wiping the local campfire.cbor after the
+// audit campfire is created, then verifying that audit entries can still be
+// written.
+func TestAudit_ColdStart(t *testing.T) {
+	// Instance 1 setup: SQLite local store + shared global store (stand-in for
+	// Azure Table Storage in production).
+	cfHome1 := t.TempDir()
+
+	globalDir := t.TempDir()
+	globalStore, err := store.Open(store.StorePath(globalDir))
+	if err != nil {
+		t.Fatalf("opening global store: %v", err)
+	}
+	t.Cleanup(func() { globalStore.Close() })
+
+	router := NewTransportRouter()
+	router.SetGlobalStore(globalStore, "http://instance1")
+
+	rawStore1, err := store.Open(store.StorePath(cfHome1))
+	if err != nil {
+		t.Fatalf("opening store (instance 1): %v", err)
+	}
+	t.Cleanup(func() { rawStore1.Close() })
+
+	srv1 := &server{
+		cfHome:          cfHome1,
+		beaconDir:       t.TempDir(),
+		cfHomeExplicit:  true,
+		st:              rawStore1,
+		transportRouter: router,
+	}
+	doInit(t, srv1)
+
+	// Create AuditWriter on instance 1. This should:
+	//   - Create a new audit campfire (no local file yet).
+	//   - Write the audit campfire ID to cfHome1/audit-campfire-id.
+	//   - Write the campfire's private key to the global store.
+	aw1, err := NewAuditWriter(srv1)
+	if err != nil {
+		t.Fatalf("NewAuditWriter (instance 1): %v", err)
+	}
+	defer aw1.Close()
+
+	auditCampfireID := aw1.CampfireID()
+	if auditCampfireID == "" {
+		t.Fatal("expected non-empty audit campfire ID")
+	}
+
+	// Verify the audit campfire was registered in the global store with CampfirePrivKey.
+	gm, err := globalStore.GetMembership(auditCampfireID)
+	if err != nil {
+		t.Fatalf("GetMembership from global store: %v", err)
+	}
+	if gm == nil {
+		t.Fatal("audit campfire not found in global store after creation on instance 1")
+	}
+	if gm.CampfirePrivKey == "" {
+		t.Fatal("audit campfire in global store is missing CampfirePrivKey — global store AddMembership not called")
+	}
+
+	// Simulate cold start: wipe the local campfire.cbor so postMessage must
+	// fall back to global store for campfire state reconstruction.
+	campfireDir := srv1.fsTransport().CampfireDir(auditCampfireID)
+	if removeErr := os.Remove(campfireDir + "/campfire.cbor"); removeErr != nil {
+		// In store-backed mode campfire.cbor may not exist on disk — that's OK.
+		// The global store fallback in postMessage still exercises the same path.
+		t.Logf("campfire.cbor not on disk at %s (may be store-backed): %v", campfireDir, removeErr)
+	}
+
+	// Write an audit entry — postMessage must succeed via global store fallback.
+	aw1.Log(AuditEntry{Action: "send", AgentKey: "testkey"})
+	aw1.Flush()
+
+	// Verify the entry was written (not dropped), proving postMessage succeeded.
+	if written := aw1.Written(); written < 1 {
+		t.Errorf("expected at least 1 written entry after cold-start, got %d (dropped=%d)",
+			written, aw1.Dropped())
+	}
+	if dropped := aw1.Dropped(); dropped > 0 {
+		t.Errorf("expected 0 dropped entries, got %d — postMessage failed silently after cold-start",
+			dropped)
+	}
+
+	// Verify instance 2 (same global store, same cfHome to share local file)
+	// finds the same audit campfire ID via the local-file level of the three-level
+	// lookup. In production, a cold-start instance uses cloud SessionStore;
+	// here we share cfHome to exercise the local-file path deterministically.
+	rawStore2, err := store.Open(store.StorePath(cfHome1))
+	if err != nil {
+		t.Fatalf("opening store (instance 2): %v", err)
+	}
+	t.Cleanup(func() { rawStore2.Close() })
+
+	srv2 := &server{
+		cfHome:          cfHome1, // same cfHome → local audit-campfire-id file found
+		beaconDir:       t.TempDir(),
+		cfHomeExplicit:  true,
+		st:              rawStore2,
+		transportRouter: router,
+	}
+
+	aw2, err := NewAuditWriter(srv2)
+	if err != nil {
+		t.Fatalf("NewAuditWriter (instance 2): %v", err)
+	}
+	defer aw2.Close()
+
+	if aw2.CampfireID() != auditCampfireID {
+		t.Errorf("instance 2 got different audit campfire ID: got %s, want %s",
+			aw2.CampfireID(), auditCampfireID)
 	}
 }

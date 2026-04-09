@@ -5,11 +5,13 @@
 //
 //   - Token registry entries (token → internalID mapping)
 //   - Session identity key material (per-session Ed25519 keypair JSON)
+//   - Audit campfire ID (per-operator, shared across instances)
 //
 // Tables:
 //
 //	CampfireSessionTokens     PK="tokens"      RK=encodeKey(token)
 //	CampfireSessionIdentities PK="identities"  RK=encodeKey(internalID)
+//	                          PK="audit"       RK=encodeKey(agentKey) — audit campfire IDs
 //
 // These tables are created on first use; callers do not need to provision them
 // separately from the main campfire tables.
@@ -24,13 +26,14 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
 )
 
-// SessionStore persists session metadata (token registry + identity key material)
-// to Azure Table Storage. It is shared across all cf-mcp instances that connect
-// to the same storage account, giving every instance access to tokens and
-// identities created on any other instance.
+// SessionStore persists session metadata (token registry + identity key material
+// + attestation state) to Azure Table Storage. It is shared across all cf-mcp
+// instances that connect to the same storage account, giving every instance
+// access to tokens, identities, and attestations created on any other instance.
 type SessionStore struct {
-	tokens     *aztables.Client // CampfireSessionTokens
-	identities *aztables.Client // CampfireSessionIdentities
+	tokens       *aztables.Client // CampfireSessionTokens
+	identities   *aztables.Client // CampfireSessionIdentities
+	attestations *aztables.Client // CampfireSessionAttestations
 }
 
 // TokenEntryRecord is the on-disk representation of a token registry entry.
@@ -58,6 +61,7 @@ func NewSessionStore(connectionString string) (*SessionStore, error) {
 	}{
 		{"CampfireSessionTokens", &ss.tokens},
 		{"CampfireSessionIdentities", &ss.identities},
+		{"CampfireSessionAttestations", &ss.attestations},
 	}
 	ctx := context.Background()
 	for _, t := range tables {
@@ -173,4 +177,72 @@ func (ss *SessionStore) LoadIdentity(internalID string) ([]byte, bool, error) {
 // revoked and cloud state cleanup is desired.
 func (ss *SessionStore) DeleteIdentity(internalID string) error {
 	return deleteEntity(context.Background(), ss.identities, "identities", encodeKey(internalID))
+}
+
+// ---------------------------------------------------------------------------
+// Attestation persistence
+// ---------------------------------------------------------------------------
+
+// SaveAttestations persists the serialized attestation store JSON for a session.
+// The data is the raw JSON bytes of the provenance persistedState (attestations.json).
+// Dual-write: callers also write to the local file; this provides a cloud fallback
+// for cold-start recovery when the local filesystem is reset (e.g. instance hop).
+func (ss *SessionStore) SaveAttestations(internalID string, data []byte) error {
+	entity := map[string]any{
+		"PartitionKey": "attestations",
+		"RowKey":       encodeKey(internalID),
+		"InternalID":   internalID,
+	}
+	setChunked(entity, "Data", data)
+	return upsertEntity(context.Background(), ss.attestations, entity)
+}
+
+// LoadAttestations returns the attestation store JSON for a session, or
+// (nil, false, nil) if no attestations have been stored for that internalID.
+func (ss *SessionStore) LoadAttestations(internalID string) ([]byte, bool, error) {
+	raw, err := getEntity(context.Background(), ss.attestations, "attestations", encodeKey(internalID))
+	if err != nil {
+		return nil, false, fmt.Errorf("aztable: LoadAttestations: %w", err)
+	}
+	if raw == nil {
+		return nil, false, nil
+	}
+	data := getChunked(raw, "Data")
+	return data, true, nil
+}
+
+// ---------------------------------------------------------------------------
+// Audit campfire ID persistence
+// ---------------------------------------------------------------------------
+
+// SaveAuditCampfireID persists the audit campfire ID to Azure Table Storage so
+// that it survives cold starts and is shared across all instances that use the
+// same storage account. The agentKey is the hex-encoded Ed25519 public key of
+// the operator identity, used as a scoping key so multiple operators can share
+// one storage account without conflicts.
+func (ss *SessionStore) SaveAuditCampfireID(agentKey, campfireID string) error {
+	entity := map[string]any{
+		"PartitionKey": "audit",
+		"RowKey":       encodeKey(agentKey),
+		"AgentKey":     agentKey,
+		"CampfireID":   campfireID,
+	}
+	return upsertEntity(context.Background(), ss.identities, entity)
+}
+
+// LoadAuditCampfireID returns the audit campfire ID previously saved for the
+// given agent key, or ("", false, nil) if none has been stored yet.
+func (ss *SessionStore) LoadAuditCampfireID(agentKey string) (string, bool, error) {
+	m, err := getEntity(context.Background(), ss.identities, "audit", encodeKey(agentKey))
+	if err != nil {
+		return "", false, fmt.Errorf("aztable: LoadAuditCampfireID: %w", err)
+	}
+	if m == nil {
+		return "", false, nil
+	}
+	id := str(m, "CampfireID")
+	if id == "" {
+		return "", false, nil
+	}
+	return id, true, nil
 }
