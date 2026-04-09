@@ -115,6 +115,25 @@ func createAndRegisterOnRelay(cf *campfire.Campfire, agentID *identity.Identity,
 		return err
 	}
 
+	// Publish beacon locally so cf share works.
+	b, err := beacon.New(
+		cf.PublicKey,
+		cf.PrivateKey,
+		cf.JoinProtocol,
+		cf.ReceptionRequirements,
+		beacon.TransportConfig{
+			Protocol: "p2p-http",
+			Config:   map[string]string{"endpoint": relayEndpoint},
+		},
+		description,
+	)
+	if err != nil {
+		return fmt.Errorf("creating beacon: %w", err)
+	}
+	if err := beacon.Publish(BeaconDir(), b); err != nil {
+		return fmt.Errorf("publishing beacon: %w", err)
+	}
+
 	if jsonOutput {
 		out := map[string]interface{}{
 			"campfire_id":   cf.PublicKeyHex(),
