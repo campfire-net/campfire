@@ -15,6 +15,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -968,5 +969,88 @@ func TestInvite_ToolRevokesCode(t *testing.T) {
 	}
 	if !inv.Revoked {
 		t.Error("expected invite to be revoked")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: campfire_revoke_invite propagates revocation to the global store
+// ---------------------------------------------------------------------------
+
+// TestRevokeInvite_GlobalStore verifies that revoking an invite code via the
+// MCP tool also revokes the code in the global store. Before this fix, the
+// global store retained the invite record as valid, allowing a second instance
+// to accept a join using a code that had already been revoked.
+func TestRevokeInvite_GlobalStore(t *testing.T) {
+	cfhttp.OverrideValidateJoinerEndpointForTest()
+	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
+	cfhttp.OverridePollTransportForTest(http.DefaultTransport)
+
+	// Set up a shared global store (simulating Azure Table Storage).
+	globalDir := t.TempDir()
+	globalStore, err := store.Open(store.StorePath(globalDir))
+	if err != nil {
+		t.Fatalf("opening global store: %v", err)
+	}
+	t.Cleanup(func() { globalStore.Close() })
+
+	router := NewTransportRouter()
+
+	// srv creates the campfire and issues an invite code.
+	srv, stLocal := newTestServerWithStore(t)
+	doInit(t, srv)
+
+	tA := cfhttp.New("", stLocal)
+	t.Cleanup(tA.StopNoncePruner)
+	tA.StartNoncePruner()
+	srv.httpTransport = tA
+	srv.transportRouter = router
+
+	// Wire the global store into the router.
+	router.SetGlobalStore(globalStore, "http://localhost")
+
+	// Create the campfire — invite code is returned in the response.
+	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	fields := extractCreateResult(t, createResp)
+	campfireID, _ := fields["campfire_id"].(string)
+	inviteCode, _ := fields["invite_code"].(string)
+	if campfireID == "" || inviteCode == "" {
+		t.Fatalf("missing campfire_id or invite_code in create response: %v", fields)
+	}
+
+	// Pre-condition: invite code must be visible in the global store.
+	invBefore, err := globalStore.LookupInvite(inviteCode)
+	if err != nil {
+		t.Fatalf("pre-condition: LookupInvite in globalStore: %v", err)
+	}
+	if invBefore == nil {
+		t.Fatal("pre-condition: invite not found in global store after campfire_create")
+	}
+	if invBefore.Revoked {
+		t.Fatal("pre-condition: invite already revoked in global store before revoke call")
+	}
+
+	// Revoke via the MCP tool.
+	revokeArgs, _ := json.Marshal(map[string]interface{}{
+		"campfire_id": campfireID,
+		"invite_code": inviteCode,
+	})
+	revokeResp := srv.dispatch(makeReq("tools/call",
+		`{"name":"campfire_revoke_invite","arguments":`+string(revokeArgs)+`}`))
+	if revokeResp.Error != nil {
+		t.Fatalf("campfire_revoke_invite failed: code=%d msg=%s",
+			revokeResp.Error.Code, revokeResp.Error.Message)
+	}
+
+	// Post-condition: invite must be revoked in the global store.
+	invAfter, err := globalStore.LookupInvite(inviteCode)
+	if err != nil {
+		t.Fatalf("LookupInvite in globalStore after revoke: %v", err)
+	}
+	if invAfter == nil {
+		t.Fatal("invite disappeared from global store after revoke (expected Revoked=true, not deleted)")
+	}
+	if !invAfter.Revoked {
+		t.Error("cross-instance revocation bug: invite still valid in global store after campfire_revoke_invite")
 	}
 }

@@ -3781,6 +3781,12 @@ func (s *server) handleRevokeInvite(id interface{}, params map[string]interface{
 	if err := st.RevokeInvite(campfireID, inviteCode); err != nil {
 		return errResponse(id, -32000, fmt.Sprintf("revoking invite code: %v", err))
 	}
+	// Mirror revocation to global store so cross-instance joins are also blocked.
+	if s.transportRouter != nil {
+		if gs := s.transportRouter.GlobalStore(); gs != nil {
+			gs.RevokeInvite(campfireID, inviteCode) //nolint:errcheck
+		}
+	}
 
 	// Audit: record revoke action (§5.e).
 	if s.auditWriter != nil {
