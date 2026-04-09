@@ -149,7 +149,9 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) *Subscript
 			// Read() swallows sync errors for resilience in one-shot reads; here
 			// we need to surface them so the subscription can terminate cleanly
 			// when the transport becomes permanently unavailable (e.g. dir deleted).
-			if err := c.syncIfFilesystem(req.CampfireID); err != nil {
+			// syncViaInterface uses the injected Syncer when set (covers all transports),
+			// otherwise falls back to syncIfFilesystem.
+			if err := c.syncViaInterface(req.CampfireID); err != nil {
 				sub.setErr(err)
 				return
 			}

@@ -114,6 +114,7 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.
 	}
 
 	client := protocol.New(s, agentID)
+	client.SetSyncer(NewStoreSyncer(agentID, s))
 
 	for {
 		// Check for stop signal (non-blocking).
@@ -166,6 +167,7 @@ func runFollowMode(entries []campfireEntry, agentID *identity.Identity, s store.
 // is skipped for all and peek modes.
 func runOneShotMode(campfireIDs []string, entries []campfireEntry, agentID *identity.Identity, s store.Store, fieldSet map[string]bool, all, peek bool, mf store.MessageFilter) error {
 	client := protocol.New(s, agentID)
+	client.SetSyncer(NewStoreSyncer(agentID, s))
 
 	preCursors := map[string]int64{}
 	var allMessages []protocol.Message

@@ -118,7 +118,9 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 	}
 
 	// Initial sync-and-check before entering the poll loop.
-	if err := c.syncIfFilesystem(req.CampfireID); err != nil {
+	// syncViaInterface uses the injected Syncer when set (covers all transports),
+	// otherwise falls back to syncIfFilesystem.
+	if err := c.syncViaInterface(req.CampfireID); err != nil {
 		// campfire-agent-zyq: Non-fatal -- the store may have messages from a
 		// previous sync -- but log it so operators can diagnose transport problems.
 		fmt.Fprintf(os.Stderr, "protocol.Client.Await: initial sync error (campfire=%s): %v\n", req.CampfireID, err)
@@ -147,7 +149,7 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 			// Periodic poll (filesystem mode or PollBroker subscribe failed).
 		}
 
-		if err := c.syncIfFilesystem(req.CampfireID); err != nil {
+		if err := c.syncViaInterface(req.CampfireID); err != nil {
 			// campfire-agent-zyq: Non-fatal -- keep polling -- but log so operators
 			// can see repeated transport failures without attaching a debugger.
 			fmt.Fprintf(os.Stderr, "protocol.Client.Await: poll sync error (campfire=%s): %v\n", req.CampfireID, err)

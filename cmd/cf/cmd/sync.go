@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport"
 	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
@@ -126,4 +127,36 @@ func syncFromHTTPPeers(cfID string, agentID *identity.Identity, s store.Store) {
 			s.AddMessage(store.MessageRecordFromMessage(cfID, &msg, store.NowNano())) //nolint:errcheck
 		}
 	}
+}
+
+// StoreSyncer implements protocol.Syncer by wrapping syncCampfire so that
+// protocol.Client.Read/Subscribe/Await sync all transport types (not just
+// filesystem). The MCP server is push-based and should NOT set a StoreSyncer
+// on its client — only cmd/cf commands that need pull-sync should use one.
+type StoreSyncer struct {
+	agentID *identity.Identity
+	store   store.Store
+}
+
+// NewStoreSyncer creates a StoreSyncer for use with protocol.Client.SetSyncer.
+// It implements the protocol.Syncer interface by delegating to syncCampfire,
+// which dispatches to the appropriate transport-specific sync function.
+func NewStoreSyncer(agentID *identity.Identity, s store.Store) protocol.Syncer {
+	return &StoreSyncer{agentID: agentID, store: s}
+}
+
+// Sync implements protocol.Syncer. It looks up the membership for campfireID
+// in the store and calls syncCampfire with the appropriate transport handler.
+// Returns an error if the membership is missing (caller decides fatality).
+func (ss *StoreSyncer) Sync(campfireID string) error {
+	m, err := ss.store.GetMembership(campfireID)
+	if err != nil {
+		return fmt.Errorf("getting membership: %w", err)
+	}
+	if m == nil {
+		// No membership — nothing to sync (mirrors syncIfFilesystem behaviour).
+		return nil
+	}
+	syncCampfire(campfireID, m, ss.agentID, ss.store)
+	return nil
 }

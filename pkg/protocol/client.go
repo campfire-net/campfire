@@ -79,6 +79,15 @@ type CoSigner struct {
 	ParticipantID uint32
 }
 
+// Syncer is the interface for transport-agnostic sync before read operations.
+// Implementations pull messages from the campfire's transport into the local store.
+// The Syncer interface decouples protocol.Client from transport-specific sync logic,
+// allowing callers (cmd/cf) to inject the appropriate sync strategy for each
+// transport type without requiring the MCP server (which is push-based) to sync.
+type Syncer interface {
+	Sync(campfireID string) error
+}
+
 // Client is a high-level campfire client that wraps a store and optional identity
 // to provide campfire operations with correct sync-before-query semantics.
 //
@@ -96,6 +105,7 @@ type Client struct {
 	httpTransport *cfhttp.Transport // optional; enables PollBroker-driven Await in HTTP mode
 	enforcer      *ScopeEnforcer    // nil when no scope restrictions apply
 	profileCache  *ProfileCache     // disk-persisting display name cache; nil when using New() directly
+	syncer        Syncer            // optional; when set, called before read/subscribe/await operations
 }
 
 // ProfileCache returns the disk-persisting display name cache for this client.
@@ -158,6 +168,29 @@ func (c *Client) checkOperation(opClass string) error {
 // new message is delivered — instead of waiting for the full poll interval.
 func (c *Client) WithHTTPTransport(tr *cfhttp.Transport) {
 	c.httpTransport = tr
+}
+
+// SetSyncer installs a Syncer on the client. When set, the syncer is called
+// before Read, Subscribe, and Await operations instead of the built-in
+// syncIfFilesystem — enabling sync for all transport types (HTTP, GitHub, etc.).
+// Pass nil to remove the syncer (reverts to syncIfFilesystem-only behaviour).
+//
+// The MCP server is push-based and should not set a syncer (pass nil).
+// cmd/cf should inject a syncer wrapping syncCampfire so that reads on
+// HTTP-transport campfires pull from peers before returning results.
+func (c *Client) SetSyncer(s Syncer) {
+	c.syncer = s
+}
+
+// syncViaInterface syncs campfireID using the injected Syncer if one is set,
+// otherwise falls back to the filesystem-only syncIfFilesystem. Errors are
+// returned to the caller so they can decide whether to treat them as fatal
+// (Subscribe) or non-fatal (Read, Await).
+func (c *Client) syncViaInterface(campfireID string) error {
+	if c.syncer != nil {
+		return c.syncer.Sync(campfireID)
+	}
+	return c.syncIfFilesystem(campfireID)
 }
 
 // GetMembership returns the membership record for the given campfire ID,

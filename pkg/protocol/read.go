@@ -102,11 +102,15 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 	}
 
 	// Sync-before-query for filesystem-transport campfires.
+	// Sync-before-query for all transport types.
+	// syncViaInterface uses the injected Syncer when set, otherwise falls back
+	// to syncIfFilesystem (filesystem-only). This ensures HTTP-transport campfires
+	// also pull messages from peers before returning results when a Syncer is set.
 	if !req.SkipSync {
-		if err := c.syncIfFilesystem(req.CampfireID); err != nil {
+		if err := c.syncViaInterface(req.CampfireID); err != nil {
 			// Sync failures are non-fatal: the store may have older messages
 			// that are still useful. Log so operators can detect transport problems.
-			log.Printf("campfire: syncIfFilesystem(%s): %v â serving from local store", req.CampfireID, err)
+			log.Printf("campfire: sync(%s): %v — serving from local store", req.CampfireID, err)
 		}
 	}
 
