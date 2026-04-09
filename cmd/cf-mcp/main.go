@@ -148,6 +148,16 @@ type server struct {
 	conventionServerStore    aztable.ConventionServerStore       // non-nil when Azure Table Storage is available (T4)
 	operatorSessionIdx  *operatorSessionIndex // bidirectional map of operator account IDs ↔ session tokens (forge-tk- auth)
 	mcpPath             string                // path advertised to SSE clients for POSTing; default "/mcp", override via CF_MCP_ENDPOINT_PATH
+	// sessionStore, when non-nil, is the cloud persistence backend used to
+	// dual-write attestation state. This enables cold-start recovery: when a
+	// new instance handles a request for a session whose cfHome has been reset,
+	// loadProvenanceStore fetches the serialized store from Azure Table Storage.
+	// The internalID for keying comes from sess.internalID.
+	sessionStore *aztable.SessionStore
+	// cloudAttestationOverride, when non-nil, overrides sessionStore for
+	// attestation persistence. Used in tests to inject in-memory stubs without
+	// requiring a real Azure Table Storage connection.
+	cloudAttestationOverride attestationPersister
 }
 
 func (s *server) identityPath() string {
@@ -1995,7 +2005,9 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 }
 
 // resolveBeaconEndpoint scans the server's beacon directory for a p2p-http
-// beacon matching campfireID and returns the endpoint URL. Returns "" if not
+// beacon matching campfireID and returns the endpoint URL. If no local beacon
+// matches, it falls back to the global store's membership record (for
+// cross-instance resolution when no beacon file is present). Returns "" if not
 // found or the beacon has no p2p-http transport.
 func (s *server) resolveBeaconEndpoint(campfireID string) string {
 	beacons, err := beacon.Scan(s.beaconDir)
@@ -2012,6 +2024,16 @@ func (s *server) resolveBeaconEndpoint(campfireID string) string {
 		}
 		if ep := b.Transport.Config["endpoint"]; ep != "" {
 			return ep
+		}
+	}
+	// Fallback: query the global store for a membership record with an endpoint.
+	// This covers cross-instance scenarios (e.g. Azure Functions) where the
+	// campfire was created on another instance and no local beacon file exists.
+	if s.transportRouter != nil {
+		if gs := s.transportRouter.GlobalStore(); gs != nil {
+			if m, gerr := gs.GetMembership(campfireID); gerr == nil && m != nil && m.TransportDir != "" {
+				return m.TransportDir
+			}
 		}
 	}
 	return ""
@@ -2174,6 +2196,29 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 			Endpoint:     s.externalAddr,
 			Role:         store.PeerRoleMember,
 		})
+
+		// Persist remote-join CBOR to the global store so other instances can
+		// reconstruct the campfire transport for this session. The TransportDir
+		// records the origin endpoint (peerEndpoint) so resolveBeaconEndpoint
+		// can return it on a global-store miss. CampfirePrivKey enables signing.
+		if gs := s.transportRouter.GlobalStore(); gs != nil {
+			role := campfire.RoleFull
+			if cfState.Encrypted {
+				role = campfire.RoleBlindRelay
+			}
+			gs.AddMembership(store.Membership{ //nolint:errcheck
+				CampfireID:      campfireID,
+				TransportDir:    peerEndpoint,
+				JoinProtocol:    result.JoinProtocol,
+				Role:            role,
+				JoinedAt:        store.NowNano(),
+				Threshold:       uint(result.Threshold),
+				CreatorPubkey:   agentID.PublicKeyHex(),
+				TransportType:   "p2p-http",
+				Encrypted:       cfState.Encrypted,
+				CampfirePrivKey: fmt.Sprintf("%x", result.CampfirePrivKey),
+			})
+		}
 	}
 
 	// Audit: record join action.
@@ -3230,6 +3275,26 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 
 		if err := transport.Init(cf); err != nil {
 			return errResponse(id, -32000, fmt.Sprintf("initializing transport: %v", err))
+		}
+
+		// Persist DM campfire to the global store so other Azure Functions
+		// instances can reconstruct the transport and send path state without
+		// access to the originating instance's local filesystem (campfireagent-ecd).
+		if s.transportRouter != nil {
+			if gs := s.transportRouter.GlobalStore(); gs != nil {
+				gs.AddMembership(store.Membership{ //nolint:errcheck
+					CampfireID:      cf.PublicKeyHex(),
+					TransportDir:    s.externalAddr,
+					JoinProtocol:    cf.JoinProtocol,
+					Role:            campfire.RoleFull,
+					JoinedAt:        store.NowNano(),
+					Threshold:       1,
+					Description:     fmt.Sprintf("dm:%s:%s", agentID.PublicKeyHex()[:12], targetHex[:12]),
+					CreatorPubkey:   agentID.PublicKeyHex(),
+					TransportType:   "p2p-http",
+					CampfirePrivKey: fmt.Sprintf("%x", cf.PrivateKey),
+				})
+			}
 		}
 
 		transportDir := transport.CampfireDir(cf.PublicKeyHex())

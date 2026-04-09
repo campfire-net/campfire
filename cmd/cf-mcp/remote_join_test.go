@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
+	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
@@ -431,6 +432,161 @@ func TestRemoteJoin_ConventionDeclarationsReplicated(t *testing.T) {
 	// Verify the convention tool name is "post".
 	if len(joinResult.ConventionTools) == 0 || joinResult.ConventionTools[0] != "post" {
 		t.Errorf("West: expected convention tool 'post', got %v", joinResult.ConventionTools)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 7: Cross-instance global store — remote join writes to global store,
+//             resolveBeaconEndpoint reads from global store on local miss.
+// ---------------------------------------------------------------------------
+
+// TestRemoteJoin_CrossInstance verifies two properties introduced in campfireagent-ac2:
+//
+//  (a) When an agent remote-joins a campfire, handleRemoteJoin persists the
+//      campfire state (including CampfirePrivKey) to the global store so other
+//      instances can reconstruct it.
+//
+//  (b) resolveBeaconEndpoint falls back to the global store when no local beacon
+//      file matches the requested campfireID, enabling join without a beacon file.
+//
+// Setup:
+//   - Server A: creates the campfire (writes to shared global store via handleCreateHTTP).
+//   - Server B: remote-joins via Server A's peer_endpoint; this adds B's membership
+//     to the global store (the change under test — part a).
+//   - Server C: shares the same global store. Its beaconDir is empty. Calls
+//     campfire_join with campfire_id only (no peer_endpoint). resolveBeaconEndpoint
+//     should fall back to the global store and return Server A's endpoint, allowing
+//     the join to complete (part b).
+func TestRemoteJoin_CrossInstance(t *testing.T) {
+	// Bypass SSRF validation so loopback endpoints work in tests.
+	cfhttp.OverrideValidateJoinerEndpointForTest()
+	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 10 * time.Second})
+
+	// Shared global store — simulates Azure Table Storage in production.
+	globalDir := t.TempDir()
+	globalStore, err := store.Open(store.StorePath(globalDir))
+	if err != nil {
+		t.Fatalf("opening global store: %v", err)
+	}
+	t.Cleanup(func() { globalStore.Close() })
+
+	// Server A: hosts the campfire. Shares the global store.
+	srvA, _, tsURLa := newTestServerWithHTTPTransport(t)
+	srvA.transportRouter.SetGlobalStore(globalStore, tsURLa)
+
+	// Session A: init and create campfire. handleCreateHTTP writes CampfirePrivKey
+	// to the global store so cross-instance transport reconstruction works.
+	initRespA := mcpCall(t, tsURLa, "", "campfire_init", map[string]interface{}{})
+	tokenA := extractTokenFromInit(t, initRespA)
+
+	createResp := mcpCall(t, tsURLa, tokenA, "campfire_create", map[string]interface{}{
+		"description":    "cross-instance global store test",
+		"delivery_modes": []string{"pull", "push"},
+	})
+	if createResp.Error != nil {
+		t.Fatalf("campfire_create on A failed: code=%d msg=%s",
+			createResp.Error.Code, createResp.Error.Message)
+	}
+	createText := extractResultText(t, createResp)
+	var createResult struct {
+		CampfireID string `json:"campfire_id"`
+	}
+	if err := json.Unmarshal([]byte(createText), &createResult); err != nil {
+		t.Fatalf("parsing create result: %v (text: %s)", err, createText)
+	}
+	campfireID := createResult.CampfireID
+	if campfireID == "" {
+		t.Fatal("campfire_id is empty in create result")
+	}
+
+	// Verify that handleCreateHTTP wrote the campfire to the global store.
+	gmA, gerr := globalStore.GetMembership(campfireID)
+	if gerr != nil {
+		t.Fatalf("global store GetMembership after create: %v", gerr)
+	}
+	if gmA == nil {
+		t.Fatal("global store has no membership record after campfire_create on A")
+	}
+	if gmA.CampfirePrivKey == "" {
+		t.Fatal("global store membership record is missing CampfirePrivKey after campfire_create")
+	}
+	if gmA.TransportDir == "" {
+		t.Fatal("global store membership record is missing TransportDir (endpoint) after campfire_create")
+	}
+	t.Logf("global store: campfire %s → endpoint %s (part a precondition OK)", campfireID[:12], gmA.TransportDir)
+
+	// Server B: separate instance, also sharing the global store. Remote-joins A.
+	// Part (a): after the remote join, the global store should have B's membership
+	// record with a p2p-http TransportType (written by handleRemoteJoin).
+	srvB, _, tsURLb := newTestServerWithHTTPTransport(t)
+	srvB.transportRouter.SetGlobalStore(globalStore, tsURLb)
+
+	initRespB := mcpCall(t, tsURLb, "", "campfire_init", map[string]interface{}{})
+	tokenB := extractTokenFromInit(t, initRespB)
+
+	joinRespB := mcpCall(t, tsURLb, tokenB, "campfire_join", map[string]interface{}{
+		"campfire_id":   campfireID,
+		"peer_endpoint": tsURLa,
+	})
+	if joinRespB.Error != nil {
+		t.Fatalf("remote join from B to A failed: code=%d msg=%s",
+			joinRespB.Error.Code, joinRespB.Error.Message)
+	}
+	t.Logf("B joined via peer_endpoint=%s (part a: remote join succeeded)", tsURLa)
+
+	// Part (a) verification: global store should now reflect the remote join.
+	// The membership record written by handleRemoteJoin uses TransportType="p2p-http".
+	// Note: the global store key is the campfire ID — the record is an upsert, so
+	// the CampfirePrivKey and endpoint should still be present after B's join.
+	gmAfterJoin, gerr2 := globalStore.GetMembership(campfireID)
+	if gerr2 != nil {
+		t.Fatalf("global store GetMembership after B's remote join: %v", gerr2)
+	}
+	if gmAfterJoin == nil {
+		t.Fatal("global store has no membership record after B's remote join")
+	}
+	t.Logf("global store after B join: TransportType=%s TransportDir=%s CampfirePrivKey=%s",
+		gmAfterJoin.TransportType, gmAfterJoin.TransportDir, gmAfterJoin.CampfirePrivKey[:min(8, len(gmAfterJoin.CampfirePrivKey))])
+
+	// Part (b): Server C has the same global store but an empty beaconDir.
+	// campfire_join with no peer_endpoint should fall back to global store
+	// via resolveBeaconEndpoint and succeed.
+	srvC, _, tsURLc := newTestServerWithHTTPTransport(t)
+	srvC.transportRouter.SetGlobalStore(globalStore, tsURLc)
+
+	// Verify C's beaconDir is empty (no local beacon).
+	beaconsC, scanErr := beacon.Scan(srvC.beaconDir)
+	if scanErr != nil {
+		t.Fatalf("scanning C's beaconDir: %v", scanErr)
+	}
+	if len(beaconsC) != 0 {
+		t.Fatalf("expected empty beaconDir on C, found %d beacons", len(beaconsC))
+	}
+
+	initRespC := mcpCall(t, tsURLc, "", "campfire_init", map[string]interface{}{})
+	tokenC := extractTokenFromInit(t, initRespC)
+
+	// Join with campfire_id only — no peer_endpoint. resolveBeaconEndpoint must
+	// fall back to globalStore.GetMembership to find the endpoint.
+	joinRespC := mcpCall(t, tsURLc, tokenC, "campfire_join", map[string]interface{}{
+		"campfire_id": campfireID,
+	})
+	if joinRespC.Error != nil {
+		t.Fatalf("cross-instance join from C (no peer_endpoint, global store fallback) failed: code=%d msg=%s\n"+
+			"(resolveBeaconEndpoint should have found the endpoint via global store)",
+			joinRespC.Error.Code, joinRespC.Error.Message)
+	}
+	t.Logf("C joined via global store endpoint fallback (part b OK)")
+
+	// Verify C is now a member.
+	lsRespC := mcpCall(t, tsURLc, tokenC, "campfire_ls", map[string]interface{}{})
+	if lsRespC.Error != nil {
+		t.Fatalf("campfire_ls on C failed: code=%d msg=%s", lsRespC.Error.Code, lsRespC.Error.Message)
+	}
+	lsText := extractResultText(t, lsRespC)
+	if !containsSubstr(lsText, campfireID[:12]) {
+		t.Errorf("C: joined campfire %s not found in campfire_ls output: %s", campfireID[:12], lsText)
 	}
 }
 
