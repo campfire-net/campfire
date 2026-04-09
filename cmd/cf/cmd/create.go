@@ -41,6 +41,19 @@ var createCmd = &cobra.Command{
 		createGitHubTokenEnv, _ := cmd.Flags().GetString("github-token-env")
 		createGitHubBaseURL, _ := cmd.Flags().GetString("github-base-url")
 		createNoConfig, _ := cmd.Flags().GetBool("no-config")
+		createRelay, _ := cmd.Flags().GetString("relay")
+
+		// Resolve relay URL: flag wins over config.
+		if createRelay == "" {
+			cfHome := CFHome()
+			cwd, cwderr := os.Getwd()
+			if cwderr != nil {
+				cwd = cfHome
+			}
+			if cfg, _, _, err2 := protocol.LoadConfig(cfHome, cwd); err2 == nil && cfg != nil {
+				createRelay = cfg.Transport.Relay
+			}
+		}
 
 		// Load agent identity
 		agentID, err := identity.Load(IdentityPath())
@@ -78,6 +91,11 @@ var createCmd = &cobra.Command{
 		}
 		defer s.Close()
 
+		// If --relay is set (or resolved from config), register on the relay.
+		if createRelay != "" {
+			return createAndRegisterOnRelay(cf, agentID, s, createDescription, createRelay)
+		}
+
 		switch createTransport {
 		case "github":
 			return createGitHub(cf, agentID, s, createDescription, createGitHubRepo, createGitHubTokenEnv, createGitHubBaseURL)
@@ -87,6 +105,38 @@ var createCmd = &cobra.Command{
 			return createFilesystemWithNoConfig(cf, agentID, s, createDescription, createNoConfig)
 		}
 	},
+}
+
+// createAndRegisterOnRelay creates a campfire locally and registers it on the
+// given HTTP relay. It outputs the beacon string from the relay response.
+func createAndRegisterOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, description, relayURL string) error {
+	beaconStr, relayEndpoint, err := registerOnRelay(cf, agentID, s, relayURL, description)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		out := map[string]interface{}{
+			"campfire_id":   cf.PublicKeyHex(),
+			"join_protocol": cf.JoinProtocol,
+			"transport":     "p2p-http",
+			"relay":         relayEndpoint,
+		}
+		if beaconStr != "" {
+			out["beacon"] = beaconStr
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	if beaconStr != "" {
+		fmt.Println(beaconStr)
+	} else {
+		fmt.Println(cf.PublicKeyHex())
+	}
+	fmt.Fprintf(os.Stderr, "Registered on relay: %s\n", relayEndpoint)
+	return nil
 }
 
 func createFilesystemWithNoConfig(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, description string, noConfig bool) error {
@@ -621,6 +671,7 @@ func init() {
 	createCmd.Flags().String("tls-key", "", "TLS private key file (PEM) for p2p-http transport; must be paired with --tls-cert")
 	createCmd.Flags().Uint("participants", 0, "total number of DKG participants for threshold>1 (default: equals threshold)")
 	createCmd.Flags().Bool("no-config", false, "skip writing beacon to .cf/config.toml in git root")
+	createCmd.Flags().String("relay", "", "register on relay: URL of HTTP relay (e.g. https://mcp.getcampfire.dev); overrides transport.relay config")
 	// GitHub transport flags.
 	createCmd.Flags().String("github-repo", "", "coordination repository for GitHub transport (owner/repo)")
 	createCmd.Flags().String("github-token-env", "", "name of env var containing GitHub token (default: GITHUB_TOKEN)")

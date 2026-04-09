@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"crypto/ecdh"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -491,6 +492,159 @@ func Poll(endpoint, campfireID string, cursor int64, timeoutSecs int, id *identi
 		b, _ := io.ReadAll(resp.Body)
 		return nil, cursor, fmt.Errorf("poll: peer returned %d: %s", resp.StatusCode, string(b))
 	}
+}
+
+// FetchRelayInfo retrieves the relay's static X25519 public key and endpoint
+// from GET <relayURL>/campfire/relay-info. Creators call this before
+// POST /campfire/create to discover the relay's static pub key for ECDH.
+func FetchRelayInfo(relayURL string) (*RelayInfoResponse, error) {
+	url := relayURL + "/campfire/relay-info"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building relay-info request: %w", err)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching relay info from %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("relay returned %d: %s", resp.StatusCode, string(b))
+	}
+
+	var info RelayInfoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("decoding relay-info response: %w", err)
+	}
+	return &info, nil
+}
+
+// RegisterOnRelay registers a campfire on a relay via POST /campfire/create.
+// The creator encrypts the campfire private key using the relay's static X25519
+// public key (obtained from FetchRelayInfo). Returns the beacon string from the
+// relay response, or an error if registration fails.
+func RegisterOnRelay(relayURL string, cf *CampfireDescriptor, agentID *AgentDescriptor) (*CreateCampfireResponse, error) {
+	// Fetch relay's static X25519 pub key.
+	info, err := FetchRelayInfo(relayURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetching relay info: %w", err)
+	}
+	if info.RelayX25519Pub == "" {
+		return nil, fmt.Errorf("relay does not support campfire registration (no static X25519 key configured)")
+	}
+
+	// Parse relay's static X25519 pub key.
+	relayPubBytes, err := hex.DecodeString(info.RelayX25519Pub)
+	if err != nil {
+		return nil, fmt.Errorf("decoding relay X25519 pub: %w", err)
+	}
+	relayX25519Pub, err := ecdh.X25519().NewPublicKey(relayPubBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parsing relay X25519 pub: %w", err)
+	}
+
+	// Generate creator's ephemeral X25519 keypair.
+	creatorEphPriv, err := generateX25519Key()
+	if err != nil {
+		return nil, fmt.Errorf("generating ephemeral X25519 key: %w", err)
+	}
+	creatorEphPubHex := fmt.Sprintf("%x", creatorEphPriv.PublicKey().Bytes())
+
+	// Derive shared secret: ECDH(creatorEphPriv, relayStaticPub).
+	shared, err := creatorEphPriv.ECDH(relayX25519Pub)
+	if err != nil {
+		return nil, fmt.Errorf("ECDH key exchange: %w", err)
+	}
+	aesKey, err := HkdfSHA256(shared, "campfire-join-v1")
+	if err != nil {
+		return nil, fmt.Errorf("HKDF key derivation: %w", err)
+	}
+
+	// Encrypt campfire private key.
+	encryptedPrivKey, err := AESGCMEncrypt(aesKey, cf.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("encrypting campfire private key: %w", err)
+	}
+
+	createReq := CreateCampfireRequest{
+		CampfireID:            cf.CampfireID,
+		EncryptedPrivKey:      encryptedPrivKey,
+		EphemeralX25519Pub:    creatorEphPubHex,
+		JoinProtocol:          cf.JoinProtocol,
+		ReceptionRequirements: cf.ReceptionRequirements,
+		Threshold:             cf.Threshold,
+		Description:           cf.Description,
+		CreatorPubkey:         agentID.PublicKeyHex,
+	}
+	bodyBytes, err := json.Marshal(createReq)
+	if err != nil {
+		return nil, fmt.Errorf("encoding create request: %w", err)
+	}
+
+	url := relayURL + "/campfire/create"
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("building create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	signRequestWithKey(req, agentID.PublicKeyHex, agentID.PrivateKey, bodyBytes)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("posting to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("relay returned %d: %s", resp.StatusCode, string(b))
+	}
+
+	var createResp CreateCampfireResponse
+	if err := json.NewDecoder(resp.Body).Decode(&createResp); err != nil {
+		return nil, fmt.Errorf("decoding create response: %w", err)
+	}
+	return &createResp, nil
+}
+
+// CampfireDescriptor holds the campfire fields needed for relay registration.
+// This is a minimal struct to avoid a circular import with pkg/campfire.
+type CampfireDescriptor struct {
+	CampfireID            string
+	PrivateKey            []byte
+	JoinProtocol          string
+	ReceptionRequirements []string
+	Threshold             uint
+	Description           string
+}
+
+// AgentDescriptor holds the identity fields needed for relay registration.
+type AgentDescriptor struct {
+	PublicKeyHex string
+	PrivateKey   []byte
+}
+
+// signRequestWithKey is like signRequest but takes raw key bytes instead of
+// an identity.Identity, to avoid the circular import between pkg/transport/http
+// and pkg/identity.
+func signRequestWithKey(req *http.Request, pubKeyHex string, privKey []byte, body []byte) {
+	nonceBytes := make([]byte, 16)
+	if _, err := randRead(nonceBytes); err != nil {
+		panic("signRequestWithKey: rand.Read failed: " + err.Error())
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+
+	signedPayload := buildSignedPayload(timestamp, nonce, body)
+	sig := ed25519.Sign(privKey, signedPayload)
+
+	req.Header.Set("X-Campfire-Sender", pubKeyHex)
+	req.Header.Set("X-Campfire-Nonce", nonce)
+	req.Header.Set("X-Campfire-Timestamp", timestamp)
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
 }
 
 // signRequest adds Ed25519 signature headers to an HTTP request.
