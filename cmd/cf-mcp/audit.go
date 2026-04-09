@@ -324,7 +324,7 @@ func (aw *AuditWriter) postMessage(payload string, tags []string) error {
 		// Local CBOR not found — try global store for cross-instance cold-start recovery.
 		// This mirrors the KeyProvider fallback in session.go (lines 871–885).
 		if gs := aw.globalStore(); gs != nil {
-			if gm, gerr := gs.GetMembership(aw.campfireID); gerr == nil && gm != nil && gm.CampfirePrivKey != "" {
+			if gm, gerr := gs.GetMembership(aw.campfireID); gerr == nil && gm != nil && gm.CampfireID == aw.campfireID && gm.CampfirePrivKey != "" {
 				pk, decErr := hex.DecodeString(gm.CampfirePrivKey)
 				if decErr == nil && len(pk) == ed25519.PrivateKeySize {
 					pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)

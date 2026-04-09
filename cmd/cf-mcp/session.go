@@ -488,6 +488,13 @@ func (l *initRateLimiter) allow(ip string) bool {
 // SessionManager
 // ---------------------------------------------------------------------------
 
+// revocationLoader is the interface used by refreshRevocationsFromCloud to
+// fetch token revocation state from cloud storage.  *aztable.SessionStore
+// satisfies this interface; tests can provide a lightweight in-memory stub.
+type revocationLoader interface {
+	LoadAllTokenEntries() ([]aztable.TokenEntryRecord, error)
+}
+
 // SessionManager maps Bearer tokens to active Sessions via the token registry.
 // All sessions are isolated: each has its own directory tree under sessionsDir.
 type SessionManager struct {
@@ -523,6 +530,10 @@ type SessionManager struct {
 	// sessionStore, when non-nil, persists token registry entries and session
 	// identity key material to Azure Table Storage so they survive instance hops.
 	sessionStore *aztable.SessionStore
+	// revocationLoader, when non-nil, is used by refreshRevocationsFromCloud to
+	// fetch token revocation state.  Set alongside sessionStore by UseSessionStore;
+	// may be overridden independently in tests.
+	revocationStore revocationLoader
 	// storeFactory, when non-nil, is called with the session internalID to create
 	// the store for a new session. This replaces the default SQLite open.
 	// When nil, the default behaviour (store.Open on the local filesystem) is used.
@@ -612,6 +623,7 @@ func (m *SessionManager) UseSessionStore(ss *aztable.SessionStore) error {
 	}
 	m.registry.mu.Unlock()
 	m.sessionStore = ss
+	m.revocationStore = ss
 	return nil
 }
 
@@ -878,6 +890,9 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 				if gerr != nil {
 					return nil, nil, fmt.Errorf("key lookup %s: local: %w, global store: %v", campfireID, localErr, gerr)
 				}
+				if gm != nil && gm.CampfireID != campfireID {
+					return nil, nil, fmt.Errorf("key lookup %s: global store returned record for wrong campfire %q", campfireID, gm.CampfireID)
+				}
 				if gm != nil && gm.CampfirePrivKey != "" {
 					pk, decErr := hex.DecodeString(gm.CampfirePrivKey)
 					if decErr != nil || len(pk) != ed25519.PrivateKeySize {
@@ -1031,6 +1046,9 @@ func (m *SessionManager) getOrCreateOperator(token string) (*Session, error) {
 				if gerr != nil {
 					return nil, nil, fmt.Errorf("key lookup %s: local: %w, global store: %v", campfireID, localErr, gerr)
 				}
+				if gm != nil && gm.CampfireID != campfireID {
+					return nil, nil, fmt.Errorf("key lookup %s: global store returned record for wrong campfire %q", campfireID, gm.CampfireID)
+				}
 				if gm != nil && gm.CampfirePrivKey != "" {
 					pk, decErr := hex.DecodeString(gm.CampfirePrivKey)
 					if decErr != nil || len(pk) != ed25519.PrivateKeySize {
@@ -1109,16 +1127,22 @@ func (m *SessionManager) reaper() {
 // refreshRevocationsFromCloud syncs revocation status from Azure Table Storage
 // into the in-memory TokenRegistry. When instance A revokes a token, instance B
 // sees the revocation at the next reaper tick instead of requiring a restart.
+// After marking a token revoked, any durable Session held open for that token's
+// internalID is closed and removed from m.sessions so it cannot be reused.
 func (m *SessionManager) refreshRevocationsFromCloud() {
-	if m.sessionStore == nil {
+	if m.revocationStore == nil {
 		return
 	}
-	entries, err := m.sessionStore.LoadAllTokenEntries()
+	entries, err := m.revocationStore.LoadAllTokenEntries()
 	if err != nil {
 		return // best-effort; will retry next cycle
 	}
+
+	// Collect internalIDs that transition to revoked in this cycle so we can
+	// close their sessions outside the registry lock.
+	var revokedIDs []string
+
 	m.registry.mu.Lock()
-	defer m.registry.mu.Unlock()
 	for _, e := range entries {
 		local, ok := m.registry.tokens[e.Token]
 		if !ok {
@@ -1130,12 +1154,27 @@ func (m *SessionManager) refreshRevocationsFromCloud() {
 				revoked:          e.Revoked,
 				gracePeriodUntil: e.GracePeriodUntil,
 			}
+			if e.Revoked {
+				revokedIDs = append(revokedIDs, e.InternalID)
+			}
 			continue
 		}
 		// Cloud says revoked but local doesn't know yet — propagate.
 		if e.Revoked && !local.revoked {
 			local.revoked = true
 			local.gracePeriodUntil = e.GracePeriodUntil
+			revokedIDs = append(revokedIDs, local.internalID)
+		}
+	}
+	m.registry.mu.Unlock()
+
+	// Close and evict any durable sessions whose tokens were just revoked.
+	// Using the same Close-before-Delete ordering as the idle reaper to prevent
+	// a concurrent getOrCreate from obtaining a mid-close session.
+	for _, id := range revokedIDs {
+		if v, ok := m.sessions.Load(id); ok {
+			v.(*Session).Close()
+			m.sessions.Delete(id)
 		}
 	}
 }

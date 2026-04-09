@@ -638,7 +638,7 @@ func (s *server) sendMessageHTTPMode(st store.Store, agentID *identity.Identity,
 		if s.transportRouter != nil {
 			if gs := s.transportRouter.GlobalStore(); gs != nil {
 				gm, gerr := gs.GetMembership(campfireID)
-				if gerr == nil && gm != nil && gm.CampfirePrivKey != "" {
+				if gerr == nil && gm != nil && gm.CampfireID == campfireID && gm.CampfirePrivKey != "" {
 					pk, decErr := hex.DecodeString(gm.CampfirePrivKey)
 					if decErr == nil && len(pk) == ed25519.PrivateKeySize {
 						pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)
@@ -948,7 +948,14 @@ type attestationPersister interface {
 // Read operations (Level, Attestations) delegate to the inner FileStore
 // without cloud interaction — cloud is write-only (mutations push up) and
 // read-on-cold-start (fallback during load).
+//
+// mu serializes mutation + cloud sync pairs. Without it there is a TOCTOU
+// window: goroutine A writes to disk, goroutine B writes to disk, B reads the
+// file (sees only B's state), A reads the file (sees only A's state), one of
+// the two cloud uploads silently reverts the other. Holding mu across the
+// entire mutation + syncToCloud call collapses that window.
 type dualWriteProvenanceStore struct {
+	mu         sync.Mutex
 	inner      *provenance.FileStore
 	filePath   string
 	cloud      attestationPersister
@@ -956,6 +963,8 @@ type dualWriteProvenanceStore struct {
 }
 
 func (d *dualWriteProvenanceStore) AddAttestation(a *provenance.Attestation) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	err := d.inner.AddAttestation(a)
 	// ErrNotCoSigned means the attestation was stored at reduced trust — still sync.
 	if err == nil || err.Error() == provenance.ErrNotCoSigned.Error() {
@@ -965,6 +974,8 @@ func (d *dualWriteProvenanceStore) AddAttestation(a *provenance.Attestation) err
 }
 
 func (d *dualWriteProvenanceStore) Revoke(attestationID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if err := d.inner.Revoke(attestationID); err != nil {
 		return err
 	}
@@ -984,6 +995,8 @@ func (d *dualWriteProvenanceStore) Attestations(key string) []*provenance.Attest
 // part of the provenance.AttestationStore interface but is called via
 // type-assert where callers need to set level-1 (claimed) provenance directly.
 func (d *dualWriteProvenanceStore) SetSelfClaimed(key string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if err := d.inner.SetSelfClaimed(key); err != nil {
 		return err
 	}

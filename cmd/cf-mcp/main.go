@@ -3391,7 +3391,7 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 			// (campfireagent-ecd — the campfire was created on a different instance).
 			if s.transportRouter != nil {
 				if gs := s.transportRouter.GlobalStore(); gs != nil {
-					if gm, gsErr := gs.GetMembership(campfireID); gsErr == nil && gm != nil && gm.CampfirePrivKey != "" {
+					if gm, gsErr := gs.GetMembership(campfireID); gsErr == nil && gm != nil && gm.CampfireID == campfireID && gm.CampfirePrivKey != "" {
 						privKeyBytes, hexErr := hex.DecodeString(gm.CampfirePrivKey)
 						if hexErr == nil && len(privKeyBytes) == ed25519.PrivateKeySize {
 							pubKey := ed25519.PrivateKey(privKeyBytes).Public().(ed25519.PublicKey)
