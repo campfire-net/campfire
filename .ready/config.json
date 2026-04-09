@@ -1,9 +1,11 @@
 {
-  "campfire_id": "6124d7ae44cdd2f0118954e5c1c401b40fe3ca796d3e4543a412ce28c3a57eb7",
+  "campfire_id": "9cc7522c3ebd3726bf16aff94854e68a76d69d24e4bbef26bdd5bd7435ae6d42",
+  "project_name": "campfire",
+  "summary_campfire_id": "552564a1dc24c48b55016039e7e9b8b15a545f005e700aa6fc5084661155f94f",
+  "encrypted": true,
+  "inbox_campfire_id": "2d1662a2f6382614ebc7afef09b2acadf9461445a9eba8e0e602d9f86f73bca7",
   "durability": {
-    "meets_minimum": false,
-    "warnings": [
-      "manually initialized \u2014 skipped durability check (identity wrapped)"
-    ]
+    "meets_minimum": true,
+    "weight": ""
   }
 }
