@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.17.1 — cross-transport CLI fixes (2026-04-09)
+
+Fixes four root causes that prevented `cf join --via` (relay-only, no endpoint) from working correctly. Agents joining via relay are now fully recognized members with working reads, syncs, and member listing.
+
+### Bug Fixes
+
+- **Endpointless members recognized**: `UpsertPeerEndpoint` is now called unconditionally for admitted joiners, even when `JoinerEndpoint` is empty. Previously, `checkMembership` returned 403 for relay-only members. (campfireagent-373)
+
+- **Transport-agnostic sync**: New `Syncer` interface in `pkg/protocol/` replaces `syncIfFilesystem`. `protocol.Client.Read`, `Subscribe`, and `Await` now sync from the relay before returning results for all transport types. (campfireagent-eac)
+
+- **Store-based member enumeration**: `cf ls` and `cf members` dispatch on transport type — filesystem members use existing path, HTTP/GitHub members query `peer_endpoints` via the store. Also fixed `dm.go` which was missed in the initial pass. (campfireagent-968)
+
+- **JoinedAt timestamp units**: `admission.go` now writes `time.Now().UnixNano()` to match the display code in `ls.go` that reads nanoseconds. New members show correct timestamps instead of 1970-01-01. (campfireagent-a7a)
+
+### Tests
+
+- Integration test: endpointless member join + poll/sync/deliver (3 tests)
+- Syncer interface unit + integration tests (10 tests)
+- Store-based member enumeration tests (5 tests)
+- JoinedAt nanosecond unit tests (2 tests)
+- E2E cross-transport test proving all 4 fixes work together (1 test)
+
 ## v0.17.0 — session durability (2026-04-09)
 
 Azure Table Storage is now the source of truth for all session state. Every durability-critical path (campfire keys, audit campfire IDs, attestations, DM campfires, remote joins, convention sends) falls back to the global store after a cold start. Operator sessions survive indefinitely across instance restarts.
