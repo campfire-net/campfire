@@ -3861,18 +3861,61 @@ func (s *server) handleAudit(id interface{}, params map[string]interface{}) json
 	}
 	_ = ownStore
 
-	fsT := s.fsTransport()
-	messages, err := fsT.ListMessages(auditID)
-	if err != nil {
-		// Audit campfire might not exist yet (no actions logged). Return empty summary.
-		result, _ := toolResultJSON(map[string]interface{}{
-			"audit_campfire_id": auditID,
-			"total_actions":     0,
-			"actions_by_type":   map[string]int{},
-			"latest_root":       "",
-			"anomalies":         []string{},
-		})
-		return okResponse(id, result)
+	// auditMsgView is a transport-agnostic view of a message used by the
+	// audit summarisation loop below. It holds only the fields handleAudit
+	// needs so we can populate it from either the store (HTTP mode) or the
+	// filesystem transport (FS mode) without duplicating the loop body.
+	type auditMsgView struct {
+		Timestamp int64
+		Payload   []byte
+		Tags      []string
+	}
+
+	var msgs []auditMsgView
+
+	if s.httpTransport != nil {
+		// HTTP mode: messages were written to the store by AuditWriter.postMessage
+		// via st.AddMessage. The filesystem transport has no entries here.
+		storeRecords, err := st.ListMessages(auditID, 0)
+		if err != nil {
+			result, _ := toolResultJSON(map[string]interface{}{
+				"audit_campfire_id": auditID,
+				"total_actions":     0,
+				"actions_by_type":   map[string]int{},
+				"latest_root":       "",
+				"anomalies":         []string{},
+			})
+			return okResponse(id, result)
+		}
+		for _, r := range storeRecords {
+			msgs = append(msgs, auditMsgView{
+				Timestamp: r.Timestamp,
+				Payload:   r.Payload,
+				Tags:      r.Tags,
+			})
+		}
+	} else {
+		// FS mode: messages were written to the filesystem by AuditWriter.postMessage.
+		fsT := s.fsTransport()
+		fsMessages, err := fsT.ListMessages(auditID)
+		if err != nil {
+			// Audit campfire might not exist yet (no actions logged). Return empty summary.
+			result, _ := toolResultJSON(map[string]interface{}{
+				"audit_campfire_id": auditID,
+				"total_actions":     0,
+				"actions_by_type":   map[string]int{},
+				"latest_root":       "",
+				"anomalies":         []string{},
+			})
+			return okResponse(id, result)
+		}
+		for _, m := range fsMessages {
+			msgs = append(msgs, auditMsgView{
+				Timestamp: m.Timestamp,
+				Payload:   m.Payload,
+				Tags:      m.Tags,
+			})
+		}
 	}
 
 	totalActions := 0
@@ -3880,7 +3923,7 @@ func (s *server) handleAudit(id interface{}, params map[string]interface{}) json
 	latestRoot := ""
 	var sequences []uint64
 
-	for _, msg := range messages {
+	for _, msg := range msgs {
 		// Apply 'since' filter using the message envelope timestamp (UnixNano).
 		if sinceNano > 0 && msg.Timestamp < sinceNano {
 			continue

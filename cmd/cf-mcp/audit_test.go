@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/store"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // ---------------------------------------------------------------------------
@@ -1188,5 +1189,81 @@ func TestAudit_ColdStart(t *testing.T) {
 	if aw2.CampfireID() != auditCampfireID {
 		t.Errorf("instance 2 got different audit campfire ID: got %s, want %s",
 			aw2.CampfireID(), auditCampfireID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestAudit_HandleAuditReadsFromStore: handleAudit reads from store in HTTP mode
+// ---------------------------------------------------------------------------
+
+// TestAudit_HandleAuditReadsFromStore verifies that in HTTP mode (httpTransport != nil),
+// handleAudit reads audit messages from the store (st.ListMessages) rather than
+// from the filesystem transport. This matters because AuditWriter.postMessage
+// writes to st.AddMessage in HTTP mode, not to the FS — so without the fix,
+// handleAudit would return zero actions after a cold start even though the store
+// has entries.
+func TestAudit_HandleAuditReadsFromStore(t *testing.T) {
+	srv, rawSt := newTestServerWithStore(t)
+
+	// Wire a real HTTP transport so srv.httpTransport != nil.
+	// This is the condition that causes AuditWriter.postMessage to use
+	// st.AddMessage instead of fsT.WriteMessage.
+	httpT := cfhttp.New("", rawSt)
+	srv.httpTransport = httpT
+
+	// Initialise identity so NewAuditWriter can load it.
+	doInit(t, srv)
+
+	// Create an AuditWriter. It will create the audit campfire state on the FS
+	// and write messages to the store (because httpTransport != nil).
+	aw, err := NewAuditWriter(srv)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	t.Cleanup(aw.Close)
+	srv.auditWriter = aw
+
+	// Log several audit entries directly (bypassing campfire_send so we control
+	// the count exactly).
+	const wantSends = 3
+	for i := 0; i < wantSends; i++ {
+		aw.Log(AuditEntry{
+			Timestamp:  time.Now().UnixNano(),
+			Action:     "send",
+			AgentKey:   "aabbcc",
+			CampfireID: "ff00",
+		})
+	}
+	// Flush ensures all entries are written to the store before we query.
+	aw.Flush()
+
+	// Call campfire_audit. Before the fix, this would return total_actions=0
+	// because handleAudit read from the FS transport (which has no messages in
+	// HTTP mode). After the fix, it reads from the store.
+	auditResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_audit","arguments":{}}`))
+	if auditResp.Error != nil {
+		t.Fatalf("campfire_audit failed: code=%d msg=%s", auditResp.Error.Code, auditResp.Error.Message)
+	}
+
+	auditText := extractResultText(t, auditResp)
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(auditText), &result); err != nil {
+		t.Fatalf("parsing campfire_audit result: %v — raw: %s", err, auditText)
+	}
+
+	total, _ := result["total_actions"].(float64)
+	if int(total) < wantSends {
+		t.Errorf("expected total_actions >= %d (store-backed messages), got %.0f; "+
+			"handleAudit may still be reading from the FS transport instead of the store",
+			wantSends, total)
+	}
+
+	byType, _ := result["actions_by_type"].(map[string]interface{})
+	if byType == nil {
+		t.Fatalf("expected actions_by_type in result, got: %v", result)
+	}
+	sends, _ := byType["send"].(float64)
+	if int(sends) < wantSends {
+		t.Errorf("expected at least %d 'send' actions in actions_by_type, got %.0f", wantSends, sends)
 	}
 }
