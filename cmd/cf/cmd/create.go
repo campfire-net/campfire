@@ -406,7 +406,7 @@ func createP2PHTTP(cf *campfire.Campfire, agentID *identity.Identity, s store.St
 		cf.ReceptionRequirements,
 		beacon.TransportConfig{
 			Protocol: "p2p-http",
-			Config:   map[string]string{"endpoints": endpoint},
+			Config:   map[string]string{"endpoint": endpoint},
 		},
 		description,
 	)

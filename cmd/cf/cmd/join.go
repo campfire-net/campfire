@@ -110,9 +110,9 @@ func joinFromBeacon(parsed *naming.URI, agentID *identity.Identity, s store.Stor
 
 	switch b.Transport.Protocol {
 	case "p2p-http":
-		via, ok := b.Transport.Config["url"]
+		via, ok := b.Transport.Config["endpoint"]
 		if !ok || via == "" {
-			return fmt.Errorf("beacon p2p-http transport missing 'url' config key")
+			return fmt.Errorf("beacon p2p-http transport missing 'endpoint' config key")
 		}
 		return joinP2PHTTP(campfireID, agentID, s, via, listen, tlsCert, tlsKey, "")
 	case "github":
