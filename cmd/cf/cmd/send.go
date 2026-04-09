@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/spf13/cobra"
 )
@@ -86,6 +88,31 @@ var sendCmd = &cobra.Command{
 		antecedents := sendAntecedents
 		if sendFulfills != "" {
 			antecedents = append(antecedents, sendFulfills)
+		}
+
+		// Validate convention:operation payloads before posting.
+		for _, tag := range tags {
+			if strings.EqualFold(tag, convention.ConventionOperationTag) {
+				result := convention.Lint([]byte(payload))
+				if len(result.Errors) > 0 {
+					for _, f := range result.Errors {
+						loc := ""
+						if f.Field != "" {
+							loc = " [" + f.Field + "]"
+						}
+						fmt.Fprintf(os.Stderr, "error%s: %s\n", loc, f.Message)
+					}
+					return fmt.Errorf("convention:operation payload is invalid (see errors above)")
+				}
+				for _, f := range result.Warnings {
+					loc := ""
+					if f.Field != "" {
+						loc = " [" + f.Field + "]"
+					}
+					fmt.Fprintf(os.Stderr, "warning%s: %s\n", loc, f.Message)
+				}
+				break
+			}
 		}
 
 		// Resolve GitHub token fully before delegating to protocol.Client.
