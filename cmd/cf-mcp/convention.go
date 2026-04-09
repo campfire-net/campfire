@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -629,7 +630,30 @@ func (s *server) sendMessageHTTPMode(st store.Store, agentID *identity.Identity,
 
 	state, stateErr := fsT.ReadState(campfireID)
 	if stateErr != nil {
-		return nil, fmt.Errorf("reading campfire state: %w", stateErr)
+		// Cold-start fallback: the local filesystem doesn't have this campfire's
+		// state (e.g. created on another instance or after a restart). Reconstruct
+		// from the global store, which persists campfire keypairs across instances.
+		// This mirrors the KeyProvider fallback pattern in session.go (lines 871-885).
+		if s.transportRouter != nil {
+			if gs := s.transportRouter.GlobalStore(); gs != nil {
+				gm, gerr := gs.GetMembership(campfireID)
+				if gerr == nil && gm != nil && gm.CampfirePrivKey != "" {
+					pk, decErr := hex.DecodeString(gm.CampfirePrivKey)
+					if decErr == nil && len(pk) == ed25519.PrivateKeySize {
+						pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)
+						state = &campfire.CampfireState{
+							PrivateKey:   pk,
+							PublicKey:    pub,
+							JoinProtocol: gm.JoinProtocol,
+						}
+						stateErr = nil
+					}
+				}
+			}
+		}
+		if stateErr != nil {
+			return nil, fmt.Errorf("reading campfire state: %w", stateErr)
+		}
 	}
 
 	cf := campfireFromState(state, members)
@@ -765,14 +789,9 @@ func (s *server) handleConventionTool(rpcID interface{}, entry *conventionToolEn
 	// Without this, senderLevel defaults to 0 inside Execute and all gated
 	// operations (e.g. core:peer-establish, core:peer-withdraw) are permanently
 	// blocked. Operator Provenance Convention v0.1 §8.1.
-	storePath := filepath.Join(s.cfHome, "attestations.json")
-	var ps provenance.AttestationStore
-	fs, psErr := provenance.NewFileStore(storePath, provenance.DefaultConfig())
-	if psErr != nil {
-		ps = provenance.NewStore(provenance.DefaultConfig())
-	} else {
-		ps = fs
-	}
+	// loadProvenanceStore handles cold-start recovery: file-first, cloud fallback.
+	attestationStorePath := filepath.Join(s.cfHome, "attestations.json")
+	ps := s.loadProvenanceStore(attestationStorePath)
 	executor.WithProvenance(&provenanceCheckerAdapter{store: ps})
 
 	ctx, cancel := context.WithTimeout(context.Background(), conventionToolTimeout)
