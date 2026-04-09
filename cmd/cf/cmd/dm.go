@@ -60,7 +60,7 @@ var dmCmd = &cobra.Command{
 			if mem.JoinProtocol != "invite-only" {
 				continue
 			}
-			members, err := fs.ForDir(mem.TransportDir).ListMembers(mem.CampfireID)
+			members, err := listMembersByTransport(mem, s)
 			if err != nil || len(members) != 2 {
 				continue
 			}

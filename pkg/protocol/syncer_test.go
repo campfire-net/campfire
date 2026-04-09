@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
@@ -423,28 +422,3 @@ var _ protocol.Syncer = (*countingSyncer)(nil)
 var _ protocol.Syncer = (*failSyncer)(nil)
 var _ protocol.Syncer = (*fsSyncer)(nil)
 
-// writeTransportMessageDirect is a standalone helper (without requiring cfID identity)
-// that uses the public message package to construct a test message and write it to
-// the filesystem transport. Used in edge-case tests below.
-func writeTransportMessageDirect(t *testing.T, cfPrivKey, cfPubKey []byte, tr *fs.Transport, campfireID, payload string, tags []string) *message.Message {
-	t.Helper()
-
-	agentID, err := identity.Generate()
-	if err != nil {
-		t.Fatalf("generating sender identity: %v", err)
-	}
-
-	msg, err := message.NewMessage(message.MustNewEd25519Signer(agentID.PrivateKey, agentID.PublicKey), []byte(payload), tags, []string{})
-	if err != nil {
-		t.Fatalf("creating message: %v", err)
-	}
-
-	if err := msg.AddHop(cfPrivKey, cfPubKey, []byte("testhash"), 1, "open", []string{}, "full"); err != nil {
-		t.Fatalf("adding provenance hop: %v", err)
-	}
-
-	if err := tr.WriteMessage(campfireID, msg); err != nil {
-		t.Fatalf("writing message to transport: %v", err)
-	}
-	return msg
-}
