@@ -902,3 +902,109 @@ walk_up = false
 		t.Errorf("walk_up: got %v, want false (project false must override global true)", cfg.Behavior.WalkUp)
 	}
 }
+
+// TestLoadConfig_TransportRelay verifies that transport.relay is parsed from
+// a config file and resolves to the correct value.
+func TestLoadConfig_TransportRelay(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[transport]
+relay = "https://relay.example.com"
+`)
+
+	cfg, layers, warns, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("expected 1 layer, got %d", len(layers))
+	}
+	if cfg.Transport.Relay != "https://relay.example.com" {
+		t.Errorf("transport.relay: got %q, want %q", cfg.Transport.Relay, "https://relay.example.com")
+	}
+
+	// Verify contributed fields includes transport.relay.
+	found := false
+	for _, f := range layers[0].Fields {
+		if f == "transport.relay" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected transport.relay in contributed fields, got %v", layers[0].Fields)
+	}
+}
+
+// TestLoadConfig_TransportRelay_Empty verifies that when no relay is configured,
+// the resolved relay is an empty string.
+func TestLoadConfig_TransportRelay_Empty(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[transport]
+type = "http"
+`)
+
+	cfg, _, _, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Transport.Relay != "" {
+		t.Errorf("transport.relay: got %q, want empty string", cfg.Transport.Relay)
+	}
+}
+
+// TestResolveRelayFromConfig verifies the resolveRelayFromConfig helper returns
+// the relay URL from the merged config and handles nil input gracefully.
+func TestResolveRelayFromConfig(t *testing.T) {
+	// Nil config returns empty string.
+	if got := resolveRelayFromConfig(nil); got != "" {
+		t.Errorf("resolveRelayFromConfig(nil): got %q, want empty string", got)
+	}
+
+	// Config with no relay returns empty string.
+	empty := &Config{}
+	if got := resolveRelayFromConfig(empty); got != "" {
+		t.Errorf("resolveRelayFromConfig(empty): got %q, want empty string", got)
+	}
+
+	// Config with relay returns the value.
+	withRelay := &Config{
+		Transport: TransportConfig{
+			Relay: "https://relay.example.com",
+		},
+	}
+	if got := resolveRelayFromConfig(withRelay); got != "https://relay.example.com" {
+		t.Errorf("resolveRelayFromConfig(withRelay): got %q, want %q", got, "https://relay.example.com")
+	}
+}
+
+// TestLoadConfig_TransportRelay_ProjectOverridesGlobal verifies that a project-level
+// relay overrides the global relay (deepest wins).
+func TestLoadConfig_TransportRelay_ProjectOverridesGlobal(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	projectDir := filepath.Join(tmp, "project")
+
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[transport]
+relay = "https://global-relay.example.com"
+`)
+	writeConfig(t, filepath.Join(projectDir, cfDir, configFilename), `
+[transport]
+relay = "https://project-relay.example.com"
+`)
+
+	cfg, _, _, err := LoadConfig(globalDir, projectDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Transport.Relay != "https://project-relay.example.com" {
+		t.Errorf("transport.relay: got %q, want project-level relay", cfg.Transport.Relay)
+	}
+}
