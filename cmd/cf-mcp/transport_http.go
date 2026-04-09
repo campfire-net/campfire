@@ -66,11 +66,16 @@ func (r *TransportRouter) RegisterForSession(campfireID, token string, t *cfhttp
 }
 
 // Unregister removes a campfire ID from the router. After this call, requests
-// for the campfire return 404.
+// for the campfire return 404. If the transport was running a nonce pruner
+// goroutine (e.g. from reconstructFromGlobalStore), it is stopped.
 func (r *TransportRouter) Unregister(campfireID string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	t := r.campfires[campfireID]
 	delete(r.campfires, campfireID)
+	r.mu.Unlock()
+	if t != nil {
+		t.StopNoncePruner()
+	}
 }
 
 // UnregisterSession removes the session's transport and all campfire routes it

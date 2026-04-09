@@ -637,3 +637,42 @@ func TestTransport_MuxServesTransportAndMCP(t *testing.T) {
 		t.Errorf("expected 404 for unknown campfire, got %d", resp2.StatusCode)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test: Unregister stops the nonce pruner goroutine
+// ---------------------------------------------------------------------------
+
+// TestTransportRouter_UnregisterStopsNoncePruner verifies that Unregister calls
+// StopNoncePruner on the transport, preventing a goroutine leak. Before this
+// fix, reconstructFromGlobalStore started a nonce pruner goroutine but
+// Unregister only deleted the map entry — the goroutine ran forever.
+func TestTransportRouter_UnregisterStopsNoncePruner(t *testing.T) {
+	router := NewTransportRouter()
+	st, err := store.Open(store.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	transport := cfhttp.New("", st)
+	transport.StartNoncePruner()
+
+	campfireID := "test-pruner-campfire"
+	router.register(campfireID, transport)
+
+	// Verify the transport is registered.
+	if got := router.GetCampfireTransport(campfireID); got == nil {
+		t.Fatal("transport should be registered")
+	}
+
+	// Unregister should stop the nonce pruner without panicking.
+	router.Unregister(campfireID)
+
+	// Verify transport is removed from the router.
+	if got := router.GetCampfireTransport(campfireID); got != nil {
+		t.Fatal("transport should be unregistered")
+	}
+
+	// Calling StopNoncePruner again should be safe (idempotent).
+	transport.StopNoncePruner()
+}

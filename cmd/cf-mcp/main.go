@@ -1348,7 +1348,7 @@ func (s *server) autoProvisionCampfire(id interface{}, campfireID string, agentI
 
 			// Write to global store for cross-instance p2p-http (same as handleCreateHTTP).
 			if gs := s.transportRouter.GlobalStore(); gs != nil {
-				gs.AddMembership(store.Membership{ //nolint:errcheck
+				if gsErr := gs.AddMembership(store.Membership{
 					CampfireID:      cf.PublicKeyHex(),
 					TransportDir:    s.externalAddr,
 					JoinProtocol:    "open",
@@ -1359,12 +1359,18 @@ func (s *server) autoProvisionCampfire(id interface{}, campfireID string, agentI
 					CreatorPubkey:   agentID.PublicKeyHex(),
 					TransportType:   "p2p-http",
 					CampfirePrivKey: fmt.Sprintf("%x", cf.PrivateKey),
-				})
-				gs.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+				}); gsErr != nil {
+					resp := errResponse(id, -32603, fmt.Sprintf("global store: adding membership: %v", gsErr))
+					return nil, &resp
+				}
+				if gsErr := gs.UpsertPeerEndpoint(store.PeerEndpoint{
 					CampfireID:   cf.PublicKeyHex(),
 					MemberPubkey: agentID.PublicKeyHex(),
 					Endpoint:     s.externalAddr,
-				})
+				}); gsErr != nil {
+					resp := errResponse(id, -32603, fmt.Sprintf("global store: upserting peer endpoint: %v", gsErr))
+					return nil, &resp
+				}
 			}
 		}
 	}
@@ -1638,7 +1644,7 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 		// instances can reconstruct the transport for this campfire. This fixes
 		// cross-instance p2p-http join/deliver (campfire-bf6, campfire-b2e).
 		if gs := s.transportRouter.GlobalStore(); gs != nil {
-			gs.AddMembership(store.Membership{ //nolint:errcheck
+			if gsErr := gs.AddMembership(store.Membership{
 				CampfireID:      cf.PublicKeyHex(),
 				TransportDir:    s.externalAddr,
 				JoinProtocol:    cf.JoinProtocol,
@@ -1649,14 +1655,18 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 				CreatorPubkey:   agentID.PublicKeyHex(),
 				TransportType:   "p2p-http",
 				CampfirePrivKey: fmt.Sprintf("%x", cf.PrivateKey),
-			})
+			}); gsErr != nil {
+				return errResponse(id, -32603, fmt.Sprintf("global store: adding membership: %v", gsErr))
+			}
 			// Register the creator as a peer so checkMembership passes
 			// and joiners get the relay's endpoint in the join response.
-			gs.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+			if gsErr := gs.UpsertPeerEndpoint(store.PeerEndpoint{
 				CampfireID:   cf.PublicKeyHex(),
 				MemberPubkey: agentID.PublicKeyHex(),
 				Endpoint:     s.externalAddr,
-			})
+			}); gsErr != nil {
+				return errResponse(id, -32603, fmt.Sprintf("global store: upserting peer endpoint: %v", gsErr))
+			}
 		}
 	}
 
@@ -1675,7 +1685,9 @@ func (s *server) handleCreateHTTP(id interface{}, cf *campfire.Campfire, agentID
 	// Mirror invite to global store so cross-instance invite-only join works.
 	if s.transportRouter != nil {
 		if gs := s.transportRouter.GlobalStore(); gs != nil {
-			gs.CreateInvite(inviteRecord) //nolint:errcheck
+			if gsErr := gs.CreateInvite(inviteRecord); gsErr != nil {
+				return errResponse(id, -32603, fmt.Sprintf("global store: creating invite: %v", gsErr))
+			}
 		}
 	}
 
