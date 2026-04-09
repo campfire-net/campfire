@@ -189,9 +189,18 @@ print('{}')
 
 # Create a campfire and return its ID. Works for both local and relay.
 # Usage: CF_ID=$(create_campfire [--cf-home HOME] [--via URL] [extra flags...])
+# Translates --via to --relay for cf create (join uses --via natively).
 create_campfire() {
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --via) args+=(--relay "$2"); shift 2 ;;
+            --join-protocol) args+=(--protocol "$2"); shift 2 ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
     local raw
-    raw=$(cf create --json "$@" 2>/dev/null)
+    raw=$(cf create --json "${args[@]}" 2>/dev/null)
     echo "$raw" | extract_json | python3 -c "import sys,json; print(json.load(sys.stdin).get('campfire_id',''))"
 }
 
