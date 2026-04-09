@@ -6,7 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
 
@@ -47,7 +46,7 @@ var membersCmd = &cobra.Command{
 			return fmt.Errorf("not a member of campfire %s", campfireID[:12])
 		}
 
-		members, err := fs.ForDir(m.TransportDir).ListMembers(campfireID)
+		members, err := listMembersByTransport(*m, s)
 		if err != nil {
 			return fmt.Errorf("listing members: %w", err)
 		}
