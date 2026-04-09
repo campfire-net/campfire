@@ -65,6 +65,7 @@ type rawTransportConfig struct {
 	Type     string `toml:"type"`
 	Endpoint string `toml:"endpoint"`
 	Dir      string `toml:"dir"`
+	Relay    string `toml:"relay"`
 }
 
 type rawNamingConfig struct {
@@ -126,6 +127,9 @@ type TransportConfig struct {
 	Endpoint string
 	// Dir is the FS transport directory.
 	Dir string
+	// Relay is the default relay URL used when --relay flag is omitted from cf create.
+	// When non-empty, cf create passes this URL as the relay for the new campfire.
+	Relay string
 }
 
 // NamingConfig holds naming-related configuration.
@@ -263,6 +267,16 @@ func compiledDefaults() Config {
 			Endpoint: defaultTransportEndpoint,
 		},
 	}
+}
+
+// resolveRelayFromConfig returns the relay URL from the merged config, or an empty
+// string if no relay is configured. This is used by cf create to supply a default
+// relay URL when the --relay flag is omitted.
+func resolveRelayFromConfig(cfg *Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Transport.Relay
 }
 
 // collectAncestors returns intermediate directories between projectDir and homeDir
@@ -472,6 +486,12 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 	if raw.Transport.Dir != "" {
 		dst.Transport.Dir = raw.Transport.Dir
 		contributed = append(contributed, "transport.dir")
+	}
+
+	// transport.relay — scalar.
+	if raw.Transport.Relay != "" {
+		dst.Transport.Relay = raw.Transport.Relay
+		contributed = append(contributed, "transport.relay")
 	}
 
 	// naming.root — global-only scalar.
