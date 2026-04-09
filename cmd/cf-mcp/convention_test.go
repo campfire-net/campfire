@@ -1,7 +1,9 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/campfire-net/campfire/pkg/trust"
+	_ "modernc.org/sqlite"
 )
 
 // socialPostPayload is the social:post test vector from Convention Extension §16.1.
@@ -1124,6 +1127,172 @@ func TestAttestations_ColdStart_Survive(t *testing.T) {
 
 	// --- Phase 5: Verify min_operator_level=1 gate passes post-recovery. ---
 	// The gate uses a provenanceCheckerAdapter wrapping the recovered store.
+	checker := &provenanceCheckerAdapter{store: ps2}
+	if checker.Level(agentID.PublicKeyHex()) < 1 {
+		t.Errorf("min_operator_level gate: level %d < 1, cold start broke provenance enforcement",
+			checker.Level(agentID.PublicKeyHex()))
+	}
+}
+
+// sqliteAttestationStore is a SQLite-backed attestationPersister for tests.
+// It exercises the full serialize → store → load → deserialize path without
+// requiring Azure Table Storage or Azurite.
+type sqliteAttestationStore struct {
+	db *sql.DB
+}
+
+func newSQLiteAttestationStore(t *testing.T) *sqliteAttestationStore {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "attestations_test.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("opening sqlite db: %v", err)
+	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS attestations (
+		internal_id TEXT PRIMARY KEY,
+		data        BLOB NOT NULL
+	)`)
+	if err != nil {
+		db.Close()
+		t.Fatalf("creating attestations table: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return &sqliteAttestationStore{db: db}
+}
+
+func (s *sqliteAttestationStore) SaveAttestations(internalID string, data []byte) error {
+	_, err := s.db.Exec(
+		`INSERT INTO attestations(internal_id, data) VALUES(?,?)
+		 ON CONFLICT(internal_id) DO UPDATE SET data=excluded.data`,
+		internalID, data,
+	)
+	if err != nil {
+		return fmt.Errorf("sqliteAttestationStore.Save: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteAttestationStore) LoadAttestations(internalID string) ([]byte, bool, error) {
+	var data []byte
+	err := s.db.QueryRow(`SELECT data FROM attestations WHERE internal_id=?`, internalID).Scan(&data)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("sqliteAttestationStore.Load: %w", err)
+	}
+	return append([]byte(nil), data...), true, nil
+}
+
+// TestAttestations_ColdStart_Survive_RealStore verifies that attestations
+// survive a simulated cold start using a real SQLite-backed session store as
+// the cloud persistence layer. This exercises the full
+// serialize → store → load → deserialize path through a durable backend.
+//
+// Scenario:
+//  1. Server with SQLite session store writes a self-claimed attestation (level 1).
+//  2. Local attestations.json is deleted (simulates instance hop / cold start).
+//  3. A new server for the same session loads attestations from the SQLite fallback.
+//  4. The recovered store reports level 1 (Claimed) — not level 0 (Anonymous).
+//  5. A min_operator_level=1 gate on the convention executor succeeds post-recovery.
+func TestAttestations_ColdStart_Survive_RealStore(t *testing.T) {
+	cfHome := t.TempDir()
+	beaconDir := filepath.Join(cfHome, "beacons")
+	if err := os.MkdirAll(beaconDir, 0700); err != nil {
+		t.Fatalf("creating beacon dir: %v", err)
+	}
+
+	const testInternalID = "test-session-id-cold-start-realstore"
+	sess := &Session{
+		internalID: testInternalID,
+		cfHome:     cfHome,
+		beaconDir:  beaconDir,
+	}
+
+	// Real SQLite-backed cloud store — exercises serialize/deserialize path.
+	cloud := newSQLiteAttestationStore(t)
+
+	// Generate an identity for the agent.
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	idPath := filepath.Join(cfHome, "identity.json")
+	if err := agentID.Save(idPath); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	// --- Phase 1: Write attestations via loadProvenanceStore (with SQLite cloud). ---
+
+	attestationPath := filepath.Join(cfHome, "attestations.json")
+	srv1 := &server{
+		cfHome:                   cfHome,
+		beaconDir:                beaconDir,
+		sess:                     sess,
+		cloudAttestationOverride: cloud,
+	}
+
+	ps1 := srv1.loadProvenanceStore(attestationPath)
+
+	dw, ok := ps1.(*dualWriteProvenanceStore)
+	if !ok {
+		t.Fatalf("expected *dualWriteProvenanceStore, got %T", ps1)
+	}
+
+	// SetSelfClaimed dual-writes through the real SQLite store.
+	if err := dw.SetSelfClaimed(agentID.PublicKeyHex()); err != nil {
+		t.Fatalf("SetSelfClaimed: %v", err)
+	}
+
+	// Verify level is 1 before cold start.
+	if got := ps1.Level(agentID.PublicKeyHex()); got != provenance.LevelClaimed {
+		t.Fatalf("expected LevelClaimed (1) before cold start, got %v", got)
+	}
+
+	// Verify SQLite has the serialized attestation data (real persistence).
+	rawData, hasData, loadErr := cloud.LoadAttestations(testInternalID)
+	if loadErr != nil {
+		t.Fatalf("LoadAttestations from SQLite: %v", loadErr)
+	}
+	if !hasData {
+		t.Fatal("expected SQLite to have attestation data after SetSelfClaimed")
+	}
+	if len(rawData) == 0 {
+		t.Fatal("SQLite attestation data is empty — serialization produced nothing")
+	}
+
+	// --- Phase 2: Simulate cold start — delete local attestations.json. ---
+
+	if err := os.Remove(attestationPath); err != nil {
+		t.Fatalf("removing attestation file: %v", err)
+	}
+	if _, statErr := os.Stat(attestationPath); !os.IsNotExist(statErr) {
+		t.Fatal("attestation file should be gone after removal (cold start precondition)")
+	}
+
+	// --- Phase 3: New server instance — local file gone, SQLite has the data. ---
+
+	srv2 := &server{
+		cfHome:                   cfHome,
+		beaconDir:                beaconDir,
+		sess:                     sess, // same session, same internalID
+		cloudAttestationOverride: cloud,
+	}
+
+	// loadProvenanceStore should fall back to SQLite and reconstitute the local file.
+	ps2 := srv2.loadProvenanceStore(attestationPath)
+
+	// --- Phase 4: Verify level 1 is preserved after cold start. ---
+	if got := ps2.Level(agentID.PublicKeyHex()); got != provenance.LevelClaimed {
+		t.Errorf("cold start: expected LevelClaimed (1), got %v (%d)", got, int(got))
+	}
+
+	// Verify the local file was reconstituted from SQLite during cold-start recovery.
+	if _, statErr := os.Stat(attestationPath); os.IsNotExist(statErr) {
+		t.Error("attestation file was not reconstituted from SQLite during cold-start recovery")
+	}
+
+	// --- Phase 5: Verify min_operator_level=1 gate passes post-recovery. ---
 	checker := &provenanceCheckerAdapter{store: ps2}
 	if checker.Level(agentID.PublicKeyHex()) < 1 {
 		t.Errorf("min_operator_level gate: level %d < 1, cold start broke provenance enforcement",
