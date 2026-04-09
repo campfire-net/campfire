@@ -342,23 +342,22 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 		})
 	}
 
-	// Register the joiner's peer endpoint for push delivery.
+	// Always register the joiner in peer_endpoints so checkMembership recognises
+	// them, even when JoinerEndpoint is empty (relay/pull-only join via --via).
+	// An empty Endpoint signals "member without a reachable push address" — the
+	// presence of the MemberPubkey row is what grants membership, not the URL.
+	// UpsertPeerEndpoint is only reached after successful admission verification,
+	// so unauthenticated entities cannot appear in the peer list.
+	h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:    campfireID,
+		MemberPubkey:  senderHex,
+		Endpoint:      req.JoinerEndpoint,
+		ParticipantID: joinerParticipantID,
+	})
+	// Register with the transport's in-memory peer set for push delivery only
+	// when the joiner provided an actual reachable endpoint.
 	if h.transport != nil && req.JoinerEndpoint != "" {
-		h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
-			CampfireID:    campfireID,
-			MemberPubkey:  senderHex,
-			Endpoint:      req.JoinerEndpoint,
-			ParticipantID: joinerParticipantID,
-		})
 		h.transport.AddPeer(campfireID, senderHex, req.JoinerEndpoint)
-	} else if req.JoinerEndpoint != "" {
-		// No transport (handler used standalone): inline persist.
-		h.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
-			CampfireID:    campfireID,
-			MemberPubkey:  senderHex,
-			Endpoint:      req.JoinerEndpoint,
-			ParticipantID: joinerParticipantID,
-		})
 	}
 
 	// Include active convention:operation messages so the joiner can register
