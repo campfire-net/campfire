@@ -359,6 +359,11 @@ type Session struct {
 	conventionTools *conventionToolMap // persisted across per-request server instances
 	lastActivity    time.Time
 	mu              sync.Mutex
+	// durable, when true, marks this session as long-lived. The idle reaper
+	// skips durable sessions entirely; only explicit revocation or server
+	// shutdown can close them. Set by getOrCreateOperator for operator
+	// sessions authenticated via forge-tk- tokens (TTL=0).
+	durable bool
 	// forgeAccountID, when non-empty, indicates that this session was created
 	// via forge-tk- auth and the account was already resolved. handleInit skips
 	// EnsureOperatorAccount when this field is set; the account is known to exist.
@@ -1008,6 +1013,7 @@ func (m *SessionManager) getOrCreateOperator(token string) (*Session, error) {
 		st:           rl,
 		rateLimiter:  rl,
 		lastActivity: time.Now(),
+		durable:      true, // operator sessions are long-lived; reaper skips them
 	}
 
 	if m.router != nil {
@@ -1071,8 +1077,15 @@ func (m *SessionManager) reaper() {
 			m.sessions.Range(func(k, v interface{}) bool {
 				sess := v.(*Session)
 				sess.mu.Lock()
+				durable := sess.durable
 				idle := time.Since(sess.lastActivity) > timeout
 				sess.mu.Unlock()
+				if durable {
+					// Operator sessions (forge-tk- auth, TTL=0) are durable:
+					// they survive indefinitely and are only closed by explicit
+					// revocation or server shutdown. Skip them here.
+					return true
+				}
 				if idle {
 					// Close before Delete: a concurrent getOrCreate can re-add
 					// the session between Delete and Close, getting a session

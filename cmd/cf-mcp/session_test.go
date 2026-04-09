@@ -1868,3 +1868,90 @@ func TestHandleInit_NamedSessionPersistence(t *testing.T) {
 		t.Errorf("identity.json unexpectedly found in old session directory %s — named init wrote to wrong path", sessionDir)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test: operator sessions survive idle reaper
+// ---------------------------------------------------------------------------
+
+// TestSession_OperatorSessionSurvivesReaper verifies that a session created via
+// getOrCreateOperator (durable=true) is never closed by the idle reaper, even
+// after the idle timeout has elapsed. A regular session created via getOrCreate
+// (durable=false) IS reaped to confirm the reaper is running.
+func TestSession_OperatorSessionSurvivesReaper(t *testing.T) {
+	testTimeout := 50 * time.Millisecond
+	dir := t.TempDir()
+	m := &SessionManager{
+		sessionsDir:         dir,
+		stopCh:              make(chan struct{}),
+		idleTimeoutOverride: testTimeout,
+		maxSessions:         defaultMaxSessions,
+	}
+	m.registry = newTokenRegistry()
+	go m.reaper()
+	t.Cleanup(m.Stop)
+
+	// Create an operator session (forge-tk- auth path, TTL=0, durable=true).
+	operatorToken, err := m.issueToken()
+	if err != nil {
+		t.Fatalf("issueToken (operator): %v", err)
+	}
+	operatorSess, err := m.getOrCreateOperator(operatorToken)
+	if err != nil {
+		t.Fatalf("getOrCreateOperator: %v", err)
+	}
+	if !operatorSess.durable {
+		t.Fatal("operator session must have durable=true")
+	}
+
+	// Create a regular session (durable=false) to confirm the reaper is active.
+	regularToken, err := m.issueToken()
+	if err != nil {
+		t.Fatalf("issueToken (regular): %v", err)
+	}
+	regularSess, err := m.getOrCreate(regularToken)
+	if err != nil {
+		t.Fatalf("getOrCreate (regular): %v", err)
+	}
+	if regularSess.durable {
+		t.Fatal("regular session must not have durable=true")
+	}
+
+	// Back-date both sessions so the reaper considers them idle.
+	for _, sess := range []*Session{operatorSess, regularSess} {
+		sess.mu.Lock()
+		sess.lastActivity = time.Now().Add(-(testTimeout + time.Millisecond))
+		sess.mu.Unlock()
+	}
+
+	// Wait for the reaper goroutine to fire (runs every testTimeout/2).
+	// Give it testTimeout*4 to be safe.
+	deadline := time.Now().Add(testTimeout * 4)
+	regularReaped := false
+	for time.Now().Before(deadline) {
+		regularSess.mu.Lock()
+		regularSt := regularSess.st
+		regularSess.mu.Unlock()
+		if regularSt == nil {
+			regularReaped = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if !regularReaped {
+		t.Error("timeout waiting for reaper to close the regular session store — is the reaper running?")
+	}
+
+	// Operator session must still be alive with its store open.
+	operatorSess.mu.Lock()
+	operatorSt := operatorSess.st
+	operatorSess.mu.Unlock()
+	if operatorSt == nil {
+		t.Error("operator (durable) session store was closed by the reaper — durable sessions must survive reaping")
+	}
+
+	// Operator session must still be present in the sync.Map.
+	if _, ok := m.sessions.Load(operatorSess.internalID); !ok {
+		t.Error("operator (durable) session was removed from the session map by the reaper — must survive")
+	}
+}
