@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.17.0 — session durability (2026-04-09)
+
+Azure Table Storage is now the source of truth for all session state. Every durability-critical path (campfire keys, audit campfire IDs, attestations, DM campfires, remote joins, convention sends) falls back to the global store after a cold start. Operator sessions survive indefinitely across instance restarts.
+
+### Features
+
+- **Durable operator sessions**: Operator sessions (forge-tk- auth, TTL=0) are marked `durable` and survive the idle reaper indefinitely. Only explicit revocation or shutdown closes them.
+
+- **Audit campfire persistence**: Audit campfire ID and CBOR persisted to Azure Table Storage. `loadOrCreateAuditCampfire` uses 3-level lookup (local file → cloud → create new). `postMessage` falls back to global store for campfire state.
+
+- **Attestation dual-write**: Attestations written to both local file and Azure Table Storage. Cold start recovers from cloud when local file is absent. `min_operator_level` gates work on any instance.
+
+- **DM campfire durability**: DM campfires written to global store. Cross-instance DM sends and discovery via global store fallback.
+
+- **Remote join durability**: Remote-joined CBOR persisted to global store. `resolveBeaconEndpoint` queries global store when local scan returns empty.
+
+- **Convention send fallback**: Convention sends fall back to global store for `ReadState` after cold start, matching the session KeyProvider pattern.
+
+- **Operator token persistence**: Operator flag persisted in token registry (JSON + Azure Table Storage). Operator tokens skip TTL check on cold start without re-authentication.
+
+### Bug Fixes
+
+- **handleAudit reads from store**: In HTTP mode, `handleAudit` now reads audit messages from the store instead of the filesystem transport. Fixes zero-action audit results after cold start.
+
+- **Revoked durable session cleanup**: `refreshRevocationsFromCloud` now closes and removes revoked operator sessions from the session map, preventing un-reapable zombie sessions.
+
+- **CampfireID validation**: All global store fallback paths validate that the returned membership record's CampfireID matches the requested ID before using the key material.
+
+- **syncToCloud TOCTOU fix**: Added mutex to `dualWriteProvenanceStore` to prevent concurrent mutations from reverting cloud attestation state.
+
+- **Audit campfire creation race**: `SaveAuditCampfireID` uses insert-if-not-exists semantics. Concurrent cold starts converge on the same audit campfire ID via check-after-write.
+
+- **Invite revocation cross-instance**: `handleRevokeInvite` now propagates revocation to the global store so revoked invite codes are rejected on all instances.
+
+### Tests
+
+- 8 durability regression tests (`TestDurability_*`) with `newTestServerWithGlobalStore` and `simulateColdStart` helpers.
+- End-to-end cold start cycle test (`TestE2E_DurableSession_FullColdStartCycle`) verifying identity, campfire, convention, DM, and audit survival.
+- Attestation cold-start test with real SQLite session store backend.
+- Concurrent audit campfire creation test.
+- Operator token cold-start survival test.
+- Invite revocation global store test.
+
+---
+
 ## v0.16.6 — multi-instance hardening and convention adoption (2026-04-09)
 
 ### Bug Fixes
