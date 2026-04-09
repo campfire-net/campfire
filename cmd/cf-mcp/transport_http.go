@@ -479,8 +479,8 @@ func (r *TransportRouter) handleCreateCampfire(w http.ResponseWriter, req *http.
 	}
 
 	// Validate required fields.
-	if createReq.CampfireID == "" {
-		http.Error(w, "campfire_id is required", http.StatusBadRequest)
+	if err := cfhttp.ValidateCampfireID(createReq.CampfireID); err != nil {
+		http.Error(w, "invalid campfire_id: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	if createReq.EphemeralX25519Pub == "" {
@@ -529,19 +529,23 @@ func (r *TransportRouter) handleCreateCampfire(w http.ResponseWriter, req *http.
 	}
 
 	// --- ECDH key exchange — decrypt campfire private key ---
-	// Use the relay's static X25519 key if available; otherwise generate ephemeral.
-	// Note: using a static key allows single-round protocol (creator knows relay's pub in advance).
+	// Requires a static X25519 key so the creator can know the relay's pub key in
+	// advance (via GET /campfire/relay-info) and encrypt in a single round.
+	// The ephemeral variant (DecryptCampfirePrivKey) is intentionally not used here:
+	// it requires a two-round protocol and the relay's pub key is unknown to the
+	// creator at request time, making it incompatible with the current protocol.
 	r.mu.RLock()
 	staticKey := r.staticX25519Key
 	r.mu.RUnlock()
 
+	if staticKey == nil {
+		http.Error(w, "relay not configured for campfire creation", http.StatusNotImplemented)
+		return
+	}
+
 	var privKeyBytes []byte
 	var relayPubHex string
-	if staticKey != nil {
-		privKeyBytes, relayPubHex, err = cfhttp.DecryptCampfirePrivKeyWithStaticKey(staticKey, createReq.EphemeralX25519Pub, createReq.EncryptedPrivKey)
-	} else {
-		privKeyBytes, relayPubHex, err = cfhttp.DecryptCampfirePrivKey(createReq.EphemeralX25519Pub, createReq.EncryptedPrivKey)
-	}
+	privKeyBytes, relayPubHex, err = cfhttp.DecryptCampfirePrivKeyWithStaticKey(staticKey, createReq.EphemeralX25519Pub, createReq.EncryptedPrivKey)
 	if err != nil {
 		log.Printf("handleCreateCampfire: ECDH/decrypt failed: %v", err)
 		http.Error(w, "key exchange failed", http.StatusBadRequest)
@@ -558,27 +562,38 @@ func (r *TransportRouter) handleCreateCampfire(w http.ResponseWriter, req *http.
 	privKey := ed25519.PrivateKey(privKeyBytes)
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
+	// --- Build membership record (shared by both branches below) ---
+	membership := store.Membership{
+		CampfireID:      createReq.CampfireID,
+		TransportDir:    endpoint,
+		JoinProtocol:    createReq.JoinProtocol,
+		Role:            campfire.RoleFull,
+		JoinedAt:        store.NowNano(),
+		Threshold:       createReq.Threshold,
+		Description:     createReq.Description,
+		CreatorPubkey:   createReq.CreatorPubkey,
+		TransportType:   "p2p-http",
+		CampfirePrivKey: fmt.Sprintf("%x", privKeyBytes),
+	}
+
 	// --- Store membership in global store (same as handleCreateHTTP) ---
 	if gs != nil {
-		gs.AddMembership(store.Membership{ //nolint:errcheck
-			CampfireID:      createReq.CampfireID,
-			TransportDir:    endpoint,
-			JoinProtocol:    createReq.JoinProtocol,
-			Role:            campfire.RoleFull,
-			JoinedAt:        store.NowNano(),
-			Threshold:       createReq.Threshold,
-			Description:     createReq.Description,
-			CreatorPubkey:   createReq.CreatorPubkey,
-			TransportType:   "p2p-http",
-			CampfirePrivKey: fmt.Sprintf("%x", privKeyBytes),
-		})
+		if err := gs.AddMembership(membership); err != nil {
+			log.Printf("handleCreateCampfire: AddMembership failed: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 		// Register the creator as a peer so checkMembership passes and
 		// joiners see the relay endpoint.
-		gs.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		if err := gs.UpsertPeerEndpoint(store.PeerEndpoint{
 			CampfireID:   createReq.CampfireID,
 			MemberPubkey: createReq.CreatorPubkey,
 			Endpoint:     endpoint,
-		})
+		}); err != nil {
+			log.Printf("handleCreateCampfire: UpsertPeerEndpoint failed: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// --- Register transport with the router ---
@@ -594,18 +609,11 @@ func (r *TransportRouter) handleCreateCampfire(w http.ResponseWriter, req *http.
 			return
 		}
 		// Store membership for key lookup.
-		st.AddMembership(store.Membership{ //nolint:errcheck
-			CampfireID:      createReq.CampfireID,
-			TransportDir:    endpoint,
-			JoinProtocol:    createReq.JoinProtocol,
-			Role:            campfire.RoleFull,
-			JoinedAt:        store.NowNano(),
-			Threshold:       createReq.Threshold,
-			Description:     createReq.Description,
-			CreatorPubkey:   createReq.CreatorPubkey,
-			TransportType:   "p2p-http",
-			CampfirePrivKey: fmt.Sprintf("%x", privKeyBytes),
-		})
+		if err := st.AddMembership(membership); err != nil {
+			log.Printf("handleCreateCampfire: AddMembership (in-memory) failed: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	t := cfhttp.New("", st)

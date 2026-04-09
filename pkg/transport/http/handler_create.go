@@ -17,6 +17,15 @@ func VerifyRequestSignature(senderHex, sigB64, nonce, timestamp string, body []b
 
 // DecryptCampfirePrivKey is the exported form of decryptCampfirePrivKey.
 // See that function's documentation for the full ECDH protocol.
+//
+// Deprecated: This ephemeral-key variant requires a two-round protocol because
+// the creator cannot know the relay's ephemeral pub key before sending the
+// request. Use DecryptCampfirePrivKeyWithStaticKey instead, which allows the
+// creator to look up the relay's static pub key via GET /campfire/relay-info
+// and complete campfire creation in a single round.
+//
+// This export is retained for use in tests and potential future protocol
+// variants. cmd/cf-mcp/transport_http.go no longer calls this function.
 func DecryptCampfirePrivKey(creatorEphemPubHex string, encryptedPrivKey []byte) (privKeyBytes []byte, relayPubHex string, err error) {
 	return decryptCampfirePrivKey(creatorEphemPubHex, encryptedPrivKey)
 }
