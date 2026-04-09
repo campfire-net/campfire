@@ -111,6 +111,7 @@ func newTestMessage(t *testing.T, id *identity.Identity) *message.Message {
 //	580 - 619: delivery_e2e_test.go        (dynamic ports via freeDeliveryE2EAddr — no static offsets)
 //	620 - 639: join_admit_test.go          (used: 620-624)
 //	640 - 659: endpointless_member_test.go (used: 640-641)
+//	660 - 679: cross_transport_e2e_test.go (used: 660)
 func portBase() int {
 	return 19000 + (os.Getpid() % 500)
 }
