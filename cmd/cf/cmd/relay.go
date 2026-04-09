@@ -48,6 +48,11 @@ func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.
 		PrivateKey:   agentID.PrivateKey,
 	}
 
+	// Validate relay URL before making any HTTP call (SSRF guard).
+	if err := cfhttp.ValidateRelayURL(relayURL, true); err != nil {
+		return "", "", fmt.Errorf("invalid relay URL: %w", err)
+	}
+
 	// Register on relay (fetch relay-info + POST /campfire/create).
 	resp, err := cfhttp.RegisterOnRelay(relayURL, cfDesc, agentDesc)
 	if err != nil {

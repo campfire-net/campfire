@@ -12,6 +12,9 @@ func TestMain(m *testing.M) {
 	// Override poll transport to allow loopback connections in tests.
 	cfhttp.OverridePollTransportForTest(http.DefaultTransport)
 
+	// Override relay URL validation to allow loopback relay endpoints in tests.
+	cfhttp.OverrideValidateRelayURLForTest()
+
 	// Isolate beacon directory so tests never scan real beacons on the host.
 	// Some machines have 100K+ beacon files; scanning them causes test timeouts.
 	// Also isolate the working directory so projectBeaconDir() doesn't find
