@@ -575,17 +575,26 @@ func TestAudit_SequenceAssignedByWriter(t *testing.T) {
 		t.Fatalf("expected at least %d sequence numbers in audit log, found %d; raw: %s", n, len(seqs), readText)
 	}
 
-	// Sort and verify contiguity: sequences must be 1,2,3,...,n with no gaps.
-	// (Simple insertion sort — n is small.)
-	for i := 1; i < len(seqs); i++ {
-		for j := i; j > 0 && seqs[j] < seqs[j-1]; j-- {
-			seqs[j], seqs[j-1] = seqs[j-1], seqs[j]
+	// Sequence numbers encode an instance seed in bits 48–63 and a per-instance
+	// counter in bits 0–47. Extract local counters and verify contiguity within
+	// the instance group. All entries from a single AuditWriter share the same
+	// instance seed, so local counters must be 1,2,3,...,n with no gaps.
+	locals := make([]uint64, len(seqs))
+	for i, s := range seqs {
+		locals[i] = s & localSeqMask
+	}
+
+	// Sort ascending (simple insertion sort — n is small).
+	for i := 1; i < len(locals); i++ {
+		for j := i; j > 0 && locals[j] < locals[j-1]; j-- {
+			locals[j], locals[j-1] = locals[j-1], locals[j]
 		}
 	}
-	for i, seq := range seqs[:n] {
+	for i, local := range locals[:n] {
 		want := uint64(i + 1)
-		if seq != want {
-			t.Errorf("sequence gap detected: position %d expected %d got %d — seqs=%v", i, want, seq, seqs)
+		if local != want {
+			t.Errorf("sequence gap detected: position %d expected local counter %d got %d — locals=%v seqs=%v",
+				i, want, local, locals, seqs)
 		}
 	}
 }
@@ -810,6 +819,45 @@ func TestDetectSequenceGaps_Unsorted(t *testing.T) {
 	anomalies = detectSequenceGaps([]uint64{5, 3, 1, 6, 2})
 	if len(anomalies) != 1 {
 		t.Fatalf("expected 1 anomaly for unsorted sequence with gap, got %d: %v", len(anomalies), anomalies)
+	}
+}
+
+// TestDetectSequenceGaps_MultiInstance verifies that sequences from different
+// instances (different seeds in bits 48–63) are analysed independently and do
+// not produce false gap anomalies against each other.
+func TestDetectSequenceGaps_MultiInstance(t *testing.T) {
+	// Simulate two instances: seed=1 and seed=2 (pre-shifted into bits 48–63).
+	const seed1 = uint64(1) << instanceIDShift
+	const seed2 = uint64(2) << instanceIDShift
+
+	// Instance 1 writes seqs 1,2,3; instance 2 writes seqs 1,2,3 — no gaps within either.
+	seqs := []uint64{
+		seed1 | 1, seed1 | 2, seed1 | 3,
+		seed2 | 1, seed2 | 2, seed2 | 3,
+	}
+	anomalies := detectSequenceGaps(seqs)
+	if len(anomalies) != 0 {
+		t.Errorf("expected no anomalies when two instances each write contiguous seqs, got: %v", anomalies)
+	}
+
+	// Instance 1 has a gap (missing 2); instance 2 is contiguous.
+	seqsWithGap := []uint64{
+		seed1 | 1, seed1 | 3, // gap: missing 2
+		seed2 | 1, seed2 | 2, seed2 | 3,
+	}
+	anomalies = detectSequenceGaps(seqsWithGap)
+	if len(anomalies) != 1 {
+		t.Fatalf("expected 1 anomaly (gap in instance 1 only), got %d: %v", len(anomalies), anomalies)
+	}
+	if !strings.Contains(anomalies[0], "gap") {
+		t.Errorf("anomaly should describe a gap, got: %s", anomalies[0])
+	}
+
+	// Legacy entries (seed=0) and new entries (seed=1) coexist without false anomalies.
+	legacySeqs := []uint64{1, 2, 3, seed1 | 1, seed1 | 2}
+	anomalies = detectSequenceGaps(legacySeqs)
+	if len(anomalies) != 0 {
+		t.Errorf("expected no anomalies for legacy + new instance seqs, got: %v", anomalies)
 	}
 }
 

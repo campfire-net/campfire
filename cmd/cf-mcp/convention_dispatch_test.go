@@ -199,3 +199,47 @@ func extractCampfireIDFromResp(t *testing.T, resp jsonRPCResponse) string {
 	}
 	return payload.CampfireID
 }
+
+// ---------------------------------------------------------------------------
+// TestConventionServerCache_TTLInvalidation
+// ---------------------------------------------------------------------------
+
+// TestConventionServerCache_TTLInvalidation verifies that the convention server
+// cache evicts stale entries after conventionServerCacheTTL.
+func TestConventionServerCache_TTLInvalidation(t *testing.T) {
+	const testID = "campfire-ttl-test"
+
+	// Clean up any state from other tests.
+	conventionServerCacheDelete(testID)
+
+	// Fresh ID should be a miss.
+	if conventionServerCacheGet(testID) {
+		t.Fatal("expected cache miss for fresh campfire ID")
+	}
+
+	// After set, should be a hit.
+	conventionServerCacheSet(testID)
+	if !conventionServerCacheGet(testID) {
+		t.Fatal("expected cache hit immediately after set")
+	}
+
+	// Backdate the entry past the TTL to simulate expiry without sleeping.
+	conventionServerCacheMu.Lock()
+	if entry, ok := conventionServerCacheEntries[testID]; ok {
+		entry.loadedAt = time.Now().Add(-(conventionServerCacheTTL + time.Second))
+	}
+	conventionServerCacheMu.Unlock()
+
+	// Should now be a miss (stale entry evicted on access).
+	if conventionServerCacheGet(testID) {
+		t.Fatal("expected cache miss after TTL expiry")
+	}
+
+	// Entry should be evicted from the map.
+	conventionServerCacheMu.Lock()
+	_, exists := conventionServerCacheEntries[testID]
+	conventionServerCacheMu.Unlock()
+	if exists {
+		t.Fatal("expected stale entry to be evicted from cache map")
+	}
+}

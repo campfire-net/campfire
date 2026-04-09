@@ -29,8 +29,20 @@ const defaultMaxSessions = 1000
 
 // defaultInitRateLimit is the maximum number of campfire_init calls (new
 // session creations) allowed per IP address per initRateWindow.
+//
 // Design doc §5.b / adversary finding S9: 10 sessions per IP per minute.
-const defaultInitRateLimit = 10
+//
+// Multi-instance note: this limit is enforced per Azure Functions instance,
+// not globally. With ~3 concurrent instances under consumption-tier scaling,
+// a single IP can achieve up to 3× this limit across the fleet. We accept
+// per-instance enforcement because:
+//   - Moving to aztable adds a Table Storage round-trip (~5-15ms) to every
+//     init call, unacceptable on a consumption-tier cold-start path.
+//   - Legitimate clients create one session and reuse it; only abusers hit
+//     the limit, and 3× headroom is acceptable for abuse mitigation.
+//   - The stricter per-instance limit (3 instead of 10) keeps the effective
+//     fleet-wide ceiling near the original 10/min target.
+const defaultInitRateLimit = 3
 
 // initRateWindow is the sliding window duration for per-IP init rate limiting.
 const initRateWindow = 1 * time.Minute

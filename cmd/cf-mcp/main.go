@@ -2988,9 +2988,12 @@ func (s *server) handleDiscover(id interface{}, _ map[string]interface{}) jsonRP
 		SignatureValid        bool     `json:"signature_valid"`
 	}
 	var entries []entry
+	seen := make(map[string]bool)
 	for _, b := range beacons {
+		cid := b.CampfireIDHex()
+		seen[cid] = true
 		entries = append(entries, entry{
-			CampfireID:            b.CampfireIDHex(),
+			CampfireID:            cid,
 			JoinProtocol:          b.JoinProtocol,
 			ReceptionRequirements: b.ReceptionRequirements,
 			Transport:             b.Transport.Protocol,
@@ -2998,6 +3001,36 @@ func (s *server) handleDiscover(id interface{}, _ map[string]interface{}) jsonRP
 			SignatureValid:        b.Verify(),
 		})
 	}
+
+	// In hosted multi-instance mode, supplement with campfires stored in the
+	// global Azure Table Storage store. A campfire created on instance A is
+	// invisible to instance B's local beacon directory, so we enumerate global
+	// store memberships and add any campfire not already covered by a local beacon.
+	if s.transportRouter != nil {
+		if gs := s.transportRouter.GlobalStore(); gs != nil {
+			if memberships, listErr := gs.ListMemberships(); listErr == nil {
+				for _, m := range memberships {
+					if seen[m.CampfireID] {
+						continue
+					}
+					seen[m.CampfireID] = true
+					transport := m.TransportType
+					if transport == "" {
+						transport = "p2p-http"
+					}
+					entries = append(entries, entry{
+						CampfireID:            m.CampfireID,
+						JoinProtocol:          m.JoinProtocol,
+						ReceptionRequirements: []string{},
+						Transport:             transport,
+						Description:           m.Description,
+						SignatureValid:        false, // synthesized from store, no beacon signature
+					})
+				}
+			}
+		}
+	}
+
 	if entries == nil {
 		entries = []entry{}
 	}
@@ -3752,9 +3785,13 @@ func (s *server) handleAudit(id interface{}, params map[string]interface{}) json
 			continue
 		}
 
-		// Parse the payload.
+		// Parse the payload using UseNumber so that large uint64 sequence numbers
+		// (which encode a 16-bit instance seed in bits 48–63) are not silently
+		// truncated by float64 conversion.
 		var entry map[string]interface{}
-		if err := json.Unmarshal(msg.Payload, &entry); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(msg.Payload))
+		dec.UseNumber()
+		if err := dec.Decode(&entry); err != nil {
 			continue
 		}
 		// Check for audit-root messages.
@@ -3770,15 +3807,17 @@ func (s *server) handleAudit(id interface{}, params map[string]interface{}) json
 					actionsByType[action]++
 				}
 				// Collect sequence numbers for gap detection.
+				// Sequence values are uint64 with instance seed in high bits; use
+				// json.Number to avoid float64 precision loss for large values.
 				if seqRaw, ok := entry["sequence"]; ok {
 					switch v := seqRaw.(type) {
-					case float64:
-						if v > 0 {
-							sequences = append(sequences, uint64(v))
-						}
 					case json.Number:
 						if n, err2 := v.Int64(); err2 == nil && n > 0 {
 							sequences = append(sequences, uint64(n))
+						}
+					case float64:
+						if v > 0 {
+							sequences = append(sequences, uint64(v))
 						}
 					}
 				}

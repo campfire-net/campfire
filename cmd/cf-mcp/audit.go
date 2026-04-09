@@ -14,7 +14,9 @@ package main
 // written by a background goroutine so the main request path is not blocked.
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -37,6 +39,47 @@ const merkleRootMaxAge = 1 * time.Hour
 
 // auditChannelSize is the buffer size for the async audit entry channel.
 const auditChannelSize = 256
+
+// instanceIDShift is the bit position of the instance seed within a sequence uint64.
+// Bits 48–63 carry the 16-bit instance seed; bits 0–47 carry the per-instance counter.
+// This partitioning keeps sequence numbers unique across instances without external
+// coordination. Old entries (written before this change) have instance seed = 0 in
+// the high bits and are treated as the legacy "instance 0" group by detectSequenceGaps.
+const instanceIDShift = 48
+
+// instanceIDMask masks the 16-bit instance seed stored in bits 48–63 of a sequence.
+const instanceIDMask = uint64(0xFFFF) << instanceIDShift
+
+// localSeqMask masks the 48-bit per-instance counter stored in bits 0–47.
+const localSeqMask = uint64(0x0000FFFFFFFFFFFF)
+
+// newInstanceSeed derives a 16-bit instance seed from the Azure Functions instance
+// environment variable WEBSITE_INSTANCE_ID, falling back to random bytes.
+// The seed is returned pre-shifted into bits 48–63 of a uint64.
+// A seed of 0 is reserved for legacy entries written before this feature.
+func newInstanceSeed() uint64 {
+	// Azure Functions sets WEBSITE_INSTANCE_ID to a unique string per instance.
+	if envID := os.Getenv("WEBSITE_INSTANCE_ID"); envID != "" {
+		h := sha256.Sum256([]byte(envID))
+		seed := binary.BigEndian.Uint16(h[:2])
+		if seed == 0 {
+			seed = 1 // reserve 0 for legacy/no-instance entries
+		}
+		return uint64(seed) << instanceIDShift
+	}
+	// Fall back to random 16-bit seed so parallel instances don't collide.
+	var buf [2]byte
+	if _, err := rand.Read(buf[:]); err == nil {
+		seed := binary.BigEndian.Uint16(buf[:])
+		if seed == 0 {
+			seed = 1
+		}
+		return uint64(seed) << instanceIDShift
+	}
+	// Absolute fallback: use a fixed non-zero seed so the instance is still
+	// distinguishable from legacy entries (instance seed = 0).
+	return uint64(1) << instanceIDShift
+}
 
 // ---------------------------------------------------------------------------
 // AuditEntry
@@ -80,6 +123,16 @@ type AuditWriter struct {
 	written atomic.Int64
 
 	// Merkle state and sequence counter — accessed only by the background goroutine.
+	//
+	// instanceSeed occupies bits 48–63 of every sequence number written by this
+	// AuditWriter. It is derived once at startup from WEBSITE_INSTANCE_ID (Azure
+	// Functions) or random bytes, ensuring that parallel instances never produce
+	// overlapping sequence numbers even though each starts its local counter at 0.
+	//
+	// seq counts written entries within this instance (0–2^48-1). The full
+	// sequence number stored in AuditEntry.Sequence is (instanceSeed | seq),
+	// where instanceSeed is already pre-shifted into bits 48–63.
+	instanceSeed   uint64
 	seq            uint64
 	pendingEntries []AuditEntry
 	lastRootAt     time.Time
@@ -114,14 +167,15 @@ func NewAuditWriter(srv *server) (*AuditWriter, error) {
 	}
 
 	aw := &AuditWriter{
-		campfireID: campfireID,
-		srv:        srv,
-		agentID:    agentID,
-		st:         st,
-		ch:         make(chan AuditEntry, auditChannelSize),
-		done:       make(chan struct{}),
-		flushReq:   make(chan chan struct{}, 4),
-		lastRootAt: time.Now(),
+		campfireID:   campfireID,
+		srv:          srv,
+		agentID:      agentID,
+		st:           st,
+		ch:           make(chan AuditEntry, auditChannelSize),
+		done:         make(chan struct{}),
+		flushReq:     make(chan chan struct{}, 4),
+		lastRootAt:   time.Now(),
+		instanceSeed: newInstanceSeed(),
 	}
 
 	aw.wg.Add(1)
@@ -230,9 +284,13 @@ func (aw *AuditWriter) loop() {
 // writeEntry serialises entry as JSON and posts it to the audit campfire.
 // Sequence numbers are assigned here (consumer side) so that only written
 // entries consume a sequence number — dropped entries never do.
+//
+// The full sequence number encodes both the instance seed (bits 48–63) and
+// the per-instance counter (bits 0–47), ensuring uniqueness across instances.
 func (aw *AuditWriter) writeEntry(entry AuditEntry) {
 	aw.seq++
-	entry.Sequence = aw.seq
+	// Compose the globally unique sequence: instance seed in high bits, local counter in low bits.
+	entry.Sequence = aw.instanceSeed | (aw.seq & localSeqMask)
 	aw.pendingEntries = append(aw.pendingEntries, entry)
 
 	payload, err := json.Marshal(entry)
@@ -418,12 +476,17 @@ func loadOrCreateAuditCampfire(srv *server, agentID *identity.Identity, st store
 // ---------------------------------------------------------------------------
 
 // detectSequenceGaps analyses a set of sequence numbers from audit log entries
-// and returns a list of human-readable anomaly descriptions. A sequence gap
-// (missing one or more consecutive sequence numbers) is the primary indicator
-// of potential tampering or inadvertent entry loss.
+// and returns a list of human-readable anomaly descriptions.
 //
-// The input slice need not be sorted. Each gap is reported as a string of the
-// form "sequence gap: missing N entries between seq X and seq Y".
+// Sequence numbers encode both an instance seed (bits 48–63) and a per-instance
+// counter (bits 0–47). Entries are first grouped by instance seed, then each
+// group is checked for gaps within its local counter sequence. This ensures that
+// parallel Azure Functions instances — each starting at counter=0 — do not
+// produce false gap anomalies for each other's entries.
+//
+// Legacy entries written before this feature have instance seed = 0 and are
+// grouped together and analysed as a single sequence (backwards compatible).
+//
 // Returns a non-nil (possibly empty) slice so callers always get a JSON array.
 func detectSequenceGaps(seqs []uint64) []string {
 	anomalies := []string{}
@@ -431,27 +494,39 @@ func detectSequenceGaps(seqs []uint64) []string {
 		return anomalies
 	}
 
-	// Sort ascending (simple insertion sort — audit logs are typically small).
-	sorted := make([]uint64, len(seqs))
-	copy(sorted, seqs)
-	for i := 1; i < len(sorted); i++ {
-		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
-			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
-		}
+	// Group sequences by instance seed (bits 48–63).
+	groups := make(map[uint64][]uint64)
+	for _, s := range seqs {
+		seed := s >> instanceIDShift
+		local := s & localSeqMask
+		groups[seed] = append(groups[seed], local)
 	}
 
-	// Scan for gaps between consecutive entries.
-	for i := 1; i < len(sorted); i++ {
-		prev, cur := sorted[i-1], sorted[i]
-		if cur <= prev {
-			// Duplicate sequence number — also anomalous.
-			anomalies = append(anomalies,
-				fmt.Sprintf("duplicate sequence number: seq %d appears more than once", cur))
-			continue
+	// For each instance group, sort and scan for gaps.
+	for seed, locals := range groups {
+		// Sort ascending (simple insertion sort — audit logs are typically small).
+		for i := 1; i < len(locals); i++ {
+			for j := i; j > 0 && locals[j] < locals[j-1]; j-- {
+				locals[j], locals[j-1] = locals[j-1], locals[j]
+			}
 		}
-		if gap := cur - prev; gap > 1 {
-			anomalies = append(anomalies,
-				fmt.Sprintf("sequence gap: missing %d entries between seq %d and seq %d", gap-1, prev, cur))
+
+		instanceLabel := ""
+		if seed > 0 {
+			instanceLabel = fmt.Sprintf(" (instance %d)", seed)
+		}
+
+		for i := 1; i < len(locals); i++ {
+			prev, cur := locals[i-1], locals[i]
+			if cur <= prev {
+				anomalies = append(anomalies,
+					fmt.Sprintf("duplicate sequence number: seq %d appears more than once%s", cur, instanceLabel))
+				continue
+			}
+			if gap := cur - prev; gap > 1 {
+				anomalies = append(anomalies,
+					fmt.Sprintf("sequence gap: missing %d entries between seq %d and seq %d%s", gap-1, prev, cur, instanceLabel))
+			}
 		}
 	}
 

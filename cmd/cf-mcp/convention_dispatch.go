@@ -17,14 +17,56 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
-// conventionServerLoadedCampfires tracks which campfire IDs have already had
-// their convention server registrations loaded into the dispatcher. This avoids
-// repeated store round-trips on every send.
-//
-// The key is the campfireID string; the value is always true.
-var conventionServerLoadedCampfires sync.Map
+// conventionServerCacheTTL is how long a campfire's convention server
+// registrations are considered fresh. After this duration, the next send
+// triggers a reload from the store — picking up handlers registered on
+// other instances or handlers added/removed since the last load.
+const conventionServerCacheTTL = 60 * time.Second
+
+// conventionCacheEntry records when a campfire's convention servers were loaded.
+type conventionCacheEntry struct {
+	loadedAt time.Time
+}
+
+// conventionServerCache replaces the old never-evicting sync.Map with a
+// TTL-aware cache. Access is guarded by conventionServerCacheMu.
+var (
+	conventionServerCacheMu      sync.Mutex
+	conventionServerCacheEntries = make(map[string]*conventionCacheEntry)
+)
+
+// conventionServerCacheGet returns true if the campfire's convention servers
+// were loaded within the TTL window. Stale entries are evicted on access.
+func conventionServerCacheGet(campfireID string) bool {
+	conventionServerCacheMu.Lock()
+	defer conventionServerCacheMu.Unlock()
+	entry, ok := conventionServerCacheEntries[campfireID]
+	if !ok {
+		return false
+	}
+	if time.Since(entry.loadedAt) > conventionServerCacheTTL {
+		delete(conventionServerCacheEntries, campfireID)
+		return false
+	}
+	return true
+}
+
+// conventionServerCacheSet marks a campfire's convention servers as freshly loaded.
+func conventionServerCacheSet(campfireID string) {
+	conventionServerCacheMu.Lock()
+	defer conventionServerCacheMu.Unlock()
+	conventionServerCacheEntries[campfireID] = &conventionCacheEntry{loadedAt: time.Now()}
+}
+
+// conventionServerCacheDelete removes a campfire from the cache (e.g. on load error).
+func conventionServerCacheDelete(campfireID string) {
+	conventionServerCacheMu.Lock()
+	defer conventionServerCacheMu.Unlock()
+	delete(conventionServerCacheEntries, campfireID)
+}
 
 // loadConventionServersForCampfire loads all enabled convention server records
 // for the given campfire from the store and registers them with the dispatcher.
@@ -41,7 +83,7 @@ func (s *server) loadConventionServersForCampfire(ctx context.Context, campfireI
 	if s.conventionDispatcher == nil || s.conventionServerStore == nil {
 		return
 	}
-	if _, loaded := conventionServerLoadedCampfires.LoadOrStore(campfireID, true); loaded {
+	if conventionServerCacheGet(campfireID) {
 		return
 	}
 
@@ -51,7 +93,7 @@ func (s *server) loadConventionServersForCampfire(ctx context.Context, campfireI
 		// will simply find no handler and return false.
 		fmt.Printf("convention dispatch: load servers for %s: %v\n", campfireID, err)
 		// Remove from loaded set so next send will retry.
-		conventionServerLoadedCampfires.Delete(campfireID)
+		conventionServerCacheDelete(campfireID)
 		return
 	}
 
@@ -73,4 +115,6 @@ func (s *server) loadConventionServersForCampfire(ctx context.Context, campfireI
 			)
 		}
 	}
+
+	conventionServerCacheSet(campfireID)
 }
