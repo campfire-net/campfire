@@ -118,7 +118,7 @@ func AdmitMember(_ context.Context, deps AdmitterDeps, req AdmissionRequest) (Ad
 		TransportDir:    req.TransportDir,
 		JoinProtocol:    req.JoinProtocol,
 		Role:            result.EffectiveRole,
-		JoinedAt:        time.Now().Unix(),
+		JoinedAt:        time.Now().UnixNano(),
 		Description:     req.Description,
 		CreatorPubkey:   req.CreatorPubkey,
 		TransportType:   req.TransportType,

@@ -355,9 +355,9 @@ func TestAdmitMember_MembershipFields(t *testing.T) {
 	req := baseRequest()
 	req.Endpoint = ""
 
-	before := time.Now().Unix()
+	before := time.Now().UnixNano()
 	_, err := admission.AdmitMember(context.Background(), deps, req)
-	after := time.Now().Unix()
+	after := time.Now().UnixNano()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -389,5 +389,40 @@ func TestAdmitMember_MembershipFields(t *testing.T) {
 	}
 	if m.JoinedAt < before || m.JoinedAt > after {
 		t.Errorf("JoinedAt %d out of range [%d, %d]", m.JoinedAt, before, after)
+	}
+}
+
+// TestAdmitMember_JoinedAtIsNanoseconds verifies that JoinedAt is stored as
+// nanoseconds since epoch (not seconds). The display code uses time.Unix(0, joinedAt)
+// which interprets the value as nanoseconds — storing seconds causes all timestamps
+// to display as 1970.
+func TestAdmitMember_JoinedAtIsNanoseconds(t *testing.T) {
+	st := &mockStore{}
+	deps := admission.AdmitterDeps{Store: st}
+	req := baseRequest()
+	req.Endpoint = ""
+
+	before := time.Now()
+	_, err := admission.AdmitMember(context.Background(), deps, req)
+	after := time.Now()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(st.memberships) != 1 {
+		t.Fatalf("expected 1 membership, got %d", len(st.memberships))
+	}
+	joinedAt := st.memberships[0].JoinedAt
+
+	// Nanosecond epoch values since 2001 are > 1e18.
+	// Second-based values are ~1.7e9 — orders of magnitude smaller.
+	const minNano = int64(1e18)
+	if joinedAt < minNano {
+		t.Errorf("JoinedAt=%d looks like seconds, not nanoseconds (want > %d)", joinedAt, minNano)
+	}
+
+	// Round-trip: interpreting as nanoseconds should yield a time within the call window.
+	recovered := time.Unix(0, joinedAt)
+	if recovered.Before(before) || recovered.After(after) {
+		t.Errorf("time.Unix(0, JoinedAt)=%v is outside call window [%v, %v]", recovered, before, after)
 	}
 }
