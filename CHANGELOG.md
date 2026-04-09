@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.16.6 — multi-instance hardening and convention adoption (2026-04-09)
+
+### Bug Fixes
+
+- **Discover tenant isolation**: `campfire_discover` global store fallback now filters by the session's agent pubkey, preventing cross-tenant campfire enumeration.
+
+- **Multi-instance beacon discovery**: `campfire_discover` supplements local beacon scan with global Azure Table Storage memberships so campfires created on any instance are discoverable from any other.
+
+- **Per-instance rate limit**: `campfire_init` rate limit reduced from 10 to 3 per instance to keep fleet-wide ceiling near the original 10/min target across ~3 instances.
+
+- **Convention cache TTL**: Convention server registration cache now uses a 60-second TTL instead of caching forever. Handler changes propagate across instances within the TTL window.
+
+- **Audit sequence numbers**: Instance-prefixed sequences (16-bit seed in bits 48–63) prevent false gap anomalies across Azure Functions instances. `detectSequenceGaps` groups by instance seed.
+
+- **Audit sequence parsing**: `handleAudit` uses `strconv.ParseUint` instead of `json.Number.Int64()`, which silently dropped sequences with instance seed ≥ 32768.
+
+- **Per-session KeyProvider**: Falls back to global Azure Table Storage store when local CBOR state is absent (cross-instance key resolution). Returns specific error messages for malformed keys.
+
+### Features
+
+- **Convention adoption UX**: `cf convention install` command for installing convention declarations. Send-time validation warns when a message doesn't match the convention schema. `cf convention adopt` for adopting conventions on a campfire.
+
+---
+
+## v0.16.5 — invite code support for p2p-http (2026-04-09)
+
+### Features
+
+- **Invite codes for p2p-http join**: Invite-only campfires now return invite codes from `campfire_create` and support joining via invite code over p2p-http transport.
+
+---
+
 ## v0.16.4 — cross-instance shared state for Azure Functions (2026-04-08)
 
 ### Bug Fixes
