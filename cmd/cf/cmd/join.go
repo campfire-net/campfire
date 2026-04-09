@@ -326,26 +326,20 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 		return fmt.Errorf("joining campfire via %s: %w", via, err)
 	}
 
-	// Persist campfire state locally.
-	stateDir := filepath.Join(CFHome(), "campfires")
-	if err := os.MkdirAll(stateDir, 0700); err != nil {
-		return fmt.Errorf("creating campfire state directory: %w", err)
-	}
-
-	cfState := campfire.CampfireState{
+	// Persist campfire state locally using fs.Transport layout. This stores
+	// the state at {baseDir}/{campfireID}/campfire.cbor, consistent with the
+	// creator path (registerOnRelay) and filesystem campfires.
+	baseDir := filepath.Join(CFHome(), "campfires")
+	transport := fs.New(baseDir)
+	cf := &campfire.Campfire{
 		PublicKey:             result.CampfirePubKey,
 		PrivateKey:            result.CampfirePrivKey,
 		JoinProtocol:          result.JoinProtocol,
 		ReceptionRequirements: result.ReceptionRequirements,
 		Threshold:             result.Threshold,
 	}
-	stateData, err := cfencoding.Marshal(cfState)
-	if err != nil {
-		return fmt.Errorf("encoding campfire state: %w", err)
-	}
-	stateFile := filepath.Join(stateDir, campfireID+".cbor")
-	if err := os.WriteFile(stateFile, stateData, 0600); err != nil {
-		return fmt.Errorf("writing campfire state: %w", err)
+	if err := transport.Init(cf); err != nil {
+		return fmt.Errorf("storing campfire state: %w", err)
 	}
 
 	// Look up description from beacon (best-effort).
@@ -353,13 +347,14 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 
 	// Record membership in local store via shared admission package.
 	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
-		Store: s,
+		FSTransport: transport,
+		Store:       s,
 	}, admission.AdmissionRequest{
 		CampfireID:      campfireID,
 		MemberPubKeyHex: agentID.PublicKeyHex(),
 		Role:            campfire.RoleFull,
 		JoinProtocol:    result.JoinProtocol,
-		TransportDir:    stateDir,
+		TransportDir:    transport.CampfireDir(campfireID),
 		TransportType:   "p2p-http",
 		Description:     p2pDescription,
 	}); err != nil {

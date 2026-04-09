@@ -40,6 +40,7 @@ section "Daemon reads without --all (cursor-based, new messages only)"
 # First read advances cursor. Second read should only show new.
 cf read "$CF_ID" --cf-home "$DAEMON_HOME" --tag batch >/dev/null 2>&1 || true
 cf send "$CF_ID" --cf-home "$SERVER_HOME" --tag batch "Message FOUR" 2>/dev/null
+sleep 5  # allow relay propagation + cold-start latency
 READ_NEW=$(cf read "$CF_ID" --cf-home "$DAEMON_HOME" --json --tag batch 2>/dev/null)
 assert_contains "Cursor read sees message 4" "$READ_NEW" "Message FOUR"
 assert_not_contains "Cursor read does not re-show message 1" "$READ_NEW" "Message ONE"

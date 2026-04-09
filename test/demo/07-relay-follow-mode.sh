@@ -30,14 +30,14 @@ section "Server sends a message while daemon is polling"
 cf send "$CF_ID" --cf-home "$SERVER_HOME" --tag live "Live message 1" 2>/dev/null
 echo "Sent live message 1"
 
-# Wait for poll cycle to pick it up
-sleep 5
+# Wait for poll cycle to pick it up (relay round-trip + poll interval)
+sleep 10
 
 section "Server sends another message"
 cf send "$CF_ID" --cf-home "$SERVER_HOME" --tag live "Live message 2" 2>/dev/null
 echo "Sent live message 2"
 
-sleep 5
+sleep 10
 
 section "Stop follow mode and check output"
 kill "$FOLLOW_PID" 2>/dev/null || true
