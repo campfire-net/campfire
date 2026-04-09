@@ -2040,3 +2040,79 @@ func TestSession_RevokedOperatorSessionCleaned(t *testing.T) {
 		t.Error("token must be marked revoked in the registry after refreshRevocationsFromCloud")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test: operator tokens survive cold start (campfireagent-4c0)
+// ---------------------------------------------------------------------------
+
+// TestSession_OperatorTokenSurvivesColdStart verifies that operator session tokens
+// (issued via forge-sk-/forge-tk- auth with TTL=0) are recognized as operator
+// tokens after a cold start and are not rejected for expiry.
+//
+// Bug: before this fix, operatorSessionIndex was in-memory only. After cold
+// start the index was empty, so validateToken (with TTL check) was called
+// instead of validateTokenNoExpiry, causing "token has expired" rejections.
+//
+// Fix: tokenEntry now carries an operator=true flag persisted in the registry
+// file. lookup() skips TTL check when operator=true regardless of the index.
+func TestSession_OperatorTokenSurvivesColdStart(t *testing.T) {
+	dir := t.TempDir()
+
+	// --- Phase 1: Issue an operator token and persist the registry. ---
+	sm1 := NewSessionManager(dir)
+	t.Cleanup(sm1.Stop)
+
+	accountID := "test-account-id-cold-start"
+	tok, err := sm1.issueOperatorForID(accountID)
+	if err != nil {
+		t.Fatalf("issueOperatorForID: %v", err)
+	}
+
+	// Verify the in-memory entry has operator=true.
+	sm1.registry.mu.RLock()
+	e1 := sm1.registry.tokens[tok]
+	sm1.registry.mu.RUnlock()
+	if e1 == nil {
+		t.Fatal("token not found in sm1 registry")
+	}
+	if !e1.operator {
+		t.Error("issueOperatorForID: entry.operator must be true")
+	}
+
+	// sm1 is stopped by its t.Cleanup registration.
+	// The registry was already saved atomically during issueOperatorForID — no
+	// extra flush is needed before creating the second SessionManager.
+
+	// --- Phase 2: Simulate cold start by loading the persisted registry. ---
+	// The new SessionManager has an empty operatorSessionIndex (it doesn't even
+	// exist at this layer — it lives in main.go). All it has is the persisted
+	// token-registry.json file.
+	sm2 := NewSessionManager(dir)
+	t.Cleanup(sm2.Stop)
+
+	// Verify the operator flag was round-tripped through the JSON file.
+	sm2.registry.mu.RLock()
+	e2 := sm2.registry.tokens[tok]
+	sm2.registry.mu.RUnlock()
+	if e2 == nil {
+		t.Fatal("token not found in sm2 registry after cold start — registry not persisted")
+	}
+	if !e2.operator {
+		t.Error("cold start: entry.operator must be true after loading from registry file")
+	}
+
+	// The critical assertion: validateToken (which applies the TTL) must succeed
+	// for operator tokens even after cold start (even if the token is "old").
+	// We override tokenTTL to 1ns to guarantee the token would be expired under
+	// normal TTL semantics, proving the operator flag is what saves it.
+	sm2.tokenTTL = time.Nanosecond
+	time.Sleep(2 * time.Millisecond) // ensure issuedAt + 1ns has passed
+
+	internalID, err := sm2.validateToken(tok)
+	if err != nil {
+		t.Errorf("validateToken after cold start must succeed for operator token, got: %v", err)
+	}
+	if internalID != accountID {
+		t.Errorf("validateToken returned internalID %q; want %q", internalID, accountID)
+	}
+}

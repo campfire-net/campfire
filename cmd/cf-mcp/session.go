@@ -66,6 +66,12 @@ type tokenEntry struct {
 	// gracePeriodUntil is non-zero for tokens that have been rotated out:
 	// they remain valid until this time to allow in-flight requests to drain.
 	gracePeriodUntil time.Time
+	// operator, when true, marks this token as an operator session token issued
+	// via forge-sk-/forge-tk- authentication. Operator tokens have TTL=0 — they
+	// never expire and are validated without a TTL deadline. This flag is
+	// persisted so operator sessions survive cold starts without requiring the
+	// in-memory operatorSessionIndex to be rebuilt.
+	operator bool
 }
 
 // TokenRegistry maps external bearer tokens to internal session IDs.
@@ -90,6 +96,7 @@ type tokenEntryJSON struct {
 	IssuedAt         time.Time `json:"issued_at"`
 	Revoked          bool      `json:"revoked"`
 	GracePeriodUntil time.Time `json:"grace_period_until,omitempty"`
+	Operator         bool      `json:"operator,omitempty"`
 }
 
 // tokenRegistryJSON is the on-disk representation of the full registry.
@@ -129,6 +136,7 @@ func newTokenRegistryFromFile(path string) (*TokenRegistry, error) {
 			issuedAt:         e.IssuedAt,
 			revoked:          e.Revoked,
 			gracePeriodUntil: e.GracePeriodUntil,
+			operator:         e.Operator,
 		}
 	}
 	return r, nil
@@ -150,6 +158,7 @@ func (r *TokenRegistry) save() error {
 			IssuedAt:         e.issuedAt,
 			Revoked:          e.revoked,
 			GracePeriodUntil: e.gracePeriodUntil,
+			Operator:         e.operator,
 		}
 	}
 	data, err := json.Marshal(reg)
@@ -228,6 +237,31 @@ func (r *TokenRegistry) issueFor(internalID string) (string, error) {
 	return tok, nil
 }
 
+// issueOperatorFor issues a new operator token that maps to an existing internalID.
+// Operator tokens have operator=true set so they survive cold starts without
+// requiring the in-memory operatorSessionIndex to classify them as TTL=0.
+func (r *TokenRegistry) issueOperatorFor(internalID string) (string, error) {
+	tok, err := generateToken()
+	if err != nil {
+		return "", err
+	}
+	entry := &tokenEntry{
+		internalID: internalID,
+		issuedAt:   time.Now(),
+		operator:   true,
+	}
+	r.mu.Lock()
+	r.tokens[tok] = entry
+	r.save() //nolint:errcheck // persist best-effort
+	onSave := r.onSave
+	entryCopy := *entry
+	r.mu.Unlock()
+	if onSave != nil {
+		onSave(tok, entryCopy) //nolint:errcheck // best-effort cloud persist
+	}
+	return tok, nil
+}
+
 // lookup validates a token and returns its internalID.
 // Returns an error for tokens not in the registry, revoked, or expired (ttl=0 means no expiry check).
 // Returns tokenExpiredError if expired, tokenRevokedError if revoked, tokenUnknownError if not found.
@@ -241,11 +275,13 @@ func (r *TokenRegistry) lookup(token string, ttl time.Duration) (string, error) 
 	var issuedAt time.Time
 	var revoked bool
 	var gracePeriodUntil time.Time
+	var operator bool
 	if ok {
 		internalID = entry.internalID
 		issuedAt = entry.issuedAt
 		revoked = entry.revoked
 		gracePeriodUntil = entry.gracePeriodUntil
+		operator = entry.operator
 	}
 	r.mu.RUnlock()
 	if !ok {
@@ -258,7 +294,10 @@ func (r *TokenRegistry) lookup(token string, ttl time.Duration) (string, error) 
 		}
 		return "", &tokenRevokedError{}
 	}
-	if ttl > 0 && time.Since(issuedAt) > ttl {
+	// Operator tokens (forge-sk-/forge-tk- auth) have TTL=0 — they never expire
+	// and are revoked explicitly. The operator flag is persisted in the registry
+	// so cold-start validation does not require the in-memory operatorSessionIndex.
+	if !operator && ttl > 0 && time.Since(issuedAt) > ttl {
 		return "", &tokenExpiredError{}
 	}
 	return internalID, nil
@@ -601,6 +640,7 @@ func (m *SessionManager) UseSessionStore(ss *aztable.SessionStore) error {
 			issuedAt:         e.IssuedAt,
 			revoked:          e.Revoked,
 			gracePeriodUntil: e.GracePeriodUntil,
+			operator:         e.Operator,
 		}
 	}
 	// Wire up cloud persistence hooks.
@@ -611,6 +651,7 @@ func (m *SessionManager) UseSessionStore(ss *aztable.SessionStore) error {
 			IssuedAt:         e.issuedAt,
 			Revoked:          e.revoked,
 			GracePeriodUntil: e.gracePeriodUntil,
+			Operator:         e.operator,
 		}
 		if saveErr := ss.SaveTokenEntry(token, rec); saveErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: token registry cloud persist failed: %v\n", saveErr)
@@ -704,6 +745,13 @@ func (m *SessionManager) validateTokenNoExpiry(token string) (string, error) {
 // Used by forge-tk- auth to reuse a stable account ID across re-authentications.
 func (m *SessionManager) issueForID(internalID string) (string, error) {
 	return m.registry.issueFor(internalID)
+}
+
+// issueOperatorForID issues a new operator session token mapped to an existing internalID.
+// Unlike issueForID, the token entry has operator=true so cold-start validation
+// skips the TTL check without consulting the in-memory operatorSessionIndex.
+func (m *SessionManager) issueOperatorForID(internalID string) (string, error) {
+	return m.registry.issueOperatorFor(internalID)
 }
 
 // getSession returns the active Session for a token, or nil if not found.
@@ -1153,6 +1201,7 @@ func (m *SessionManager) refreshRevocationsFromCloud() {
 				issuedAt:         e.IssuedAt,
 				revoked:          e.Revoked,
 				gracePeriodUntil: e.GracePeriodUntil,
+				operator:         e.Operator,
 			}
 			if e.Revoked {
 				revokedIDs = append(revokedIDs, e.InternalID)

@@ -4419,9 +4419,11 @@ func (s *server) handleMCPSessioned(w http.ResponseWriter, r *http.Request) {
 			}
 			if sessToken == "" {
 				// No existing token — issue a new TTL=0 session token.
-				// TTL=0 means no expiry check — the token persists until explicitly revoked.
+				// issueOperatorForID sets operator=true in the registry entry so the
+				// token survives cold starts without requiring the in-memory
+				// operatorSessionIndex to classify it as TTL=0.
 				var issueErr error
-				sessToken, issueErr = s.sessManager.issueForID(accountID)
+				sessToken, issueErr = s.sessManager.issueOperatorForID(accountID)
 				if issueErr != nil {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusInternalServerError)
