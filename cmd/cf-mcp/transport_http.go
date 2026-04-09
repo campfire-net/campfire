@@ -1,14 +1,23 @@
 package main
 
 import (
+	"crypto/ecdh"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
@@ -35,6 +44,13 @@ type TransportRouter struct {
 	// Functions instances.
 	globalStore    store.Store
 	selfEndpoint   string // server's external URL (e.g. https://mcp.east.getcampfire.dev/api)
+
+	// staticX25519Key is an optional static X25519 private key used for ECDH in
+	// the POST /campfire/create endpoint. When set, the relay decrypts campfire
+	// private keys sent by creators using ECDH(staticX25519Key, creatorEphemPub).
+	// When nil, the relay generates a fresh ephemeral key per request (requires
+	// the creator to first discover the relay's ephemeral pub via a separate call).
+	staticX25519Key *ecdh.PrivateKey
 }
 
 // NewTransportRouter creates a new TransportRouter.
@@ -188,12 +204,23 @@ func (r *TransportRouter) SetGlobalStore(s store.Store, endpoint string) {
 // transport handler. It extracts the campfire ID from the URL path, looks up the
 // owning transport, and delegates. If no session owns the campfire locally, falls
 // back to reconstructing a transport from the global store.
+//
+// Special case: POST /campfire/create is intercepted before per-campfire routing.
+// This endpoint allows external agents to register a campfire on the relay via ECDH
+// key exchange (design-cf-remote-relay.md §3).
 func (r *TransportRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Path: /campfire/{id}/{action}
 	// The handler.route in pkg/transport/http expects paths starting with /campfire/
 	path := req.URL.Path
 	if len(path) < len("/campfire/") {
 		http.NotFound(w, req)
+		return
+	}
+
+	// Intercept POST /campfire/create before per-campfire routing.
+	// This endpoint has no campfire ID in the path — the campfire is being registered.
+	if path == "/campfire/create" && req.Method == http.MethodPost {
+		r.handleCreateCampfire(w, req)
 		return
 	}
 
@@ -292,3 +319,292 @@ func (r *TransportRouter) GlobalStore() store.Store {
 	defer r.mu.RUnlock()
 	return r.globalStore
 }
+
+// SetStaticX25519Key sets the relay's static X25519 private key used for ECDH in
+// POST /campfire/create. The creator encrypts the campfire private key using
+// ECDH(creatorEphemPriv, relay.StaticX25519PubHex()), so the relay must have a
+// known static key for the creator to target.
+//
+// If not set, POST /campfire/create is unavailable (returns 501).
+func (r *TransportRouter) SetStaticX25519Key(key *ecdh.PrivateKey) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.staticX25519Key = key
+}
+
+// StaticX25519PubHex returns the hex-encoded static X25519 public key for the relay,
+// or "" if not configured. Creators use this to encrypt campfire private keys for
+// POST /campfire/create.
+func (r *TransportRouter) StaticX25519PubHex() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.staticX25519Key == nil {
+		return ""
+	}
+	return hex.EncodeToString(r.staticX25519Key.PublicKey().Bytes())
+}
+
+// maxCreateBodySize is the maximum body accepted by POST /campfire/create.
+const maxCreateBodySize = 4 * 1024 // 4 KiB — create requests are small
+
+// requestTimestampWindowCreate is the freshness window for /campfire/create requests.
+// Matches the window used in pkg/transport/http/handler.go.
+const requestTimestampWindowCreate = 60 * time.Second
+
+// handleCreateCampfire handles POST /campfire/create.
+//
+// This endpoint allows an external agent to register a campfire on the relay.
+// The creator proves ownership of the campfire private key via ECDH key exchange:
+//
+//  1. Creator generates ephemeral X25519 keypair, encrypts campfire privkey with
+//     AES-256-GCM using HKDF(ECDH(creatorEphemPriv, relayEphemPub), "campfire-join-v1").
+//  2. Creator sends encrypted_priv_key + ephemeral_x25519_pub in a signed POST.
+//  3. Relay generates its own ephemeral X25519 keypair, performs ECDH, decrypts.
+//  4. Relay validates the decrypted privkey produces the claimed campfire_id.
+//  5. Relay stores membership in global store, registers transport with router.
+//  6. Relay returns endpoint and beacon.
+//
+// Error responses:
+//   - 401: missing/invalid Ed25519 signature headers
+//   - 400: malformed request body or invalid keys
+//   - 409: campfire already registered on this relay
+//   - 500: internal errors (key generation, store write)
+func (r *TransportRouter) handleCreateCampfire(w http.ResponseWriter, req *http.Request) {
+	// --- Signature verification ---
+	// Reuse the same header-based verification as pkg/transport/http/handler.go
+	// (readAndVerify pattern). We re-implement it here because readAndVerify is on
+	// the unexported handler struct in that package.
+	senderHex := req.Header.Get("X-Campfire-Sender")
+	sigB64 := req.Header.Get("X-Campfire-Signature")
+	nonce := req.Header.Get("X-Campfire-Nonce")
+	timestamp := req.Header.Get("X-Campfire-Timestamp")
+	if senderHex == "" || sigB64 == "" || nonce == "" || timestamp == "" {
+		http.Error(w, "missing signature headers", http.StatusUnauthorized)
+		return
+	}
+
+	// Validate timestamp freshness.
+	tsUnix, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid timestamp header", http.StatusUnauthorized)
+		return
+	}
+	tsTime := time.Unix(tsUnix, 0)
+	diff := time.Since(tsTime)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > requestTimestampWindowCreate {
+		http.Error(w, "request timestamp out of window", http.StatusUnauthorized)
+		return
+	}
+
+	// Read and size-limit the body before signature verification.
+	req.Body = http.MaxBytesReader(w, req.Body, maxCreateBodySize)
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		http.Error(w, "cannot read body", http.StatusBadRequest)
+		return
+	}
+
+	// Verify the Ed25519 signature covers timestamp + nonce + body.
+	if err := cfhttp.VerifyRequestSignature(senderHex, sigB64, nonce, timestamp, body); err != nil {
+		log.Printf("handleCreateCampfire: signature verification failed from %s: %v", senderHex[:min(8, len(senderHex))], err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	// --- Parse request body ---
+	var createReq cfhttp.CreateCampfireRequest
+	if err := json.Unmarshal(body, &createReq); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields.
+	if createReq.CampfireID == "" {
+		http.Error(w, "campfire_id is required", http.StatusBadRequest)
+		return
+	}
+	if createReq.EphemeralX25519Pub == "" {
+		http.Error(w, "ephemeral_x25519_pub is required", http.StatusBadRequest)
+		return
+	}
+	if len(createReq.EncryptedPrivKey) == 0 {
+		http.Error(w, "encrypted_priv_key is required", http.StatusBadRequest)
+		return
+	}
+
+	// creator_pubkey must match the request signer.
+	if createReq.CreatorPubkey == "" {
+		createReq.CreatorPubkey = senderHex
+	} else if createReq.CreatorPubkey != senderHex {
+		http.Error(w, "creator_pubkey does not match X-Campfire-Sender", http.StatusBadRequest)
+		return
+	}
+
+	// Default join protocol if absent.
+	if createReq.JoinProtocol == "" {
+		createReq.JoinProtocol = "open"
+	}
+	if createReq.Threshold == 0 {
+		createReq.Threshold = 1
+	}
+
+	// --- Duplicate check ---
+	// If the campfire is already registered in the global store, return 409.
+	r.mu.RLock()
+	gs := r.globalStore
+	endpoint := r.selfEndpoint
+	r.mu.RUnlock()
+
+	if gs != nil {
+		existing, _ := gs.GetMembership(createReq.CampfireID)
+		if existing != nil && existing.CampfirePrivKey != "" {
+			http.Error(w, "campfire already registered on this relay", http.StatusConflict)
+			return
+		}
+	}
+	// Also check in-memory router.
+	if r.GetCampfireTransport(createReq.CampfireID) != nil {
+		http.Error(w, "campfire already registered on this relay", http.StatusConflict)
+		return
+	}
+
+	// --- ECDH key exchange — decrypt campfire private key ---
+	// Use the relay's static X25519 key if available; otherwise generate ephemeral.
+	// Note: using a static key allows single-round protocol (creator knows relay's pub in advance).
+	r.mu.RLock()
+	staticKey := r.staticX25519Key
+	r.mu.RUnlock()
+
+	var privKeyBytes []byte
+	var relayPubHex string
+	if staticKey != nil {
+		privKeyBytes, relayPubHex, err = cfhttp.DecryptCampfirePrivKeyWithStaticKey(staticKey, createReq.EphemeralX25519Pub, createReq.EncryptedPrivKey)
+	} else {
+		privKeyBytes, relayPubHex, err = cfhttp.DecryptCampfirePrivKey(createReq.EphemeralX25519Pub, createReq.EncryptedPrivKey)
+	}
+	if err != nil {
+		log.Printf("handleCreateCampfire: ECDH/decrypt failed: %v", err)
+		http.Error(w, "key exchange failed", http.StatusBadRequest)
+		return
+	}
+
+	// --- Validate decrypted private key produces the claimed campfire_id ---
+	if err := cfhttp.ValidateCampfirePrivKey(privKeyBytes, createReq.CampfireID); err != nil {
+		log.Printf("handleCreateCampfire: key validation failed: %v", err)
+		http.Error(w, "private key does not match campfire_id", http.StatusBadRequest)
+		return
+	}
+
+	privKey := ed25519.PrivateKey(privKeyBytes)
+	pubKey := privKey.Public().(ed25519.PublicKey)
+
+	// --- Store membership in global store (same as handleCreateHTTP) ---
+	if gs != nil {
+		gs.AddMembership(store.Membership{ //nolint:errcheck
+			CampfireID:      createReq.CampfireID,
+			TransportDir:    endpoint,
+			JoinProtocol:    createReq.JoinProtocol,
+			Role:            campfire.RoleFull,
+			JoinedAt:        store.NowNano(),
+			Threshold:       createReq.Threshold,
+			Description:     createReq.Description,
+			CreatorPubkey:   createReq.CreatorPubkey,
+			TransportType:   "p2p-http",
+			CampfirePrivKey: fmt.Sprintf("%x", privKeyBytes),
+		})
+		// Register the creator as a peer so checkMembership passes and
+		// joiners see the relay endpoint.
+		gs.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+			CampfireID:   createReq.CampfireID,
+			MemberPubkey: createReq.CreatorPubkey,
+			Endpoint:     endpoint,
+		})
+	}
+
+	// --- Register transport with the router ---
+	// Use the same pattern as reconstructFromGlobalStore.
+	st := gs
+	if st == nil {
+		// No global store: use an in-memory-only store.
+		var openErr error
+		st, openErr = store.Open(":memory:")
+		if openErr != nil {
+			log.Printf("handleCreateCampfire: cannot open in-memory store: %v", openErr)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		// Store membership for key lookup.
+		st.AddMembership(store.Membership{ //nolint:errcheck
+			CampfireID:      createReq.CampfireID,
+			TransportDir:    endpoint,
+			JoinProtocol:    createReq.JoinProtocol,
+			Role:            campfire.RoleFull,
+			JoinedAt:        store.NowNano(),
+			Threshold:       createReq.Threshold,
+			Description:     createReq.Description,
+			CreatorPubkey:   createReq.CreatorPubkey,
+			TransportType:   "p2p-http",
+			CampfirePrivKey: fmt.Sprintf("%x", privKeyBytes),
+		})
+	}
+
+	t := cfhttp.New("", st)
+	t.StartNoncePruner()
+	t.SetSelfInfo(createReq.CreatorPubkey, endpoint)
+
+	// Key provider reads from the store so subsequent join requests work.
+	capturedGS := st // capture for closure
+	t.SetKeyProvider(func(id string) ([]byte, []byte, error) {
+		m, merr := capturedGS.GetMembership(id)
+		if merr != nil || m == nil || m.CampfirePrivKey == "" {
+			return nil, nil, fmt.Errorf("campfire not found: %s", id)
+		}
+		pk, decErr := hex.DecodeString(m.CampfirePrivKey)
+		if decErr != nil || len(pk) != ed25519.PrivateKeySize {
+			return nil, nil, fmt.Errorf("invalid key for campfire: %s", id)
+		}
+		pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)
+		return pk, pub, nil
+	})
+
+	t.SetDeliveryModesProvider(func(string) []string {
+		return []string{campfire.DeliveryModePull, campfire.DeliveryModePush}
+	})
+
+	// Register without session ownership (no session token for this path).
+	r.register(createReq.CampfireID, t)
+
+	// --- Generate beacon ---
+	var beaconStr string
+	b, berr := beacon.New(
+		pubKey, privKey,
+		createReq.JoinProtocol, createReq.ReceptionRequirements,
+		beacon.TransportConfig{
+			Protocol: "p2p-http",
+			Config:   map[string]string{"endpoint": endpoint},
+		},
+		createReq.Description,
+	)
+	if berr == nil {
+		data, encErr := cfencoding.Marshal(b)
+		if encErr == nil {
+			beaconStr = "beacon:" + base64.StdEncoding.EncodeToString(data)
+		}
+	}
+
+	// --- Return response ---
+	resp := cfhttp.CreateCampfireResponse{
+		CampfireID:     createReq.CampfireID,
+		RelayX25519Pub: relayPubHex,
+		Beacon:         beaconStr,
+		Endpoint:       endpoint,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
+}
+
