@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -856,17 +857,28 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 	if m.router != nil {
 		t := cfhttp.New("", rl)
 		t.StartNoncePruner()
-		// Set the key provider once at session init so that repeated campfire
-		// creations within the same session do not overwrite it. The closure
-		// captures cfHome (constant for this session) and resolves the
-		// campfire-specific state on each call via the campfireID argument.
+		// Key provider: try local CBOR first (fast path for campfires created
+		// on this instance), then fall back to global aztable store (for
+		// campfires created on other instances in a multi-instance deployment).
 		fsT := fs.New(cfHome)
+		globalStore := m.router.GlobalStore()
 		t.SetKeyProvider(func(campfireID string) (privKey []byte, pubKey []byte, err error) {
-			state, err := fsT.ReadState(campfireID)
-			if err != nil {
-				return nil, nil, err
+			state, localErr := fsT.ReadState(campfireID)
+			if localErr == nil {
+				return state.PrivateKey, state.PublicKey, nil
 			}
-			return state.PrivateKey, state.PublicKey, nil
+			// Fall back to global store for cross-instance key resolution.
+			if globalStore != nil {
+				gm, gerr := globalStore.GetMembership(campfireID)
+				if gerr == nil && gm != nil && gm.CampfirePrivKey != "" {
+					pk, decErr := hex.DecodeString(gm.CampfirePrivKey)
+					if decErr == nil && len(pk) == ed25519.PrivateKeySize {
+						pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)
+						return pk, pub, nil
+					}
+				}
+			}
+			return nil, nil, localErr
 		})
 		// Set delivery modes provider so the join handler can validate push
 		// endpoint requests for HTTP-mode campfires (where membership.TransportDir
@@ -998,12 +1010,23 @@ func (m *SessionManager) getOrCreateOperator(token string) (*Session, error) {
 		t := cfhttp.New("", rl)
 		t.StartNoncePruner()
 		fsT := fs.New(cfHome)
+		globalStore := m.router.GlobalStore()
 		t.SetKeyProvider(func(campfireID string) (privKey []byte, pubKey []byte, err error) {
-			state, err := fsT.ReadState(campfireID)
-			if err != nil {
-				return nil, nil, err
+			state, localErr := fsT.ReadState(campfireID)
+			if localErr == nil {
+				return state.PrivateKey, state.PublicKey, nil
 			}
-			return state.PrivateKey, state.PublicKey, nil
+			if globalStore != nil {
+				gm, gerr := globalStore.GetMembership(campfireID)
+				if gerr == nil && gm != nil && gm.CampfirePrivKey != "" {
+					pk, decErr := hex.DecodeString(gm.CampfirePrivKey)
+					if decErr == nil && len(pk) == ed25519.PrivateKeySize {
+						pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)
+						return pk, pub, nil
+					}
+				}
+			}
+			return nil, nil, localErr
 		})
 		if m.conventionDispatcher != nil {
 			d := m.conventionDispatcher
