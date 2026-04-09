@@ -22,6 +22,17 @@ import (
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
+// routerNonceEntry records a seen request nonce and its expiry time for the
+// TransportRouter's per-router nonce deduplication store.
+type routerNonceEntry struct {
+	expiresAt time.Time
+}
+
+// routerNonceWindow is how long a nonce is retained in the TransportRouter's
+// nonce store. Matches the window used in pkg/transport/http for consistency.
+// We retain nonces for 2× the timestamp window to handle clock-skew edge cases.
+const routerNonceWindow = 2 * requestTimestampWindowCreate
+
 // TransportRouter maps campfire IDs to per-session HTTP transport instances.
 // When an external peer sends a request to /campfire/{id}/deliver (or sync,
 // poll, etc.), the router looks up which session owns that campfire and
@@ -36,6 +47,11 @@ type TransportRouter struct {
 	campfires        map[string]*cfhttp.Transport // campfireID → session's transport
 	transports       map[string]*cfhttp.Transport // session token → transport
 	sessionCampfires map[string][]string          // session token → owned campfire IDs
+
+	// nonceMu guards seenNonces independently of the router-global mu to avoid
+	// serializing nonce checks with campfire registration operations.
+	nonceMu    sync.Mutex
+	seenNonces map[string]routerNonceEntry // nonce → expiry; guards /campfire/create replays
 
 	// globalStore is a non-namespaced store for cross-instance campfire lookups.
 	// When a campfire isn't found in the local in-memory router, the global store
@@ -59,7 +75,35 @@ func NewTransportRouter() *TransportRouter {
 		campfires:        make(map[string]*cfhttp.Transport),
 		transports:       make(map[string]*cfhttp.Transport),
 		sessionCampfires: make(map[string][]string),
+		seenNonces:       make(map[string]routerNonceEntry),
 	}
+}
+
+// consumeNonce records a nonce as seen and returns true if it was new.
+// Returns false if the nonce has been seen before (replay attempt).
+// Nonces are pruned lazily on write; the caller is responsible for periodic
+// pruning via pruneNonces if long-lived operation without traffic is expected.
+func (r *TransportRouter) consumeNonce(nonce string) (accepted bool) {
+	r.nonceMu.Lock()
+	defer r.nonceMu.Unlock()
+
+	now := time.Now()
+
+	// Fast path: reject duplicates before pruning.
+	if _, seen := r.seenNonces[nonce]; seen {
+		return false
+	}
+
+	// Lazy prune: remove expired entries while holding the lock.
+	for k, e := range r.seenNonces {
+		if now.After(e.expiresAt) {
+			delete(r.seenNonces, k)
+		}
+	}
+
+	// Record nonce.
+	r.seenNonces[nonce] = routerNonceEntry{expiresAt: now.Add(routerNonceWindow)}
+	return true
 }
 
 // register is unexported to prevent direct use. Use RegisterForSession instead,
@@ -221,6 +265,12 @@ func (r *TransportRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// This endpoint has no campfire ID in the path — the campfire is being registered.
 	if path == "/campfire/create" && req.Method == http.MethodPost {
 		r.handleCreateCampfire(w, req)
+		return
+	}
+
+	// Intercept GET /campfire/relay-info — returns static X25519 pub key for ECDH.
+	if path == "/campfire/relay-info" && req.Method == http.MethodGet {
+		r.handleRelayInfo(w, req)
 		return
 	}
 
@@ -411,6 +461,13 @@ func (r *TransportRouter) handleCreateCampfire(w http.ResponseWriter, req *http.
 	if err := cfhttp.VerifyRequestSignature(senderHex, sigB64, nonce, timestamp, body); err != nil {
 		log.Printf("handleCreateCampfire: signature verification failed from %s: %v", senderHex[:min(8, len(senderHex))], err)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	// Check nonce uniqueness — reject replays of signed requests.
+	if !r.consumeNonce(nonce) {
+		log.Printf("handleCreateCampfire: duplicate nonce %s from %s", nonce, senderHex[:min(8, len(senderHex))])
+		http.Error(w, "replay detected", http.StatusUnauthorized)
 		return
 	}
 
@@ -605,6 +662,26 @@ func (r *TransportRouter) handleCreateCampfire(w http.ResponseWriter, req *http.
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
+}
+
+// handleRelayInfo handles GET /campfire/relay-info.
+// Returns the relay's static X25519 public key and endpoint so creators can
+// pre-encrypt campfire private keys for POST /campfire/create.
+func (r *TransportRouter) handleRelayInfo(w http.ResponseWriter, req *http.Request) {
+	r.mu.RLock()
+	staticKey := r.staticX25519Key
+	endpoint := r.selfEndpoint
+	r.mu.RUnlock()
+
+	resp := cfhttp.RelayInfoResponse{
+		Endpoint: endpoint,
+	}
+	if staticKey != nil {
+		resp.RelayX25519Pub = hex.EncodeToString(staticKey.PublicKey().Bytes())
+	}
+
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
