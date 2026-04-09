@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +37,7 @@ var lsCmd = &cobra.Command{
 			}
 			var entries []entry
 			for _, m := range memberships {
-				members, _ := fs.ForDir(m.TransportDir).ListMembers(m.CampfireID)
+				members, _ := listMembersByTransport(m, s)
 				threshold := m.Threshold
 				if threshold == 0 {
 					threshold = 1
@@ -67,7 +66,7 @@ var lsCmd = &cobra.Command{
 		}
 
 		for _, m := range memberships {
-			members, _ := fs.ForDir(m.TransportDir).ListMembers(m.CampfireID)
+			members, _ := listMembersByTransport(m, s)
 			idShort := m.CampfireID
 			if len(idShort) > 12 {
 				idShort = idShort[:12]
