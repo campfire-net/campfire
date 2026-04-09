@@ -95,6 +95,17 @@ func TestInitWithConfig_NoConfig(t *testing.T) {
 	// Use an empty directory as globalDir — no config.toml present.
 	globalDir := t.TempDir()
 
+	// Isolate from real config cascade: chdir to a temp dir so ancestor walk
+	// doesn't pick up .cf/config.toml files from the real working directory.
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) }) //nolint:errcheck
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
 	client, result, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
 	if err != nil {
 		t.Fatalf("InitWithConfig: %v", err)
@@ -162,6 +173,16 @@ file = "identity.json"
 // that the auto_join attempt is made and a warning is emitted.
 func TestInitWithConfig_AutoJoined(t *testing.T) {
 	globalDir := t.TempDir()
+
+	// Isolate from real config cascade.
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) }) //nolint:errcheck
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
 
 	// Use a well-formed hex campfire ID that won't be reachable.
 	// InitWithConfig should attempt auto-join, fail, and record a warning.
@@ -545,6 +566,16 @@ present_as = "`+configID+`"
 // store already has a membership record before InitWithConfig is called,
 // the auto-join entry is silently skipped without attempting a join.
 func TestInitWithConfig_AutoJoin_AlreadyMember_PreSeeded(t *testing.T) {
+	// Isolate from real config cascade.
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) }) //nolint:errcheck
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
 	_, _, baseDir := makeFilesystemBeaconString(t)
 
 	// Scan the transport dir to find the campfire ID.
