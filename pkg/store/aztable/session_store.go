@@ -44,6 +44,10 @@ type TokenEntryRecord struct {
 	IssuedAt         time.Time `json:"issued_at"`
 	Revoked          bool      `json:"revoked"`
 	GracePeriodUntil time.Time `json:"grace_period_until,omitempty"`
+	// Operator, when true, marks this as a forge-sk-/forge-tk- issued operator
+	// session token that has TTL=0 (no expiry). Persisted so cold-start validation
+	// can skip the TTL check without consulting the in-memory operatorSessionIndex.
+	Operator bool `json:"operator,omitempty"`
 }
 
 // NewSessionStore connects to Azure Table Storage using the given connection
@@ -89,6 +93,10 @@ func (ss *SessionStore) SaveTokenEntry(token string, entry TokenEntryRecord) err
 	if !entry.GracePeriodUntil.IsZero() {
 		gracePeriodNs = entry.GracePeriodUntil.UnixNano()
 	}
+	operator := int64(0)
+	if entry.Operator {
+		operator = 1
+	}
 	entity := map[string]any{
 		"PartitionKey":       "tokens",
 		"RowKey":             encodeKey(token),
@@ -97,6 +105,7 @@ func (ss *SessionStore) SaveTokenEntry(token string, entry TokenEntryRecord) err
 		"IssuedAtNs":         entry.IssuedAt.UnixNano(),
 		"Revoked":            revoked,
 		"GracePeriodUntilNs": gracePeriodNs,
+		"Operator":           operator,
 	}
 	return upsertEntity(context.Background(), ss.tokens, entity)
 }
@@ -137,6 +146,7 @@ func (ss *SessionStore) LoadAllTokenEntries() ([]TokenEntryRecord, error) {
 				IssuedAt:         time.Unix(0, toInt64(m["IssuedAtNs"])),
 				Revoked:          revoked,
 				GracePeriodUntil: gracePeriodUntil,
+				Operator:         toInt64(m["Operator"]) != 0,
 			})
 		}
 	}
@@ -220,6 +230,11 @@ func (ss *SessionStore) LoadAttestations(internalID string) ([]byte, bool, error
 // same storage account. The agentKey is the hex-encoded Ed25519 public key of
 // the operator identity, used as a scoping key so multiple operators can share
 // one storage account without conflicts.
+//
+// Uses insert-if-not-exists semantics: if another instance has already written
+// an ID for this agentKey, the existing ID is left untouched and no error is
+// returned. Callers should LoadAuditCampfireID after Save to determine which
+// ID actually won (compare-and-swap pattern for concurrent cold starts).
 func (ss *SessionStore) SaveAuditCampfireID(agentKey, campfireID string) error {
 	entity := map[string]any{
 		"PartitionKey": "audit",
@@ -227,7 +242,7 @@ func (ss *SessionStore) SaveAuditCampfireID(agentKey, campfireID string) error {
 		"AgentKey":     agentKey,
 		"CampfireID":   campfireID,
 	}
-	return upsertEntity(context.Background(), ss.identities, entity)
+	return insertEntity(context.Background(), ss.identities, entity)
 }
 
 // LoadAuditCampfireID returns the audit campfire ID previously saved for the

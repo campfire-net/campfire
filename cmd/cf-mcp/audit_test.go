@@ -16,9 +16,11 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
@@ -1195,6 +1197,160 @@ func TestAudit_ColdStart(t *testing.T) {
 // ---------------------------------------------------------------------------
 // TestAudit_HandleAuditReadsFromStore: handleAudit reads from store in HTTP mode
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// TestAudit_ConcurrentColdStart: concurrent cold starts converge on one ID
+// ---------------------------------------------------------------------------
+
+// fakeAuditSessionStore is a thread-safe in-memory implementation of
+// auditSessionStore used in tests. SaveAuditCampfireID uses insert-if-not-exists
+// semantics: only the first caller stores a value; subsequent callers with
+// different IDs are silently ignored (no-op), matching the cloud behaviour of
+// insertEntity.
+type fakeAuditSessionStore struct {
+	mu   sync.Mutex
+	data map[string]string // agentKey → campfireID
+}
+
+func newFakeAuditSessionStore() *fakeAuditSessionStore {
+	return &fakeAuditSessionStore{data: make(map[string]string)}
+}
+
+func (f *fakeAuditSessionStore) SaveAuditCampfireID(agentKey, campfireID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.data[agentKey]; !exists {
+		f.data[agentKey] = campfireID
+	}
+	// If already exists, silently ignore (insert-if-not-exists semantics).
+	return nil
+}
+
+func (f *fakeAuditSessionStore) LoadAuditCampfireID(agentKey string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.data[agentKey]
+	return id, ok, nil
+}
+
+// TestAudit_ConcurrentColdStart simulates two instances both missing levels 1 and 2
+// of the three-level lookup and racing to create a new audit campfire. With the
+// check-after-write fix both instances must converge on the same campfire ID.
+func TestAudit_ConcurrentColdStart(t *testing.T) {
+	// Shared cloud store: insert-if-not-exists; first writer wins.
+	cloudStore := newFakeAuditSessionStore()
+
+	// Build two independent servers sharing only the cloud store.
+	// Each has its own cfHome, its own SQLite store, and its own identity.
+	// They use the same agentKey (same shared operator identity) to simulate
+	// two instances of the same deployed service.
+	sharedIdentityDir := t.TempDir()
+
+	// Create the shared identity once.
+	sharedSrv := &server{
+		cfHome:        sharedIdentityDir,
+		beaconDir:     t.TempDir(),
+		cfHomeExplicit: true,
+	}
+	doInit(t, sharedSrv)
+
+	// Helper: build a server that shares the identity dir but has its own local
+	// cfHome for the audit campfire file. This simulates two fresh instances
+	// that share the same operator identity (same agent key) but have separate
+	// local filesystems.
+	makeInstance := func(name string) (*server, store.Store) {
+		instanceHome := t.TempDir()
+
+		// Copy the identity file into the instance's cfHome so each instance
+		// loads the same agent key.
+		identityData, err := os.ReadFile(sharedIdentityDir + "/identity.json")
+		if err != nil {
+			t.Fatalf("%s: reading shared identity: %v", name, err)
+		}
+		if err := os.WriteFile(instanceHome+"/identity.json", identityData, 0600); err != nil {
+			t.Fatalf("%s: writing identity to instance dir: %v", name, err)
+		}
+
+		rawSt, err := store.Open(store.StorePath(instanceHome))
+		if err != nil {
+			t.Fatalf("%s: opening store: %v", name, err)
+		}
+		t.Cleanup(func() { rawSt.Close() })
+
+		srv := &server{
+			cfHome:        instanceHome,
+			beaconDir:     t.TempDir(),
+			cfHomeExplicit: true,
+			st:            rawSt,
+		}
+		return srv, rawSt
+	}
+
+	srv1, st1 := makeInstance("instance-1")
+	srv2, st2 := makeInstance("instance-2")
+
+	// Load the shared agent identity for both instances.
+	agentID, err := identity.Load(sharedIdentityDir + "/identity.json")
+	if err != nil {
+		t.Fatalf("loading shared identity: %v", err)
+	}
+
+	// Run both instances concurrently — both are in a cold-start state:
+	// no local file, nothing in cloud yet. They both race to create and
+	// register the audit campfire.
+	type result struct {
+		id  string
+		err error
+	}
+	ch1 := make(chan result, 1)
+	ch2 := make(chan result, 1)
+
+	go func() {
+		id, err := loadOrCreateAuditCampfireWithStore(srv1, agentID, st1, cloudStore)
+		ch1 <- result{id, err}
+	}()
+	go func() {
+		id, err := loadOrCreateAuditCampfireWithStore(srv2, agentID, st2, cloudStore)
+		ch2 <- result{id, err}
+	}()
+
+	r1 := <-ch1
+	r2 := <-ch2
+
+	if r1.err != nil {
+		t.Fatalf("instance 1 loadOrCreateAuditCampfire error: %v", r1.err)
+	}
+	if r2.err != nil {
+		t.Fatalf("instance 2 loadOrCreateAuditCampfire error: %v", r2.err)
+	}
+
+	if r1.id == "" {
+		t.Fatal("instance 1 returned empty audit campfire ID")
+	}
+	if r2.id == "" {
+		t.Fatal("instance 2 returned empty audit campfire ID")
+	}
+
+	// Both instances must converge on the same campfire ID — the one the first
+	// writer wrote to the cloud store. Without the check-after-write fix each
+	// instance would return its own locally created ID, causing divergence.
+	if r1.id != r2.id {
+		t.Errorf("concurrent cold starts diverged: instance1=%s instance2=%s; "+
+			"check-after-write race fix not working", r1.id, r2.id)
+	}
+
+	// The winning ID must match what's in the cloud store.
+	canonicalID, ok, err := cloudStore.LoadAuditCampfireID(agentID.PublicKeyHex())
+	if err != nil {
+		t.Fatalf("LoadAuditCampfireID from cloud store: %v", err)
+	}
+	if !ok || canonicalID == "" {
+		t.Fatal("cloud store has no audit campfire ID after both instances ran")
+	}
+	if r1.id != canonicalID {
+		t.Errorf("instance result %s differs from cloud canonical ID %s", r1.id, canonicalID)
+	}
+}
 
 // TestAudit_HandleAuditReadsFromStore verifies that in HTTP mode (httpTransport != nil),
 // handleAudit reads audit messages from the store (st.ListMessages) rather than

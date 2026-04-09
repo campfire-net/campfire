@@ -454,6 +454,14 @@ func computeMerkleRoot(entries []AuditEntry) string {
 // auditCampfireIDFile is the filename within cfHome where the audit campfire ID is persisted.
 const auditCampfireIDFile = "audit-campfire-id"
 
+// auditSessionStore is the interface used by loadOrCreateAuditCampfire for
+// cloud persistence of the audit campfire ID. The real implementation is
+// aztable.SessionStore; tests inject a fake in-memory implementation.
+type auditSessionStore interface {
+	SaveAuditCampfireID(agentKey, campfireID string) error
+	LoadAuditCampfireID(agentKey string) (string, bool, error)
+}
+
 // loadOrCreateAuditCampfire loads the audit campfire ID using a three-level lookup:
 //  1. Local file (cfHome/audit-campfire-id) — fast path for the same instance.
 //  2. Cloud SessionStore (Azure Table Storage) — for cold starts on a new instance.
@@ -462,7 +470,21 @@ const auditCampfireIDFile = "audit-campfire-id"
 // When a new campfire is created, it is also registered in the global store
 // (if available) with CampfirePrivKey set, so that other instances can reconstruct
 // the campfire state and post audit messages without holding local CBOR.
+//
+// Concurrent cold start safety: SaveAuditCampfireID uses insert-if-not-exists
+// semantics. After saving, the ID is loaded back to determine which instance
+// won the race. If another instance wrote first, the winner's ID is used and
+// the locally created campfire is abandoned.
 func loadOrCreateAuditCampfire(srv *server, agentID *identity.Identity, st store.Store) (string, error) {
+	return loadOrCreateAuditCampfireWithStore(srv, agentID, st, sessionStoreFrom(srv))
+}
+
+// loadOrCreateAuditCampfireWithStore is the implementation of
+// loadOrCreateAuditCampfire that accepts an explicit auditSessionStore. This
+// allows tests to inject a fake in-memory store without needing Azure Table
+// Storage. Production code calls loadOrCreateAuditCampfire which resolves the
+// store from the server.
+func loadOrCreateAuditCampfireWithStore(srv *server, agentID *identity.Identity, st store.Store, ss auditSessionStore) (string, error) {
 	idPath := srv.cfHome + "/" + auditCampfireIDFile
 
 	// Level 1: local file.
@@ -474,7 +496,7 @@ func loadOrCreateAuditCampfire(srv *server, agentID *identity.Identity, st store
 	}
 
 	// Level 2: cloud SessionStore.
-	if ss := sessionStoreFrom(srv); ss != nil {
+	if ss != nil {
 		if id, ok, err := ss.LoadAuditCampfireID(agentID.PublicKeyHex()); err == nil && ok && id != "" {
 			// Found in cloud — write to local file so subsequent lookups are fast.
 			_ = os.WriteFile(idPath, []byte(id), 0600)
@@ -516,12 +538,27 @@ func loadOrCreateAuditCampfire(srv *server, agentID *identity.Identity, st store
 	campfireID := cf.PublicKeyHex()
 	campfirePrivKeyHex := fmt.Sprintf("%x", cf.PrivateKey)
 
-	// Persist to local file.
+	// Persist to local file (tentative — may be overwritten below if we lose the race).
 	_ = os.WriteFile(idPath, []byte(campfireID), 0600)
 
-	// Persist to cloud SessionStore so other instances can find the campfire.
-	if ss := sessionStoreFrom(srv); ss != nil {
-		_ = ss.SaveAuditCampfireID(agentID.PublicKeyHex(), campfireID)
+	// Persist to cloud SessionStore with insert-if-not-exists semantics.
+	// If another instance already wrote an ID, the insert is a no-op.
+	// We then load back to find out which ID actually won the race.
+	if ss != nil {
+		if saveErr := ss.SaveAuditCampfireID(agentID.PublicKeyHex(), campfireID); saveErr != nil {
+			// Save failed (network error, etc.) — continue with the locally created ID.
+			// A subsequent cold start will retry the cloud lookup.
+			_ = saveErr
+		} else {
+			// Verify we won the race: load back the canonical ID from cloud.
+			if canonicalID, ok, loadErr := ss.LoadAuditCampfireID(agentID.PublicKeyHex()); loadErr == nil && ok && canonicalID != "" && canonicalID != campfireID {
+				// Another instance won the race — use the canonical ID and update local file.
+				campfireID = canonicalID
+				_ = os.WriteFile(idPath, []byte(campfireID), 0600)
+				// Return early: the winning instance already registered in global store.
+				return campfireID, nil
+			}
+		}
 	}
 
 	// Register in global store with CampfirePrivKey so other instances can
@@ -543,12 +580,10 @@ func loadOrCreateAuditCampfire(srv *server, agentID *identity.Identity, st store
 	return campfireID, nil
 }
 
-// sessionStoreFrom returns the SessionStore from srv, or nil if not available.
-// The SessionStore is only present in hosted HTTP mode with Azure Table Storage.
-func sessionStoreFrom(srv *server) interface {
-	SaveAuditCampfireID(agentKey, campfireID string) error
-	LoadAuditCampfireID(agentKey string) (string, bool, error)
-} {
+// sessionStoreFrom returns the SessionStore from srv as an auditSessionStore,
+// or nil if not available. The SessionStore is only present in hosted HTTP
+// mode with Azure Table Storage.
+func sessionStoreFrom(srv *server) auditSessionStore {
 	if srv == nil || srv.sessManager == nil {
 		return nil
 	}
