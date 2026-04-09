@@ -295,6 +295,16 @@ func (c *Client) joinP2PHTTP(campfireID string, t *P2PHTTPTransport) (*JoinResul
 		}
 	}
 
+	// Always store the relay (--via endpoint) as a peer so syncFromHTTPPeers
+	// can pull messages from it. Serverless relays don't return themselves in
+	// the peer list (no SelfInfo), so the joiner would have zero sync targets
+	// without this. Uses the campfire pubkey as the member identifier.
+	c.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:   campfireID,
+		MemberPubkey: fmt.Sprintf("%x", result.CampfirePubKey),
+		Endpoint:     t.PeerEndpoint,
+	})
+
 	// Store threshold DKG share from the join response (threshold>1 only).
 	// The share is encrypted by the admitting node and decrypted during cfhttp.Join.
 	if len(result.ThresholdShareData) > 0 && result.MyParticipantID > 0 {
