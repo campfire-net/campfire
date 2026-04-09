@@ -39,6 +39,7 @@ var joinCmd = &cobra.Command{
 		joinListen, _ := cmd.Flags().GetString("listen")
 		joinTLSCert, _ := cmd.Flags().GetString("tls-cert")
 		joinTLSKey, _ := cmd.Flags().GetString("tls-key")
+		joinInviteCode, _ := cmd.Flags().GetString("invite-code")
 		joinGitHubRepo, _ := cmd.Flags().GetString("github-repo")
 		joinGitHubTokenEnv, _ := cmd.Flags().GetString("github-token-env")
 		joinGitHubBaseURL, _ := cmd.Flags().GetString("github-base-url")
@@ -79,7 +80,7 @@ var joinCmd = &cobra.Command{
 
 		// Route based on --via flag (p2p-http), GitHub Issue URL, or filesystem (default).
 		if joinVia != "" {
-			return joinP2PHTTP(campfireID, agentID, s, joinVia, joinListen, joinTLSCert, joinTLSKey)
+			return joinP2PHTTP(campfireID, agentID, s, joinVia, joinListen, joinTLSCert, joinTLSKey, joinInviteCode)
 		}
 		if strings.HasPrefix(campfireID, "https://github.com/") {
 			return joinGitHub(campfireID, agentID, s, joinGitHubTokenEnv, joinGitHubBaseURL, joinGitHubRepo)
@@ -113,7 +114,7 @@ func joinFromBeacon(parsed *naming.URI, agentID *identity.Identity, s store.Stor
 		if !ok || via == "" {
 			return fmt.Errorf("beacon p2p-http transport missing 'url' config key")
 		}
-		return joinP2PHTTP(campfireID, agentID, s, via, listen, tlsCert, tlsKey)
+		return joinP2PHTTP(campfireID, agentID, s, via, listen, tlsCert, tlsKey, "")
 	case "github":
 		// Transport hint provides repo info; delegate to GitHub join.
 		if githubRepo == "" {
@@ -303,7 +304,7 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 	return nil
 }
 
-func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, via, listen, tlsCert, tlsKey string) error {
+func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, via, listen, tlsCert, tlsKey, inviteCode string) error {
 	if (tlsCert == "") != (tlsKey == "") {
 		return fmt.Errorf("--tls-cert and --tls-key must both be provided or both omitted")
 	}
@@ -316,7 +317,11 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	}
 
 	// Send join request to the via endpoint.
-	result, err := cfhttp.Join(via, campfireID, agentID, myEndpoint)
+	var joinOpts []cfhttp.JoinOptions
+	if inviteCode != "" {
+		joinOpts = append(joinOpts, cfhttp.JoinOptions{InviteCode: inviteCode})
+	}
+	result, err := cfhttp.Join(via, campfireID, agentID, myEndpoint, joinOpts...)
 	if err != nil {
 		return fmt.Errorf("joining campfire via %s: %w", via, err)
 	}
@@ -741,6 +746,7 @@ func projectBeaconDir() string {
 
 func init() {
 	joinCmd.Flags().String("via", "", "peer HTTP endpoint to join through (enables p2p-http transport)")
+	joinCmd.Flags().String("invite-code", "", "invite code for joining invite-only campfires via p2p-http")
 	joinCmd.Flags().String("listen", "", "HTTP listen address for p2p-http transport (e.g. :9002)")
 	joinCmd.Flags().String("tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint advertisement")
 	joinCmd.Flags().String("tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")

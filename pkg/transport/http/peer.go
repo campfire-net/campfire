@@ -188,7 +188,13 @@ type JoinResult struct {
 
 // Join sends a join request to the given peer endpoint and returns the
 // campfire state (including the decrypted private key for threshold=1).
-func Join(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint string) (*JoinResult, error) {
+// JoinOptions holds optional parameters for the Join function.
+type JoinOptions struct {
+	// InviteCode is an optional invite code for joining invite-only campfires.
+	InviteCode string
+}
+
+func Join(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint string, opts ...JoinOptions) (*JoinResult, error) {
 	// Generate ephemeral X25519 keypair for key exchange.
 	ephemPriv, err := generateX25519Key()
 	if err != nil {
@@ -200,6 +206,9 @@ func Join(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint str
 		JoinerPubkey:       id.PublicKeyHex(),
 		JoinerEndpoint:     myEndpoint,
 		EphemeralX25519Pub: fmt.Sprintf("%x", ephemPub.Bytes()),
+	}
+	if len(opts) > 0 && opts[0].InviteCode != "" {
+		joinReq.InviteCode = opts[0].InviteCode
 	}
 	bodyBytes, err := json.Marshal(joinReq)
 	if err != nil {

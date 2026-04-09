@@ -24,6 +24,10 @@ type JoinRequest struct {
 	// Required. The admitting member uses this to derive a shared secret and encrypt the
 	// campfire private key (threshold=1) or DKG share (threshold>1).
 	EphemeralX25519Pub string `json:"ephemeral_x25519_pub"`
+	// InviteCode is an optional invite code for joining invite-only campfires.
+	// When provided, the server validates and consumes the invite, admitting
+	// the joiner without requiring pre-admission in the peer list.
+	InviteCode string `json:"invite_code,omitempty"`
 }
 
 // PeerEntry is one member's pubkey + endpoint in the JoinResponse.
@@ -148,8 +152,10 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 	}
 
 	// Enforce invite-only protocol: reject unadmitted joiners server-side.
-	// The joiner must already be in the peer list to be admitted.
-	// (Invite-only campfires require the creator to pre-add the joiner's pubkey.)
+	// Three ways to pass the gate:
+	//   1. Joiner is already pre-admitted (pubkey in the peer list)
+	//   2. Joiner is the transport node itself (self-join)
+	//   3. Joiner provides a valid invite code
 	if membership.JoinProtocol == "invite-only" {
 		admitted := false
 		if peers, err := h.store.ListPeerEndpoints(campfireID); err == nil {
@@ -164,6 +170,12 @@ func (h *handler) handleJoin(w http.ResponseWriter, r *http.Request, campfireID,
 		selfPubHex, _ := h.transport.SelfInfo()
 		if senderHex == selfPubHex {
 			admitted = true
+		}
+		// Accept a valid invite code as an alternative to pre-admission.
+		if !admitted && req.InviteCode != "" {
+			if _, invErr := h.store.ValidateAndUseInvite(campfireID, req.InviteCode); invErr == nil {
+				admitted = true
+			}
 		}
 		if !admitted {
 			// Clean up any stale peer endpoint record for the rejected joiner.
