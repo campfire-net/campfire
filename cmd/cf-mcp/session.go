@@ -870,12 +870,16 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 			// Fall back to global store for cross-instance key resolution.
 			if globalStore != nil {
 				gm, gerr := globalStore.GetMembership(campfireID)
-				if gerr == nil && gm != nil && gm.CampfirePrivKey != "" {
+				if gerr != nil {
+					return nil, nil, fmt.Errorf("key lookup %s: local: %w, global store: %v", campfireID, localErr, gerr)
+				}
+				if gm != nil && gm.CampfirePrivKey != "" {
 					pk, decErr := hex.DecodeString(gm.CampfirePrivKey)
-					if decErr == nil && len(pk) == ed25519.PrivateKeySize {
-						pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)
-						return pk, pub, nil
+					if decErr != nil || len(pk) != ed25519.PrivateKeySize {
+						return nil, nil, fmt.Errorf("key lookup %s: global store has invalid key (decode: %v, len: %d)", campfireID, decErr, len(pk))
 					}
+					pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)
+					return pk, pub, nil
 				}
 			}
 			return nil, nil, localErr
@@ -1018,12 +1022,16 @@ func (m *SessionManager) getOrCreateOperator(token string) (*Session, error) {
 			}
 			if globalStore != nil {
 				gm, gerr := globalStore.GetMembership(campfireID)
-				if gerr == nil && gm != nil && gm.CampfirePrivKey != "" {
+				if gerr != nil {
+					return nil, nil, fmt.Errorf("key lookup %s: local: %w, global store: %v", campfireID, localErr, gerr)
+				}
+				if gm != nil && gm.CampfirePrivKey != "" {
 					pk, decErr := hex.DecodeString(gm.CampfirePrivKey)
-					if decErr == nil && len(pk) == ed25519.PrivateKeySize {
-						pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)
-						return pk, pub, nil
+					if decErr != nil || len(pk) != ed25519.PrivateKeySize {
+						return nil, nil, fmt.Errorf("key lookup %s: global store has invalid key (decode: %v, len: %d)", campfireID, decErr, len(pk))
 					}
+					pub := ed25519.PrivateKey(pk).Public().(ed25519.PublicKey)
+					return pk, pub, nil
 				}
 			}
 			return nil, nil, localErr

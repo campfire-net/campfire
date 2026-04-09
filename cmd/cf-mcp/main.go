@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -3006,26 +3007,39 @@ func (s *server) handleDiscover(id interface{}, _ map[string]interface{}) jsonRP
 	// global Azure Table Storage store. A campfire created on instance A is
 	// invisible to instance B's local beacon directory, so we enumerate global
 	// store memberships and add any campfire not already covered by a local beacon.
+	//
+	// Security: only include campfires where CreatorPubkey matches the session's
+	// agent identity. Without this filter, ListMemberships returns all tenants'
+	// campfires — an information disclosure across tenant boundaries.
 	if s.transportRouter != nil {
 		if gs := s.transportRouter.GlobalStore(); gs != nil {
-			if memberships, listErr := gs.ListMemberships(); listErr == nil {
-				for _, m := range memberships {
-					if seen[m.CampfireID] {
-						continue
+			agentID, idErr := identity.Load(s.identityPath())
+			if idErr == nil {
+				agentPubHex := agentID.PublicKeyHex()
+				if memberships, listErr := gs.ListMemberships(); listErr == nil {
+					for _, m := range memberships {
+						if seen[m.CampfireID] {
+							continue
+						}
+						if m.CreatorPubkey != agentPubHex {
+							continue
+						}
+						seen[m.CampfireID] = true
+						transport := m.TransportType
+						if transport == "" {
+							transport = "p2p-http"
+						}
+						entries = append(entries, entry{
+							CampfireID:            m.CampfireID,
+							JoinProtocol:          m.JoinProtocol,
+							ReceptionRequirements: []string{},
+							Transport:             transport,
+							Description:           m.Description,
+							SignatureValid:        false, // synthesized from store, no beacon signature
+						})
 					}
-					seen[m.CampfireID] = true
-					transport := m.TransportType
-					if transport == "" {
-						transport = "p2p-http"
-					}
-					entries = append(entries, entry{
-						CampfireID:            m.CampfireID,
-						JoinProtocol:          m.JoinProtocol,
-						ReceptionRequirements: []string{},
-						Transport:             transport,
-						Description:           m.Description,
-						SignatureValid:        false, // synthesized from store, no beacon signature
-					})
+				} else {
+					fmt.Printf("discover: ListMemberships: %v\n", listErr)
 				}
 			}
 		}
@@ -3812,8 +3826,8 @@ func (s *server) handleAudit(id interface{}, params map[string]interface{}) json
 				if seqRaw, ok := entry["sequence"]; ok {
 					switch v := seqRaw.(type) {
 					case json.Number:
-						if n, err2 := v.Int64(); err2 == nil && n > 0 {
-							sequences = append(sequences, uint64(n))
+						if n, err2 := strconv.ParseUint(v.String(), 10, 64); err2 == nil && n > 0 {
+							sequences = append(sequences, n)
 						}
 					case float64:
 						if v > 0 {
