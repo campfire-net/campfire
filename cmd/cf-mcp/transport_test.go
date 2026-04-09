@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -635,5 +636,60 @@ func TestTransport_MuxServesTransportAndMCP(t *testing.T) {
 
 	if resp2.StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 for unknown campfire, got %d", resp2.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: Unregister stops the nonce pruner goroutine (no goroutine leak)
+// ---------------------------------------------------------------------------
+
+// TestTransportRouter_UnregisterStopsNoncePruner verifies that Unregister
+// signals the transport's background nonce pruner goroutine to exit.
+// The done condition: goroutine count does not grow after Register+StartNoncePruner
+// followed by Unregister.
+func TestTransportRouter_UnregisterStopsNoncePruner(t *testing.T) {
+	router := NewTransportRouter()
+
+	st, err := store.Open(store.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	campfireID := "test-campfire-nonce-pruner"
+
+	// Record goroutine baseline before the pruner is started.
+	runtime.GC()
+	time.Sleep(10 * time.Millisecond)
+	before := runtime.NumGoroutine()
+
+	// Create a transport, start its nonce pruner, register it.
+	transport := cfhttp.New("", st)
+	transport.StartNoncePruner()
+	router.register(campfireID, transport)
+
+	// Give the goroutine a moment to start.
+	time.Sleep(10 * time.Millisecond)
+	during := runtime.NumGoroutine()
+	if during <= before {
+		t.Logf("goroutine count did not increase (before=%d during=%d); pruner may have started already", before, during)
+	}
+
+	// Unregister — this must stop the nonce pruner goroutine.
+	router.Unregister(campfireID)
+
+	// Allow the goroutine to exit.
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+	after := runtime.NumGoroutine()
+
+	// After unregister the goroutine count should be back to baseline (±1 slack
+	// for unrelated background goroutines that may start/stop during the test).
+	const maxGrowth = 1
+	growth := after - before
+	if growth > maxGrowth {
+		t.Errorf("goroutine count grew by %d after Unregister (before=%d after=%d); "+
+			"nonce pruner goroutine was not stopped — fix: call t.StopNoncePruner() in Unregister",
+			growth, before, after)
 	}
 }
