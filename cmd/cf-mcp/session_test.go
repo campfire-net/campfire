@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/campfire-net/campfire/pkg/store/aztable"
 )
 
 // ---------------------------------------------------------------------------
@@ -1953,5 +1955,88 @@ func TestSession_OperatorSessionSurvivesReaper(t *testing.T) {
 	// Operator session must still be present in the sync.Map.
 	if _, ok := m.sessions.Load(operatorSess.internalID); !ok {
 		t.Error("operator (durable) session was removed from the session map by the reaper — must survive")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: revoked operator sessions are cleaned from m.sessions
+// ---------------------------------------------------------------------------
+
+// stubRevocationLoader is a test double for revocationLoader that returns a
+// fixed set of token entries, simulating what a cloud store would return.
+type stubRevocationLoader struct {
+	entries []aztable.TokenEntryRecord
+}
+
+func (s *stubRevocationLoader) LoadAllTokenEntries() ([]aztable.TokenEntryRecord, error) {
+	return s.entries, nil
+}
+
+// TestSession_RevokedOperatorSessionCleaned verifies that after
+// refreshRevocationsFromCloud marks a token revoked (because the cloud store
+// returns Revoked=true), the corresponding Session is closed and removed from
+// m.sessions. A revoked durable session must not remain reapable.
+func TestSession_RevokedOperatorSessionCleaned(t *testing.T) {
+	dir := t.TempDir()
+	m := &SessionManager{
+		sessionsDir: dir,
+		stopCh:      make(chan struct{}),
+		maxSessions: defaultMaxSessions,
+	}
+	m.registry = newTokenRegistry()
+	t.Cleanup(m.Stop)
+
+	// Issue a token and create an operator (durable) session for it.
+	token, err := m.issueToken()
+	if err != nil {
+		t.Fatalf("issueToken: %v", err)
+	}
+	sess, err := m.getOrCreateOperator(token)
+	if err != nil {
+		t.Fatalf("getOrCreateOperator: %v", err)
+	}
+	if !sess.durable {
+		t.Fatal("operator session must be durable")
+	}
+
+	// Confirm the session is in the map before revocation.
+	if _, ok := m.sessions.Load(sess.internalID); !ok {
+		t.Fatal("session must be in m.sessions before revocation")
+	}
+
+	// Capture the internalID from the registry.
+	m.registry.mu.Lock()
+	local := m.registry.tokens[token]
+	m.registry.mu.Unlock()
+	if local == nil {
+		t.Fatal("token not found in registry")
+	}
+
+	// Wire a stub revocation loader that reports the token as revoked.
+	m.revocationStore = &stubRevocationLoader{
+		entries: []aztable.TokenEntryRecord{
+			{
+				Token:      token,
+				InternalID: local.internalID,
+				IssuedAt:   local.issuedAt,
+				Revoked:    true,
+			},
+		},
+	}
+
+	// Run the refresh — this should mark the token revoked and evict the session.
+	m.refreshRevocationsFromCloud()
+
+	// Session must no longer be in m.sessions.
+	if _, ok := m.sessions.Load(sess.internalID); ok {
+		t.Error("revoked operator session was not removed from m.sessions by refreshRevocationsFromCloud")
+	}
+
+	// The token must be marked revoked in the registry.
+	m.registry.mu.Lock()
+	entry := m.registry.tokens[token]
+	m.registry.mu.Unlock()
+	if entry == nil || !entry.revoked {
+		t.Error("token must be marked revoked in the registry after refreshRevocationsFromCloud")
 	}
 }

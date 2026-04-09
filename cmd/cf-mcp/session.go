@@ -530,7 +530,7 @@ type SessionManager struct {
 	// sessionStore, when non-nil, persists token registry entries and session
 	// identity key material to Azure Table Storage so they survive instance hops.
 	sessionStore *aztable.SessionStore
-	// revocationLoader, when non-nil, is used by refreshRevocationsFromCloud to
+	// revocationStore, when non-nil, is used by refreshRevocationsFromCloud to
 	// fetch token revocation state.  Set alongside sessionStore by UseSessionStore;
 	// may be overridden independently in tests.
 	revocationStore revocationLoader
