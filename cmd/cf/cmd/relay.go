@@ -19,6 +19,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
@@ -31,7 +32,7 @@ import (
 //   - stores relay as peer endpoint (keyed by campfire pubkey)
 //
 // Returns the beacon string from the relay response (may be empty on older relays).
-func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, relayURL, description string) (beaconStr string, relayEndpoint string, err error) {
+func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, baseDir, relayURL, description string) (beaconStr string, relayEndpoint string, err error) {
 	campfireID := cf.PublicKeyHex()
 
 	// Build relay-agnostic campfire descriptor.
@@ -59,16 +60,24 @@ func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.
 		effectiveEndpoint = relayURL
 	}
 
-	// Record p2p-http membership in local store.
-	stateDir := "" // no local CBOR state for relay-registered campfires
+	// Store campfire state locally so cf send can sign provenance hops.
+	// The relay has an encrypted copy of the private key, but the creator
+	// needs the plaintext locally for message signing.
+	transport := fs.New(baseDir)
+	if err := transport.Init(cf); err != nil {
+		return "", "", fmt.Errorf("storing campfire state locally: %w", err)
+	}
+
+	// Record p2p-http membership in local store with the local transport dir.
 	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
-		Store: s,
+		FSTransport: transport,
+		Store:       s,
 	}, admission.AdmissionRequest{
 		CampfireID:      campfireID,
 		MemberPubKeyHex: agentID.PublicKeyHex(),
 		Role:            store.PeerRoleCreator,
 		JoinProtocol:    cf.JoinProtocol,
-		TransportDir:    stateDir,
+		TransportDir:    transport.CampfireDir(campfireID),
 		TransportType:   "p2p-http",
 		Description:     description,
 	}); err != nil {
@@ -77,11 +86,13 @@ func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.
 
 	// Store relay as peer endpoint (keyed by campfire pubkey so syncFromHTTPPeers
 	// can find it — same convention as joinP2PHTTP).
-	s.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+	if err := s.UpsertPeerEndpoint(store.PeerEndpoint{
 		CampfireID:   campfireID,
 		MemberPubkey: campfireID, // campfire pubkey as member identifier for relay
 		Endpoint:     effectiveEndpoint,
-	})
+	}); err != nil {
+		return "", "", fmt.Errorf("storing relay peer endpoint: %w", err)
+	}
 
 	return resp.Beacon, effectiveEndpoint, nil
 }

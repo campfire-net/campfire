@@ -27,11 +27,13 @@ import (
 var randRead = rand.Read
 
 
-// httpClient uses newSSRFSafeTransport() to re-validate resolved IPs at
-// connection time, closing the DNS-rebinding TOCTOU window.
+// httpClient is used for all peer-to-peer HTTP operations (deliver, sync, join,
+// poll). SSRF protection is applied at the endpoint acceptance layer
+// (validateJoinerEndpoint) when peer endpoints are stored — not at every HTTP
+// call. This allows operator-configured endpoints (--via, --relay) including
+// loopback addresses for local development.
 var httpClient = &http.Client{
-	Timeout:   30 * time.Second,
-	Transport: newSSRFSafeTransport(),
+	Timeout: 30 * time.Second,
 }
 
 // OverrideHTTPClientForTest replaces the package-level HTTP client.
@@ -494,6 +496,11 @@ func Poll(endpoint, campfireID string, cursor int64, timeoutSecs int, id *identi
 	}
 }
 
+// relayClient is a standard HTTP client for operator-configured relay URLs.
+// Unlike httpClient, it does not apply SSRF restrictions because relay URLs
+// are trusted operator input (--relay flag or config), not peer-supplied.
+var relayClient = &http.Client{Timeout: 30 * time.Second}
+
 // FetchRelayInfo retrieves the relay's static X25519 public key and endpoint
 // from GET <relayURL>/campfire/relay-info. Creators call this before
 // POST /campfire/create to discover the relay's static pub key for ECDH.
@@ -504,7 +511,7 @@ func FetchRelayInfo(relayURL string) (*RelayInfoResponse, error) {
 		return nil, fmt.Errorf("building relay-info request: %w", err)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := relayClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching relay info from %s: %w", url, err)
 	}
@@ -592,7 +599,7 @@ func RegisterOnRelay(relayURL string, cf *CampfireDescriptor, agentID *AgentDesc
 	req.Header.Set("Content-Type", "application/json")
 	signRequestWithKey(req, agentID.PublicKeyHex, agentID.PrivateKey, bodyBytes)
 
-	resp, err := httpClient.Do(req)
+	resp, err := relayClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("posting to %s: %w", url, err)
 	}

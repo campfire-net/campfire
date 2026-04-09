@@ -521,15 +521,23 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 		}
 		cfState = *state
 	} else {
-		// Standard P2P HTTP path: flat .cbor file alongside the membership.
+		// Standard P2P HTTP path: try fs.Transport layout (campfire.cbor) first,
+		// then flat layout ({campfireID}.cbor) for backwards compatibility.
 		transportDir, err := sanitizeTransportDir(m.TransportDir)
 		if err != nil {
 			return nil, fmt.Errorf("invalid transport dir: %w", err)
 		}
-		statePath := filepath.Join(transportDir, req.CampfireID+".cbor")
+		// fs.Transport layout: {TransportDir}/campfire.cbor (used by relay create
+		// and filesystem create — TransportDir is the campfire-specific directory).
+		statePath := filepath.Join(transportDir, "campfire.cbor")
 		stateData, err := os.ReadFile(statePath)
 		if err != nil {
-			return nil, fmt.Errorf("reading campfire state: %w", err)
+			// Flat layout fallback: {TransportDir}/{campfireID}.cbor
+			statePath = filepath.Join(transportDir, req.CampfireID+".cbor")
+			stateData, err = os.ReadFile(statePath)
+			if err != nil {
+				return nil, fmt.Errorf("reading campfire state: %w", err)
+			}
 		}
 		if err := cfencoding.Unmarshal(stateData, &cfState); err != nil {
 			return nil, fmt.Errorf("decoding campfire state: %w", err)

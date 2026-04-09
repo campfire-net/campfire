@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -5018,6 +5019,15 @@ func main() {
 			srv.sessManager = sm
 			srv.transportRouter = router
 			srv.operatorSessionIdx = newOperatorSessionIndex()
+
+			// Generate a static X25519 key for relay ECDH so creators can
+			// register campfires via POST /campfire/create.
+			x25519Key, err := ecdh.X25519().GenerateKey(rand.Reader)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: generating X25519 key: %v\n", err)
+				os.Exit(1)
+			}
+			router.SetStaticX25519Key(x25519Key)
 
 			// Wire global (non-namespaced) store to the transport router so
 			// p2p-http requests can find campfires created on other instances.

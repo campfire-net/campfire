@@ -110,7 +110,7 @@ var createCmd = &cobra.Command{
 // createAndRegisterOnRelay creates a campfire locally and registers it on the
 // given HTTP relay. It outputs the beacon string from the relay response.
 func createAndRegisterOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, description, relayURL string) error {
-	beaconStr, relayEndpoint, err := registerOnRelay(cf, agentID, s, relayURL, description)
+	beaconStr, relayEndpoint, err := registerOnRelay(cf, agentID, s, fs.DefaultBaseDir(), relayURL, description)
 	if err != nil {
 		return err
 	}

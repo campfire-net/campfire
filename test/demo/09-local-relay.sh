@@ -20,8 +20,9 @@ else
     CF_MCP=cf-mcp
 fi
 
-# Start cf-mcp in HTTP mode
-"$CF_MCP" --http ":${MCP_PORT}" --cf-home "$MCP_HOME" >/dev/null 2>&1 &
+# Start cf-mcp in HTTP mode with sessions (required for transport router / relay)
+SESSIONS_DIR=$(mktemp -d); register_cleanup "$SESSIONS_DIR"
+"$CF_MCP" --http ":${MCP_PORT}" --cf-home "$MCP_HOME" --sessions-dir "$SESSIONS_DIR" >/dev/null 2>&1 &
 MCP_PID=$!
 sleep 2
 
