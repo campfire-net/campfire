@@ -1,0 +1,37 @@
+
+[1m=== Setup: server + daemon identities ===[0m
+Server: 269db511b8cd92307909a9d7087cdd9d2afe9ef7b6a3a82aa72c3b3241a598eb
+Daemon: 7abd3f880891ce35f6dfbd6a3abbd1a9f41ce402f94ff9588686ae538603595d
+
+[1m=== Server creates campfire ===[0m
+Campfire: d304c7711478...
+
+[1m=== Server sends a tagged request ===[0m
+f6021b7f-a3d6-4cf5-a8f6-be8adf5f4198
+Request sent with tags: relay-inbound, webhook
+
+[1m=== Daemon joins ===[0m
+Joined campfire d304c7711478
+trust: unknown
+  [unknown] convention-extension:promote
+Daemon joined
+
+[1m=== Daemon reads with tag filter ===[0m
+  [0;32mPASS[0m: Daemon sees tagged request
+
+[1m=== Daemon sends response ===[0m
+796c1dca-556b-43a4-b096-8ed66cd34556
+Response sent
+
+[1m=== Server reads response ===[0m
+  [0;32mPASS[0m: Server sees daemon response
+
+[1m=== Verify bidirectional: both agents see all messages ===[0m
+  [0;32mPASS[0m: Server sees own request
+  [0;32mPASS[0m: Server sees daemon response
+  [0;32mPASS[0m: Daemon sees server request
+  [0;32mPASS[0m: Daemon sees own response
+
+================================
+Results: [0;32m6 passed[0m, [0;31m0 failed[0m
+================================
