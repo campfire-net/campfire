@@ -114,6 +114,17 @@ type CreateCampfireResponse struct {
 	Endpoint string `json:"endpoint"`
 }
 
+// RelayInfoResponse is the body for GET /campfire/relay-info.
+// Creators use this to discover the relay's static X25519 public key before
+// calling POST /campfire/create.
+type RelayInfoResponse struct {
+	// RelayX25519Pub is the relay's static X25519 public key (hex).
+	// Empty when the relay has no static X25519 key configured (relay-create unavailable).
+	RelayX25519Pub string `json:"relay_x25519_pub"`
+	// Endpoint is the relay's public endpoint URL.
+	Endpoint string `json:"endpoint"`
+}
+
 // decryptCampfirePrivKey performs the ECDH key exchange from the relay's side
 // to decrypt the campfire private key sent by the creator.
 //
