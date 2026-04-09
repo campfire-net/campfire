@@ -959,31 +959,6 @@ type = "http"
 	}
 }
 
-// TestResolveRelayFromConfig verifies the resolveRelayFromConfig helper returns
-// the relay URL from the merged config and handles nil input gracefully.
-func TestResolveRelayFromConfig(t *testing.T) {
-	// Nil config returns empty string.
-	if got := resolveRelayFromConfig(nil); got != "" {
-		t.Errorf("resolveRelayFromConfig(nil): got %q, want empty string", got)
-	}
-
-	// Config with no relay returns empty string.
-	empty := &Config{}
-	if got := resolveRelayFromConfig(empty); got != "" {
-		t.Errorf("resolveRelayFromConfig(empty): got %q, want empty string", got)
-	}
-
-	// Config with relay returns the value.
-	withRelay := &Config{
-		Transport: TransportConfig{
-			Relay: "https://relay.example.com",
-		},
-	}
-	if got := resolveRelayFromConfig(withRelay); got != "https://relay.example.com" {
-		t.Errorf("resolveRelayFromConfig(withRelay): got %q, want %q", got, "https://relay.example.com")
-	}
-}
-
 // TestLoadConfig_TransportRelay_ProjectOverridesGlobal verifies that a project-level
 // relay overrides the global relay (deepest wins).
 func TestLoadConfig_TransportRelay_ProjectOverridesGlobal(t *testing.T) {

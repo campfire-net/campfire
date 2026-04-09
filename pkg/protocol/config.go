@@ -269,16 +269,6 @@ func compiledDefaults() Config {
 	}
 }
 
-// resolveRelayFromConfig returns the relay URL from the merged config, or an empty
-// string if no relay is configured. This is used by cf create to supply a default
-// relay URL when the --relay flag is omitted.
-func resolveRelayFromConfig(cfg *Config) string {
-	if cfg == nil {
-		return ""
-	}
-	return cfg.Transport.Relay
-}
-
 // collectAncestors returns intermediate directories between projectDir and homeDir
 // (exclusive of homeDir and globalDir), ordered furthest-first (global → local).
 func collectAncestors(projectDir, homeDir, globalDir string) []string {

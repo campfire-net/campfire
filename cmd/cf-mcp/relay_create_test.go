@@ -480,3 +480,286 @@ func TestRelayCreate_MissingSignatureHeaders(t *testing.T) {
 		t.Errorf("missing headers: expected 401, got %d", w.Code)
 	}
 }
+
+// TC-H2: TestRelayCreate_PrivKeyMismatch verifies that a request where the
+// encrypted private key decrypts successfully but the resulting key does not
+// match the claimed campfire_id returns 400 Bad Request.
+//
+// This tests the validation step after ECDH: even if the creator can perform
+// the ECDH exchange, they must actually hold the matching campfire private key.
+func TestRelayCreate_PrivKeyMismatch(t *testing.T) {
+	router, _ := newRelayTestServer(t)
+
+	relayPriv, relayPubHex := generateRelayX25519Key(t)
+	router.SetStaticX25519Key(relayPriv)
+
+	creatorID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating creator identity: %v", err)
+	}
+
+	// Generate the campfire that will be claimed in the request.
+	cf, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("campfire.New: %v", err)
+	}
+
+	// Generate a DIFFERENT ed25519 keypair — this is the wrong private key.
+	_, wrongPrivKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating wrong ed25519 key: %v", err)
+	}
+
+	// Creator generates ephemeral X25519 keypair.
+	creatorEphPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating creator ephemeral X25519 key: %v", err)
+	}
+	creatorEphPubHex := hex.EncodeToString(creatorEphPriv.PublicKey().Bytes())
+
+	// Parse the relay's static X25519 pub key.
+	relayPubBytes, err := hex.DecodeString(relayPubHex)
+	if err != nil {
+		t.Fatalf("decoding relay X25519 pub: %v", err)
+	}
+	relayX25519Pub, err := ecdh.X25519().NewPublicKey(relayPubBytes)
+	if err != nil {
+		t.Fatalf("parsing relay X25519 pub: %v", err)
+	}
+
+	// ECDH: derive shared secret with the relay's static key (same as normal flow).
+	shared, err := creatorEphPriv.ECDH(relayX25519Pub)
+	if err != nil {
+		t.Fatalf("ECDH: %v", err)
+	}
+	aesKey, err := cfhttp.HkdfSHA256(shared, "campfire-join-v1")
+	if err != nil {
+		t.Fatalf("HKDF: %v", err)
+	}
+
+	// Encrypt the WRONG private key — ECDH will succeed, but key validation fails.
+	encryptedWrongKey, err := cfhttp.AESGCMEncrypt(aesKey, wrongPrivKey)
+	if err != nil {
+		t.Fatalf("encrypting wrong privkey: %v", err)
+	}
+
+	// Build request with the correct campfire_id but the wrong encrypted key.
+	reqBody := cfhttp.CreateCampfireRequest{
+		CampfireID:         cf.PublicKeyHex(),
+		EncryptedPrivKey:   encryptedWrongKey,
+		EphemeralX25519Pub: creatorEphPubHex,
+		JoinProtocol:       "open",
+		Threshold:          1,
+		Description:        "mismatch test",
+		CreatorPubkey:      creatorID.PublicKeyHex(),
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("marshaling request: %v", err)
+	}
+
+	req := signedCreateRequest(t, "/campfire/create", body, creatorID)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("privkey mismatch: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TC-M1: TestRelayCreate_StaleTimestamp verifies that a request with a timestamp
+// older than the allowed freshness window (60s) returns 401 Unauthorized.
+//
+// This tests replay protection against stale requests re-submitted after the
+// nonce window has expired — the timestamp check must catch them first.
+func TestRelayCreate_StaleTimestamp(t *testing.T) {
+	router, _ := newRelayTestServer(t)
+
+	relayPriv, relayPubHex := generateRelayX25519Key(t)
+	router.SetStaticX25519Key(relayPriv)
+
+	creatorID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating creator identity: %v", err)
+	}
+	cf, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("campfire.New: %v", err)
+	}
+
+	body := buildCreateRequest(t, creatorID, cf.PrivateKey, cf.PublicKey, relayPubHex, "open")
+
+	// Set timestamp to 90 seconds in the past (outside the 60s window).
+	staleTime := time.Now().Add(-90 * time.Second)
+	ts := strconv.FormatInt(staleTime.Unix(), 10)
+
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("generating nonce: %v", err)
+	}
+	nonceHex := hex.EncodeToString(nonce)
+
+	// Build signature over the stale timestamp.
+	var payload []byte
+	payload = append(payload, []byte(ts)...)
+	payload = append(payload, '\n')
+	payload = append(payload, []byte(nonceHex)...)
+	payload = append(payload, '\n')
+	payload = append(payload, body...)
+	sig := ed25519.Sign(creatorID.PrivateKey, payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/campfire/create", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Campfire-Sender", creatorID.PublicKeyHex())
+	req.Header.Set("X-Campfire-Nonce", nonceHex)
+	req.Header.Set("X-Campfire-Timestamp", ts)
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("stale timestamp: expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TC-M1: TestRelayCreate_FutureTimestamp verifies that a request with a timestamp
+// too far in the future (beyond the allowed freshness window) returns 401 Unauthorized.
+//
+// This prevents pre-signed requests from being held and replayed later.
+func TestRelayCreate_FutureTimestamp(t *testing.T) {
+	router, _ := newRelayTestServer(t)
+
+	relayPriv, relayPubHex := generateRelayX25519Key(t)
+	router.SetStaticX25519Key(relayPriv)
+
+	creatorID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating creator identity: %v", err)
+	}
+	cf, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("campfire.New: %v", err)
+	}
+
+	body := buildCreateRequest(t, creatorID, cf.PrivateKey, cf.PublicKey, relayPubHex, "open")
+
+	// Set timestamp to 90 seconds in the future (outside the 60s window).
+	futureTime := time.Now().Add(90 * time.Second)
+	ts := strconv.FormatInt(futureTime.Unix(), 10)
+
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("generating nonce: %v", err)
+	}
+	nonceHex := hex.EncodeToString(nonce)
+
+	// Build signature over the future timestamp.
+	var payload []byte
+	payload = append(payload, []byte(ts)...)
+	payload = append(payload, '\n')
+	payload = append(payload, []byte(nonceHex)...)
+	payload = append(payload, '\n')
+	payload = append(payload, body...)
+	sig := ed25519.Sign(creatorID.PrivateKey, payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/campfire/create", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Campfire-Sender", creatorID.PublicKeyHex())
+	req.Header.Set("X-Campfire-Nonce", nonceHex)
+	req.Header.Set("X-Campfire-Timestamp", ts)
+	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("future timestamp: expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TC-M2: TestRelayCreate_CreatorPubkeyMismatch verifies that a request where
+// the creator_pubkey field in the JSON body does not match the X-Campfire-Sender
+// header (the signing key) returns 400 Bad Request.
+//
+// This prevents one agent from registering a campfire and claiming another
+// agent's public key as the creator.
+func TestRelayCreate_CreatorPubkeyMismatch(t *testing.T) {
+	router, _ := newRelayTestServer(t)
+
+	relayPriv, relayPubHex := generateRelayX25519Key(t)
+	router.SetStaticX25519Key(relayPriv)
+
+	// The agent who signs the request.
+	signerID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating signer identity: %v", err)
+	}
+
+	// A different identity whose pubkey will be claimed in creator_pubkey.
+	otherID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating other identity: %v", err)
+	}
+
+	cf, err := campfire.New("open", nil, 1)
+	if err != nil {
+		t.Fatalf("campfire.New: %v", err)
+	}
+
+	// Build a valid request body but set creator_pubkey to the OTHER identity.
+	// buildCreateRequest sets creator_pubkey = creatorID, so we build manually.
+	creatorEphPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating creator ephemeral X25519 key: %v", err)
+	}
+	creatorEphPubHex := hex.EncodeToString(creatorEphPriv.PublicKey().Bytes())
+
+	relayPubBytes, err := hex.DecodeString(relayPubHex)
+	if err != nil {
+		t.Fatalf("decoding relay X25519 pub: %v", err)
+	}
+	relayX25519Pub, err := ecdh.X25519().NewPublicKey(relayPubBytes)
+	if err != nil {
+		t.Fatalf("parsing relay X25519 pub: %v", err)
+	}
+	shared, err := creatorEphPriv.ECDH(relayX25519Pub)
+	if err != nil {
+		t.Fatalf("ECDH: %v", err)
+	}
+	aesKey, err := cfhttp.HkdfSHA256(shared, "campfire-join-v1")
+	if err != nil {
+		t.Fatalf("HKDF: %v", err)
+	}
+	encryptedPrivKey, err := cfhttp.AESGCMEncrypt(aesKey, cf.PrivateKey)
+	if err != nil {
+		t.Fatalf("encrypting privkey: %v", err)
+	}
+
+	// Set creator_pubkey to otherID, but the request will be signed by signerID.
+	reqBody := cfhttp.CreateCampfireRequest{
+		CampfireID:         cf.PublicKeyHex(),
+		EncryptedPrivKey:   encryptedPrivKey,
+		EphemeralX25519Pub: creatorEphPubHex,
+		JoinProtocol:       "open",
+		Threshold:          1,
+		Description:        "mismatch test",
+		CreatorPubkey:      otherID.PublicKeyHex(), // does not match signer
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("marshaling request: %v", err)
+	}
+
+	// Sign with signerID — X-Campfire-Sender will be signerID.PublicKeyHex(),
+	// which does not match creator_pubkey (otherID.PublicKeyHex()).
+	req := signedCreateRequest(t, "/campfire/create", body, signerID)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("creator_pubkey mismatch: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}

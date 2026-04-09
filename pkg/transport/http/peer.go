@@ -498,6 +498,9 @@ func Poll(endpoint, campfireID string, cursor int64, timeoutSecs int, id *identi
 // from GET <relayURL>/campfire/relay-info. Creators call this before
 // POST /campfire/create to discover the relay's static pub key for ECDH.
 func FetchRelayInfo(relayURL string) (*RelayInfoResponse, error) {
+	if err := ValidateRelayURL(relayURL, true); err != nil {
+		return nil, fmt.Errorf("relay URL validation: %w", err)
+	}
 	url := relayURL + "/campfire/relay-info"
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {

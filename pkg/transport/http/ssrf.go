@@ -185,6 +185,66 @@ func isPrivateIP(ip net.IP) bool {
 // in cmd/cf-mcp/main.go). No separate per-caller override is needed in tests.
 var ValidateJoinerEndpoint = validateJoinerEndpoint
 
+// ValidateRelayURL validates that the given relay URL is safe to use before
+// making any HTTP call. Unlike validateJoinerEndpoint, an empty URL is rejected
+// because a relay URL must be explicitly provided.
+//
+// Rejects:
+//   - empty string
+//   - non-http/https schemes (file://, ftp://, etc.)
+//   - private, loopback, link-local, or reserved IP addresses
+//   - hostnames that resolve to private addresses
+func ValidateRelayURL(relayURL string, allowInsecure bool) error {
+	if relayURL == "" {
+		return fmt.Errorf("relay URL must not be empty")
+	}
+
+	u, err := url.Parse(relayURL)
+	if err != nil {
+		return fmt.Errorf("invalid relay URL: %w", err)
+	}
+
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("invalid relay URL scheme %q: must be http or https", u.Scheme)
+	}
+
+	if u.Scheme == "http" && !allowInsecure {
+		return fmt.Errorf("relay URL uses insecure http scheme; use https or pass --allow-insecure")
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("relay URL has no host")
+	}
+
+	// If the host is an IP literal, check it directly — no DNS involved.
+	if ip := net.ParseIP(host); ip != nil {
+		if isPrivateIP(ip) {
+			return fmt.Errorf("relay URL resolves to a private/internal address")
+		}
+		return nil
+	}
+
+	// Hostname: resolve now (validation-time check).
+	addrs, err := net.DefaultResolver.LookupHost(context.Background(), host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve relay host %q: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return fmt.Errorf("relay host %q resolved to no addresses", host)
+	}
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			continue
+		}
+		if isPrivateIP(ip) {
+			return fmt.Errorf("relay host %q resolves to a private/internal address", host)
+		}
+	}
+	return nil
+}
+
 // NewSSRFSafeClient returns an *http.Client backed by the SSRF-safe transport.
 // Exported for tests that want to verify the transport rejects private addresses.
 func NewSSRFSafeClient() *nethttp.Client {

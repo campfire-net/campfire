@@ -382,11 +382,15 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	// can pull messages from it. Serverless relays don't return themselves in
 	// the peer list (no SelfInfo), so the joiner would have zero sync targets
 	// without this. Uses the campfire pubkey as the member identifier.
-	s.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
-		CampfireID:   campfireID,
-		MemberPubkey: fmt.Sprintf("%x", result.CampfirePubKey),
-		Endpoint:     via,
-	})
+	// Guard: only upsert if the relay returned a campfire pubkey — a nil/empty
+	// key would store an unusable peer entry and confuse syncFromHTTPPeers.
+	if len(result.CampfirePubKey) > 0 {
+		s.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+			CampfireID:   campfireID,
+			MemberPubkey: fmt.Sprintf("%x", result.CampfirePubKey),
+			Endpoint:     via,
+		})
+	}
 
 	// Store received DKG share (threshold>1).
 	if len(result.ThresholdShareData) > 0 {

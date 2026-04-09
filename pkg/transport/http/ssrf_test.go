@@ -335,3 +335,127 @@ func TestValidateJoinerEndpoint_OverrideRoutesThrough(t *testing.T) {
 		t.Errorf("after OverrideValidateJoinerEndpointForTest, ValidateJoinerEndpoint returned error: %v", err)
 	}
 }
+
+// --- ValidateRelayURL tests (campfireagent-8b4) --------------------------------
+
+// TestValidateRelayURL_RejectsEmptyString verifies that an empty relay URL is
+// rejected before any HTTP call is made.
+func TestValidateRelayURL_RejectsEmptyString(t *testing.T) {
+	err := cfhttp.ValidateRelayURL("", false)
+	if err == nil {
+		t.Error("expected error for empty relay URL, got nil")
+	}
+}
+
+// TestValidateRelayURL_RejectsBadSchemes verifies that non-http/https schemes
+// (file://, ftp://) are rejected before any HTTP call is made.
+func TestValidateRelayURL_RejectsBadSchemes(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"file scheme", "file:///etc/passwd"},
+		{"ftp scheme", "ftp://evil.example.com/"},
+		{"no scheme", "example.com/path"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := cfhttp.ValidateRelayURL(tc.url, true)
+			if err == nil {
+				t.Errorf("expected error for relay URL %q, got nil", tc.url)
+			}
+		})
+	}
+}
+
+// TestValidateRelayURL_RejectsPrivateIPs verifies that relay URLs pointing to
+// private/internal IPs (SSRF targets) are rejected before any HTTP call.
+func TestValidateRelayURL_RejectsPrivateIPs(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"loopback 127.x", "http://127.0.0.1:8080/"},
+		{"RFC1918 10.x", "http://10.0.0.1/"},
+		{"RFC1918 172.16.x", "http://172.16.0.1/"},
+		{"RFC1918 192.168.x", "http://192.168.1.1/"},
+		{"link-local 169.254.x (IMDS)", "http://169.254.169.254/"},
+		{"IPv6 loopback ::1", "http://[::1]/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := cfhttp.ValidateRelayURL(tc.url, true)
+			if err == nil {
+				t.Errorf("expected error for private relay URL %q, got nil", tc.url)
+			}
+		})
+	}
+}
+
+// TestValidateRelayURL_RejectsInsecureHTTP verifies that http:// URLs are
+// rejected when allowInsecure is false.
+func TestValidateRelayURL_RejectsInsecureHTTP(t *testing.T) {
+	// 1.2.3.4 is a public IP — the only failure should be the insecure check.
+	err := cfhttp.ValidateRelayURL("http://1.2.3.4/", false)
+	if err == nil {
+		t.Error("expected error for http:// relay URL with allowInsecure=false, got nil")
+	}
+}
+
+// TestValidateRelayURL_AcceptsPublicHTTPS verifies that a valid public https
+// relay URL is accepted.
+func TestValidateRelayURL_AcceptsPublicHTTPS(t *testing.T) {
+	err := cfhttp.ValidateRelayURL("https://1.2.3.4/", true)
+	if err != nil {
+		t.Errorf("expected nil for public https relay URL, got %v", err)
+	}
+}
+
+// TestFetchRelayInfo_RejectsPrivateURL verifies that FetchRelayInfo calls
+// ValidateRelayURL before making any HTTP connection, and returns an error for
+// private URLs without attempting a network request.
+func TestFetchRelayInfo_RejectsPrivateURL(t *testing.T) {
+	// 169.254.169.254 is the AWS IMDS endpoint — a classic SSRF target.
+	// FetchRelayInfo must reject it before making any HTTP call.
+	_, err := cfhttp.FetchRelayInfo("http://169.254.169.254/")
+	if err == nil {
+		t.Fatal("expected error for IMDS relay URL in FetchRelayInfo, got nil")
+	}
+
+	// Confirm error mentions validation (not a network error).
+	errMsg := err.Error()
+	if !bytes.Contains([]byte(errMsg), []byte("validation")) &&
+		!bytes.Contains([]byte(errMsg), []byte("private")) &&
+		!bytes.Contains([]byte(errMsg), []byte("internal")) &&
+		!bytes.Contains([]byte(errMsg), []byte("scheme")) &&
+		!bytes.Contains([]byte(errMsg), []byte("empty")) {
+		t.Errorf("expected validation error, got: %v", err)
+	}
+}
+
+// TestFetchRelayInfo_RejectsFileScheme verifies that FetchRelayInfo rejects a
+// file:// relay URL before any HTTP call.
+func TestFetchRelayInfo_RejectsFileScheme(t *testing.T) {
+	_, err := cfhttp.FetchRelayInfo("file:///etc/passwd")
+	if err == nil {
+		t.Fatal("expected error for file:// relay URL in FetchRelayInfo, got nil")
+	}
+}
+
+// TestFetchRelayInfo_RejectsFTPScheme verifies that FetchRelayInfo rejects an
+// ftp:// relay URL before any HTTP call.
+func TestFetchRelayInfo_RejectsFTPScheme(t *testing.T) {
+	_, err := cfhttp.FetchRelayInfo("ftp://evil.example.com/")
+	if err == nil {
+		t.Fatal("expected error for ftp:// relay URL in FetchRelayInfo, got nil")
+	}
+}
+
+// TestFetchRelayInfo_RejectsEmptyURL verifies that FetchRelayInfo rejects an
+// empty relay URL before any HTTP call.
+func TestFetchRelayInfo_RejectsEmptyURL(t *testing.T) {
+	_, err := cfhttp.FetchRelayInfo("")
+	if err == nil {
+		t.Fatal("expected error for empty relay URL in FetchRelayInfo, got nil")
+	}
+}

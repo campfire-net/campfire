@@ -109,6 +109,77 @@ require_hosted_relay() {
 
 HOSTED_RELAY_URL="https://mcp.east.getcampfire.dev/api"
 
+# --- Hosted relay helpers (MCP protocol) ---
+
+# Get an MCP session on the hosted relay. Returns the session token.
+mcp_session() {
+    local resp
+    resp=$(curl -s "$HOSTED_RELAY_URL/mcp" -X POST \
+        -H "Content-Type: application/json" \
+        -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"campfire_init","arguments":{}}}')
+    echo "$resp" | python3 -c "
+import sys, json, re
+text = json.load(sys.stdin)['result']['content'][0]['text']
+m = re.search(r'Session token: (\S+)', text)
+print(m.group(1) if m else '')
+"
+}
+
+# Create a campfire on the hosted relay via MCP. Returns the campfire ID.
+# Usage: CF_ID=$(mcp_create_campfire "$SESSION_TOKEN" [--join-protocol invite-only])
+mcp_create_campfire() {
+    local token="$1" extra_args=""
+    shift
+    local join_protocol="open"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --join-protocol) join_protocol="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    local resp
+    resp=$(curl -s "$HOSTED_RELAY_URL/mcp" -X POST \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $token" \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"campfire_create\",\"arguments\":{\"join_protocol\":\"$join_protocol\"}}}")
+    echo "$resp" | python3 -c "
+import sys, json
+text = json.load(sys.stdin)['result']['content'][0]['text']
+data = json.loads(text)
+print(data['campfire_id'])
+"
+}
+
+# Send a message to a campfire via MCP.
+mcp_send() {
+    local token="$1" cf_id="$2" message="$3"
+    shift 3
+    local tags_json="[]"
+    if [ $# -gt 0 ]; then
+        tags_json="[$(printf '"%s",' "$@" | sed 's/,$//')]"
+    fi
+    curl -s "$HOSTED_RELAY_URL/mcp" -X POST \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $token" \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"campfire_send\",\"arguments\":{\"campfire_id\":\"$cf_id\",\"message\":\"$message\",\"tags\":$tags_json}}}" >/dev/null
+}
+
+# Read messages from a campfire via MCP. Returns raw text content.
+mcp_read() {
+    local token="$1" cf_id="$2"
+    shift 2
+    local tags_json="[]"
+    if [ $# -gt 0 ]; then
+        tags_json="[$(printf '"%s",' "$@" | sed 's/,$//')]"
+    fi
+    local resp
+    resp=$(curl -s "$HOSTED_RELAY_URL/mcp" -X POST \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $token" \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"campfire_read\",\"arguments\":{\"campfire_id\":\"$cf_id\",\"tags\":$tags_json}}}")
+    echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'][0]['text'])" 2>/dev/null
+}
+
 # --- Local relay management ---
 # Start a local cf-mcp relay and return the URL.
 # Usage: RELAY_URL=$(start_local_relay)
