@@ -26,47 +26,9 @@ func captureInitWithPassphrase(t *testing.T, cfHomeDir, passphrase string) (stdo
 	initCmd.Flags().Set("name", "")         //nolint:errcheck
 	initCmd.Flags().Set("session", "false") //nolint:errcheck
 	initCmd.Flags().Set("from", "")         //nolint:errcheck
-	if f := initCmd.Flags().Lookup("remote"); f != nil {
-		initCmd.Flags().Set("remote", "") //nolint:errcheck
-	}
 	t.Setenv("CF_HOME", cfHomeDir)
 	t.Setenv("CF_PASSPHRASE", passphrase)
 	rootCmd.SetArgs([]string{"init"})
-	runErr := rootCmd.Execute()
-
-	w.Close()
-	os.Stdout = origStdout
-
-	buf := make([]byte, 8192)
-	n, _ := r.Read(buf)
-	r.Close()
-
-	return string(buf[:n]), runErr
-}
-
-// captureInitRemote runs cf init --remote <url> with the given CF_HOME and passphrase.
-// NOTE: The --remote flag is retained for backward compatibility but no longer creates
-// a center campfire in the init flow. This test verifies the flag is accepted gracefully.
-func captureInitRemote(t *testing.T, cfHomeDir, passphrase, remoteURL string) (stdout string, err error) {
-	t.Helper()
-
-	r, w, pipeErr := os.Pipe()
-	if pipeErr != nil {
-		t.Fatalf("creating pipe: %v", pipeErr)
-	}
-	origStdout := os.Stdout
-	os.Stdout = w
-
-	initCmd.Flags().Set("force", "false")   //nolint:errcheck
-	initCmd.Flags().Set("name", "")         //nolint:errcheck
-	initCmd.Flags().Set("session", "false") //nolint:errcheck
-	initCmd.Flags().Set("from", "")         //nolint:errcheck
-	if f := initCmd.Flags().Lookup("remote"); f != nil {
-		initCmd.Flags().Set("remote", remoteURL) //nolint:errcheck
-	}
-	t.Setenv("CF_HOME", cfHomeDir)
-	t.Setenv("CF_PASSPHRASE", passphrase)
-	rootCmd.SetArgs([]string{"init", "--remote", remoteURL})
 	runErr := rootCmd.Execute()
 
 	w.Close()
@@ -208,30 +170,3 @@ func TestInitNoisyOutput(t *testing.T) {
 	}
 }
 
-// TestInitRemoteFlag verifies that --remote <url> is accepted without error.
-// NOTE: The --remote flag no longer creates a center campfire. It is retained for
-// backward compatibility but is a no-op in the new init flow.
-func TestInitRemoteFlag(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	remoteURL := "https://mcp.getcampfire.dev"
-	_, err := captureInitRemote(t, tmpDir, "remote-test-passphrase", remoteURL)
-	if err != nil {
-		t.Fatalf("cf init --remote failed: %v", err)
-	}
-
-	// Identity campfire should still be created.
-	s, openErr := store.Open(store.StorePath(tmpDir))
-	if openErr != nil {
-		t.Fatalf("opening store: %v", openErr)
-	}
-	defer s.Close()
-
-	memberships, listErr := s.ListMemberships()
-	if listErr != nil {
-		t.Fatalf("listing memberships: %v", listErr)
-	}
-	if len(memberships) == 0 {
-		t.Fatal("expected identity campfire to be created")
-	}
-}

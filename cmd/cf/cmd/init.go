@@ -526,7 +526,6 @@ func init() {
 	initCmd.Flags().String("name", "", "persistent agent name (survives across sessions)")
 	initCmd.Flags().Bool("session", false, "create a temporary identity in a unique temp dir")
 	initCmd.Flags().String("from", "", "inherit config from this CF_HOME path (requires --name)")
-	initCmd.Flags().String("remote", "", "URL of remote campfire relay for center campfire (default: filesystem)")
 	initCmd.Flags().Bool("durable", false, "create a threshold=2 identity campfire with a cold key recovery phrase")
 	initCmd.Flags().String("display-name", "", "human-readable display name stored in ~/.cf/profile.json (unverified, max 64 chars)")
 	rootCmd.AddCommand(initCmd)
@@ -542,65 +541,3 @@ func resolvePassphrase() ([]byte, error) {
 	return promptPassphrase()
 }
 
-// createCenterCampfire creates the operator's center campfire.
-// Uses filesystem transport by default; uses HTTP transport if remoteURL is non-empty.
-// Returns the campfire ID hex, the transport label ("fs" or "http"), and any error.
-func createCenterCampfire(cfHome string, agentID *identity.Identity, remoteURL string) (string, string, error) {
-	// Create campfire keypair (open join protocol, no requirements, threshold=1).
-	centerCF, err := campfire.New("open", nil, 1)
-	if err != nil {
-		return "", "", fmt.Errorf("creating center campfire: %w", err)
-	}
-
-	transportLabel := "fs"
-	transportDir := ""
-
-	if remoteURL == "" {
-		// Filesystem transport
-		transport := fs.New(fs.DefaultBaseDir())
-		if err := transport.Init(centerCF); err != nil {
-			return "", "", fmt.Errorf("initializing fs transport: %w", err)
-		}
-		if err := transport.WriteMember(centerCF.PublicKeyHex(), campfire.MemberRecord{
-			PublicKey: agentID.PublicKey,
-			JoinedAt:  time.Now().UnixNano(),
-		}); err != nil {
-			return "", "", fmt.Errorf("writing member record: %w", err)
-		}
-		transportDir = transport.CampfireDir(centerCF.PublicKeyHex())
-	} else {
-		// HTTP transport: store the remote URL as the transport dir.
-		// TransportType must be "p2p-http" for transport.ResolveType() to
-		// recognize it; "http" is only used for the human-readable output label.
-		transportLabel = "p2p-http"
-		transportDir = remoteURL
-	}
-
-	// Open store and record membership
-	s, err := store.Open(store.StorePath(cfHome))
-	if err != nil {
-		return "", "", fmt.Errorf("opening store: %w", err)
-	}
-	defer s.Close()
-
-	if err := s.AddMembership(store.Membership{
-		CampfireID:    centerCF.PublicKeyHex(),
-		TransportDir:  transportDir,
-		JoinProtocol:  centerCF.JoinProtocol,
-		Role:          store.PeerRoleCreator,
-		JoinedAt:      store.NowNano(),
-		Threshold:     centerCF.Threshold,
-		Description:   "center campfire",
-		TransportType: transportLabel,
-	}); err != nil {
-		return "", "", fmt.Errorf("recording membership: %w", err)
-	}
-
-	// Set "center" alias
-	aliases := naming.NewAliasStore(cfHome)
-	if err := aliases.Set("center", centerCF.PublicKeyHex()); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not set center alias: %v\n", err)
-	}
-
-	return centerCF.PublicKeyHex(), transportLabel, nil
-}
