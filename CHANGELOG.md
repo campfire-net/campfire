@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.18.0 — identity delegation (2026-04-10)
+
+Delegated trust for campfire identities. A trust anchor can grant authority to delegates, who can further delegate — creating verifiable trust chains up to 10 hops deep. Grants are revocable with immediate cascade.
+
+### Features
+
+- **Identity delegation convention**: New `pkg/convention/delegation/` package implements the three approved specs — grant (`identity-delegation-v0.1.md`), trust resolution (`identity-v0.2-trust-resolution.md`), and revocation (`identity-delegation-revocation.md`). Convention-layer only — zero protocol changes.
+- **Trust-anchor config**: `[identity.trust] anchors` in `.cf/config.toml` declares ed25519 public keys as trust anchors. Project configs extend (not override) the global anchor list. Supports both hex and base64 encoding.
+- **Grant validation**: `ValidateGrant` enforces 5 rules from the spec — signature verification, campfire binding (anti-replay), expiry with 60s clock-skew slack, 7-day hard ceiling, and revocation check.
+- **Trust resolution**: `Resolve` walks the local campfire log to determine if a sender is trusted. Four typed outcomes: `Resolved`, `DeadEnd`, `InvalidGrant`, `DepthExceeded`. MAX_CHAIN_DEPTH=10.
+- **GrantChainResolver**: Convention handlers access the delegation trust chain via `req.Identity.Chain`, `req.Identity.Anchor`, and `req.Identity.TrustResolved`. Plugs into the existing `IdentityResolver` interface. Optional — servers that don't install it behave exactly as before.
+- **`cf trust resolve`**: New CLI command checks delegation trust for a sender in a campfire. Human-readable and `--json` output. Exit code 0 for Resolved, 1 otherwise.
+
+### Bug Fixes
+
+- **`findValidGrant` skip-on-invalid**: Invalid grants (expired, wrong campfire) are now skipped per spec instead of aborting the search. If the newest grant is expired but an older valid one exists, resolution correctly finds it.
+
+### Tests
+
+- 22 delegation tests (grant validation, trust resolution, resolver integration)
+- 2 E2E lifecycle tests (full grant→resolve→revoke→re-grant + subtree cascade)
+- Demo 15: identity delegation lifecycle — 16 assertions, filesystem transport
+
+### Security
+
+Adversarial security review (Opus) evaluated 10 attack vectors. 0 critical, 0 high findings. The implementation is secure: complete signature verification chain, campfire binding prevents replay, depth cap prevents cycles/DoS, parent-only revocation enforced by sender filtering.
+
 ## v0.17.4 — relay end-to-end: create, join, admit, send, read (2026-04-10)
 
 Complete relay campfire lifecycle. All 12 demo scripts pass — filesystem, local relay, and hosted relay (mcp.getcampfire.dev).
