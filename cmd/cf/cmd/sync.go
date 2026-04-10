@@ -145,8 +145,17 @@ func syncFromHTTPPeers(cfID string, agentID *identity.Identity, s store.Store) {
 			// Non-fatal: peer may be offline.
 			continue
 		}
-		for _, msg := range msgs {
-			s.AddMessage(store.MessageRecordFromMessage(cfID, &msg, store.NowNano())) //nolint:errcheck
+		for i := range msgs {
+			// Verify Ed25519 signature before accepting — matches syncIfFilesystem behaviour.
+			// A compromised peer could otherwise inject forged messages.
+			if !msgs[i].VerifySignature() {
+				continue
+			}
+			// Reject messages with invalid or missing provenance hops.
+			if !msgs[i].VerifyProvenance() {
+				continue
+			}
+			s.AddMessage(store.MessageRecordFromMessage(cfID, &msgs[i], store.NowNano())) //nolint:errcheck
 		}
 	}
 }

@@ -10,9 +10,14 @@ package cmd
 // Fix: syncFromFilesystem now returns an error when ListMessages fails.
 // syncCampfire propagates filesystem errors and returns error.
 // StoreSyncer.Sync propagates the error from syncCampfire.
+//
+// Also contains regression tests for campfireagent-e23: syncFromHTTPPeers must
+// verify Ed25519 signatures before storing peer messages.
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,6 +27,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // TestStoreSyncer_ReturnsErrorOnBrokenTransport verifies that StoreSyncer.Sync
@@ -122,6 +128,151 @@ func TestStoreSyncer_Subscribe_TerminatesOnBrokenTransport(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Messages() channel did not close within 2 seconds after transport dir deletion: subscription ran forever (StoreSyncer.Sync is still swallowing errors)")
+	}
+}
+
+// TestStoreSyncer_HTTPPeer_TamperedMessageRejected verifies that syncFromHTTPPeers
+// does not store a message whose Ed25519 signature has been tampered with.
+//
+// Before the fix (campfireagent-e23): syncFromHTTPPeers called s.AddMessage without
+// calling VerifySignature or VerifyProvenance, so a compromised peer could inject
+// forged messages into the local store. This test uses a real httptest.Server to serve
+// a tampered message and confirms it does NOT appear in the local store after sync.
+func TestStoreSyncer_HTTPPeer_TamperedMessageRejected(t *testing.T) {
+	// Override HTTP client so loopback (127.0.0.1) is reachable.
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 5 * time.Second})
+	defer cfhttp.OverrideHTTPClientForTest(http.DefaultClient)
+
+	// Create a valid signed message, then tamper with its payload so the
+	// Ed25519 signature no longer verifies.
+	authorID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating author identity: %v", err)
+	}
+	validMsg := newTestMessage(t, authorID.PrivateKey, authorID.PublicKey,
+		[]byte("legitimate payload"), []string{"test"}, nil)
+	// Tamper: overwrite payload after signing — signature is now invalid.
+	validMsg.Payload = []byte("tampered payload")
+
+	// Stand up a real httptest.Server that serves the tampered message on /sync.
+	peer := newMockHTTPPeer()
+	peer.addSyncMessage(*validMsg)
+	srv := httptest.NewServer(peer.handler())
+	defer srv.Close()
+
+	// Create local store and register a p2p-http membership for the campfire.
+	s, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating agent identity: %v", err)
+	}
+
+	// Use a campfire ID that is a valid hex string (64 chars).
+	campfireID := "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233"
+
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: "",
+		TransportType: "p2p-http",
+		JoinProtocol: "open",
+		Role:         campfire.RoleFull,
+		JoinedAt:     time.Now().UnixNano(),
+		Threshold:    1,
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	// Register the test server as the only peer for this campfire.
+	if err := s.UpsertPeerEndpoint(store.PeerEndpoint{
+		CampfireID:   campfireID,
+		MemberPubkey: authorID.PublicKeyHex(),
+		Endpoint:     srv.URL,
+	}); err != nil {
+		t.Fatalf("upserting peer endpoint: %v", err)
+	}
+
+	// Run syncFromHTTPPeers — the function under test.
+	syncFromHTTPPeers(campfireID, agentID, s)
+
+	// The tampered message must NOT be in the local store.
+	msgs, err := s.ListMessages(campfireID, 0)
+	if err != nil {
+		t.Fatalf("listing messages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 messages in store after tampered-signature sync, got %d: "+
+			"syncFromHTTPPeers is storing messages without verifying Ed25519 signatures", len(msgs))
+	}
+}
+
+// TestStoreSyncer_HTTPPeer_ValidMessageAccepted verifies that syncFromHTTPPeers
+// stores a correctly signed message from a peer — regression guard ensuring the
+// verification fix does not reject legitimate messages.
+func TestStoreSyncer_HTTPPeer_ValidMessageAccepted(t *testing.T) {
+	cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 5 * time.Second})
+	defer cfhttp.OverrideHTTPClientForTest(http.DefaultClient)
+
+	authorID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating author identity: %v", err)
+	}
+
+	// Create a valid signed message with a provenance hop so VerifyProvenance passes.
+	validMsg := newTestMessage(t, authorID.PrivateKey, authorID.PublicKey,
+		[]byte("valid payload"), []string{"test"}, nil)
+	addTestProvenance(t, validMsg)
+
+	peer := newMockHTTPPeer()
+	peer.addSyncMessage(*validMsg)
+	srv := httptest.NewServer(peer.handler())
+	defer srv.Close()
+
+	s, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	agentID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating agent identity: %v", err)
+	}
+
+	campfireID := "ccddee0011223344ccddee0011223344ccddee0011223344ccddee0011223344"
+
+	if err := s.AddMembership(store.Membership{
+		CampfireID:   campfireID,
+		TransportDir: "",
+		TransportType: "p2p-http",
+		JoinProtocol: "open",
+		Role:         campfire.RoleFull,
+		JoinedAt:     time.Now().UnixNano(),
+		Threshold:    1,
+	}); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	if err := s.UpsertPeerEndpoint(store.PeerEndpoint{
+		CampfireID:   campfireID,
+		MemberPubkey: authorID.PublicKeyHex(),
+		Endpoint:     srv.URL,
+	}); err != nil {
+		t.Fatalf("upserting peer endpoint: %v", err)
+	}
+
+	syncFromHTTPPeers(campfireID, agentID, s)
+
+	msgs, err := s.ListMessages(campfireID, 0)
+	if err != nil {
+		t.Fatalf("listing messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 message in store after valid-signature sync, got %d", len(msgs))
 	}
 }
 
