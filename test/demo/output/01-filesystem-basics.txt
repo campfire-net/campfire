@@ -1,40 +1,40 @@
 
 [1m=== Setup: two identities ===[0m
-Alice: 9c7eabc40d0e76ff040bc6b0f76ffc7114c3c9aaad13c3984e26bdaa5dc70164
-Bob:   ceff11ffae21404c9d404b8b75cf1e73d3b0bd08adc7d457335c6306324cbcc4
+Alice: d60283ccccc334770a5c3e92ed482ddc8c9c4e2d57f64754133f0097eb25c752
+Bob:   fd19a47e378cd919b23a8b35cee6fb225ff57bee2b7fab5320cce8584975fc21
 
 [1m=== Alice creates a filesystem campfire ===[0m
-Campfire: 4edca68301d2...
+Campfire: 6863b0b32573...
 
 [1m=== Bob joins via filesystem ===[0m
-Joined campfire 4edca68301d2
+Joined campfire 6863b0b32573
 trust: unknown
   [unknown] convention-extension:promote
 Bob joined
 
 [1m=== Alice sends a message ===[0m
-6e71b4d8-441b-41a3-8039-40c229f5b3bf
+3f0cbf29-6a25-4cb9-9727-74f219914806
 Sent
 
 [1m=== Bob reads messages ===[0m
   [0;32mPASS[0m: Bob sees Alice's message
 
 [1m=== Bob sends a reply ===[0m
-4f2c87c3-3b17-4fb1-b816-041663172a44
+68f485a1-21cf-473c-8fa3-996d20d1c7f6
 
 [1m=== Alice reads with tag filter ===[0m
   [0;32mPASS[0m: Alice sees reply tag
   [0;32mPASS[0m: Tag filter excludes non-matching
 
 [1m=== cf ls shows campfire ===[0m
-4edca68301d2  open  2 members  threshold=1  creator
-1533a6052cbb  invite-only  1 members  threshold=1  creator  identity campfire
+b7e42cacfb88  invite-only  1 members  threshold=1  creator  identity campfire
+6863b0b32573  open  2 members  threshold=1  creator
   [0;32mPASS[0m: ls shows campfire
   [0;32mPASS[0m: ls shows members
 
 [1m=== cf members lists agents ===[0m
-9c7eabc4  creator
-ceff11ff  full
+d60283cc  creator
+fd19a47e  full
   [0;32mPASS[0m: Members shows Alice
   [0;32mPASS[0m: Members shows Bob
 

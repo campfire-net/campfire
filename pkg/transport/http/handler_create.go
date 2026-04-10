@@ -112,6 +112,9 @@ type CreateCampfireResponse struct {
 	Beacon string `json:"beacon,omitempty"`
 	// Endpoint is the relay's public endpoint URL.
 	Endpoint string `json:"endpoint"`
+	// InviteCode is a default invite code for joining invite-only campfires.
+	// Reusable (unlimited uses by default). Empty for open campfires on older relays.
+	InviteCode string `json:"invite_code,omitempty"`
 }
 
 // RelayInfoResponse is the body for GET /campfire/relay-info.

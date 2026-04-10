@@ -2,16 +2,16 @@
 [1m=== Setup ===[0m
 
 [1m=== Alice creates a filesystem campfire ===[0m
-Campfire: 9a6330b17859...
+Campfire: d82f57deac52...
 
 [1m=== Bob joins ===[0m
-Joined campfire 9a6330b17859
+Joined campfire d82f57deac52
 trust: unknown
   [unknown] convention-extension:promote
 
 [1m=== Alice sends tagged messages ===[0m
-53eaa6f4-e273-42e3-8f19-418586eef68c
-4ec693a2-9d38-4f0a-8086-1a41d444e1cd
+a8786ef4-468b-4837-aa5a-079cd890a3f0
+8ce7d123-9eb9-4369-89e1-120cb20bffe5
 
 [1m=== Bob reads only proposals ===[0m
   [0;32mPASS[0m: Proposal tag filter works
@@ -22,8 +22,8 @@ trust: unknown
   [0;32mPASS[0m: Proposal excluded
 
 [1m=== Multiple tag filtering ===[0m
-fe74749a-ee6d-4ed4-8108-e1c8fa3fba2d
-a9725a1d-85dd-4638-b1cf-8cdd40e82f02
+9f93650e-6032-47bd-a8be-f8dd0d902dbd
+ed1494c2-1d5f-4e91-a8eb-631b068c1526
   [0;32mPASS[0m: Urgent filter matches
   [0;32mPASS[0m: Normal excluded from urgent
 

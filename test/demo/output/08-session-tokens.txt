@@ -1,12 +1,12 @@
 
 [1m=== Create session token ===[0m
-Token: cfs1_pgFYIM8YFXPGPYu3D4WxLhtON...
+Token: cfs1_pgFYIOYAHfnJOr-Lj9a2lMWJU...
   [0;32mPASS[0m: Token starts with cfs1_
 
 [1m=== Send messages via session ===[0m
-sent: 4cdd295e
+sent: 73158332
 Sent message 1
-sent: 6cb33d0c
+sent: a0a17d17
 Sent message 2
 
 [1m=== Read messages via session ===[0m
@@ -14,11 +14,11 @@ Sent message 2
   [0;32mPASS[0m: Session read sees message 2
 
 [1m=== End session ===[0m
-session ended: cf181573c63d
+session ended: e6001df9c93a
 Session ended
 
 [1m=== Read after end (should fail or return empty) ===[0m
-Post-end read: 2026/04/09 18:31:40 campfire: syncIfFilesystem(cf181573c63d8bb70f85b12e1b4e37d6a
+Post-end read: 2026/04/10 00:47:31 campfire: sync(e6001df9c93abf8b8fd6b694c5895244135577e019211
 
 ================================
 Results: [0;32m3 passed[0m, [0;31m0 failed[0m

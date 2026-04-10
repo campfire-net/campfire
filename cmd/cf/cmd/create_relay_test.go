@@ -262,7 +262,7 @@ func TestCreateRelay_OutputsBeaconAndRecordsMembership(t *testing.T) {
 		t.Fatalf("campfire.New: %v", err)
 	}
 
-	beaconStr, relayEndpoint, err := registerOnRelay(cf, agentID, agentStore, t.TempDir(), relay.URL, "test relay campfire")
+	beaconStr, relayEndpoint, _, err := registerOnRelay(cf, agentID, agentStore, t.TempDir(), relay.URL, "test relay campfire")
 	if err != nil {
 		t.Fatalf("registerOnRelay: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestCreateRelay_LsShowsP2PHTTP(t *testing.T) {
 		t.Fatalf("campfire.New: %v", err)
 	}
 
-	_, _, err = registerOnRelay(cf, agentID, agentStore, t.TempDir(), relay.URL, "ls test campfire")
+	_, _, _, err = registerOnRelay(cf, agentID, agentStore, t.TempDir(), relay.URL, "ls test campfire")
 	if err != nil {
 		t.Fatalf("registerOnRelay: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestCreateRelay_SecondAgentCanJoinAndRead(t *testing.T) {
 		t.Fatalf("campfire.New: %v", err)
 	}
 
-	_, _, err = registerOnRelay(cf, creatorID, creatorStore, t.TempDir(), relay.URL, "e2e test")
+	_, _, _, err = registerOnRelay(cf, creatorID, creatorStore, t.TempDir(), relay.URL, "e2e test")
 	if err != nil {
 		t.Fatalf("registerOnRelay: %v", err)
 	}

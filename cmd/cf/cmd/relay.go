@@ -32,7 +32,7 @@ import (
 //   - stores relay as peer endpoint (keyed by campfire pubkey)
 //
 // Returns the beacon string from the relay response (may be empty on older relays).
-func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, baseDir, relayURL, description string) (beaconStr string, relayEndpoint string, err error) {
+func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.Store, baseDir, relayURL, description string) (beaconStr string, relayEndpoint string, inviteCode string, err error) {
 	campfireID := cf.PublicKeyHex()
 
 	// Build relay-agnostic campfire descriptor.
@@ -52,7 +52,7 @@ func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.
 	// Register on relay (fetch relay-info + POST /campfire/create).
 	resp, err := cfhttp.RegisterOnRelay(relayURL, cfDesc, agentDesc)
 	if err != nil {
-		return "", "", fmt.Errorf("registering on relay %s: %w", relayURL, err)
+		return "", "", "", fmt.Errorf("registering on relay %s: %w", relayURL, err)
 	}
 
 	effectiveEndpoint := resp.Endpoint
@@ -65,7 +65,7 @@ func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.
 	// needs the plaintext locally for message signing.
 	transport := fs.New(baseDir)
 	if err := transport.Init(cf); err != nil {
-		return "", "", fmt.Errorf("storing campfire state locally: %w", err)
+		return "", "", "", fmt.Errorf("storing campfire state locally: %w", err)
 	}
 
 	// Record p2p-http membership in local store with the local transport dir.
@@ -81,7 +81,7 @@ func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.
 		TransportType:   "p2p-http",
 		Description:     description,
 	}); err != nil {
-		return "", "", fmt.Errorf("recording membership: %w", err)
+		return "", "", "", fmt.Errorf("recording membership: %w", err)
 	}
 
 	// Store relay as peer endpoint (keyed by campfire pubkey so syncFromHTTPPeers
@@ -91,8 +91,8 @@ func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.
 		MemberPubkey: campfireID, // campfire pubkey as member identifier for relay
 		Endpoint:     effectiveEndpoint,
 	}); err != nil {
-		return "", "", fmt.Errorf("storing relay peer endpoint: %w", err)
+		return "", "", "", fmt.Errorf("storing relay peer endpoint: %w", err)
 	}
 
-	return resp.Beacon, effectiveEndpoint, nil
+	return resp.Beacon, effectiveEndpoint, resp.InviteCode, nil
 }

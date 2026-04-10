@@ -67,7 +67,7 @@ func TestRelayE2E(t *testing.T) {
 		t.Fatalf("campfire.New: %v", err)
 	}
 
-	_, relayEndpoint, err := registerOnRelay(cf, agentA, storeA, t.TempDir(), relay.URL, "e2e relay test")
+	_, relayEndpoint, _, err := registerOnRelay(cf, agentA, storeA, t.TempDir(), relay.URL, "e2e relay test")
 	if err != nil {
 		t.Fatalf("registerOnRelay: %v", err)
 	}

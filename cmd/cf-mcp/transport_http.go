@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/campfire"
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
@@ -639,6 +641,25 @@ func (r *TransportRouter) handleCreateCampfire(w http.ResponseWriter, req *http.
 	// Register without session ownership (no session token for this path).
 	r.register(createReq.CampfireID, t)
 
+	// --- Generate default invite code ---
+	inviteCode := uuid.New().String()
+	st.CreateInvite(store.InviteRecord{ //nolint:errcheck
+		CampfireID: createReq.CampfireID,
+		InviteCode: inviteCode,
+		CreatedBy:  createReq.CreatorPubkey,
+		CreatedAt:  store.NowNano(),
+		Label:      "default",
+	})
+	if gs != nil && gs != st {
+		gs.CreateInvite(store.InviteRecord{ //nolint:errcheck
+			CampfireID: createReq.CampfireID,
+			InviteCode: inviteCode,
+			CreatedBy:  createReq.CreatorPubkey,
+			CreatedAt:  store.NowNano(),
+			Label:      "default",
+		})
+	}
+
 	// --- Generate beacon ---
 	var beaconStr string
 	b, berr := beacon.New(
@@ -663,6 +684,7 @@ func (r *TransportRouter) handleCreateCampfire(w http.ResponseWriter, req *http.
 		RelayX25519Pub: relayPubHex,
 		Beacon:         beaconStr,
 		Endpoint:       endpoint,
+		InviteCode:     inviteCode,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
