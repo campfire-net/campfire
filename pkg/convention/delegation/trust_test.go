@@ -1,0 +1,480 @@
+package delegation_test
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/pkg/convention/delegation"
+	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport/fs"
+)
+
+// trustTestEnv is the scaffold for trust resolution integration tests.
+type trustTestEnv struct {
+	campfireIDRaw []byte // raw 32-byte ed25519 pubkey
+	campfireHex   string // hex form of campfireIDRaw
+	transportDir  string
+	fsTransport   *fs.Transport
+	identities    []*identity.Identity
+	clients       []*protocol.Client
+	stores        []store.Store
+}
+
+// newTrustTestEnv sets up a filesystem campfire with n member identities.
+// Each identity gets its own SQLite store and protocol.Client.
+// Index 0 is conventionally the "root" (anchor) identity.
+func newTrustTestEnv(t *testing.T, n int) *trustTestEnv {
+	t.Helper()
+
+	storeDir := t.TempDir()
+	transportDir := t.TempDir()
+
+	// Generate campfire identity.
+	cfID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating campfire identity: %v", err)
+	}
+	campfireIDRaw := cfID.PublicKey
+	campfireHex := cfID.PublicKeyHex()
+
+	// Set up transport directory structure.
+	cfDir := filepath.Join(transportDir, campfireHex)
+	for _, sub := range []string{"members", "messages"} {
+		if err := os.MkdirAll(filepath.Join(cfDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	// Write campfire state (campfire.cbor).
+	state := &campfire.CampfireState{
+		PublicKey:             cfID.PublicKey,
+		PrivateKey:            cfID.PrivateKey,
+		JoinProtocol:          "open",
+		ReceptionRequirements: []string{},
+		CreatedAt:             time.Now().UnixNano(),
+	}
+	stateData, err := cfencoding.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshalling campfire state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfDir, "campfire.cbor"), stateData, 0644); err != nil {
+		t.Fatalf("writing campfire state: %v", err)
+	}
+
+	tr := fs.New(transportDir)
+
+	// Generate identities and register them as campfire members.
+	ids := make([]*identity.Identity, n)
+	for i := 0; i < n; i++ {
+		id, err := identity.Generate()
+		if err != nil {
+			t.Fatalf("generating identity %d: %v", i, err)
+		}
+		ids[i] = id
+		if err := tr.WriteMember(campfireHex, campfire.MemberRecord{
+			PublicKey: id.PublicKey,
+			JoinedAt:  time.Now().UnixNano(),
+			Role:      campfire.RoleFull,
+		}); err != nil {
+			t.Fatalf("writing member %d: %v", i, err)
+		}
+	}
+
+	// Shared membership record (same transport dir for all clients).
+	membership := store.Membership{
+		CampfireID:    campfireHex,
+		TransportDir:  tr.CampfireDir(campfireHex),
+		JoinProtocol:  "open",
+		Role:          campfire.RoleFull,
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	}
+
+	clients := make([]*protocol.Client, n)
+	stores := make([]store.Store, n)
+
+	for i := 0; i < n; i++ {
+		s, err := store.Open(filepath.Join(storeDir, ids[i].PublicKeyHex()[:8]+".db"))
+		if err != nil {
+			t.Fatalf("opening store %d: %v", i, err)
+		}
+		t.Cleanup(func() { s.Close() })
+		if err := s.AddMembership(membership); err != nil {
+			t.Fatalf("adding membership %d: %v", i, err)
+		}
+		stores[i] = s
+		clients[i] = protocol.New(s, ids[i])
+	}
+
+	env := &trustTestEnv{
+		campfireIDRaw: campfireIDRaw,
+		campfireHex:   campfireHex,
+		transportDir:  transportDir,
+		fsTransport:   tr,
+		identities:    ids,
+		clients:       clients,
+		stores:        stores,
+	}
+	return env
+}
+
+// postGrant sends an identity:granted message from identity parentIdx delegating to child.
+func (e *trustTestEnv) postGrant(t *testing.T, parentIdx int, child ed25519.PublicKey, expiresAt int64) {
+	t.Helper()
+	payload := map[string]interface{}{
+		"child_pubkey": hex.EncodeToString(child),
+		"campfire_id":  e.campfireHex,
+		"expires_at":   expiresAt,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshalling grant payload: %v", err)
+	}
+	if _, err := e.clients[parentIdx].Send(protocol.SendRequest{
+		CampfireID: e.campfireHex,
+		Payload:    b,
+		Tags:       []string{delegation.GrantedTag},
+	}); err != nil {
+		t.Fatalf("posting grant from %d: %v", parentIdx, err)
+	}
+	e.syncAll(t)
+}
+
+// postRevoke sends an identity:revoked message from identity parentIdx for child.
+func (e *trustTestEnv) postRevoke(t *testing.T, parentIdx int, child ed25519.PublicKey) {
+	t.Helper()
+	payload := map[string]interface{}{
+		"child_pubkey": hex.EncodeToString(child),
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshalling revoke payload: %v", err)
+	}
+	if _, err := e.clients[parentIdx].Send(protocol.SendRequest{
+		CampfireID: e.campfireHex,
+		Payload:    b,
+		Tags:       []string{delegation.RevokedTag},
+	}); err != nil {
+		t.Fatalf("posting revoke from %d: %v", parentIdx, err)
+	}
+	e.syncAll(t)
+}
+
+// syncAll pulls all filesystem messages into every store so every client
+// can see messages posted by every other client.
+func (e *trustTestEnv) syncAll(t *testing.T) {
+	t.Helper()
+	msgs, err := e.fsTransport.ListMessages(e.campfireHex)
+	if err != nil {
+		t.Fatalf("listing messages from transport: %v", err)
+	}
+	for _, s := range e.stores {
+		for idx := range msgs {
+			if !msgs[idx].VerifySignature() {
+				continue
+			}
+			s.AddMessage(store.MessageRecordFromMessage(e.campfireHex, &msgs[idx], store.NowNano())) //nolint:errcheck
+		}
+	}
+}
+
+// futureExpiry returns a unix timestamp 1 day from now.
+func futureExpiry() int64 { return time.Now().Unix() + 86400 }
+
+// pastExpiry returns an expired unix timestamp (well past the 60-second skew slack).
+func pastExpiry() int64 { return time.Now().Unix() - 120 }
+
+// pubkey returns the ed25519.PublicKey for identity index i.
+func (e *trustTestEnv) pubkey(i int) ed25519.PublicKey { return e.identities[i].PublicKey }
+
+// anchors returns a slice of pubkeys for the given identity indices.
+func (e *trustTestEnv) anchors(indices ...int) []ed25519.PublicKey {
+	result := make([]ed25519.PublicKey, len(indices))
+	for i, idx := range indices {
+		result[i] = e.identities[idx].PublicKey
+	}
+	return result
+}
+
+// ---- Test cases ----
+
+// Test 1: Sender is a trust anchor → Resolved with empty chain.
+func TestResolve_SenderIsAnchor(t *testing.T) {
+	env := newTrustTestEnv(t, 1)
+	ctx := context.Background()
+
+	out := delegation.Resolve(ctx, env.clients[0], env.campfireIDRaw, env.pubkey(0), env.anchors(0))
+
+	r, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved, got %T: %+v", out, out)
+	}
+	if len(r.Chain) != 0 {
+		t.Errorf("expected empty chain for anchor sender, got len=%d", len(r.Chain))
+	}
+	if !r.Anchor.Equal(env.pubkey(0)) {
+		t.Errorf("expected anchor == sender")
+	}
+}
+
+// Test 2: Sender has valid grant from anchor → Resolved{chain:[grant], anchor:parent}.
+func TestResolve_ValidGrantFromAnchor(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	// ids[0] (anchor) grants ids[1] (sender).
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry())
+
+	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	r, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved, got %T: %+v", out, out)
+	}
+	if len(r.Chain) != 1 {
+		t.Errorf("expected chain length 1, got %d", len(r.Chain))
+	}
+	if !r.Anchor.Equal(env.pubkey(0)) {
+		t.Errorf("expected anchor to be ids[0]")
+	}
+}
+
+// Test 3: Sender has valid 3-hop chain → Resolved{chain:[g1,g2], anchor:root}.
+// Chain: ids[0] (anchor) → ids[1] → ids[2] (sender).
+func TestResolve_ThreeHopChain(t *testing.T) {
+	env := newTrustTestEnv(t, 3)
+	ctx := context.Background()
+
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry()) // root → mid
+	env.postGrant(t, 1, env.pubkey(2), futureExpiry()) // mid → leaf
+
+	out := delegation.Resolve(ctx, env.clients[2], env.campfireIDRaw, env.pubkey(2), env.anchors(0))
+
+	r, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved, got %T: %+v", out, out)
+	}
+	if len(r.Chain) != 2 {
+		t.Errorf("expected chain length 2, got %d", len(r.Chain))
+	}
+	if !r.Anchor.Equal(env.pubkey(0)) {
+		t.Errorf("expected anchor to be ids[0]")
+	}
+	// Chain[0] is ids[1]→ids[2] grant, Chain[1] is ids[0]→ids[1] grant.
+	if !r.Chain[0].ParentPubkey.Equal(env.pubkey(1)) {
+		t.Errorf("chain[0].Parent should be ids[1]")
+	}
+}
+
+// Test 4: Sender has no grant → DeadEnd.
+func TestResolve_NoGrant(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	out := delegation.Resolve(ctx, env.clients[0], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	d, ok := out.(delegation.DeadEnd)
+	if !ok {
+		t.Fatalf("expected DeadEnd, got %T: %+v", out, out)
+	}
+	if !d.LastResolved.Equal(env.pubkey(1)) {
+		t.Errorf("expected LastResolved == sender")
+	}
+	if len(d.Chain) != 0 {
+		t.Errorf("expected empty chain, got %d", len(d.Chain))
+	}
+}
+
+// Test 5: Sender's grant has bad signature → InvalidGrant.
+// We directly inject a tampered record into all stores.
+func TestResolve_BadSignatureGrant(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	childHex := hex.EncodeToString(env.pubkey(1))
+	parentHex := hex.EncodeToString(env.pubkey(0))
+
+	// Inject a grant record with an invalid signature into all stores.
+	tamperedRec := store.MessageRecord{
+		ID:          "tampered-sig-grant",
+		CampfireID:  env.campfireHex,
+		Sender:      parentHex,
+		Payload:     []byte(`{"child_pubkey":"` + childHex + `","campfire_id":"` + env.campfireHex + `","expires_at":9999999999}`),
+		Tags:        []string{delegation.GrantedTag},
+		Antecedents: []string{},
+		Timestamp:   time.Now().UnixNano(),
+		Signature:   []byte("invalidsig"),
+		Provenance:  []message.ProvenanceHop{},
+	}
+	for _, s := range env.stores {
+		s.AddMessage(tamperedRec) //nolint:errcheck
+	}
+
+	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	ig, ok := out.(delegation.InvalidGrant)
+	if !ok {
+		t.Fatalf("expected InvalidGrant, got %T: %+v", out, out)
+	}
+	if ig.BadGrant == nil {
+		t.Error("expected BadGrant to be non-nil")
+	}
+}
+
+// Test 6: Sender's grant has wrong campfire_id → InvalidGrant.
+func TestResolve_WrongCampfireID(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	const wrongCampfire = "1111111111111111111111111111111111111111111111111111111111111111"
+	payload := map[string]interface{}{
+		"child_pubkey": hex.EncodeToString(env.pubkey(1)),
+		"campfire_id":  wrongCampfire,
+		"expires_at":   futureExpiry(),
+	}
+	b, _ := json.Marshal(payload)
+	if _, err := env.clients[0].Send(protocol.SendRequest{
+		CampfireID: env.campfireHex,
+		Payload:    b,
+		Tags:       []string{delegation.GrantedTag},
+	}); err != nil {
+		t.Fatalf("posting grant: %v", err)
+	}
+	env.syncAll(t)
+
+	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	_, ok := out.(delegation.InvalidGrant)
+	if !ok {
+		t.Fatalf("expected InvalidGrant for wrong campfire_id, got %T: %+v", out, out)
+	}
+}
+
+// Test 7: Sender's grant is expired → InvalidGrant (fails rule 3).
+func TestResolve_ExpiredGrant(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	env.postGrant(t, 0, env.pubkey(1), pastExpiry())
+
+	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	// An expired grant fails ValidateGrant (ErrGrantExpired), so InvalidGrant is returned.
+	_, ok := out.(delegation.InvalidGrant)
+	if !ok {
+		t.Fatalf("expected InvalidGrant for expired grant, got %T: %+v", out, out)
+	}
+}
+
+// Test 8: Chain depth exceeds 10 → DepthExceeded.
+// Build a 12-identity chain where each identity grants the next.
+func TestResolve_DepthExceeded(t *testing.T) {
+	const chainLen = 12
+	env := newTrustTestEnv(t, chainLen)
+	ctx := context.Background()
+
+	// ids[0] (anchor) → ids[1] → ... → ids[11] (sender).
+	for i := 0; i < chainLen-1; i++ {
+		env.postGrant(t, i, env.pubkey(i+1), futureExpiry())
+	}
+
+	// Resolve ids[11] with ids[0] as anchor. The walk terminates at depth 10 (MAX_CHAIN_DEPTH).
+	out := delegation.Resolve(ctx, env.clients[chainLen-1], env.campfireIDRaw, env.pubkey(chainLen-1), env.anchors(0))
+
+	_, ok := out.(delegation.DepthExceeded)
+	if !ok {
+		t.Fatalf("expected DepthExceeded for 12-hop chain, got %T: %+v", out, out)
+	}
+}
+
+// Test 9: Sender's grant is revoked → DeadEnd.
+func TestResolve_RevokedGrant(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry())
+	env.postRevoke(t, 0, env.pubkey(1))
+
+	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	_, ok := out.(delegation.DeadEnd)
+	if !ok {
+		t.Fatalf("expected DeadEnd for revoked grant, got %T: %+v", out, out)
+	}
+}
+
+// Test 10: Sender's grant revoked then re-granted → Resolved.
+func TestResolve_RevokedThenRegranted(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry())
+	env.postRevoke(t, 0, env.pubkey(1))
+	// Small pause to ensure the re-grant has a later timestamp than the revoke.
+	time.Sleep(2 * time.Millisecond)
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry())
+
+	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	r, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved after re-grant, got %T: %+v", out, out)
+	}
+	if !r.Anchor.Equal(env.pubkey(0)) {
+		t.Errorf("expected anchor to be ids[0]")
+	}
+}
+
+// Test 11: Subtree cascade — revoke mid-node → grandchild DeadEnd.
+// Chain: ids[0] (anchor) → ids[1] (mid) → ids[2] (leaf).
+// Revoke ids[0]→ids[1] → ids[2] resolution should DeadEnd at ids[1].
+func TestResolve_SubtreeCascade(t *testing.T) {
+	env := newTrustTestEnv(t, 3)
+	ctx := context.Background()
+
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry()) // root → mid
+	env.postGrant(t, 1, env.pubkey(2), futureExpiry()) // mid → leaf
+	env.postRevoke(t, 0, env.pubkey(1))                // revoke root → mid
+
+	out := delegation.Resolve(ctx, env.clients[2], env.campfireIDRaw, env.pubkey(2), env.anchors(0))
+
+	_, ok := out.(delegation.DeadEnd)
+	if !ok {
+		t.Fatalf("expected DeadEnd for grandchild after subtree revoke, got %T: %+v", out, out)
+	}
+}
+
+// Test 12: Multiple grants from different parents; revoke one → still Resolved via other.
+// ids[0] (anchor-A) grants ids[2]; ids[1] (anchor-B) grants ids[2].
+// Revoke ids[0]→ids[2]; ids[2] should still resolve via ids[1].
+func TestResolve_MultipleGrantsRevokeOne(t *testing.T) {
+	env := newTrustTestEnv(t, 3)
+	ctx := context.Background()
+
+	env.postGrant(t, 0, env.pubkey(2), futureExpiry()) // anchor-A → leaf
+	env.postGrant(t, 1, env.pubkey(2), futureExpiry()) // anchor-B → leaf
+	env.postRevoke(t, 0, env.pubkey(2))                // revoke anchor-A → leaf
+
+	// Both ids[0] and ids[1] are anchors.
+	out := delegation.Resolve(ctx, env.clients[2], env.campfireIDRaw, env.pubkey(2), env.anchors(0, 1))
+
+	r, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved via second parent, got %T: %+v", out, out)
+	}
+	if !r.Anchor.Equal(env.pubkey(1)) {
+		t.Errorf("expected anchor to be ids[1], got %x", r.Anchor)
+	}
+}
