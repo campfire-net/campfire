@@ -24,7 +24,7 @@ assert_nonzero_exit "Intruder rejected" \
     cf join "$CF_ID" --cf-home "$INTRUDER_HOME" --via "$RELAY_URL"
 
 section "Owner admits daemon"
-cf admit "$CF_ID" "$DAEMON_PUB" --cf-home "$OWNER_HOME" --via "$RELAY_URL" 2>/dev/null
+cf admit "$CF_ID" "$DAEMON_PUB" --cf-home "$OWNER_HOME" 2>/dev/null
 echo "Daemon admitted"
 
 section "Daemon joins"
