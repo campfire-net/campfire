@@ -1,5 +1,10 @@
 [
   {
+    "version": "v0.18",
+    "path": "/docs/v0.18/",
+    "release": "0.18.0"
+  },
+  {
     "version": "v0.17",
     "path": "/docs/v0.17/",
     "release": "0.17.6"
