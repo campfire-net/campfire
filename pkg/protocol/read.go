@@ -279,6 +279,15 @@ func (c *Client) readFromHTTPPeers(req ReadRequest, m *store.Membership) (*ReadR
 			continue // peer offline
 		}
 		for i := range msgs {
+			// Verify Ed25519 signature before accepting — matches syncIfFilesystem behaviour.
+			// A compromised peer could otherwise inject forged messages.
+			if !msgs[i].VerifySignature() {
+				continue
+			}
+			// Reject messages with invalid or missing provenance hops.
+			if !msgs[i].VerifyProvenance() {
+				continue
+			}
 			allMsgs = append(allMsgs, store.MessageRecordFromMessage(req.CampfireID, &msgs[i], msgs[i].Timestamp))
 		}
 	}
