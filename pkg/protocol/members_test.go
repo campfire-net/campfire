@@ -323,7 +323,6 @@ func TestMembers_Roles(t *testing.T) {
 
 	// A pre-admits B with role=writer.
 	err = A.client.Admit(protocol.AdmitRequest{
-		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:      campfireID,
 		MemberPubKeyHex: B.id.PublicKeyHex(),
 		Role:            "writer",

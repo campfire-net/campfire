@@ -91,49 +91,26 @@ func TestJoin_FilesystemMissingDir(t *testing.T) {
 
 // --- Admit edge cases ---
 
-// TestAdmit_NilTransport verifies that Admit with nil Transport returns an error.
-func TestAdmit_NilTransport(t *testing.T) {
+// TestAdmit_NotAMember verifies that Admit when not a member returns an error.
+func TestAdmit_NotAMember(t *testing.T) {
 	clientA := newJoinClient(t)
-	campfireID, _ := createFSCampfire(t, clientA, "invite-only")
-
 	clientB := newJoinClient(t)
 	err := clientA.Admit(protocol.AdmitRequest{
-		CampfireID:      campfireID,
+		CampfireID:      "0000000000000000000000000000000000000000000000000000000000000000",
 		MemberPubKeyHex: clientB.PublicKeyHex(),
-		Transport:       nil,
 	})
 	if err == nil {
-		t.Fatal("Admit with nil Transport: expected error, got nil")
-	}
-}
-
-// TestAdmit_UnsupportedTransport verifies that Admit with a P2PHTTPTransport
-// (only FilesystemTransport is supported for Admit) returns an error.
-func TestAdmit_UnsupportedTransport(t *testing.T) {
-	clientA := newJoinClient(t)
-	campfireID, _ := createFSCampfire(t, clientA, "invite-only")
-
-	clientB := newJoinClient(t)
-	err := clientA.Admit(protocol.AdmitRequest{
-		CampfireID:      campfireID,
-		MemberPubKeyHex: clientB.PublicKeyHex(),
-		Transport:       &protocol.P2PHTTPTransport{},
-	})
-	if err == nil {
-		t.Fatal("Admit with P2PHTTPTransport: expected error (only filesystem supported), got nil")
+		t.Fatal("Admit when not a member: expected error, got nil")
 	}
 }
 
 // TestAdmit_MissingCampfireID verifies that Admit without a CampfireID returns an error.
 func TestAdmit_MissingCampfireID(t *testing.T) {
 	clientA := newJoinClient(t)
-	_, campfireDir := createFSCampfire(t, clientA, "invite-only")
-
 	clientB := newJoinClient(t)
 	err := clientA.Admit(protocol.AdmitRequest{
 		CampfireID:      "",
 		MemberPubKeyHex: clientB.PublicKeyHex(),
-		Transport:       &protocol.FilesystemTransport{Dir: campfireDir},
 	})
 	if err == nil {
 		t.Fatal("Admit with empty CampfireID: expected error, got nil")
@@ -143,12 +120,11 @@ func TestAdmit_MissingCampfireID(t *testing.T) {
 // TestAdmit_MissingMemberPubKeyHex verifies that Admit without MemberPubKeyHex returns an error.
 func TestAdmit_MissingMemberPubKeyHex(t *testing.T) {
 	clientA := newJoinClient(t)
-	campfireID, campfireDir := createFSCampfire(t, clientA, "invite-only")
+	campfireID, _ := createFSCampfire(t, clientA, "invite-only")
 
 	err := clientA.Admit(protocol.AdmitRequest{
 		CampfireID:      campfireID,
 		MemberPubKeyHex: "",
-		Transport:       &protocol.FilesystemTransport{Dir: campfireDir},
 	})
 	if err == nil {
 		t.Fatal("Admit with empty MemberPubKeyHex: expected error, got nil")

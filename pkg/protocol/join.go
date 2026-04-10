@@ -26,6 +26,7 @@ import (
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/campfire-net/campfire/pkg/message"
 	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
@@ -378,19 +379,12 @@ type AdmitRequest struct {
 	// Role is the role to assign to the admitted member.
 	// Defaults to campfire.RoleFull when empty.
 	Role string
-
-	// Transport configures the transport for the campfire. Only FilesystemTransport
-	// is supported for Admit (pre-admission writes a member record to the filesystem).
-	// Required.
-	Transport Transport
 }
 
-// Admit pre-admits a member to an invite-only campfire by writing their
-// member record to the filesystem transport directory. After Admit, the
-// target can call Join() and will be allowed in.
-//
-// This is the filesystem-transport equivalent of the server-side pre-admission
-// in the P2P HTTP transport.
+// Admit pre-admits a member to an invite-only campfire. The transport is
+// resolved from the stored membership — the caller doesn't specify it.
+// For filesystem: writes a member record to the transport directory.
+// For p2p-http: POSTs to the relay's /admit endpoint.
 func (c *Client) Admit(req AdmitRequest) error {
 	if req.CampfireID == "" {
 		return fmt.Errorf("protocol.Client.Admit: CampfireID is required")
@@ -399,14 +393,12 @@ func (c *Client) Admit(req AdmitRequest) error {
 		return fmt.Errorf("protocol.Client.Admit: MemberPubKeyHex is required")
 	}
 
-	// Resolve beacon strings and cf:// URIs. Hint is discarded — Admit uses stored transport.
 	resolvedID, _, resolveErr := resolveInput(req.CampfireID, c.opts.namingResolver)
 	if resolveErr != nil {
 		return fmt.Errorf("protocol.Client.Admit: resolving campfire address: %w", resolveErr)
 	}
 	req.CampfireID = resolvedID
 
-	// Scope enforcement: campfire allowlist + admin operation class.
 	if err := c.checkCampfire(req.CampfireID); err != nil {
 		return err
 	}
@@ -414,22 +406,12 @@ func (c *Client) Admit(req AdmitRequest) error {
 		return err
 	}
 
-	var transportDir string
-	switch t := req.Transport.(type) {
-	case *FilesystemTransport:
-		if t.Dir == "" {
-			return fmt.Errorf("protocol.Client.Admit: FilesystemTransport.Dir is required")
-		}
-		transportDir = t.Dir
-	case FilesystemTransport:
-		if t.Dir == "" {
-			return fmt.Errorf("protocol.Client.Admit: FilesystemTransport.Dir is required")
-		}
-		transportDir = t.Dir
-	case nil:
-		return fmt.Errorf("protocol.Client.Admit: Transport is required")
-	default:
-		return fmt.Errorf("protocol.Client.Admit: unsupported transport type: %T (only filesystem supported)", req.Transport)
+	m, err := c.store.GetMembership(req.CampfireID)
+	if err != nil {
+		return fmt.Errorf("protocol.Client.Admit: querying membership: %w", err)
+	}
+	if m == nil {
+		return fmt.Errorf("protocol.Client.Admit: not a member of campfire %s", shortID(req.CampfireID))
 	}
 
 	role := req.Role
@@ -437,20 +419,45 @@ func (c *Client) Admit(req AdmitRequest) error {
 		role = campfire.RoleFull
 	}
 
+	switch transport.ResolveType(*m) {
+	case transport.TypePeerHTTP:
+		return c.admitP2PHTTP(req.CampfireID, req.MemberPubKeyHex, role)
+	default:
+		return c.admitFilesystem(req.CampfireID, req.MemberPubKeyHex, role, m.TransportDir)
+	}
+}
+
+func (c *Client) admitFilesystem(campfireID, memberPubKeyHex, role, transportDir string) error {
 	tr := fs.ForDir(transportDir)
 	_, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
 		FSTransport: tr,
-		// Store is not passed here: Admit only writes the transport-layer member file.
-		// The joiner's own store is updated when they call Join().
-		Store: &noopStore{},
+		Store:       &noopStore{},
 	}, admission.AdmissionRequest{
-		CampfireID:      req.CampfireID,
-		MemberPubKeyHex: req.MemberPubKeyHex,
+		CampfireID:      campfireID,
+		MemberPubKeyHex: memberPubKeyHex,
 		Role:            role,
 		TransportDir:    transportDir,
 		TransportType:   "filesystem",
 	})
 	return err
+}
+
+func (c *Client) admitP2PHTTP(campfireID, memberPubKeyHex, role string) error {
+	peers, err := c.store.ListPeerEndpoints(campfireID)
+	if err != nil {
+		return fmt.Errorf("listing peers: %w", err)
+	}
+	var endpoint string
+	for _, p := range peers {
+		if p.Endpoint != "" && p.MemberPubkey != c.identity.PublicKeyHex() {
+			endpoint = p.Endpoint
+			break
+		}
+	}
+	if endpoint == "" {
+		return fmt.Errorf("no relay endpoint found for campfire %s", shortID(campfireID))
+	}
+	return cfhttp.AdmitOnRelay(endpoint, campfireID, memberPubKeyHex, role, c.identity)
 }
 
 // noopStore is a no-op implementation of admission.Store used by Admit()

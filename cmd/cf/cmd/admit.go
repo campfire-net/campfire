@@ -1,17 +1,12 @@
 package cmd
 
 import (
-	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"time"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/transport"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
+	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +26,7 @@ var admitCmd = &cobra.Command{
 			return fmt.Errorf("public key must be 32 bytes (64 hex chars), got %d bytes", len(memberKey))
 		}
 
-		s, err := openStore()
+		agentID, s, err := requireAgentAndStore()
 		if err != nil {
 			return err
 		}
@@ -42,91 +37,18 @@ var admitCmd = &cobra.Command{
 			return err
 		}
 
-		m, err := s.GetMembership(campfireID)
-		if err != nil {
-			return fmt.Errorf("querying membership: %w", err)
-		}
-		if m == nil {
-			return fmt.Errorf("not a member of campfire %s", campfireID[:12])
-		}
-
-		transportType := transport.ResolveType(*m)
-		if transportType != transport.TypeFilesystem {
-			return fmt.Errorf("admission not yet supported for %s transport — use the transport's native member management", transportType)
+		client := protocol.New(s, agentID)
+		if err := client.Admit(protocol.AdmitRequest{
+			CampfireID:      campfireID,
+			MemberPubKeyHex: memberKeyHex,
+			Role:            admitRole,
+		}); err != nil {
+			return err
 		}
 
-		fsTransport := fs.ForDir(m.TransportDir)
-
-		// Check if already a member
-		members, err := fsTransport.ListMembers(campfireID)
-		if err != nil {
-			return fmt.Errorf("listing members: %w", err)
-		}
-		for _, existing := range members {
-			if fmt.Sprintf("%x", existing.PublicKey) == memberKeyHex {
-				return fmt.Errorf("agent %s is already a member", memberKeyHex[:12])
-			}
-		}
-
-		state, err := fsTransport.ReadState(campfireID)
-		if err != nil {
-			return fmt.Errorf("reading campfire state: %w", err)
-		}
-
-		now := time.Now().UnixNano()
-
-		// Validate role and default to "full".
-		switch admitRole {
-		case campfire.RoleObserver, campfire.RoleWriter, campfire.RoleFull, "":
-			// valid
-		default:
-			return fmt.Errorf("invalid role %q: must be one of observer, writer, full", admitRole)
-		}
 		role := admitRole
 		if role == "" {
-			role = campfire.RoleFull
-		}
-
-		// Write member record
-		if err := fsTransport.WriteMember(campfireID, campfire.MemberRecord{
-			PublicKey: memberKey,
-			JoinedAt:  now,
-			Role:      role,
-		}); err != nil {
-			return fmt.Errorf("writing member record: %w", err)
-		}
-
-		// Write campfire:member-joined system message
-		cfSigner, err := message.NewEd25519Signer(
-			ed25519.PrivateKey(state.PrivateKey),
-			ed25519.PublicKey(state.PublicKey),
-		)
-		if err != nil {
-			return fmt.Errorf("creating signer for system message: %w", err)
-		}
-		sysMsg, err := message.NewMessage(
-			cfSigner,
-			[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, memberKeyHex, now)),
-			[]string{campfire.TagMemberJoined},
-			nil,
-		)
-		if err != nil {
-			return fmt.Errorf("creating system message: %w", err)
-		}
-
-		updatedMembers, _ := fsTransport.ListMembers(campfireID)
-		cf := campfireFromState(state, updatedMembers)
-		if err := sysMsg.AddHop(
-			state.PrivateKey, state.PublicKey,
-			cf.MembershipHash(), len(updatedMembers),
-			state.JoinProtocol, state.ReceptionRequirements,
-			campfire.RoleFull,
-		); err != nil {
-			return fmt.Errorf("adding provenance hop: %w", err)
-		}
-
-		if err := fsTransport.WriteMessage(campfireID, sysMsg); err != nil {
-			return fmt.Errorf("writing system message: %w", err)
+			role = "full"
 		}
 
 		if jsonOutput {

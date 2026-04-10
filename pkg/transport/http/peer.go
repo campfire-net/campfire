@@ -113,6 +113,39 @@ func Sync(endpoint string, campfireID string, since int64, id *identity.Identity
 	return msgs, nil
 }
 
+// AdmitOnRelay tells a relay to pre-admit a member to an invite-only campfire.
+// The member's pubkey is added to the peer list so they can pass the join gate.
+func AdmitOnRelay(endpoint, campfireID, memberPubkeyHex, role string, id *identity.Identity) error {
+	reqBody := AdmitRequest{
+		MemberPubkey: memberPubkeyHex,
+		Role:         role,
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("encoding admit request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/campfire/%s/admit", endpoint, campfireID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("building admit request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	signRequest(req, id, bodyBytes)
+
+	resp, err := relayClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("posting to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("relay returned %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
 // DeliverToAll delivers a message to all given endpoints in parallel.
 // Returns one error per endpoint (nil if successful).
 func DeliverToAll(endpoints []string, campfireID string, msg *message.Message, id *identity.Identity) []error {

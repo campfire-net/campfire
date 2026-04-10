@@ -207,6 +207,8 @@ func (h *handler) route(w http.ResponseWriter, r *http.Request) {
 		h.authMiddleware(campfireID, h.handlePoll)(w, r)
 	case action == "membership" && r.Method == http.MethodPost:
 		h.authMiddleware(campfireID, h.handleMembership)(w, r)
+	case action == "admit" && r.Method == http.MethodPost:
+		h.authMiddleware(campfireID, h.handleAdmit)(w, r)
 	case action == "join" && r.Method == http.MethodPost:
 		h.signatureOnlyMiddleware(campfireID, h.handleJoin)(w, r)
 	case action == "sign" && r.Method == http.MethodPost:

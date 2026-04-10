@@ -220,7 +220,6 @@ func testJoinInviteOnlyAccept(t *testing.T) {
 
 	// A pre-admits B.
 	if err := clientA.Admit(protocol.AdmitRequest{
-		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:      campfireID,
 		MemberPubKeyHex: clientB.PublicKeyHex(),
 	}); err != nil {

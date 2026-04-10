@@ -46,7 +46,6 @@ func testAdmitThenJoin(t *testing.T) {
 
 	// A admits B with role full.
 	if err := clientA.Admit(protocol.AdmitRequest{
-		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:      campfireID,
 		MemberPubKeyHex: clientB.PublicKeyHex(),
 		Role:            campfire.RoleFull,
@@ -56,8 +55,8 @@ func testAdmitThenJoin(t *testing.T) {
 
 	// B joins — must succeed because A admitted them.
 	_, err := clientB.Join(protocol.JoinRequest{
-		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
-		CampfireID:    campfireID,
+		Transport:  &protocol.FilesystemTransport{Dir: campfireDir},
+		CampfireID: campfireID,
 	})
 	if err != nil {
 		t.Fatalf("B.Join after Admit: %v", err)
@@ -95,7 +94,6 @@ func testAdmitWithRole(t *testing.T) {
 
 	// A admits B with role writer.
 	if err := clientA.Admit(protocol.AdmitRequest{
-		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:      campfireID,
 		MemberPubKeyHex: clientB.PublicKeyHex(),
 		Role:            campfire.RoleWriter,
@@ -105,8 +103,8 @@ func testAdmitWithRole(t *testing.T) {
 
 	// B joins.
 	_, err := clientB.Join(protocol.JoinRequest{
-		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
-		CampfireID:    campfireID,
+		Transport:  &protocol.FilesystemTransport{Dir: campfireDir},
+		CampfireID: campfireID,
 	})
 	if err != nil {
 		t.Fatalf("B.Join: %v", err)
@@ -150,8 +148,8 @@ func testAdmitWithoutPriorAdmitRejected(t *testing.T) {
 
 	clientB := newJoinClient(t)
 	_, err := clientB.Join(protocol.JoinRequest{
-		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
-		CampfireID:    campfireID,
+		Transport:  &protocol.FilesystemTransport{Dir: campfireDir},
+		CampfireID: campfireID,
 	})
 	if err == nil {
 		t.Fatal("expected error joining invite-only campfire without Admit, got nil")
@@ -171,7 +169,6 @@ func testDuplicateAdmitIdempotent(t *testing.T) {
 	bPubKey := clientB.PublicKeyHex()
 
 	admitReq := protocol.AdmitRequest{
-		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:      campfireID,
 		MemberPubKeyHex: bPubKey,
 		Role:            campfire.RoleFull,
@@ -216,7 +213,6 @@ func testMemberRecordOnDisk(t *testing.T) {
 	bPubKey := clientB.PublicKeyHex()
 
 	if err := clientA.Admit(protocol.AdmitRequest{
-		Transport: &protocol.FilesystemTransport{Dir: campfireDir},
 		CampfireID:      campfireID,
 		MemberPubKeyHex: bPubKey,
 		Role:            campfire.RoleWriter,
