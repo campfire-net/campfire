@@ -9,6 +9,7 @@ package http_test
 import (
 	"crypto/ed25519"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -19,6 +20,23 @@ import (
 	"github.com/campfire-net/campfire/pkg/threshold"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
+
+// freeAddr returns a 127.0.0.1:PORT string where PORT is OS-assigned and
+// immediately released. This avoids bind collisions in parallel CI runs caused
+// by hardcoded port offsets. The port is not held between freeAddr() and
+// Listen(), so there is a small TOCTOU window; in practice this is safe for
+// loopback addresses on Linux/macOS where the kernel assigns ephemeral ports
+// from a large range and does not immediately reuse released ports.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("freeAddr: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	return addr
+}
 
 // TestSendReadP2PThreshold1 tests the basic send→deliver→sync flow:
 // - Agent A sends a message (delivered via HTTP to B).
@@ -42,14 +60,10 @@ func TestSendReadP2PThreshold1(t *testing.T) {
 	addPeerEndpoint(t, sB, campfireID, idA.PublicKeyHex())
 	addPeerEndpoint(t, sB, campfireID, idB.PublicKeyHex())
 
-	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+20)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+21)
-	epA := fmt.Sprintf("http://%s", addrA)
-	epB := fmt.Sprintf("http://%s", addrB)
+	addrA := freeAddr(t)
+	addrB := freeAddr(t)
 
 	trA := cfhttp.New(addrA, sA)
-	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
 	trA.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -60,13 +74,16 @@ func TestSendReadP2PThreshold1(t *testing.T) {
 		t.Fatalf("starting transport A: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
+	epA := fmt.Sprintf("http://%s", trA.Addr())
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
 
 	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := fmt.Sprintf("http://%s", trB.Addr())
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build a message with a signed provenance hop (threshold=1).
@@ -194,13 +211,9 @@ func TestSendReadP2PThreshold2(t *testing.T) {
 	storeShare(sB, campfireID, 2, shareB)
 	storeShare(sC, campfireID, 3, shareC)
 
-	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+22)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+23)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+24)
-	epA := fmt.Sprintf("http://%s", addrA)
-	epB := fmt.Sprintf("http://%s", addrB)
-	epC := fmt.Sprintf("http://%s", addrC)
+	addrA := freeAddr(t)
+	addrB := freeAddr(t)
+	addrC := freeAddr(t)
 
 	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
@@ -217,28 +230,31 @@ func TestSendReadP2PThreshold2(t *testing.T) {
 
 	// Start transports.
 	trA := cfhttp.New(addrA, sA)
-	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
 	trA.SetThresholdShareProvider(buildShareProvider(sA))
 	if err := trA.Start(); err != nil {
 		t.Fatalf("starting transport A: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
+	epA := fmt.Sprintf("http://%s", trA.Addr())
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
 
 	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
 	trB.SetThresholdShareProvider(buildShareProvider(sB))
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := fmt.Sprintf("http://%s", trB.Addr())
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
 
 	trC := cfhttp.New(addrC, sC)
-	trC.SetSelfInfo(idC.PublicKeyHex(), epC)
 	trC.SetThresholdShareProvider(buildShareProvider(sC))
 	if err := trC.Start(); err != nil {
 		t.Fatalf("starting transport C: %v", err)
 	}
 	t.Cleanup(func() { trC.Stop() }) //nolint:errcheck
+	epC := fmt.Sprintf("http://%s", trC.Addr())
+	trC.SetSelfInfo(idC.PublicKeyHex(), epC)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build the hop sign input and run FROST signing in-process for the test.
@@ -373,11 +389,8 @@ func TestSignEndpointRoundTrip(t *testing.T) {
 	sA.UpsertThresholdShare(store.ThresholdShare{CampfireID: campfireID, ParticipantID: 1, SecretShare: shareA}) //nolint:errcheck
 	sB.UpsertThresholdShare(store.ThresholdShare{CampfireID: campfireID, ParticipantID: 2, SecretShare: shareB}) //nolint:errcheck
 
-	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+25)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+26)
-	epA := fmt.Sprintf("http://%s", addrA)
-	epB := fmt.Sprintf("http://%s", addrB)
+	addrA := freeAddr(t)
+	addrB := freeAddr(t)
 
 	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
@@ -390,20 +403,22 @@ func TestSignEndpointRoundTrip(t *testing.T) {
 	}
 
 	trA := cfhttp.New(addrA, sA)
-	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
 	trA.SetThresholdShareProvider(buildShareProvider(sA))
 	if err := trA.Start(); err != nil {
 		t.Fatalf("starting A: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
+	epA := fmt.Sprintf("http://%s", trA.Addr())
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
 
 	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
 	trB.SetThresholdShareProvider(buildShareProvider(sB))
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := fmt.Sprintf("http://%s", trB.Addr())
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
 	time.Sleep(20 * time.Millisecond)
 
 	// The message to threshold-sign: must be CBOR-encoded MessageSignInput or HopSignInput.

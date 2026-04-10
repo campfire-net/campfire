@@ -45,6 +45,7 @@ type nonceEntry struct {
 // Transport manages an HTTP server for P2P campfire communication.
 type Transport struct {
 	listenAddr string
+	boundAddr  string // actual address after Start() (may differ from listenAddr when port is 0)
 	tlsConfig  *TLSConfig
 	server     *http.Server
 	store      store.Store
@@ -264,6 +265,7 @@ func (t *Transport) Start() error {
 			return fmt.Errorf("binding %s: %w", t.listenAddr, err)
 		}
 	}
+	t.boundAddr = ln.Addr().String()
 	go t.server.Serve(ln) //nolint:errcheck
 
 	// Background nonce pruner: sweeps the nonce map every nonceWindow/2
@@ -307,6 +309,13 @@ func (t *Transport) Stop() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return t.server.Shutdown(ctx)
+}
+
+// Addr returns the address the transport is bound to after Start().
+// When the transport was created with a ":0" address, Addr returns the
+// OS-assigned address (e.g. "127.0.0.1:54321").
+func (t *Transport) Addr() string {
+	return t.boundAddr
 }
 
 // AddPeer registers a peer for a campfire.
