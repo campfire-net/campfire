@@ -1,26 +1,24 @@
 
 [1m=== Setup: server + daemon identities ===[0m
-Server: 7e8a526685e377f96c187631dedd1e110673d9824d84889571e87b7f6dfa1a3f
-Daemon: e9b9f7b57750cdc1c6888c387e9a13c263af341d4ec86c1cf1a5f0ef96b16409
+Server: 0b8c3284df3c66179f5ca15efd2db7e32d5ddadc4ce0193a577b84f20636404b
+Daemon: e1b0e8f5ac02451a19e479a367e429b70b463709d60351ce0ea265cfa733b2ff
 
-[1m=== Server creates campfire ===[0m
-Campfire: 0673ffacded6...
+[1m=== Server creates campfire on relay ===[0m
+Campfire: f84b48ee66dcee2138f895eb5d34db0293a176bb66c4962dfb5b83ed6dc0ffa8
 
 [1m=== Server sends a tagged request ===[0m
-f30ef686-a1ec-417a-8388-0b5902523913
-Request sent with tags: relay-inbound, webhook
+05316247-5bf7-4211-9968-5b7480ab15dc
+Request sent
 
-[1m=== Daemon joins ===[0m
-Joined campfire 0673ffacded6
-trust: unknown
-  [unknown] convention-extension:promote
+[1m=== Daemon joins via relay ===[0m
+Joined campfire f84b48ee66dc
 Daemon joined
 
 [1m=== Daemon reads with tag filter ===[0m
   [0;32mPASS[0m: Daemon sees tagged request
 
 [1m=== Daemon sends response ===[0m
-db3d32b5-9af8-435b-8053-d8ae798ee109
+7c6c49a5-8738-4c09-bb30-a26a86490830
 Response sent
 
 [1m=== Server reads response ===[0m
@@ -32,6 +30,17 @@ Response sent
   [0;32mPASS[0m: Daemon sees server request
   [0;32mPASS[0m: Daemon sees own response
 
+[1m=== Verify cf ls shows campfire for both agents ===[0m
+  [0;32mPASS[0m: cf ls: server sees campfire
+  [0;32mPASS[0m: cf ls: daemon sees campfire
+
+[1m=== Verify cf members returns member list ===[0m
+  [0;32mPASS[0m: cf members returns JSON array
+
+[1m=== Cleanup ===[0m
+Left campfire f84b48ee66dc
+Left campfire f84b48ee66dc
+
 ================================
-Results: [0;32m6 passed[0m, [0;31m0 failed[0m
+Results: [0;32m9 passed[0m, [0;31m0 failed[0m
 ================================
