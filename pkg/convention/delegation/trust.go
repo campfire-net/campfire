@@ -200,9 +200,8 @@ func findValidGrant(
 		rawMsg := protoMsgToRaw(c.msg)
 
 		if err := ValidateGrant(rawMsg, campfireHex, now); err != nil {
-			// Report the first invalid grant as InvalidGrant.
-			pmsg := c.msg
-			return nil, &pmsg, err
+			// Per spec §4: skip invalid grants and try the next candidate.
+			continue
 		}
 
 		// Validation passed. Check for a revocation from the same parent.

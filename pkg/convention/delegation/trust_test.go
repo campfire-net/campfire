@@ -297,7 +297,7 @@ func TestResolve_NoGrant(t *testing.T) {
 	}
 }
 
-// Test 5: Sender's grant has bad signature → InvalidGrant.
+// Test 5: Sender's grant has bad signature → DeadEnd (invalid grants are skipped per spec §4).
 // We directly inject a tampered record into all stores.
 func TestResolve_BadSignatureGrant(t *testing.T) {
 	env := newTrustTestEnv(t, 2)
@@ -324,16 +324,14 @@ func TestResolve_BadSignatureGrant(t *testing.T) {
 
 	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
 
-	ig, ok := out.(delegation.InvalidGrant)
+	// Per spec §4, invalid grants are skipped. With no valid grant remaining, the result is DeadEnd.
+	_, ok := out.(delegation.DeadEnd)
 	if !ok {
-		t.Fatalf("expected InvalidGrant, got %T: %+v", out, out)
-	}
-	if ig.BadGrant == nil {
-		t.Error("expected BadGrant to be non-nil")
+		t.Fatalf("expected DeadEnd (invalid grant skipped per spec), got %T: %+v", out, out)
 	}
 }
 
-// Test 6: Sender's grant has wrong campfire_id → InvalidGrant.
+// Test 6: Sender's grant has wrong campfire_id → DeadEnd (invalid grants are skipped per spec §4).
 func TestResolve_WrongCampfireID(t *testing.T) {
 	env := newTrustTestEnv(t, 2)
 	ctx := context.Background()
@@ -356,13 +354,14 @@ func TestResolve_WrongCampfireID(t *testing.T) {
 
 	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
 
-	_, ok := out.(delegation.InvalidGrant)
+	// Per spec §4, invalid grants are skipped. With no valid grant remaining, the result is DeadEnd.
+	_, ok := out.(delegation.DeadEnd)
 	if !ok {
-		t.Fatalf("expected InvalidGrant for wrong campfire_id, got %T: %+v", out, out)
+		t.Fatalf("expected DeadEnd (invalid grant skipped per spec), got %T: %+v", out, out)
 	}
 }
 
-// Test 7: Sender's grant is expired → InvalidGrant (fails rule 3).
+// Test 7: Sender's grant is expired → DeadEnd (invalid grants are skipped per spec §4).
 func TestResolve_ExpiredGrant(t *testing.T) {
 	env := newTrustTestEnv(t, 2)
 	ctx := context.Background()
@@ -371,10 +370,10 @@ func TestResolve_ExpiredGrant(t *testing.T) {
 
 	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
 
-	// An expired grant fails ValidateGrant (ErrGrantExpired), so InvalidGrant is returned.
-	_, ok := out.(delegation.InvalidGrant)
+	// Per spec §4, expired grants are skipped (continue). With no valid grant, DeadEnd is returned.
+	_, ok := out.(delegation.DeadEnd)
 	if !ok {
-		t.Fatalf("expected InvalidGrant for expired grant, got %T: %+v", out, out)
+		t.Fatalf("expected DeadEnd (expired grant skipped per spec), got %T: %+v", out, out)
 	}
 }
 
@@ -453,6 +452,31 @@ func TestResolve_SubtreeCascade(t *testing.T) {
 	_, ok := out.(delegation.DeadEnd)
 	if !ok {
 		t.Fatalf("expected DeadEnd for grandchild after subtree revoke, got %T: %+v", out, out)
+	}
+}
+
+// Test 12a: Newest grant is expired, older valid grant exists → Resolved (regression for spec §4).
+// Before the fix, findValidGrant would return InvalidGrant on the first (expired) candidate
+// instead of continuing to the older valid grant.
+func TestResolve_ExpiredNewerGrantFallsBackToValidOlder(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	// Post an older valid grant first, then a newer expired one.
+	// syncAll ensures both are in every store before resolving.
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry()) // older, valid
+	time.Sleep(2 * time.Millisecond)
+	env.postGrant(t, 0, env.pubkey(1), pastExpiry()) // newer, expired
+
+	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	// The expired (newest) grant must be skipped and the older valid grant used.
+	r, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved (valid older grant), got %T: %+v", out, out)
+	}
+	if !r.Anchor.Equal(env.pubkey(0)) {
+		t.Errorf("expected anchor to be ids[0]")
 	}
 }
 
