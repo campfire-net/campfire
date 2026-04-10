@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -40,15 +41,21 @@ func computeInitialCursor(s store.Store, campfireID string) (int64, error) {
 }
 
 // syncCampfire runs the appropriate sync function for a single campfire based on its transport.
-func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, s store.Store) {
+// Returns an error only for hard transport failures (e.g. deleted filesystem directory).
+// Network-level failures (GitHub token missing, HTTP peer offline) are silently ignored so
+// that transient outages do not terminate subscriptions.
+func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, s store.Store) error {
 	switch transport.ResolveType(*m) {
 	case transport.TypeGitHub:
 		syncFromGitHub(cfID, m.TransportDir, s)
 	case transport.TypePeerHTTP:
 		syncFromHTTPPeers(cfID, agentID, s)
 	default:
-		syncFromFilesystem(cfID, m.TransportDir, s)
+		if err := syncFromFilesystem(cfID, m.TransportDir, s); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // syncFromGitHub polls the GitHub Issue for new comments and stores verified messages
@@ -85,11 +92,25 @@ func syncFromGitHub(cfID, transportDir string, s store.Store) {
 // Only messages with valid Ed25519 signatures are stored; invalid messages are silently
 // skipped to prevent injection of unsigned content via shared filesystem directories.
 // Provenance hops are also verified; any hop with an invalid signature is rejected.
-func syncFromFilesystem(cfID string, transportDir string, s store.Store) {
+//
+// Returns an error if the transport directory does not exist or is otherwise unreadable.
+// ListMessages returns nil/nil for a missing directory (resilient design for one-shot reads),
+// so we use os.Stat to explicitly detect a missing directory — the same approach used by
+// syncIfFilesystem in pkg/protocol/read.go. This lets callers that need to detect permanent
+// transport failures (e.g. Subscribe via StoreSyncer) surface the error.
+func syncFromFilesystem(cfID string, transportDir string, s store.Store) error {
 	fsTransport := fs.ForDir(transportDir)
+
+	// Detect transport directory removal explicitly.
+	// ListMessages returns nil/nil on IsNotExist, so we must stat first.
+	campfireDir := fsTransport.CampfireDir(cfID)
+	if _, err := os.Stat(campfireDir); os.IsNotExist(err) {
+		return fmt.Errorf("campfire transport directory removed: %s", campfireDir)
+	}
+
 	fsMessages, err := fsTransport.ListMessages(cfID)
 	if err != nil {
-		return
+		return fmt.Errorf("reading filesystem transport %q: %w", transportDir, err)
 	}
 	for _, fsMsg := range fsMessages {
 		// workspace-h0t: verify message signature before storing.
@@ -102,6 +123,7 @@ func syncFromFilesystem(cfID string, transportDir string, s store.Store) {
 		}
 		s.AddMessage(store.MessageRecordFromMessage(cfID, &fsMsg, store.NowNano())) //nolint:errcheck
 	}
+	return nil
 }
 
 // syncFromHTTPPeers pulls messages from all known peer endpoints for a p2p-http campfire.
@@ -157,6 +179,8 @@ func (ss *StoreSyncer) Sync(campfireID string) error {
 		// No membership — nothing to sync (mirrors syncIfFilesystem behaviour).
 		return nil
 	}
-	syncCampfire(campfireID, m, ss.agentID, ss.store)
+	if err := syncCampfire(campfireID, m, ss.agentID, ss.store); err != nil {
+		return fmt.Errorf("syncing campfire %s: %w", campfireID, err)
+	}
 	return nil
 }

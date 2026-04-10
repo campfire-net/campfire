@@ -177,7 +177,9 @@ func TestCreateFilesystem_ProjectMode_AnnouncementSent(t *testing.T) {
 	}
 
 	// Sync messages from root campfire transport dir into store.
-	syncFromFilesystem(rootCF.PublicKeyHex(), rootTransportDir, s)
+	if err := syncFromFilesystem(rootCF.PublicKeyHex(), rootTransportDir, s); err != nil {
+		t.Fatalf("syncFromFilesystem: %v", err)
+	}
 
 	// Verify announcement message in store.
 	msgs, err := s.ListMessages(rootCF.PublicKeyHex(), 0)

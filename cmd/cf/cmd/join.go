@@ -277,8 +277,9 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 	}
 
 	// Sync messages immediately so convention declarations are available
-	// without requiring a separate cf read.
-	syncCampfire(campfireID, m, agentID, s)
+	// without requiring a separate cf read. Errors are non-fatal here —
+	// a failed sync at join time is not a reason to abort the join.
+	syncCampfire(campfireID, m, agentID, s) //nolint:errcheck
 
 	// Auto-send identity:profile if the agent has a display name (best-effort).
 	maybeSendProfileMessage(campfireID, agentID, s)
@@ -435,9 +436,10 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	}
 
 	// Sync messages immediately so convention declarations are available
-	// without requiring a separate cf read.
+	// without requiring a separate cf read. Errors are non-fatal here —
+	// a failed sync at join time is not a reason to abort the join.
 	p2pMembership, _ := s.GetMembership(campfireID)
-	syncCampfire(campfireID, p2pMembership, agentID, s)
+	syncCampfire(campfireID, p2pMembership, agentID, s) //nolint:errcheck
 
 	// Compare fingerprints against local policy (Trust v0.2 §5.3).
 	p2pReport := compareJoinedCampfire(s, campfireID)
@@ -626,9 +628,10 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 	}
 
 	// Sync messages immediately so convention declarations are available
-	// without requiring a separate cf read.
+	// without requiring a separate cf read. Errors are non-fatal here —
+	// a failed sync at join time is not a reason to abort the join.
 	ghMembership, _ := s.GetMembership(campfireID)
-	syncCampfire(campfireID, ghMembership, agentID, s)
+	syncCampfire(campfireID, ghMembership, agentID, s) //nolint:errcheck
 
 	// Compare fingerprints against local policy (Trust v0.2 §5.3).
 	ghReport := compareJoinedCampfire(s, campfireID)
