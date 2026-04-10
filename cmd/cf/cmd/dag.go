@@ -45,7 +45,7 @@ var dagCmd = &cobra.Command{
 			return fmt.Errorf("querying membership: %w", err)
 		}
 		if m != nil {
-			syncCampfire(resolved, m, agentID, s)
+			syncCampfire(resolved, m, agentID, s) //nolint:errcheck
 		}
 
 		// Query messages.

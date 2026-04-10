@@ -102,7 +102,9 @@ func TestFollowFilesystemPicksUpNewMessages(t *testing.T) {
 	}
 
 	// Sync once to populate store with first message.
-	syncFromFilesystem(campfireID, cfDir, s)
+	if err := syncFromFilesystem(campfireID, cfDir, s); err != nil {
+		t.Fatalf("syncFromFilesystem: %v", err)
+	}
 
 	// Verify first message is in store.
 	msgs, err := s.ListMessages(campfireID, 0)
@@ -127,7 +129,9 @@ func TestFollowFilesystemPicksUpNewMessages(t *testing.T) {
 	}
 
 	// Sync again (simulating one iteration of the follow loop).
-	syncFromFilesystem(campfireID, cfDir, s)
+	if err := syncFromFilesystem(campfireID, cfDir, s); err != nil {
+		t.Fatalf("syncFromFilesystem: %v", err)
+	}
 
 	// Query for messages after the first one.
 	newMsgs, err := s.ListMessages(campfireID, firstTS)

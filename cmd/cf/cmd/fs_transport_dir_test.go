@@ -95,7 +95,9 @@ func TestFSTransportDirFromMembership(t *testing.T) {
 
 	// Sync messages from the filesystem transport into the store.
 	// Must use customBaseDir, not DefaultBaseDir().
-	syncFromFilesystem(campfireID, transportDir, s)
+	if err := syncFromFilesystem(campfireID, transportDir, s); err != nil {
+		t.Fatalf("syncFromFilesystem: %v", err)
+	}
 
 	// Verify the message is now in the store.
 	msgs, err := s.ListMessages(campfireID, 0)
