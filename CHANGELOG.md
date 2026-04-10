@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.17.4 — relay end-to-end: create, join, admit, send, read (2026-04-10)
+
+Complete relay campfire lifecycle. All 12 demo scripts pass — filesystem, local relay, and hosted relay (mcp.getcampfire.dev).
+
+### Features
+
+- **`cf admit` on relay campfires**: `protocol.Client.Admit` resolves transport from membership — CLI has no transport awareness. New `POST /campfire/{id}/admit` endpoint on relay adds members to invite-only peer list.
+- **Direct relay reads**: `cf read` for p2p-http campfires fetches directly from the relay instead of syncing to a local copy. Eliminates redundant storage and clock-domain cursor mismatches.
+
+### Bug Fixes
+
+- **Azure Table `Timestamp` collision**: Azure Table Storage's reserved `Timestamp` property overwrote message creation timestamps with entity last-modified time (~seconds). Renamed to `MsgTimestamp`; read path falls back to old property for pre-migration rows.
+- **Relay send path**: `registerOnRelay` now stores campfire state locally via `fs.Transport.Init` so `cf send` can sign provenance hops. Previously empty TransportDir caused "transport dir is empty."
+- **Join state layout**: `joinP2PHTTP` stores state in fs.Transport layout (campfire.cbor) matching creator path. Fixes `cf leave` and `cf read` on relay-joined campfires.
+- **Beacon publishing**: `createAndRegisterOnRelay` publishes a local p2p-http beacon so `cf share` works.
+
+### Tests
+
+- All 12 demo scripts pass (50 assertions across filesystem, local relay, and hosted relay)
+- Full test suite green
+
 ## v0.17.3 — relay campfire creation from CLI (2026-04-09)
 
 CLI agents can now create campfires on hosted relays via `cf create --relay URL`. The relay handles ECDH key exchange, stores the campfire, and returns a beacon. Other agents join with `cf join <id> --via URL` as before.
