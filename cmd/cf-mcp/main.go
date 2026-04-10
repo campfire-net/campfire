@@ -4887,6 +4887,16 @@ func main() {
 			cfHome = filepath.Join(home, ".campfire")
 		}
 	}
+	// When --cf-home was specified explicitly and CF_HOME is not already set,
+	// propagate cfHome to CF_HOME so DefaultBaseDir() (transport layer) also
+	// resolves under the same directory. Without this, --cf-home controls only
+	// the identity/store path while the transport reads CF_HOME independently,
+	// causing pack/restore to capture the wrong (empty) campfires/ directory.
+	if cfHomeExplicit && os.Getenv("CF_HOME") == "" {
+		if err := os.Setenv("CF_HOME", cfHome); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not set CF_HOME: %v\n", err)
+		}
+	}
 	if beaconDir == "" {
 		if env := os.Getenv("CF_BEACON_DIR"); env != "" {
 			beaconDir = env

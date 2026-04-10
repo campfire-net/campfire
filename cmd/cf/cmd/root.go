@@ -59,6 +59,17 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfHome, "cf-home", "", "path to campfire home directory (default: ~/.cf)")
 	rootCmd.Flags().BoolVar(&helpPrimitives, "help-primitives", false, "show primitive commands (send, read, create, discover, await, inspect)")
 
+	// When --cf-home is specified explicitly, propagate it to CF_HOME so that
+	// DefaultBaseDir() (transport layer) also resolves under the same directory.
+	// Without this, --cf-home controls only the identity/store path while the
+	// transport continues to use $CF_HOME or ~/.campfire/campfires/, causing
+	// pack/restore operations to capture an empty directory.
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+		if cfHome != "" && os.Getenv("CF_HOME") == "" {
+			os.Setenv("CF_HOME", cfHome) //nolint:errcheck
+		}
+	}
+
 	// Register command groups for organized help output.
 	rootCmd.AddGroup(
 		&cobra.Group{ID: groupConventions, Title: "Convention Operations:"},
