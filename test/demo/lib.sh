@@ -100,69 +100,14 @@ assert_nonzero_exit() {
 
 # --- Infrastructure checks ---
 
+HOSTED_RELAY_URL="https://mcp.east.getcampfire.dev/api"
+
 require_hosted_relay() {
     if ! timeout 5 bash -c 'echo > /dev/tcp/mcp.getcampfire.dev/443' 2>/dev/null; then
         echo "SKIP: mcp.getcampfire.dev not reachable"
         exit 0
     fi
-}
-
-HOSTED_RELAY_URL="https://mcp.east.getcampfire.dev/api"
-
-# --- Local relay management ---
-# Start a local cf-mcp relay and return the URL.
-# Usage: RELAY_URL=$(start_local_relay)
-start_local_relay() {
-    local mcp_home port mcp_bin pid
-    mcp_home=$(new_identity relay)
-    register_cleanup "$mcp_home"
-    port=$((19000 + RANDOM % 1000))
-
-    export PATH="$HOME/.local/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"
-    if ! command -v cf-mcp >/dev/null 2>&1; then
-        (cd ~/projects/campfire && go build -o /tmp/cf-mcp ./cmd/cf-mcp) >/dev/null 2>&1
-        mcp_bin=/tmp/cf-mcp
-    else
-        mcp_bin=cf-mcp
-    fi
-
-    "$mcp_bin" --http ":${port}" --cf-home "$mcp_home" >/dev/null 2>&1 &
-    pid=$!
-    LOCAL_RELAY_PID=$pid
-
-    # Wait for it to be ready
-    for i in 1 2 3 4 5; do
-        if curl -sf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
-            echo "http://127.0.0.1:${port}"
-            return 0
-        fi
-        sleep 1
-    done
-    echo "FAIL: local relay did not start on port $port" >&2
-    return 1
-}
-
-stop_local_relay() {
-    if [ -n "${LOCAL_RELAY_PID:-}" ]; then
-        kill "$LOCAL_RELAY_PID" 2>/dev/null || true
-        wait "$LOCAL_RELAY_PID" 2>/dev/null || true
-    fi
-}
-
-# Create a campfire on a LOCAL relay. The first agent creates with
-# --transport p2p-http --listen, which registers it on the relay.
-# Usage: CF_ID=$(create_relay_campfire --cf-home HOME RELAY_URL)
-create_relay_campfire() {
-    local home="$1" relay_url="$2"
-    shift 2
-    local raw cf_id
-    # Create locally, then the relay knows about it when we join
-    raw=$(cf create --cf-home "$home" --transport p2p-http --listen ":0" --json "$@" 2>/dev/null)
-    cf_id=$(echo "$raw" | extract_json | python3 -c "import sys,json; print(json.load(sys.stdin).get('campfire_id',''))")
-    # Now join the relay so it has the campfire
-    # Actually — we need to use protocol.Client or the MCP API.
-    # Simpler: just return the cf_id. The --listen agent IS the relay.
-    echo "$cf_id"
+    RELAY_URL="$HOSTED_RELAY_URL"
 }
 
 # Extract JSON object from mixed stdout (cf commands sometimes print
