@@ -194,6 +194,98 @@ func TestListMembersByTransport_PeerHTTP(t *testing.T) {
 	}
 }
 
+// TestListMembersByTransport_GitHub verifies that GitHub-transport campfires
+// return members from the store's peer_endpoints table with correct pubkeys and
+// roles — exercising the TypeGitHub branch in listMembersByTransport, which
+// shares the listMembersFromStore path with TypePeerHTTP.
+func TestListMembersByTransport_GitHub(t *testing.T) {
+	cfHomeDir := t.TempDir()
+	t.Setenv("CF_HOME", cfHomeDir)
+
+	s, err := store.Open(filepath.Join(cfHomeDir, "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	cfID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating campfire identity: %v", err)
+	}
+	campfireID := cfID.PublicKeyHex()
+
+	member1, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating member1: %v", err)
+	}
+	member2, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating member2: %v", err)
+	}
+
+	m := store.Membership{
+		CampfireID:    campfireID,
+		TransportDir:  "github:owner/repo/" + campfireID,
+		JoinProtocol:  "invite-only",
+		Role:          campfire.RoleFull,
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "github",
+	}
+	if err := s.AddMembership(m); err != nil {
+		t.Fatalf("adding membership: %v", err)
+	}
+
+	m1Hex := fmt.Sprintf("%x", member1.PublicKey)
+	m2Hex := fmt.Sprintf("%x", member2.PublicKey)
+
+	// Populate peer endpoints (as join.go does after a successful join).
+	if err := s.UpsertPeerEndpoint(store.PeerEndpoint{
+		CampfireID:   campfireID,
+		MemberPubkey: m1Hex,
+		Endpoint:     "https://github.com/owner/repo",
+		Role:         store.PeerRoleCreator,
+	}); err != nil {
+		t.Fatalf("upserting peer endpoint 1: %v", err)
+	}
+	if err := s.UpsertPeerEndpoint(store.PeerEndpoint{
+		CampfireID:   campfireID,
+		MemberPubkey: m2Hex,
+		Endpoint:     "https://github.com/owner/repo",
+		Role:         store.PeerRoleMember,
+	}); err != nil {
+		t.Fatalf("upserting peer endpoint 2: %v", err)
+	}
+
+	members, err := listMembersByTransport(m, s)
+	if err != nil {
+		t.Fatalf("listMembersByTransport: %v", err)
+	}
+
+	if len(members) != 2 {
+		t.Errorf("expected 2 members, got %d; endpoints: %+v", len(members), members)
+	}
+
+	found := map[string]string{} // pubkeyHex → role
+	for _, mem := range members {
+		found[fmt.Sprintf("%x", mem.PublicKey)] = mem.Role
+	}
+	if _, ok := found[m1Hex]; !ok {
+		t.Errorf("member1 (%s) not found in result", m1Hex[:8])
+	}
+	if _, ok := found[m2Hex]; !ok {
+		t.Errorf("member2 (%s) not found in result", m2Hex[:8])
+	}
+	// creator role → EffectiveRole → RoleFull
+	if found[m1Hex] != campfire.RoleFull {
+		t.Errorf("member1 role: got %q, want %q", found[m1Hex], campfire.RoleFull)
+	}
+	// member role → EffectiveRole → RoleFull (legacy default)
+	if found[m2Hex] != campfire.RoleFull {
+		t.Errorf("member2 role: got %q, want %q", found[m2Hex], campfire.RoleFull)
+	}
+}
+
 // TestListMembersFromStore_MalformedPubkey verifies that malformed hex pubkeys
 // in peer_endpoints are silently skipped rather than causing an error.
 func TestListMembersFromStore_MalformedPubkey(t *testing.T) {
