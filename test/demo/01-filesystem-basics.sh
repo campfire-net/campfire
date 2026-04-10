@@ -13,7 +13,7 @@ echo "Bob:   $(pubkey_of "$BOB_HOME")"
 
 section "Alice creates a filesystem campfire"
 CF_ID=$(create_campfire --cf-home "$ALICE_HOME")
-echo "Campfire: ${CF_ID:0:12}..."
+echo "Campfire: $CF_ID"
 
 section "Bob joins via filesystem"
 cf join "$CF_ID" --cf-home "$BOB_HOME" 2>/dev/null
@@ -39,7 +39,7 @@ assert_not_contains "Tag filter excludes non-matching" "$NOTAG_OUT" "Hello"
 section "cf ls shows campfire"
 LS_OUT=$(cf ls --cf-home "$ALICE_HOME" 2>/dev/null)
 echo "$LS_OUT"
-assert_contains "ls shows campfire" "$LS_OUT" "${CF_ID:0:12}"
+assert_contains "ls shows campfire" "$LS_OUT" "$CF_ID"
 assert_contains "ls shows members" "$LS_OUT" "members"
 
 section "cf members lists agents"

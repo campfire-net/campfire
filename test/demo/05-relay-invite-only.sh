@@ -17,7 +17,7 @@ echo "Intruder: $(pubkey_of "$INTRUDER_HOME")"
 
 section "Owner creates invite-only relay campfire"
 CF_ID=$(create_campfire --cf-home "$OWNER_HOME" --via "$RELAY_URL" --join-protocol invite-only)
-echo "Campfire (invite-only): ${CF_ID:0:12}..."
+echo "Campfire (invite-only): $CF_ID"
 
 section "Intruder attempts to join (should fail)"
 assert_nonzero_exit "Intruder rejected" \

@@ -13,7 +13,7 @@ DAEMON2_HOME=$(new_identity daemon2); register_cleanup "$DAEMON2_HOME"
 
 section "Server creates relay campfire"
 CF_ID=$(create_campfire --cf-home "$SERVER_HOME" --via "$RELAY_URL")
-echo "Campfire: ${CF_ID:0:12}..."
+echo "Campfire: $CF_ID"
 
 section "Both daemons join (no endpoints)"
 cf join "$CF_ID" --cf-home "$DAEMON1_HOME" --via "$RELAY_URL" 2>/dev/null

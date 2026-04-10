@@ -39,7 +39,7 @@ DAEMON_HOME=$(new_identity daemon); register_cleanup "$DAEMON_HOME"
 
 section "Server creates campfire on local relay"
 CF_ID=$(create_campfire --cf-home "$SERVER_HOME" --via "$LOCAL_RELAY")
-echo "Campfire: ${CF_ID:0:12}..."
+echo "Campfire: $CF_ID"
 
 section "Server sends a request"
 cf send "$CF_ID" --cf-home "$SERVER_HOME" --tag request "Local relay request" 2>/dev/null

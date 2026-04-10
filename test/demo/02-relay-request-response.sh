@@ -16,7 +16,7 @@ echo "Daemon: $(pubkey_of "$DAEMON_HOME")"
 
 section "Server creates campfire"
 CF_ID=$(create_campfire --cf-home "$SERVER_HOME")
-echo "Campfire: ${CF_ID:0:12}..."
+echo "Campfire: $CF_ID"
 
 section "Server sends a tagged request"
 cf send "$CF_ID" --cf-home "$SERVER_HOME" --tag "relay-inbound" --tag "webhook" "Process order #1234" 2>/dev/null

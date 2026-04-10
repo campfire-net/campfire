@@ -11,7 +11,7 @@ BOB_HOME=$(new_identity bob); register_cleanup "$BOB_HOME"
 
 section "Alice creates a filesystem campfire"
 CF_ID=$(create_campfire --cf-home "$ALICE_HOME")
-echo "Campfire: ${CF_ID:0:12}..."
+echo "Campfire: $CF_ID"
 
 section "Bob joins"
 cf join "$CF_ID" --cf-home "$BOB_HOME" 2>/dev/null
