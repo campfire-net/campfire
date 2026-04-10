@@ -1,6 +1,9 @@
 package protocol
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1006,5 +1009,250 @@ relay = "https://project-relay.example.com"
 	}
 	if cfg.Transport.Relay != "https://project-relay.example.com" {
 		t.Errorf("transport.relay: got %q, want project-level relay", cfg.Transport.Relay)
+	}
+}
+
+// --- trust anchor tests ---
+
+// knownPubkeyHex is a well-formed 32-byte ed25519 public key in hex (64 chars).
+const knownPubkeyHex = "1e294c14bc79d9bf6bec754e563389b6c3d3e9255ad206df1ba60cdc52197ffd"
+
+// secondPubkeyHex is a second distinct 32-byte key in hex.
+const secondPubkeyHex = "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233"
+
+func hexToKey(t *testing.T, h string) ed25519.PublicKey {
+	t.Helper()
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		t.Fatalf("hex decode %q: %v", h, err)
+	}
+	return ed25519.PublicKey(b)
+}
+
+// TestLoadConfig_TrustAnchors_HexAndBase64 verifies that hex and base64 encodings
+// of two distinct keys both decode correctly from [identity.trust].
+func TestLoadConfig_TrustAnchors_HexAndBase64(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+
+	// Encode the second key in base64; use hex for the first.
+	secondBase64 := base64.StdEncoding.EncodeToString(hexToKey(t, secondPubkeyHex))
+
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity.trust]
+anchors = ["`+knownPubkeyHex+`", "`+secondBase64+`"]
+`)
+
+	cfg, _, warns, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+
+	if len(cfg.Identity.TrustAnchors) != 2 {
+		t.Fatalf("expected 2 anchors, got %d", len(cfg.Identity.TrustAnchors))
+	}
+
+	// Verify both keys are present.
+	wantFirst := hexToKey(t, knownPubkeyHex)
+	wantSecond := hexToKey(t, secondPubkeyHex)
+	found1, found2 := false, false
+	for _, a := range cfg.Identity.TrustAnchors {
+		if a.Equal(wantFirst) {
+			found1 = true
+		}
+		if a.Equal(wantSecond) {
+			found2 = true
+		}
+	}
+	if !found1 {
+		t.Errorf("hex-encoded anchor not found in parsed list")
+	}
+	if !found2 {
+		t.Errorf("base64-encoded anchor not found in parsed list")
+	}
+}
+
+// TestLoadConfig_TrustAnchors_Dedup verifies that the same key provided in both
+// hex and base64 is deduplicated to a single entry.
+func TestLoadConfig_TrustAnchors_Dedup(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+
+	// Same key expressed as both hex and its own base64 encoding.
+	sameKeyBase64 := base64.StdEncoding.EncodeToString(hexToKey(t, knownPubkeyHex))
+
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity.trust]
+anchors = ["`+knownPubkeyHex+`", "`+sameKeyBase64+`"]
+`)
+
+	cfg, _, warns, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+
+	// Same key twice → deduplicated to one entry.
+	if len(cfg.Identity.TrustAnchors) != 1 {
+		t.Fatalf("expected 1 anchor (deduped), got %d", len(cfg.Identity.TrustAnchors))
+	}
+
+	want := hexToKey(t, knownPubkeyHex)
+	if !cfg.Identity.TrustAnchors[0].Equal(want) {
+		t.Errorf("anchor mismatch: got %x, want %x", cfg.Identity.TrustAnchors[0], want)
+	}
+}
+
+// TestLoadConfig_TrustAnchors_NoSection verifies that when [identity.trust] is
+// absent, TrustAnchors is an empty slice (not nil panicking on range).
+func TestLoadConfig_TrustAnchors_NoSection(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity]
+display_name = "Agent"
+`)
+
+	cfg, _, _, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// TrustAnchors should be nil or empty — either is fine, but len must be 0.
+	if len(cfg.Identity.TrustAnchors) != 0 {
+		t.Errorf("expected 0 trust anchors, got %d", len(cfg.Identity.TrustAnchors))
+	}
+}
+
+// TestLoadConfig_TrustAnchors_GlobalAndProjectExtend verifies that project anchors
+// extend (not override) the global anchor list.
+func TestLoadConfig_TrustAnchors_GlobalAndProjectExtend(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	projectDir := filepath.Join(tmp, "project")
+
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity.trust]
+anchors = ["`+knownPubkeyHex+`"]
+`)
+	writeConfig(t, filepath.Join(projectDir, cfDir, configFilename), `
+[identity.trust]
+anchors = ["`+secondPubkeyHex+`"]
+`)
+
+	cfg, _, _, err := LoadConfig(globalDir, projectDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Identity.TrustAnchors) != 2 {
+		t.Fatalf("expected 2 anchors (global + project extend), got %d", len(cfg.Identity.TrustAnchors))
+	}
+
+	// Both keys must be present.
+	wantFirst := hexToKey(t, knownPubkeyHex)
+	wantSecond := hexToKey(t, secondPubkeyHex)
+	found1, found2 := false, false
+	for _, a := range cfg.Identity.TrustAnchors {
+		if a.Equal(wantFirst) {
+			found1 = true
+		}
+		if a.Equal(wantSecond) {
+			found2 = true
+		}
+	}
+	if !found1 {
+		t.Errorf("global anchor not found in merged list")
+	}
+	if !found2 {
+		t.Errorf("project anchor not found in merged list")
+	}
+}
+
+// TestLoadConfig_TrustAnchors_InvalidSkipped verifies that an invalid anchor string
+// is skipped with a warning while valid ones still parse.
+func TestLoadConfig_TrustAnchors_InvalidSkipped(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity.trust]
+anchors = ["not-a-valid-key", "`+knownPubkeyHex+`"]
+`)
+
+	cfg, _, _, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Only the valid key should be present; invalid one silently dropped.
+	if len(cfg.Identity.TrustAnchors) != 1 {
+		t.Fatalf("expected 1 anchor (invalid skipped), got %d", len(cfg.Identity.TrustAnchors))
+	}
+	want := hexToKey(t, knownPubkeyHex)
+	if !cfg.Identity.TrustAnchors[0].Equal(want) {
+		t.Errorf("anchor mismatch: got %x, want %x", cfg.Identity.TrustAnchors[0], want)
+	}
+}
+
+// TestLoadConfig_TrustAnchors_EmptyList verifies that anchors = [] produces an empty slice.
+func TestLoadConfig_TrustAnchors_EmptyList(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity.trust]
+anchors = []
+`)
+
+	cfg, _, _, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Identity.TrustAnchors) != 0 {
+		t.Errorf("expected 0 anchors, got %d", len(cfg.Identity.TrustAnchors))
+	}
+}
+
+// TestDecodeAnchor_Hex verifies hex decoding.
+func TestDecodeAnchor_Hex(t *testing.T) {
+	key, err := decodeAnchor(knownPubkeyHex)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(key) != ed25519.PublicKeySize {
+		t.Errorf("expected %d bytes, got %d", ed25519.PublicKeySize, len(key))
+	}
+}
+
+// TestDecodeAnchor_Base64 verifies standard base64 decoding.
+func TestDecodeAnchor_Base64(t *testing.T) {
+	// Encode knownPubkeyHex as base64 for a well-formed input.
+	b64 := base64.StdEncoding.EncodeToString(hexToKey(t, knownPubkeyHex))
+	key, err := decodeAnchor(b64)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(key) != ed25519.PublicKeySize {
+		t.Errorf("expected %d bytes, got %d", ed25519.PublicKeySize, len(key))
+	}
+}
+
+// TestDecodeAnchor_InvalidString verifies that garbage input returns an error.
+func TestDecodeAnchor_InvalidString(t *testing.T) {
+	_, err := decodeAnchor("not-valid-at-all!!!")
+	if err == nil {
+		t.Error("expected error for invalid anchor string, got nil")
+	}
+}
+
+// TestDecodeAnchor_WrongLength verifies that a valid base64 string that decodes to
+// the wrong number of bytes returns an error.
+func TestDecodeAnchor_WrongLength(t *testing.T) {
+	// 16 bytes base64-encoded — valid encoding but wrong key size.
+	short := base64.StdEncoding.EncodeToString(make([]byte, 16))
+	_, err := decodeAnchor(short)
+	if err == nil {
+		t.Error("expected error for wrong-length anchor, got nil")
 	}
 }
