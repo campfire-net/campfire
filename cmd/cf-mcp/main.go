@@ -5020,12 +5020,30 @@ func main() {
 			srv.transportRouter = router
 			srv.operatorSessionIdx = newOperatorSessionIndex()
 
-			// Generate a static X25519 key for relay ECDH so creators can
+			// Load or generate a static X25519 key for relay ECDH so creators can
 			// register campfires via POST /campfire/create.
-			x25519Key, err := ecdh.X25519().GenerateKey(rand.Reader)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: generating X25519 key: %v\n", err)
-				os.Exit(1)
+			// CF_RELAY_X25519_KEY (hex-encoded 32-byte private key) persists the key
+			// across Azure Functions instances — without it, each cold-start generates
+			// a different key and cross-instance relay-info/create calls fail.
+			var x25519Key *ecdh.PrivateKey
+			if keyHex := os.Getenv("CF_RELAY_X25519_KEY"); keyHex != "" {
+				keyBytes, err := hex.DecodeString(keyHex)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: CF_RELAY_X25519_KEY is not valid hex: %v\n", err)
+					os.Exit(1)
+				}
+				x25519Key, err = ecdh.X25519().NewPrivateKey(keyBytes)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: CF_RELAY_X25519_KEY is not a valid X25519 private key: %v\n", err)
+					os.Exit(1)
+				}
+			} else {
+				var err error
+				x25519Key, err = ecdh.X25519().GenerateKey(rand.Reader)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: generating X25519 key: %v\n", err)
+					os.Exit(1)
+				}
 			}
 			router.SetStaticX25519Key(x25519Key)
 
