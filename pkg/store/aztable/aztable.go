@@ -353,7 +353,7 @@ func (ts *TableStore) AddMessage(m store.MessageRecord) (bool, error) {
 		"Sender":           m.Sender,
 		"Tags":             string(tagsJSON),
 		"Antecedents":      string(anteJSON),
-		"Timestamp":        m.Timestamp,
+		"MsgTimestamp":     m.Timestamp, // avoid Azure Table reserved "Timestamp" property
 		"Provenance":       string(provJSON),
 		"ReceivedAt":       m.ReceivedAt,
 		"Instance":         m.Instance,
@@ -1485,6 +1485,20 @@ func toInt64(v any) int64 {
 	return 0
 }
 
+// firstNonZero returns the first argument that converts to a non-zero int64.
+// Used for backwards-compatible property reads (new name preferred, old name as fallback).
+func firstNonZero(vals ...any) any {
+	for _, v := range vals {
+		if toInt64(v) != 0 {
+			return v
+		}
+	}
+	if len(vals) > 0 {
+		return vals[0]
+	}
+	return nil
+}
+
 // membershipFromEntity converts a map from Table Storage to a store.Membership.
 func membershipFromEntity(m map[string]any) (*store.Membership, error) {
 	enc, _ := m["Encrypted"].(float64)
@@ -1530,7 +1544,7 @@ func messageFromEntity(m map[string]any) (*store.MessageRecord, error) {
 		Payload:          payload,
 		Tags:             tags,
 		Antecedents:      antecedents,
-		Timestamp:        toInt64(m["Timestamp"]),
+		Timestamp:        toInt64(firstNonZero(m["MsgTimestamp"], m["Timestamp"])), // MsgTimestamp preferred; Timestamp for pre-migration rows
 		Signature:        signature,
 		Provenance:       provenance,
 		ReceivedAt:       toInt64(m["ReceivedAt"]),

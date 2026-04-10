@@ -11,6 +11,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
 // ReadRequest specifies the parameters for a Read operation.
@@ -101,15 +102,26 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 		return nil, err
 	}
 
-	// Sync-before-query for filesystem-transport campfires.
-	// Sync-before-query for all transport types.
-	// syncViaInterface uses the injected Syncer when set, otherwise falls back
-	// to syncIfFilesystem (filesystem-only). This ensures HTTP-transport campfires
-	// also pull messages from peers before returning results when a Syncer is set.
+	// For p2p-http campfires where the caller is a CLI client (not the hosted
+	// server), read directly from the relay — the relay is the store. No local
+	// copy, no sync, no cursor mismatch between clock domains. Skip when
+	// SkipSync is set (the MCP server path) since the server IS the relay.
+	m, _ := c.store.GetMembership(req.CampfireID)
+	if m != nil && transport.ResolveType(*m) == transport.TypePeerHTTP && !req.SkipSync && c.syncer != nil {
+		result, err := c.readFromHTTPPeers(req, m)
+		if err != nil {
+			log.Printf("campfire: relay read(%s): %v — falling back to local store", req.CampfireID, err)
+		} else if len(result.Messages) > 0 || req.AfterTimestamp > 0 {
+			// Got messages from relay, or this is a cursor read (may legitimately be empty).
+			return result, nil
+		}
+		// No peers with endpoints found or empty result on first read — fall through
+		// to syncer-based path (the Syncer may know the endpoint independently).
+	}
+
+	// Sync-before-query for filesystem and GitHub transport campfires.
 	if !req.SkipSync {
 		if err := c.syncViaInterface(req.CampfireID); err != nil {
-			// Sync failures are non-fatal: the store may have older messages
-			// that are still useful. Log so operators can detect transport problems.
 			log.Printf("campfire: sync(%s): %v — serving from local store", req.CampfireID, err)
 		}
 	}
@@ -129,9 +141,6 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 		return nil, fmt.Errorf("protocol.Client.Read: listing messages: %w", err)
 	}
 
-	// Compute pre-filter max timestamp using the scalar MAX query so we don't
-	// load all unfiltered payloads just to find the highest timestamp.
-	// This mirrors the runOneShotMode approach in cmd/cf/cmd/read.go.
 	maxTS, err := c.store.MaxMessageTimestamp(req.CampfireID, req.AfterTimestamp)
 	if err != nil {
 		return nil, fmt.Errorf("protocol.Client.Read: querying max timestamp: %w", err)
@@ -249,4 +258,116 @@ func (c *Client) syncIfFilesystem(campfireID string) error {
 	}
 
 	return nil
+}
+
+// readFromHTTPPeers reads messages directly from the relay — no local copy.
+// The relay is the source of truth for p2p-http campfires. Returns messages
+// from all reachable peers, filtered by the request parameters.
+func (c *Client) readFromHTTPPeers(req ReadRequest, m *store.Membership) (*ReadResult, error) {
+	peers, err := c.store.ListPeerEndpoints(req.CampfireID)
+	if err != nil {
+		return nil, fmt.Errorf("listing peer endpoints: %w", err)
+	}
+
+	var allMsgs []store.MessageRecord
+	for _, peer := range peers {
+		if peer.MemberPubkey == c.identity.PublicKeyHex() || peer.Endpoint == "" {
+			continue
+		}
+		msgs, err := cfhttp.Sync(peer.Endpoint, req.CampfireID, req.AfterTimestamp, c.identity)
+		if err != nil {
+			continue // peer offline
+		}
+		for i := range msgs {
+			allMsgs = append(allMsgs, store.MessageRecordFromMessage(req.CampfireID, &msgs[i], msgs[i].Timestamp))
+		}
+	}
+
+	// Also include locally-sent messages (the sender stores them locally).
+	f := store.MessageFilter{
+		Tags:               req.Tags,
+		TagPrefixes:        req.TagPrefixes,
+		ExcludeTags:        req.ExcludeTags,
+		ExcludeTagPrefixes: req.ExcludeTagPrefixes,
+		Sender:             req.Sender,
+		RespectCompaction:  !req.IncludeCompacted,
+	}
+	localMsgs, _ := c.store.ListMessages(req.CampfireID, req.AfterTimestamp, f)
+	allMsgs = append(allMsgs, localMsgs...)
+
+	// Deduplicate by message ID.
+	seen := make(map[string]bool)
+	var deduped []store.MessageRecord
+	for _, m := range allMsgs {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			deduped = append(deduped, m)
+		}
+	}
+
+	// Apply tag/sender filters to relay messages (local messages already filtered).
+	var filtered []store.MessageRecord
+	for _, m := range deduped {
+		if matchesFilter(m, f) {
+			filtered = append(filtered, m)
+		}
+	}
+
+	var maxTS int64
+	for _, m := range deduped {
+		if m.Timestamp > maxTS {
+			maxTS = m.Timestamp
+		}
+	}
+
+	out := make([]Message, len(filtered))
+	for i, r := range filtered {
+		out[i] = MessageFromRecord(r)
+	}
+
+	if req.Limit > 0 && len(out) > req.Limit {
+		out = out[:req.Limit]
+		if len(out) > 0 {
+			maxTS = out[len(out)-1].Timestamp
+		}
+	}
+
+	return &ReadResult{Messages: out, MaxTimestamp: maxTS}, nil
+}
+
+// matchesFilter checks if a message record matches the given filter criteria.
+func matchesFilter(m store.MessageRecord, f store.MessageFilter) bool {
+	if f.Sender != "" && m.Sender != f.Sender {
+		return false
+	}
+	if len(f.ExcludeTags) > 0 || len(f.ExcludeTagPrefixes) > 0 {
+		for _, tag := range m.Tags {
+			for _, ex := range f.ExcludeTags {
+				if tag == ex {
+					return false
+				}
+			}
+			for _, prefix := range f.ExcludeTagPrefixes {
+				if len(tag) >= len(prefix) && tag[:len(prefix)] == prefix {
+					return false
+				}
+			}
+		}
+	}
+	if len(f.Tags) == 0 && len(f.TagPrefixes) == 0 {
+		return true
+	}
+	for _, tag := range m.Tags {
+		for _, want := range f.Tags {
+			if tag == want {
+				return true
+			}
+		}
+		for _, prefix := range f.TagPrefixes {
+			if len(tag) >= len(prefix) && tag[:len(prefix)] == prefix {
+				return true
+			}
+		}
+	}
+	return false
 }
