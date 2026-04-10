@@ -14,7 +14,11 @@ package protocol
 // Config files seed protocol INPUTS only — never outputs (trust, roles).
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,10 +55,15 @@ type rawScopeConfig struct {
 	OperationClasses []string `toml:"operation_classes"`
 }
 
+type rawTrustConfig struct {
+	Anchors []string `toml:"anchors"`
+}
+
 type rawIdentityConfig struct {
-	File        string `toml:"file"`
-	DisplayName string `toml:"display_name"`
-	PresentAs   string `toml:"present_as"`
+	File        string         `toml:"file"`
+	DisplayName string         `toml:"display_name"`
+	PresentAs   string         `toml:"present_as"`
+	Trust       rawTrustConfig `toml:"trust"`
 }
 
 type rawStoreConfig struct {
@@ -111,6 +120,10 @@ type IdentityConfig struct {
 	// PresentAs is the campfire ID to present as (set by cf home be, cleared by cf home be --self).
 	// When non-empty, the agent presents as this campfire identity rather than its machine key.
 	PresentAs string
+	// TrustAnchors is the decoded list of ed25519 public keys from [identity.trust] anchors.
+	// Project configs EXTEND (not override) the global anchor list.
+	// Invalid anchor strings are skipped with a warning during merge.
+	TrustAnchors []ed25519.PublicKey
 }
 
 // StoreConfig holds store-related configuration.
@@ -464,6 +477,23 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 		contributed = append(contributed, "identity.present_as")
 	}
 
+	// identity.trust.anchors — list: project configs EXTEND (not override) the global list.
+	// Invalid anchor strings are logged as warnings and skipped (not fatal).
+	if len(raw.Identity.Trust.Anchors) > 0 {
+		for _, anchor := range raw.Identity.Trust.Anchors {
+			key, err := decodeAnchor(anchor)
+			if err != nil {
+				log.Printf("config %s: identity.trust.anchors: skipping invalid anchor %q: %v", path, anchor, err)
+				continue
+			}
+			// Deduplicate: skip if already present (byte-level equality).
+			if !containsAnchor(dst.Identity.TrustAnchors, key) {
+				dst.Identity.TrustAnchors = append(dst.Identity.TrustAnchors, key)
+			}
+		}
+		contributed = append(contributed, "identity.trust.anchors")
+	}
+
 	// store.file — scalar.
 	if raw.Store.File != "" {
 		dst.Store.File = resolveRelativePath(raw.Store.File, filepath.Dir(path))
@@ -597,6 +627,57 @@ func resolveRelativePath(value, configDir string) string {
 		return value
 	}
 	return filepath.Join(configDir, value)
+}
+
+// decodeAnchor decodes a base64- or hex-encoded ed25519 public key string.
+// Hex is detected first (only [0-9a-fA-F] chars) to avoid misinterpreting a
+// hex string as base64 — both charsets overlap. Base64 is tried next (with
+// padding, then without). Returns an error if decoding fails or the decoded
+// bytes are not exactly ed25519.PublicKeySize (32) bytes.
+func decodeAnchor(s string) (ed25519.PublicKey, error) {
+	var raw []byte
+	var err error
+
+	if isHexString(s) {
+		raw, err = hex.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("hex decode: %w", err)
+		}
+	} else if raw, err = base64.StdEncoding.DecodeString(s); err != nil {
+		if raw, err = base64.RawStdEncoding.DecodeString(s); err != nil {
+			return nil, fmt.Errorf("not valid base64 or hex: %w", err)
+		}
+	}
+
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("expected %d bytes, got %d", ed25519.PublicKeySize, len(raw))
+	}
+	return ed25519.PublicKey(raw), nil
+}
+
+// isHexString reports whether s consists solely of [0-9a-fA-F] characters.
+// This is used to distinguish hex-encoded keys from base64-encoded ones before
+// attempting decode — the charsets overlap (A-F appear in both).
+func isHexString(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// containsAnchor reports whether key is already present in the list (byte equality).
+func containsAnchor(list []ed25519.PublicKey, key ed25519.PublicKey) bool {
+	for _, existing := range list {
+		if existing.Equal(key) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateIdentityPath validates an identity.file value from config.
