@@ -1,0 +1,35 @@
+{
+  "convention": "identity-delegation",
+  "version": "0.1",
+  "operation": "grant",
+  "description": "Sign and post a delegation grant from the parent identity (sender) to a child pubkey. Verifiers confirm the message signature (proving the parent signed), that campfire_id matches the campfire the message is being read from (replay binding), and that expires_at has not passed.",
+  "signing": "member_key",
+  "antecedents": "none",
+  "args": [
+    {
+      "name": "child_pubkey",
+      "type": "string",
+      "required": true,
+      "pattern": "^[0-9a-f]{64}$",
+      "max_length": 64,
+      "description": "Hex-encoded ed25519 public key being granted authority"
+    },
+    {
+      "name": "campfire_id",
+      "type": "string",
+      "required": true,
+      "pattern": "^[0-9a-f]{64}$",
+      "max_length": 64,
+      "description": "Hex-encoded campfire ID this grant is valid in — prevents cross-campfire replay"
+    },
+    {
+      "name": "expires_at",
+      "type": "int",
+      "required": true,
+      "description": "Unix seconds; must be in the future and within 7 days of the message timestamp"
+    }
+  ],
+  "produces_tags": [
+    {"tag": "identity:granted", "cardinality": "exactly_one"}
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "convention": "identity-delegation",
+  "version": "0.1",
+  "operation": "revoke",
+  "description": "Revoke all grants previously issued by the signer (parent) to the named child pubkey in this campfire. Grants from other parents are unaffected. A new grant posted after the revoke restores access.",
+  "signing": "member_key",
+  "antecedents": "none",
+  "args": [
+    {
+      "name": "child_pubkey",
+      "type": "string",
+      "required": true,
+      "pattern": "^[0-9a-f]{64}$",
+      "max_length": 64,
+      "description": "Hex-encoded ed25519 public key whose grants from this signer are revoked"
+    }
+  ],
+  "produces_tags": [
+    {"tag": "identity:revoked", "cardinality": "exactly_one"}
+  ]
+}
