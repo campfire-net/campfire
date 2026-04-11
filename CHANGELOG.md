@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.18.1 — delegation write path (2026-04-11)
+
+Finishes the v0.18 identity delegation feature. v0.18.0 shipped grant validation and trust resolution (the read half) but left issuance as a hand-marshal operation; v0.18.1 adds the SDK helper and CLI command so callers can write grants with one function call.
+
+### Features
+
+- **`delegation.PostGrant`**: New SDK helper in `pkg/convention/delegation/grant.go`. Constructs, signs, and posts an `identity:granted` message from the client's identity (the parent) to a child ed25519 public key, valid in the given campfire for a caller-supplied TTL. Zero/negative TTLs return `ErrGrantTTLInvalid`; TTLs over 7 days return `ErrGrantCeilingExceeded` — the hard ceiling from identity-delegation-v0.1.md §4 rule 4 is enforced at issuance rather than silently clamped.
+- **`cf trust grant`**: New CLI command — `cf trust grant <campfire-id> <child-pubkey> [--ttl 24h] [--json]`. Positional args mirror `cf trust resolve` for consistency. Human output is a compact single-line summary; `--json` emits a structured object with `msg_id`, `parent`, `child`, `campfire_id`, `expires_at`, and `ttl_seconds`.
+
+### Bug Fixes
+
+- **`TestValidateGrant_CeilingExceeded` wall-clock rot**: The test computed `expires_at` relative to a fixture date but compared against `message.NewMessage`'s real `time.Now()` timestamp. On the day it was written the two dates aligned and the assertion passed by coincidence; the test started failing on 2026-04-11 once real time drifted past the fixture by more than a day. The fix computes the 8-day expiry from real wall-clock now so the rule 4 ceiling comparison is consistent with the message timestamp it is compared against.
+
+### Tests
+
+- 4 new `PostGrant` tests (RoundTrip, ZeroTTL, ExceedsCeiling, EndToEnd) in `pkg/convention/delegation`
+- 5 new `cf trust grant` CLI tests (Success, MissingArgs, MalformedHex, TTLExceedsCeiling, JSONOutput) in `cmd/cf/cmd`
+- Full `go test ./...` green
+
 ## v0.18.0 — identity delegation (2026-04-10)
 
 Delegated trust for campfire identities. A trust anchor can grant authority to delegates, who can further delegate — creating verifiable trust chains up to 10 hops deep. Grants are revocable with immediate cascade.
