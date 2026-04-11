@@ -1,8 +1,10 @@
 package delegation_test
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -136,8 +138,12 @@ func TestValidateGrant_Expired(t *testing.T) {
 func TestValidateGrant_CeilingExceeded(t *testing.T) {
 	pub, priv := generateKey(t)
 
-	// 8 days from now — over the 7-day ceiling.
-	eightDays := now.Unix() + 8*86400
+	// Rule 4 compares payload.expires_at against msg.Timestamp/1e9 + 7*86400.
+	// msg.Timestamp is set by message.NewMessage to real time.Now() — the caller
+	// cannot inject it. So expiresAt must be computed relative to real wall-clock
+	// now, not the fixture `now`, or the test rots as wall time advances past
+	// the fixture date (drift makes the ceiling appear satisfied).
+	eightDays := time.Now().Unix() + 8*86400
 
 	payload := makeGrantPayload(
 		"0000000000000000000000000000000000000000000000000000000000000001",
@@ -146,12 +152,9 @@ func TestValidateGrant_CeilingExceeded(t *testing.T) {
 	)
 	grant := newSignedGrant(t, priv, pub, payload)
 
-	// Massage Timestamp so the message was signed "now" (NewMessage uses
-	// time.Now(); we need to check relative to the message's own timestamp).
-	// The signed grant's Timestamp is time.Now().UnixNano() at creation, so
-	// msg.Timestamp/1e9 ≈ now.Unix(). An 8-day expiry therefore exceeds the
-	// 7-day ceiling.
-	err := delegation.ValidateGrant(grant, campfireHex, now)
+	// Pass real wall-clock time to the rule-3 slack check so it doesn't trip
+	// before rule 4. (Rule 3 is caller-supplied now; rule 4 is msg.Timestamp.)
+	err := delegation.ValidateGrant(grant, campfireHex, time.Now())
 	if !errors.Is(err, delegation.ErrGrantCeilingExceeded) {
 		t.Fatalf("expected ErrGrantCeilingExceeded, got %v", err)
 	}
@@ -185,5 +188,155 @@ func TestParseGrantPayload_MalformedJSON(t *testing.T) {
 	_, err := delegation.ParseGrantPayload([]byte(`not json`))
 	if err == nil {
 		t.Fatal("expected error for malformed JSON, got nil")
+	}
+}
+
+// --- PostGrant tests (identity-delegation-v0.1.md §3 write path) ---
+
+// TestPostGrant_RoundTrip posts a grant via PostGrant and verifies the posted
+// message can be read back, parsed, signature-verified, and accepted by
+// ValidateGrant. This is the happy-path smoke test that proves the write and
+// read halves agree on the wire format.
+func TestPostGrant_RoundTrip(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	parentIdx := 0 // anchor identity
+	childPub := env.pubkey(1)
+
+	msg, err := delegation.PostGrant(ctx, env.clients[parentIdx], env.campfireIDRaw, childPub, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("PostGrant: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("PostGrant returned nil message")
+	}
+	if msg.ID == "" {
+		t.Error("posted message has empty ID")
+	}
+	if msg.Timestamp == 0 {
+		t.Error("posted message has zero Timestamp")
+	}
+	if !msg.VerifySignature() {
+		t.Error("posted message signature does not verify")
+	}
+	// Sender must be the parent identity's public key.
+	parentPub := env.pubkey(parentIdx)
+	if !ed25519.PublicKey(msg.Sender).Equal(parentPub) {
+		t.Errorf("posted message Sender does not match parent pubkey")
+	}
+
+	gp, err := delegation.ParseGrantPayload(msg.Payload)
+	if err != nil {
+		t.Fatalf("ParseGrantPayload: %v", err)
+	}
+	if gp.CampfireID != env.campfireHex {
+		t.Errorf("grant campfire_id: want %s, got %s", env.campfireHex, gp.CampfireID)
+	}
+	if gp.ChildPubkey != hex.EncodeToString(childPub) {
+		t.Errorf("grant child_pubkey: want %s, got %s", hex.EncodeToString(childPub), gp.ChildPubkey)
+	}
+	if gp.ExpiresAt <= time.Now().Unix() {
+		t.Errorf("grant expires_at not in future: %d", gp.ExpiresAt)
+	}
+
+	// Must pass ValidateGrant.
+	if err := delegation.ValidateGrant(msg, env.campfireHex, time.Now()); err != nil {
+		t.Errorf("ValidateGrant on PostGrant output: %v", err)
+	}
+}
+
+// TestPostGrant_ZeroTTL asserts ErrGrantTTLInvalid for ttl=0 and negative.
+func TestPostGrant_ZeroTTL(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+	childPub := env.pubkey(1)
+
+	for _, ttl := range []time.Duration{0, -time.Second, -24 * time.Hour} {
+		_, err := delegation.PostGrant(ctx, env.clients[0], env.campfireIDRaw, childPub, ttl)
+		if !errors.Is(err, delegation.ErrGrantTTLInvalid) {
+			t.Errorf("ttl=%v: expected ErrGrantTTLInvalid, got %v", ttl, err)
+		}
+	}
+}
+
+// TestPostGrant_ExceedsCeiling asserts ttl > 7 days returns ErrGrantCeilingExceeded
+// and no message is posted to the campfire.
+func TestPostGrant_ExceedsCeiling(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+	childPub := env.pubkey(1)
+
+	// Count granted messages before.
+	beforeMsgs, err := env.fsTransport.ListMessages(env.campfireHex)
+	if err != nil {
+		t.Fatalf("ListMessages pre: %v", err)
+	}
+	var beforeGrants int
+	for i := range beforeMsgs {
+		for _, tag := range beforeMsgs[i].Tags {
+			if tag == delegation.GrantedTag {
+				beforeGrants++
+			}
+		}
+	}
+
+	_, err = delegation.PostGrant(ctx, env.clients[0], env.campfireIDRaw, childPub, 8*24*time.Hour)
+	if !errors.Is(err, delegation.ErrGrantCeilingExceeded) {
+		t.Fatalf("expected ErrGrantCeilingExceeded, got %v", err)
+	}
+
+	// Count granted messages after — must be unchanged.
+	afterMsgs, err := env.fsTransport.ListMessages(env.campfireHex)
+	if err != nil {
+		t.Fatalf("ListMessages post: %v", err)
+	}
+	var afterGrants int
+	for i := range afterMsgs {
+		for _, tag := range afterMsgs[i].Tags {
+			if tag == delegation.GrantedTag {
+				afterGrants++
+			}
+		}
+	}
+	if afterGrants != beforeGrants {
+		t.Errorf("ceiling-violated PostGrant posted a message: before=%d after=%d", beforeGrants, afterGrants)
+	}
+}
+
+// TestPostGrant_EndToEnd issues a grant via PostGrant and then calls Resolve
+// on the child — asserts Resolved{}. Proves the write path, the read path,
+// and the convention wire format all agree.
+func TestPostGrant_EndToEnd(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	parentPub := env.pubkey(0)
+	childPub := env.pubkey(1)
+	anchors := env.anchors(0)
+
+	// Issue via PostGrant (not the test harness postGrant helper).
+	if _, err := delegation.PostGrant(ctx, env.clients[0], env.campfireIDRaw, childPub, 24*time.Hour); err != nil {
+		t.Fatalf("PostGrant: %v", err)
+	}
+	// Sync the posted message into every client's store so Resolve can see it.
+	env.syncAll(t)
+
+	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, childPub, anchors)
+	r, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved, got %T: %+v", out, out)
+	}
+	if len(r.Chain) != 1 {
+		t.Errorf("expected chain length 1, got %d", len(r.Chain))
+	}
+	if !r.Anchor.Equal(parentPub) {
+		t.Error("expected anchor == parent")
+	}
+	if !r.Chain[0].ChildPubkey.Equal(childPub) {
+		t.Error("expected chain[0].ChildPubkey == child")
+	}
+	if !r.Chain[0].ParentPubkey.Equal(parentPub) {
+		t.Error("expected chain[0].ParentPubkey == parent")
 	}
 }
