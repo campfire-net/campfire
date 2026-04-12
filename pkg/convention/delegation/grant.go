@@ -43,6 +43,12 @@ var (
 	// ErrGrantTTLInvalid is returned when PostGrant is called with a zero or
 	// negative TTL. Issuance requires a positive lifetime.
 	ErrGrantTTLInvalid = errors.New("grant TTL must be > 0")
+
+	// ErrGrantChildKeyMalformed is returned when payload.child_pubkey is not a
+	// valid 64-character hex string decoding to 32 bytes. Surfaced at validation
+	// time so downstream consumers don't have to defensively re-check after
+	// ValidateGrant has already accepted the message.
+	ErrGrantChildKeyMalformed = errors.New("grant child_pubkey malformed")
 )
 
 // GrantPayload is the JSON payload of an identity:granted message.
@@ -61,14 +67,20 @@ func ParseGrantPayload(payload []byte) (*GrantPayload, error) {
 	return &gp, nil
 }
 
-// ValidateGrant checks a grant message against the five validation rules from
-// identity-delegation-v0.1.md §4.
+// ValidateGrant checks a grant message against rules 1-4 from
+// identity-delegation-v0.1.md §4, plus a payload well-formedness check on
+// child_pubkey that isn't a numbered rule but prevents malformed grants from
+// reaching the trust walker.
 //
 //   - Rule 1: message signature verifies under msg.Sender.
 //   - Rule 2: payload.campfire_id == campfireIDHex.
 //   - Rule 3: payload.expires_at > now.Unix() - 60 (clock-skew slack).
 //   - Rule 4: payload.expires_at <= msg.Timestamp/1e9 + 7*86400 (hard ceiling).
-//   - Rule 5: grant is not revoked (returns nil — enforcement wired in campfire-ab7).
+//   - Well-formedness: payload.child_pubkey decodes to a 32-byte Ed25519 key.
+//
+// Rule 5 (revocation) is NOT checked here — it's enforced by the trust walker
+// (Resolve → findValidGrant → isRevoked) because revocation is a walker-scoped
+// concern, not a property of any individual grant message.
 //
 // campfireIDHex is the hex-encoded ID of the campfire the message was read from.
 // now is the caller-supplied current time (enables deterministic testing).
@@ -78,10 +90,20 @@ func ValidateGrant(grant *message.Message, campfireIDHex string, now time.Time) 
 		return ErrSignatureInvalid
 	}
 
-	// Parse payload for rules 2–4.
+	// Parse payload for rules 2–4 and well-formedness.
 	gp, err := ParseGrantPayload(grant.Payload)
 	if err != nil {
 		return fmt.Errorf("grant payload: %w", err)
+	}
+
+	// Well-formedness: child_pubkey must be valid 64-char hex decoding to 32 bytes.
+	// Checked here so downstream (findValidGrant) can decode without defensive
+	// re-validation after ValidateGrant accepts the message. Closes the hex-decode
+	// error swallow at trust.go line 225 (campfire-61b) and the unchecked length
+	// (campfire-6c1) by construction.
+	childBytes, err := hex.DecodeString(gp.ChildPubkey)
+	if err != nil || len(childBytes) != ed25519.PublicKeySize {
+		return ErrGrantChildKeyMalformed
 	}
 
 	// Rule 2: campfire_id must match the campfire the message was read from.
@@ -101,7 +123,6 @@ func ValidateGrant(grant *message.Message, campfireIDHex string, now time.Time) 
 		return ErrGrantCeilingExceeded
 	}
 
-	// Rule 5: revocation check — deferred to campfire-ab7.
 	return nil
 }
 

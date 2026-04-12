@@ -5,8 +5,10 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,24 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
+
+// listErrAfterNStore wraps a real store.Store and injects an error on the
+// Nth ListMessages call (1-based). Used to test ReadError outcomes without
+// requiring an external mock framework.
+type listErrAfterNStore struct {
+	store.Store
+	n       int32 // fail starting at this call number (1-based)
+	callNum atomic.Int32
+	err     error
+}
+
+func (s *listErrAfterNStore) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
+	n := int(s.callNum.Add(1))
+	if n >= int(s.n) {
+		return nil, s.err
+	}
+	return s.Store.ListMessages(campfireID, afterTimestamp, filter...)
+}
 
 // trustTestEnv is the scaffold for trust resolution integration tests.
 type trustTestEnv struct {
@@ -500,5 +520,69 @@ func TestResolve_MultipleGrantsRevokeOne(t *testing.T) {
 	}
 	if !r.Anchor.Equal(env.pubkey(1)) {
 		t.Errorf("expected anchor to be ids[1], got %x", r.Anchor)
+	}
+}
+
+// TestResolve_StoreReadError_ReturnsReadError verifies that when client.Read
+// fails while looking up identity:granted messages, Resolve returns ReadError
+// (not DeadEnd, which was the silent pre-campfire-188 behaviour).
+func TestResolve_StoreReadError_ReturnsReadError(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	// Wrap the store for ids[1] so that ListMessages always returns an error,
+	// simulating a store I/O failure on the grant read.
+	storeErr := errors.New("injected read error")
+	errStore := &listErrAfterNStore{
+		Store: env.stores[1],
+		n:     1, // fail on the very first ListMessages call (grant lookup)
+		err:   storeErr,
+	}
+	faultyClient := protocol.New(errStore, env.identities[1])
+
+	out := delegation.Resolve(ctx, faultyClient, env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	re, ok := out.(delegation.ReadError)
+	if !ok {
+		t.Fatalf("expected ReadError when grant read fails, got %T: %+v", out, out)
+	}
+	if !errors.Is(re.Err, delegation.ErrStoreRead) {
+		t.Errorf("expected Err to wrap ErrStoreRead, got %v", re.Err)
+	}
+	if !re.Target.Equal(env.pubkey(1)) {
+		t.Errorf("expected Target == sender pubkey, got %x", re.Target)
+	}
+}
+
+// TestResolve_RevokeStoreReadError_ReturnsReadError verifies that when
+// client.Read fails while checking identity:revoked messages (after a valid
+// grant has been found), Resolve returns ReadError rather than silently
+// treating the unreadable revocation log as "not revoked" (campfire-188).
+func TestResolve_RevokeStoreReadError_ReturnsReadError(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	// Post a valid grant so there is a candidate for the trust walker to find.
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry())
+
+	// Wrap the store for ids[1] so that the second ListMessages call (revoke
+	// lookup) returns an error. The first call (grant lookup) succeeds, finding
+	// the grant posted above.
+	storeErr := errors.New("injected revoke read error")
+	errStore := &listErrAfterNStore{
+		Store: env.stores[1],
+		n:     2, // fail on the second ListMessages call (revoke lookup)
+		err:   storeErr,
+	}
+	faultyClient := protocol.New(errStore, env.identities[1])
+
+	out := delegation.Resolve(ctx, faultyClient, env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	re, ok := out.(delegation.ReadError)
+	if !ok {
+		t.Fatalf("expected ReadError when revoke read fails, got %T: %+v", out, out)
+	}
+	if !errors.Is(re.Err, delegation.ErrStoreRead) {
+		t.Errorf("expected Err to wrap ErrStoreRead, got %v", re.Err)
 	}
 }
