@@ -64,6 +64,8 @@ type rawIdentityConfig struct {
 	DisplayName string         `toml:"display_name"`
 	PresentAs   string         `toml:"present_as"`
 	Trust       rawTrustConfig `toml:"trust"`
+	Backend     string         `toml:"backend"`
+	Fingerprint string         `toml:"fingerprint"`
 }
 
 type rawStoreConfig struct {
@@ -124,6 +126,13 @@ type IdentityConfig struct {
 	// Project configs EXTEND (not override) the global anchor list.
 	// Invalid anchor strings are skipped with a warning during merge.
 	TrustAnchors []ed25519.PublicKey
+	// Backend specifies the signing backend for root-identity operations.
+	// Valid values: "file" (default) or "ssh-agent".
+	// When "ssh-agent", Fingerprint must also be set.
+	Backend string
+	// Fingerprint is the SHA256 fingerprint of the ssh-agent key to use for signing.
+	// Required when Backend = "ssh-agent". Format: "SHA256:...".
+	Fingerprint string
 }
 
 // StoreConfig holds store-related configuration.
@@ -266,11 +275,15 @@ func LoadConfig(globalDir, projectDir string) (*Config, []ConfigLayer, []string,
 	return &merged, layers, warnings, nil
 }
 
+// compiled-in backend default
+const defaultBackend = "file"
+
 // compiledDefaults returns a Config with all compiled-in default values.
 func compiledDefaults() Config {
 	return Config{
 		Identity: IdentityConfig{
-			File: defaultIdentityFile,
+			File:    defaultIdentityFile,
+			Backend: defaultBackend,
 		},
 		Store: StoreConfig{
 			File: defaultStoreFile,
@@ -465,6 +478,21 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 	if raw.Identity.DisplayName != "" {
 		dst.Identity.DisplayName = raw.Identity.DisplayName
 		contributed = append(contributed, "identity.display_name")
+	}
+
+	// identity.backend — scalar: "file" or "ssh-agent". deepest wins.
+	if raw.Identity.Backend != "" {
+		if raw.Identity.Backend != "file" && raw.Identity.Backend != "ssh-agent" {
+			return nil, fmt.Errorf("config %s: identity.backend %q is not valid (expected \"file\" or \"ssh-agent\")", path, raw.Identity.Backend)
+		}
+		dst.Identity.Backend = raw.Identity.Backend
+		contributed = append(contributed, "identity.backend")
+	}
+
+	// identity.fingerprint — scalar: required when backend = "ssh-agent".
+	if raw.Identity.Fingerprint != "" {
+		dst.Identity.Fingerprint = raw.Identity.Fingerprint
+		contributed = append(contributed, "identity.fingerprint")
 	}
 
 	// identity.present_as — scalar (deepest wins; empty string clears).

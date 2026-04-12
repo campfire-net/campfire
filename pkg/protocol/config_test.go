@@ -1256,3 +1256,98 @@ func TestDecodeAnchor_WrongLength(t *testing.T) {
 		t.Error("expected error for wrong-length anchor, got nil")
 	}
 }
+
+// TestIdentityConfig_BackendDefault verifies that the compiled default backend is "file".
+func TestIdentityConfig_BackendDefault(t *testing.T) {
+	tmp := t.TempDir()
+	cfg, _, _, err := LoadConfig(tmp, tmp)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Identity.Backend != "file" {
+		t.Errorf("default backend = %q, want \"file\"", cfg.Identity.Backend)
+	}
+}
+
+// TestIdentityConfig_BackendFile verifies that backend = "file" is accepted.
+func TestIdentityConfig_BackendFile(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity]
+backend = "file"
+`)
+	cfg, _, _, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Identity.Backend != "file" {
+		t.Errorf("backend = %q, want \"file\"", cfg.Identity.Backend)
+	}
+}
+
+// TestIdentityConfig_BackendSSHAgent verifies that backend = "ssh-agent" with
+// a fingerprint is accepted.
+func TestIdentityConfig_BackendSSHAgent(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity]
+backend = "ssh-agent"
+fingerprint = "SHA256:aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789abcd"
+`)
+	cfg, _, _, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Identity.Backend != "ssh-agent" {
+		t.Errorf("backend = %q, want \"ssh-agent\"", cfg.Identity.Backend)
+	}
+	if cfg.Identity.Fingerprint != "SHA256:aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789abcd" {
+		t.Errorf("fingerprint = %q, unexpected", cfg.Identity.Fingerprint)
+	}
+}
+
+// TestIdentityConfig_UnknownBackend verifies that an unknown backend value is rejected.
+func TestIdentityConfig_UnknownBackend(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity]
+backend = "1password"
+`)
+	_, _, _, err := LoadConfig(globalDir, globalDir)
+	if err == nil {
+		t.Fatal("LoadConfig should fail for unknown backend value")
+	}
+	if !strings.Contains(err.Error(), "1password") {
+		t.Errorf("error should mention the bad value, got: %v", err)
+	}
+}
+
+// TestIdentityConfig_FingerprintCascade verifies that fingerprint cascades
+// across config layers (project overrides global).
+func TestIdentityConfig_FingerprintCascade(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	projectDir := filepath.Join(tmp, "project")
+
+	writeConfig(t, filepath.Join(globalDir, configFilename), `
+[identity]
+backend = "ssh-agent"
+fingerprint = "SHA256:global"
+`)
+	writeConfig(t, filepath.Join(projectDir, ".cf", configFilename), `
+[identity]
+fingerprint = "SHA256:project"
+`)
+
+	cfg, _, _, err := LoadConfig(globalDir, projectDir)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	// Project layer wins (deeper config).
+	if cfg.Identity.Fingerprint != "SHA256:project" {
+		t.Errorf("fingerprint = %q, want \"SHA256:project\"", cfg.Identity.Fingerprint)
+	}
+}
