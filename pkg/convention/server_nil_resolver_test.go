@@ -90,7 +90,7 @@ func TestResolveIdentity_MalformedSenderHex(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			info := resolveIdentity(tc.senderHex, resolver)
+			info := resolveIdentity(context.Background(), tc.senderHex, resolver)
 			if info.MachineKey != nil {
 				t.Errorf("senderHex=%q: expected MachineKey==nil for malformed input, got %x", tc.senderHex, info.MachineKey)
 			}

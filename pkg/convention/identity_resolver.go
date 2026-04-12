@@ -38,6 +38,14 @@ type IdentityInfo struct {
 	// TrustResolved is true when a GrantChainResolver successfully resolved the
 	// sender back to a trust anchor (delegation.Resolved outcome).
 	TrustResolved bool
+
+	// Provenance maps bool field names to the Name() of the resolver that first
+	// set them to true. Only fields set to true have entries; false fields are
+	// absent. Populated by CompositeResolver using first-setter-wins semantics.
+	// Nil when resolution was performed by a non-composite resolver.
+	//
+	// Field names: "identity_verified", "trust_resolved".
+	Provenance map[string]string
 }
 
 // IdentityResolver resolves sender pubkeys to IdentityInfo.
@@ -49,17 +57,25 @@ type IdentityInfo struct {
 // by the verified echo ceremony (cf home be / homeLinkCmd).
 type IdentityResolver interface {
 	// Resolve returns IdentityInfo for the given sender pubkey.
-	Resolve(senderPubkey ed25519.PublicKey) IdentityInfo
+	// ctx is threaded for cancellation and deadline propagation.
+	Resolve(ctx context.Context, senderPubkey ed25519.PublicKey) (IdentityInfo, error)
+
+	// Name returns a stable human-readable identifier for this resolver.
+	// Used by CompositeResolver to populate IdentityInfo.Provenance.
+	Name() string
 }
 
 // NoopIdentityResolver returns IdentityInfo with only MachineKey set.
 // Used when no VerificationCache is available. This is the default resolver.
 type NoopIdentityResolver struct{}
 
+// Name implements IdentityResolver.
+func (NoopIdentityResolver) Name() string { return "noop" }
+
 // Resolve implements IdentityResolver. It returns IdentityInfo with only
 // MachineKey populated; IdentityVerified is always false.
-func (NoopIdentityResolver) Resolve(senderPubkey ed25519.PublicKey) IdentityInfo {
-	return IdentityInfo{MachineKey: senderPubkey}
+func (NoopIdentityResolver) Resolve(_ context.Context, senderPubkey ed25519.PublicKey) (IdentityInfo, error) {
+	return IdentityInfo{MachineKey: senderPubkey}, nil
 }
 
 // CacheIdentityResolver uses a protocol.VerificationCache to resolve sender
@@ -73,16 +89,19 @@ func NewCacheIdentityResolver(cache protocol.VerificationCache) *CacheIdentityRe
 	return &CacheIdentityResolver{cache: cache}
 }
 
+// Name implements IdentityResolver.
+func (r *CacheIdentityResolver) Name() string { return "cache" }
+
 // Resolve implements IdentityResolver. If cache has a verified entry for
 // senderPubkey, it returns IdentityInfo with Identity and IdentityVerified set.
 // On a cache miss (or empty campfire ID), it returns MachineKey-only.
-func (r *CacheIdentityResolver) Resolve(senderPubkey ed25519.PublicKey) IdentityInfo {
+func (r *CacheIdentityResolver) Resolve(_ context.Context, senderPubkey ed25519.PublicKey) (IdentityInfo, error) {
 	info := IdentityInfo{MachineKey: senderPubkey}
 	if id, ok := r.cache.Get(senderPubkey); ok && id != "" {
 		info.Identity = id
 		info.IdentityVerified = true
 	}
-	return info
+	return info, nil
 }
 
 // GrantChainResolver resolves sender pubkeys by walking the local campfire grant
@@ -122,6 +141,9 @@ func NewGrantChainResolver(client *protocol.Client, campfireID string, anchors [
 	}
 }
 
+// Name implements IdentityResolver.
+func (r *GrantChainResolver) Name() string { return "grant-chain" }
+
 // Resolve implements IdentityResolver. It calls delegation.Resolve threading
 // the caller's context through. The current delegation.Resolve implementation
 // performs synchronous local store reads and does not yet use the context
@@ -132,23 +154,19 @@ func NewGrantChainResolver(client *protocol.Client, campfireID string, anchors [
 // On a Resolved outcome it returns TrustResolved=true with Chain and Anchor set.
 // On any other outcome (DeadEnd, InvalidGrant, DepthExceeded, ReadError) it returns
 // TrustResolved=false with nil Chain and nil Anchor.
-//
-// NOTE: IdentityResolver.Resolve does not accept a context parameter. The caller
-// context is not available here; context.Background() is used as the threading
-// point until the IdentityResolver interface is updated to accept ctx.
-func (r *GrantChainResolver) Resolve(senderPubkey ed25519.PublicKey) IdentityInfo {
+func (r *GrantChainResolver) Resolve(ctx context.Context, senderPubkey ed25519.PublicKey) (IdentityInfo, error) {
 	info := IdentityInfo{MachineKey: senderPubkey}
 	if r.campfireIDRaw == nil {
 		// campfireID was invalid at construction — fail-closed.
-		return info
+		return info, nil
 	}
-	out := delegation.Resolve(context.Background(), r.client, r.campfireIDRaw, senderPubkey, r.anchors)
+	out := delegation.Resolve(ctx, r.client, r.campfireIDRaw, senderPubkey, r.anchors)
 	if resolved, ok := out.(delegation.Resolved); ok {
 		info.TrustResolved = true
 		info.Chain = resolved.Chain
 		info.Anchor = resolved.Anchor
 	}
-	return info
+	return info, nil
 }
 
 // FromConfig returns a GrantChainResolver that reads trust anchors from the
@@ -176,6 +194,11 @@ func FromConfig(client *protocol.Client, campfireID string, cfg *protocol.Config
 //
 // Resolvers are called in order. The first resolver in the slice wins for any
 // field it sets; subsequent resolvers fill in fields the earlier ones did not set.
+//
+// Provenance semantics: first-setter-wins per bool field. The resolver whose
+// Name() is recorded in Provenance["identity_verified"] (or "trust_resolved")
+// was the first to set that field to true. Resolver order therefore matters for
+// provenance attribution.
 type CompositeResolver struct {
 	resolvers []IdentityResolver
 }
@@ -188,12 +211,20 @@ func NewCompositeResolver(resolvers ...IdentityResolver) *CompositeResolver {
 	return &CompositeResolver{resolvers: resolvers}
 }
 
+// Name implements IdentityResolver.
+func (c *CompositeResolver) Name() string { return "composite" }
+
 // Resolve implements IdentityResolver. It calls each resolver in order and
 // merges results: fields set by earlier resolvers win over later ones.
-func (c *CompositeResolver) Resolve(senderPubkey ed25519.PublicKey) IdentityInfo {
-	merged := IdentityInfo{}
+// Provenance is populated with first-setter-wins per bool field.
+func (c *CompositeResolver) Resolve(ctx context.Context, senderPubkey ed25519.PublicKey) (IdentityInfo, error) {
+	merged := IdentityInfo{Provenance: map[string]string{}}
 	for _, r := range c.resolvers {
-		info := r.Resolve(senderPubkey)
+		info, err := r.Resolve(ctx, senderPubkey)
+		if err != nil {
+			return IdentityInfo{}, err
+		}
+		name := r.Name()
 		// Always prefer the first non-nil MachineKey.
 		if merged.MachineKey == nil && info.MachineKey != nil {
 			merged.MachineKey = info.MachineKey
@@ -202,12 +233,14 @@ func (c *CompositeResolver) Resolve(senderPubkey ed25519.PublicKey) IdentityInfo
 		if merged.Identity == "" && info.Identity != "" {
 			merged.Identity = info.Identity
 		}
-		// Merge bool flags: once set to true, stay true.
-		if info.IdentityVerified {
+		// Merge bool flags: first-setter-wins; record provenance for first setter.
+		if info.IdentityVerified && !merged.IdentityVerified {
 			merged.IdentityVerified = true
+			merged.Provenance["identity_verified"] = name
 		}
-		if info.TrustResolved {
+		if info.TrustResolved && !merged.TrustResolved {
 			merged.TrustResolved = true
+			merged.Provenance["trust_resolved"] = name
 		}
 		// Merge Chain/Anchor from first resolver that resolved trust.
 		if merged.Chain == nil && info.Chain != nil {
@@ -217,17 +250,23 @@ func (c *CompositeResolver) Resolve(senderPubkey ed25519.PublicKey) IdentityInfo
 			merged.Anchor = info.Anchor
 		}
 	}
-	return merged
+	return merged, nil
 }
 
 // resolveIdentity decodes the hex sender pubkey from a protocol.Message and
 // calls resolver.Resolve. On hex decode failure it returns IdentityInfo with
-// nil MachineKey and IdentityVerified=false.
-func resolveIdentity(senderHex string, resolver IdentityResolver) IdentityInfo {
+// nil MachineKey and IdentityVerified=false. On resolver error it returns
+// MachineKey-only with IdentityVerified=false.
+func resolveIdentity(ctx context.Context, senderHex string, resolver IdentityResolver) IdentityInfo {
 	pub, err := hex.DecodeString(senderHex)
 	if err != nil || len(pub) != ed25519.PublicKeySize {
 		// Malformed sender — return zero IdentityInfo (MachineKey nil).
 		return IdentityInfo{}
 	}
-	return resolver.Resolve(ed25519.PublicKey(pub))
+	info, err := resolver.Resolve(ctx, ed25519.PublicKey(pub))
+	if err != nil {
+		// Resolver error — return MachineKey-only, IdentityVerified=false.
+		return IdentityInfo{MachineKey: ed25519.PublicKey(pub)}
+	}
+	return info
 }

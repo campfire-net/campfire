@@ -34,7 +34,10 @@ func TestNoopIdentityResolver(t *testing.T) {
 	pub, _ := generateTestKey(t)
 
 	resolver := convention.NoopIdentityResolver{}
-	info := resolver.Resolve(pub)
+	info, err := resolver.Resolve(context.Background(), pub)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
 
 	if info.MachineKey == nil {
 		t.Fatal("expected MachineKey to be set")
@@ -64,7 +67,10 @@ func TestCacheIdentityResolver_Hit(t *testing.T) {
 	}
 
 	resolver := convention.NewCacheIdentityResolver(cache)
-	info := resolver.Resolve(pub)
+	info, err := resolver.Resolve(context.Background(), pub)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
 
 	if !info.MachineKey.Equal(pub) {
 		t.Errorf("MachineKey mismatch: got %x, want %x", info.MachineKey, pub)
@@ -86,7 +92,10 @@ func TestCacheIdentityResolver_Miss(t *testing.T) {
 	// No entry set for pub.
 
 	resolver := convention.NewCacheIdentityResolver(cache)
-	info := resolver.Resolve(pub)
+	info, err := resolver.Resolve(context.Background(), pub)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
 
 	if !info.MachineKey.Equal(pub) {
 		t.Errorf("MachineKey mismatch: got %x, want %x", info.MachineKey, pub)
@@ -122,7 +131,10 @@ func TestCacheIdentityResolver_NilFromCache(t *testing.T) {
 	pub, _ := generateTestKey(t)
 
 	resolver := convention.NewCacheIdentityResolver(mockEmptyCache{})
-	info := resolver.Resolve(pub)
+	info, err := resolver.Resolve(context.Background(), pub)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
 
 	if !info.MachineKey.Equal(pub) {
 		t.Errorf("MachineKey mismatch: got %x, want %x", info.MachineKey, pub)

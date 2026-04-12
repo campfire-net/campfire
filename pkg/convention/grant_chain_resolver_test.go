@@ -192,7 +192,10 @@ func TestGrantChainResolver_TrustResolved_ValidChain(t *testing.T) {
 	env.postGrant(t, 0, env.pubkey(1), futureGrantExpiry())
 
 	resolver := convention.NewGrantChainResolver(env.clients[1], env.campfireHex, env.anchors(0))
-	info := resolver.Resolve(env.pubkey(1))
+	info, err := resolver.Resolve(context.Background(), env.pubkey(1))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
 
 	if info.MachineKey == nil {
 		t.Fatal("expected MachineKey to be set")
@@ -221,7 +224,10 @@ func TestGrantChainResolver_TrustResolved_UnknownSender(t *testing.T) {
 	// No grant posted — ids[1] has no chain to ids[0].
 
 	resolver := convention.NewGrantChainResolver(env.clients[0], env.campfireHex, env.anchors(0))
-	info := resolver.Resolve(env.pubkey(1))
+	info, err := resolver.Resolve(context.Background(), env.pubkey(1))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
 
 	if info.MachineKey == nil {
 		t.Fatal("expected MachineKey to be set")
@@ -259,7 +265,10 @@ func TestCompositeResolver_MergesCache_AndGrantChain(t *testing.T) {
 	grantResolver := convention.NewGrantChainResolver(env.clients[1], env.campfireHex, env.anchors(0))
 
 	composite := convention.NewCompositeResolver(cacheResolver, grantResolver)
-	info := composite.Resolve(env.pubkey(1))
+	info, err := composite.Resolve(context.Background(), env.pubkey(1))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
 
 	if info.MachineKey == nil {
 		t.Fatal("expected MachineKey to be set")
@@ -493,7 +502,10 @@ func TestFromConfig_HonorsAnchors(t *testing.T) {
 	}
 
 	resolver := convention.FromConfig(env.clients[1], env.campfireHex, cfg)
-	info := resolver.Resolve(env.pubkey(1))
+	info, err := resolver.Resolve(context.Background(), env.pubkey(1))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
 
 	if !info.TrustResolved {
 		t.Error("expected TrustResolved=true: sender has a valid grant from configured anchor")
@@ -542,7 +554,10 @@ func TestFromConfig_EmptyAnchors_Warns(t *testing.T) {
 	}
 
 	// Resolver should fail-close: no valid resolution without anchors.
-	info := resolver.Resolve(env.pubkey(1))
+	info, err := resolver.Resolve(context.Background(), env.pubkey(1))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
 	if info.TrustResolved {
 		t.Error("expected TrustResolved=false when no trust anchors are configured")
 	}
