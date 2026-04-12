@@ -409,7 +409,7 @@ func TestResolve_DepthExceeded(t *testing.T) {
 		env.postGrant(t, i, env.pubkey(i+1), futureExpiry())
 	}
 
-	// Resolve ids[11] with ids[0] as anchor. The walk terminates at depth 10 (MAX_CHAIN_DEPTH).
+	// Resolve ids[11] with ids[0] as anchor. The walk terminates at depth 10 (MaxChainDepth).
 	out := delegation.Resolve(ctx, env.clients[chainLen-1], env.campfireIDRaw, env.pubkey(chainLen-1), env.anchors(0))
 
 	_, ok := out.(delegation.DepthExceeded)

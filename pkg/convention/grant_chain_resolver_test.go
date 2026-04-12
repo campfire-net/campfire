@@ -29,8 +29,7 @@ import (
 // grantChainTestEnv is the shared test scaffold for GrantChainResolver tests.
 // It mirrors the pattern from delegation/trust_test.go's trustTestEnv.
 type grantChainTestEnv struct {
-	campfireIDRaw []byte
-	campfireHex   string
+	campfireHex string
 	transportDir  string
 	fsTransport   *fs.Transport
 	identities    []*identity.Identity
@@ -50,7 +49,6 @@ func newGrantChainTestEnv(t *testing.T, n int) *grantChainTestEnv {
 	if err != nil {
 		t.Fatalf("generating campfire identity: %v", err)
 	}
-	campfireIDRaw := cfID.PublicKey
 	campfireHex := cfID.PublicKeyHex()
 
 	cfDir := filepath.Join(transportDir, campfireHex)
@@ -120,8 +118,7 @@ func newGrantChainTestEnv(t *testing.T, n int) *grantChainTestEnv {
 	}
 
 	return &grantChainTestEnv{
-		campfireIDRaw: campfireIDRaw,
-		campfireHex:   campfireHex,
+		campfireHex: campfireHex,
 		transportDir:  transportDir,
 		fsTransport:   tr,
 		identities:    ids,
@@ -194,7 +191,7 @@ func TestGrantChainResolver_TrustResolved_ValidChain(t *testing.T) {
 	// ids[0] (anchor) grants ids[1] (sender).
 	env.postGrant(t, 0, env.pubkey(1), futureGrantExpiry())
 
-	resolver := convention.NewGrantChainResolver(env.clients[1], env.campfireIDRaw, env.anchors(0))
+	resolver := convention.NewGrantChainResolver(env.clients[1], env.campfireHex, env.anchors(0))
 	info := resolver.Resolve(env.pubkey(1))
 
 	if info.MachineKey == nil {
@@ -223,7 +220,7 @@ func TestGrantChainResolver_TrustResolved_UnknownSender(t *testing.T) {
 	env := newGrantChainTestEnv(t, 2)
 	// No grant posted — ids[1] has no chain to ids[0].
 
-	resolver := convention.NewGrantChainResolver(env.clients[0], env.campfireIDRaw, env.anchors(0))
+	resolver := convention.NewGrantChainResolver(env.clients[0], env.campfireHex, env.anchors(0))
 	info := resolver.Resolve(env.pubkey(1))
 
 	if info.MachineKey == nil {
@@ -259,7 +256,7 @@ func TestCompositeResolver_MergesCache_AndGrantChain(t *testing.T) {
 	}
 
 	cacheResolver := convention.NewCacheIdentityResolver(cache)
-	grantResolver := convention.NewGrantChainResolver(env.clients[1], env.campfireIDRaw, env.anchors(0))
+	grantResolver := convention.NewGrantChainResolver(env.clients[1], env.campfireHex, env.anchors(0))
 
 	composite := convention.NewCompositeResolver(cacheResolver, grantResolver)
 	info := composite.Resolve(env.pubkey(1))
@@ -301,7 +298,7 @@ func TestServer_WithGrantChainResolver_HandlerReadsChain(t *testing.T) {
 	// ids[0] grants ids[1].
 	env.postGrant(t, 0, env.pubkey(1), futureGrantExpiry())
 
-	resolver := convention.NewGrantChainResolver(env.clients[0], env.campfireIDRaw, env.anchors(0))
+	resolver := convention.NewGrantChainResolver(env.clients[0], env.campfireHex, env.anchors(0))
 
 	decl := &convention.Declaration{
 		Convention: "grant-chain-server-test",
@@ -477,5 +474,79 @@ func TestServer_WithNoopResolver_ChainIsNil(t *testing.T) {
 	// MachineKey should still be set.
 	if capturedIdentity.MachineKey == nil {
 		t.Error("expected MachineKey to be set even with NoopIdentityResolver")
+	}
+}
+
+// --- Test 6: FromConfig honors configured trust anchors ---
+
+func TestFromConfig_HonorsAnchors(t *testing.T) {
+	env := newGrantChainTestEnv(t, 2)
+
+	// ids[0] (anchor) grants ids[1] (sender).
+	env.postGrant(t, 0, env.pubkey(1), futureGrantExpiry())
+
+	// Build a protocol.Config with ids[0] as a trust anchor.
+	cfg := &protocol.Config{
+		Identity: protocol.IdentityConfig{
+			TrustAnchors: []ed25519.PublicKey{env.pubkey(0)},
+		},
+	}
+
+	resolver := convention.FromConfig(env.clients[1], env.campfireHex, cfg)
+	info := resolver.Resolve(env.pubkey(1))
+
+	if !info.TrustResolved {
+		t.Error("expected TrustResolved=true: sender has a valid grant from configured anchor")
+	}
+	if info.Anchor == nil {
+		t.Fatal("expected Anchor to be set")
+	}
+	if !info.Anchor.Equal(env.pubkey(0)) {
+		t.Errorf("Anchor mismatch: got %x, want %x", info.Anchor, env.pubkey(0))
+	}
+	if len(info.Chain) != 1 {
+		t.Errorf("expected chain length 1, got %d", len(info.Chain))
+	}
+}
+
+// --- Test 7: FromConfig with empty anchors prints warning and fail-closes ---
+
+func TestFromConfig_EmptyAnchors_Warns(t *testing.T) {
+	env := newGrantChainTestEnv(t, 2)
+
+	// ids[0] grants ids[1] — but no anchors are configured, so trust can never resolve.
+	env.postGrant(t, 0, env.pubkey(1), futureGrantExpiry())
+
+	// Redirect stderr to capture the warning.
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+
+	cfg := &protocol.Config{} // TrustAnchors is nil/empty
+
+	resolver := convention.FromConfig(env.clients[1], env.campfireHex, cfg)
+
+	w.Close()
+	os.Stderr = origStderr
+
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	r.Close()
+	stderrOutput := string(buf[:n])
+
+	if stderrOutput == "" {
+		t.Error("expected a warning to stderr when no anchors are configured, got empty output")
+	}
+
+	// Resolver should fail-close: no valid resolution without anchors.
+	info := resolver.Resolve(env.pubkey(1))
+	if info.TrustResolved {
+		t.Error("expected TrustResolved=false when no trust anchors are configured")
+	}
+	if info.Chain != nil {
+		t.Errorf("expected Chain==nil for fail-closed resolver, got %v", info.Chain)
 	}
 }
