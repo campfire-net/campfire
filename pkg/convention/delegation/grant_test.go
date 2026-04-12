@@ -304,6 +304,38 @@ func TestPostGrant_ExceedsCeiling(t *testing.T) {
 	}
 }
 
+// TestValidateGrant_ChildKeyMalformed_NonHex verifies that a grant whose payload
+// child_pubkey is not valid hex is rejected with ErrGrantChildKeyMalformed.
+func TestValidateGrant_ChildKeyMalformed_NonHex(t *testing.T) {
+	pub, priv := generateKey(t)
+
+	// "not-hex!!" is not valid hexadecimal.
+	payload := makeGrantPayload("not-hex!!", campfireHex, expiresInOneDay())
+	grant := newSignedGrant(t, priv, pub, payload)
+
+	err := delegation.ValidateGrant(grant, campfireHex, now)
+	if !errors.Is(err, delegation.ErrGrantChildKeyMalformed) {
+		t.Fatalf("expected ErrGrantChildKeyMalformed for non-hex child_pubkey, got %v", err)
+	}
+}
+
+// TestValidateGrant_ChildKeyMalformed_WrongLength verifies that a grant whose
+// payload child_pubkey is valid hex but decodes to fewer than 32 bytes is
+// rejected with ErrGrantChildKeyMalformed.
+func TestValidateGrant_ChildKeyMalformed_WrongLength(t *testing.T) {
+	pub, priv := generateKey(t)
+
+	// 30 bytes = 60 hex chars — valid hex but wrong Ed25519 key size.
+	shortKey := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	payload := makeGrantPayload(shortKey, campfireHex, expiresInOneDay())
+	grant := newSignedGrant(t, priv, pub, payload)
+
+	err := delegation.ValidateGrant(grant, campfireHex, now)
+	if !errors.Is(err, delegation.ErrGrantChildKeyMalformed) {
+		t.Fatalf("expected ErrGrantChildKeyMalformed for short child_pubkey, got %v", err)
+	}
+}
+
 // TestPostGrant_EndToEnd issues a grant via PostGrant and then calls Resolve
 // on the child — asserts Resolved{}. Proves the write path, the read path,
 // and the convention wire format all agree.

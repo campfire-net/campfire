@@ -8,6 +8,8 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -20,8 +22,32 @@ import (
 // hops; 10 is a generous safety cap that terminates adversarial or cyclic input.
 const MAX_CHAIN_DEPTH = 10
 
+// MaxGrantReadLimit caps the number of identity:granted or identity:revoked
+// messages a single trust-walk read will pull into memory. Legitimate deployments
+// have on the order of dozens of grants per campfire; this cap prevents a peer
+// who floods a campfire with grants from causing unbounded memory allocation
+// during findValidGrant (campfire-d38). If this limit is hit, a valid grant for
+// the target child may still be present in the truncated tail — callers should
+// treat "at-limit with no valid grant for child" as a possible false negative
+// for adversarial traffic, not for legitimate chains.
+const MaxGrantReadLimit = 10000
+
 // RevokedTag is the tag produced by an identity-delegation:revoke operation.
+//
+// NOTE: this constant duplicates convention.IdentityRevokedTag (see
+// pkg/convention/identity.go). The delegation package cannot import convention
+// (convention imports delegation), and the reverse import would break the
+// dependency graph. A test asserts both constants equal "identity:revoked" —
+// if this string changes, update both sites and the test will tell you
+// (campfire-3a8).
 const RevokedTag = "identity:revoked"
+
+// ErrStoreRead wraps any underlying store.Read / client.Read error produced
+// during trust resolution. Resolve surfaces this class of failure via the
+// ReadError Outcome variant so callers can distinguish "store unavailable"
+// from "no grant exists" (both of which previously silently mapped to
+// DeadEnd — campfire-188).
+var ErrStoreRead = errors.New("store read failed")
 
 // GrantInfo holds the parsed payload of a single identity:granted message
 // together with the message metadata needed by callers inspecting the chain.
@@ -79,10 +105,27 @@ type DepthExceeded struct {
 	Chain []GrantInfo
 }
 
+// ReadError means the trust walker hit a store I/O error before it could
+// complete the walk. This is distinct from DeadEnd — DeadEnd is "the log
+// says no valid grant exists"; ReadError is "we couldn't read the log."
+// Callers must treat ReadError as non-authoritative: the sender's trust
+// state is unknown, and the policy decision (fail-open, fail-closed, retry)
+// is the caller's. Fixes campfire-188.
+type ReadError struct {
+	// Chain is the partial chain walked successfully before the read failed.
+	Chain []GrantInfo
+	// Target is the pubkey whose grant lookup (or revocation lookup) failed.
+	Target ed25519.PublicKey
+	// Err is the underlying store error, wrapped in ErrStoreRead for
+	// errors.Is checks.
+	Err error
+}
+
 func (Resolved) outcome()      {}
 func (DeadEnd) outcome()       {}
 func (InvalidGrant) outcome()  {}
 func (DepthExceeded) outcome() {}
+func (ReadError) outcome()     {}
 
 // revokePayload is the JSON payload of an identity:revoked message.
 type revokePayload struct {
@@ -128,10 +171,15 @@ func Resolve(
 		}
 
 		// Find valid non-revoked grant for current.
-		gi, badGrant, validationErr := findValidGrant(client, campfireHex, current, now)
-		if validationErr != nil {
-			// A grant was found but failed validation — return InvalidGrant.
-			return InvalidGrant{Chain: chain, BadGrant: badGrant, Err: validationErr}
+		gi, badGrant, err := findValidGrant(client, campfireHex, current, now)
+		if err != nil {
+			// Store I/O error — surface as ReadError so the caller can
+			// distinguish "log unreadable" from "no grant exists" (campfire-188).
+			if errors.Is(err, ErrStoreRead) {
+				return ReadError{Chain: chain, Target: current, Err: err}
+			}
+			// Otherwise a grant was found but failed validation — return InvalidGrant.
+			return InvalidGrant{Chain: chain, BadGrant: badGrant, Err: err}
 		}
 		if gi == nil {
 			// No valid unrevoked grant; walk ends here.
@@ -149,13 +197,15 @@ func Resolve(
 // identity:granted message whose payload.child_pubkey matches childPubkey.
 //
 // It iterates grants in descending timestamp order. For each grant it:
-//  1. Validates via ValidateGrant (signature, campfire_id, expiry, ceiling).
+//  1. Validates via ValidateGrant (signature, campfire_id, expiry, ceiling,
+//     child_pubkey well-formedness).
 //  2. Checks for a newer identity:revoked message from the same parent for the same child.
 //
 // Returns:
-//   - (*GrantInfo, nil, nil)   — valid unrevoked grant found
-//   - (nil, nil, nil)          — no grant exists at all (DeadEnd)
-//   - (nil, *Message, error)   — a grant was found but failed validation (InvalidGrant)
+//   - (*GrantInfo, nil, nil)         — valid unrevoked grant found
+//   - (nil, nil, nil)                — no grant exists at all (DeadEnd)
+//   - (nil, *Message, validationErr) — a grant was found but failed validation (InvalidGrant)
+//   - (nil, nil, ErrStoreRead…)      — store I/O error (surfaced as ReadError by Resolve)
 func findValidGrant(
 	client *protocol.Client,
 	campfireHex string,
@@ -164,15 +214,18 @@ func findValidGrant(
 ) (*GrantInfo, *protocol.Message, error) {
 	childHex := hex.EncodeToString(childPubkey)
 
-	// Read all identity:granted messages from the campfire (local only).
+	// Read identity:granted messages from the campfire (local only), capped at
+	// MaxGrantReadLimit to prevent a grant-flood from blowing memory (campfire-d38).
 	result, err := client.Read(protocol.ReadRequest{
 		CampfireID: campfireHex,
 		Tags:       []string{GrantedTag},
 		SkipSync:   true,
+		Limit:      MaxGrantReadLimit,
 	})
 	if err != nil {
-		// Treat read errors as no grant found (DeadEnd); caller decides policy.
-		return nil, nil, nil
+		// Surface the store error instead of silently mapping to DeadEnd
+		// (campfire-188). Resolve converts this into a ReadError Outcome.
+		return nil, nil, fmt.Errorf("%w: reading grants: %v", ErrStoreRead, err)
 	}
 
 	// Collect candidates matching this child pubkey.
@@ -207,21 +260,32 @@ func findValidGrant(
 		// Validation passed. Check for a revocation from the same parent.
 		revoked, revokeErr := isRevoked(client, campfireHex, childHex, c.msg.Sender, c.msg.Timestamp)
 		if revokeErr != nil {
-			// Read error on revoke query — treat conservatively: skip this grant.
-			continue
+			// Store error on revoke lookup — surface as ReadError rather than
+			// silently treating the grant as revoked (campfire-188). A store
+			// failure is not the same as "revoked"; conflating them is a
+			// correctness bug for any caller that relies on the Outcome type.
+			return nil, nil, revokeErr
 		}
 		if revoked {
 			// Revoked; try the next (older) grant.
 			continue
 		}
 
-		// Valid and not revoked — build GrantInfo.
+		// Valid and not revoked — build GrantInfo. Both parentBytes (from signed
+		// Sender field) and childBytes (from payload, now validated by
+		// ValidateGrant) are guaranteed well-formed.
 		parentBytes, err := hex.DecodeString(c.msg.Sender)
 		if err != nil || len(parentBytes) != ed25519.PublicKeySize {
 			pmsg := c.msg
 			return nil, &pmsg, ErrSignatureInvalid
 		}
-		childBytes, _ := hex.DecodeString(c.gp.ChildPubkey)
+		childBytes, err := hex.DecodeString(c.gp.ChildPubkey)
+		if err != nil || len(childBytes) != ed25519.PublicKeySize {
+			// Unreachable: ValidateGrant already enforced child_pubkey
+			// well-formedness. If this fires, ValidateGrant has a bug.
+			pmsg := c.msg
+			return nil, &pmsg, ErrGrantChildKeyMalformed
+		}
 
 		gi := &GrantInfo{
 			MessageID:    c.msg.ID,
@@ -239,6 +303,10 @@ func findValidGrant(
 
 // isRevoked checks whether a newer identity:revoked message from parentHex for
 // childHex exists in the campfire, posted strictly after grantTimestamp.
+//
+// Store errors are wrapped in ErrStoreRead and propagated up. findValidGrant's
+// caller (Resolve) converts that to a ReadError Outcome so the caller can tell
+// "revoke lookup failed" apart from "no revocation found" (campfire-188).
 func isRevoked(
 	client *protocol.Client,
 	campfireHex string,
@@ -251,9 +319,10 @@ func isRevoked(
 		Tags:       []string{RevokedTag},
 		Sender:     parentHex,
 		SkipSync:   true,
+		Limit:      MaxGrantReadLimit,
 	})
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("%w: reading revocations: %v", ErrStoreRead, err)
 	}
 
 	for _, msg := range result.Messages {
