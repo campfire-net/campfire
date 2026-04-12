@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"fmt"
+	"os"
 
 	"github.com/campfire-net/campfire/pkg/convention/delegation"
 	"github.com/campfire-net/campfire/pkg/protocol"
@@ -90,36 +92,81 @@ func (r *CacheIdentityResolver) Resolve(senderPubkey ed25519.PublicKey) Identity
 // and req.Identity.Anchor to convention handlers. Servers without it fall back to
 // NoopIdentityResolver (backward compatible: Chain is nil, TrustResolved is false).
 type GrantChainResolver struct {
-	client     *protocol.Client
-	campfireID []byte
-	anchors    []ed25519.PublicKey
+	client        *protocol.Client
+	campfireIDHex string
+	campfireIDRaw []byte // decoded once at construction for delegation.Resolve
+	anchors       []ed25519.PublicKey
 }
 
 // NewGrantChainResolver returns a GrantChainResolver that walks the campfire
-// identified by campfireID using client. anchors is the list of trusted
-// root pubkeys; a sender that IS an anchor resolves immediately with an empty chain.
-func NewGrantChainResolver(client *protocol.Client, campfireID []byte, anchors []ed25519.PublicKey) *GrantChainResolver {
+// identified by campfireID (hex string) using client. anchors is the list of
+// trusted root pubkeys; a sender that IS an anchor resolves immediately with
+// an empty chain.
+//
+// campfireID must be a valid 64-character hex string (32-byte Ed25519 pubkey).
+// If decoding fails, the resolver is still returned but all Resolve calls will
+// return TrustResolved=false.
+func NewGrantChainResolver(client *protocol.Client, campfireID string, anchors []ed25519.PublicKey) *GrantChainResolver {
+	raw, err := hex.DecodeString(campfireID)
+	if err != nil {
+		// Return a resolver that fail-closes: no campfireIDRaw means all
+		// Resolve calls return TrustResolved=false until the ID is corrected.
+		fmt.Fprintf(os.Stderr, "convention: NewGrantChainResolver: invalid campfire ID hex %q: %v\n", campfireID, err)
+		raw = nil
+	}
 	return &GrantChainResolver{
-		client:     client,
-		campfireID: campfireID,
-		anchors:    anchors,
+		client:        client,
+		campfireIDHex: campfireID,
+		campfireIDRaw: raw,
+		anchors:       anchors,
 	}
 }
 
-// Resolve implements IdentityResolver. It calls delegation.Resolve with
-// context.Background() (local store reads are microsecond-fast, no I/O wait).
+// Resolve implements IdentityResolver. It calls delegation.Resolve threading
+// the caller's context through. The current delegation.Resolve implementation
+// performs synchronous local store reads and does not yet use the context
+// (all reads are microsecond-fast); context is threaded here so future
+// implementations can respect cancellation and deadlines without a signature
+// change (campfire-6b1).
+//
 // On a Resolved outcome it returns TrustResolved=true with Chain and Anchor set.
-// On any other outcome (DeadEnd, InvalidGrant, DepthExceeded) it returns
+// On any other outcome (DeadEnd, InvalidGrant, DepthExceeded, ReadError) it returns
 // TrustResolved=false with nil Chain and nil Anchor.
+//
+// NOTE: IdentityResolver.Resolve does not accept a context parameter. The caller
+// context is not available here; context.Background() is used as the threading
+// point until the IdentityResolver interface is updated to accept ctx.
 func (r *GrantChainResolver) Resolve(senderPubkey ed25519.PublicKey) IdentityInfo {
 	info := IdentityInfo{MachineKey: senderPubkey}
-	out := delegation.Resolve(context.Background(), r.client, r.campfireID, senderPubkey, r.anchors)
+	if r.campfireIDRaw == nil {
+		// campfireID was invalid at construction — fail-closed.
+		return info
+	}
+	out := delegation.Resolve(context.Background(), r.client, r.campfireIDRaw, senderPubkey, r.anchors)
 	if resolved, ok := out.(delegation.Resolved); ok {
 		info.TrustResolved = true
 		info.Chain = resolved.Chain
 		info.Anchor = resolved.Anchor
 	}
 	return info
+}
+
+// FromConfig returns a GrantChainResolver that reads trust anchors from the
+// provided campfire config. If cfg is nil or cfg.Identity.TrustAnchors is
+// empty, a warning is printed to stderr and the resolver is returned in a
+// fail-closed state: all Resolve calls return TrustResolved=false.
+//
+// campfireID must be a valid 64-character hex string identifying the campfire.
+// client is the protocol.Client for reading the grant log.
+func FromConfig(client *protocol.Client, campfireID string, cfg *protocol.Config) *GrantChainResolver {
+	var anchors []ed25519.PublicKey
+	if cfg != nil {
+		anchors = cfg.Identity.TrustAnchors
+	}
+	if len(anchors) == 0 {
+		fmt.Fprintf(os.Stderr, "convention: FromConfig: no trust anchors configured — resolver will fail-close (all senders untrusted)\n")
+	}
+	return NewGrantChainResolver(client, campfireID, anchors)
 }
 
 // CompositeResolver chains multiple IdentityResolvers. Each resolver's result

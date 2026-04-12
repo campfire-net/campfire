@@ -17,10 +17,10 @@ import (
 	"github.com/campfire-net/campfire/pkg/protocol"
 )
 
-// MAX_CHAIN_DEPTH is the maximum number of grant hops the resolver will walk
+// MaxChainDepth is the maximum number of grant hops the resolver will walk
 // before returning DepthExceeded. A legitimate chain is never deeper than 5
 // hops; 10 is a generous safety cap that terminates adversarial or cyclic input.
-const MAX_CHAIN_DEPTH = 10
+const MaxChainDepth = 10
 
 // MaxGrantReadLimit caps the number of identity:granted or identity:revoked
 // messages a single trust-walk read will pull into memory. Legitimate deployments
@@ -98,7 +98,7 @@ type InvalidGrant struct {
 	Err error
 }
 
-// DepthExceeded means the walk hit MAX_CHAIN_DEPTH without reaching a trust anchor.
+// DepthExceeded means the walk hit MaxChainDepth without reaching a trust anchor.
 // This indicates a pathological or cyclic delegation chain.
 type DepthExceeded struct {
 	// Chain is the partial chain up to the depth limit.
@@ -162,7 +162,7 @@ func Resolve(
 	chain := make([]GrantInfo, 0)
 	current := sender
 
-	for depth := 0; depth < MAX_CHAIN_DEPTH; depth++ {
+	for depth := 0; depth < MaxChainDepth; depth++ {
 		// If current is a trust anchor, resolution succeeds.
 		for _, anchor := range anchors {
 			if current.Equal(anchor) {
@@ -342,6 +342,22 @@ func isRevoked(
 
 // protoMsgToRaw converts a protocol.Message back to a message.Message so that
 // ValidateGrant can call VerifySignature (which requires []byte Sender and Signature).
+//
+// Why this shim exists (campfire-1b1):
+//   - delegation.findValidGrant reads messages via protocol.Client.Read, which returns
+//     protocol.Message with Sender as a hex string (SDK-facing type).
+//   - ValidateGrant requires *message.Message because its signature verification path
+//     calls message.Message.VerifySignature(), which needs Sender as []byte.
+//   - delegation cannot import protocol (protocol imports convention, convention imports
+//     delegation — that cycle is already disallowed). Moving VerifySignature to accept
+//     raw bytes would require touching message.Message.VerifySignature (a broad API
+//     change) or splitting ValidateGrant into a "verify-then-validate" pair.
+//   - We cannot touch ValidateGrant here (that is PR #1 territory, campfire-af4).
+//
+// The shim is therefore the correct short-term solution. A future PR (#5 or later)
+// should add a ValidateGrantFromProto overload that accepts protocol.Message directly
+// (hex-decode once, then validate), letting us delete protoMsgToRaw and the
+// intermediate allocation. Track as campfire-1b1.
 func protoMsgToRaw(pm protocol.Message) *message.Message {
 	senderBytes, _ := hex.DecodeString(pm.Sender)
 	return &message.Message{
