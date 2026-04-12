@@ -229,7 +229,7 @@ func (s *Server) dispatch(ctx context.Context, campfireID string, msg protocol.M
 		return
 	}
 
-	identity := resolveIdentity(msg.Sender, s.resolver)
+	identity := resolveIdentity(ctx, msg.Sender, s.resolver)
 	if identity.MachineKey == nil {
 		// Malformed sender hex — signature validation should have caught this upstream,
 		// but guard here so handlers can rely on MachineKey being non-nil.
