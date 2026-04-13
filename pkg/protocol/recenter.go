@@ -119,8 +119,12 @@ func (c *Client) postRecenterClaim(configDir, centerID string) error {
 	newKeyHex := c.identity.PublicKeyHex()
 	payload := RecenterCanonicalPayload(newKeyHex, centerID)
 
-	// Sign with the new context key (we have the private key).
-	newKeySig := ed25519.Sign(c.identity.PrivateKey, payload)
+	// Sign with the new context key. Route through SignWithBackend so that
+	// ssh-agent backends are used when configured (campfire-c5f).
+	newKeySig, err := c.identity.SignWithBackend(payload)
+	if err != nil {
+		return fmt.Errorf("signing recenter claim: %w", err)
+	}
 
 	// Get the center's private key from the transport state.
 	centerPrivKey, err := c.getCenterPrivateKey(centerID)

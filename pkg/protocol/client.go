@@ -271,10 +271,7 @@ func (c *Client) sendFilesystem(req SendRequest, m *store.Membership) (*message.
 		return nil, fmt.Errorf("not recognized as a member in the transport directory")
 	}
 
-	signer, err := message.NewEd25519Signer(c.identity.PrivateKey, c.identity.PublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("creating signer: %w", err)
-	}
+	signer := c.identity.NewSigner()
 	msg, err := message.NewMessage(signer, req.Payload, req.Tags, req.Antecedents)
 	if err != nil {
 		return nil, fmt.Errorf("creating message: %w", err)
@@ -376,10 +373,7 @@ func (c *Client) sendGitHub(req SendRequest, m *store.Membership) (*message.Mess
 	}
 	tr.RegisterCampfire(req.CampfireID, meta.IssueNumber)
 
-	signer, err := message.NewEd25519Signer(c.identity.PrivateKey, c.identity.PublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("creating signer: %w", err)
-	}
+	signer := c.identity.NewSigner()
 	msg, err := message.NewMessage(signer, req.Payload, req.Tags, req.Antecedents)
 	if err != nil {
 		return nil, fmt.Errorf("creating message: %w", err)
@@ -544,10 +538,7 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 		}
 	}
 
-	signer, err := message.NewEd25519Signer(c.identity.PrivateKey, c.identity.PublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("creating signer: %w", err)
-	}
+	signer := c.identity.NewSigner()
 	msg, err := message.NewMessage(signer, req.Payload, req.Tags, req.Antecedents)
 	if err != nil {
 		return nil, fmt.Errorf("creating message: %w", err)
