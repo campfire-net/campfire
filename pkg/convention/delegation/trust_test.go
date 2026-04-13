@@ -41,6 +41,24 @@ func (s *listErrAfterNStore) ListMessages(campfireID string, afterTimestamp int6
 	return s.Store.ListMessages(campfireID, afterTimestamp, filter...)
 }
 
+// limitingStore wraps a real store.Store and caps the number of messages
+// returned by ListMessages to at most maxRecords. Combined with the store's
+// Reverse ordering, this simulates MaxGrantReadLimit truncation at the store
+// layer — used to prove that Reverse: true in findValidGrant preserves
+// newest-first ordering under truncation (campfire-213 / fix 9d).
+type limitingStore struct {
+	store.Store
+	maxRecords int
+}
+
+func (s *limitingStore) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
+	msgs, err := s.Store.ListMessages(campfireID, afterTimestamp, filter...)
+	if err != nil || s.maxRecords <= 0 || len(msgs) <= s.maxRecords {
+		return msgs, err
+	}
+	return msgs[:s.maxRecords], nil
+}
+
 // trustTestEnv is the scaffold for trust resolution integration tests.
 type trustTestEnv struct {
 	campfireIDRaw []byte // raw 32-byte ed25519 pubkey
@@ -774,42 +792,56 @@ func TestResolve_ShortCampfireID(t *testing.T) {
 	}
 }
 
-// TestResolve_NewestGrantFoundDespiteTruncation verifies that when grants are read
-// with a limit (simulating MaxGrantReadLimit truncation), the newest grant is
-// found rather than the oldest. Before fix 9d, Read returned oldest-first and
-// the Limit would cut off the newest grants, hiding them from the trust walker
-// (campfire-213).
+// TestResolve_NewestGrantFoundDespiteTruncation verifies that fix 9d (Reverse:
+// true on the grant Read) is load-bearing: when the store returns only the
+// newest N grants due to truncation, Resolve finds a valid grant even if all
+// older grants are expired.
 //
-// This test uses a small-limit store wrapper to simulate truncation at the store
-// layer without needing MaxGrantReadLimit+1 actual messages.
+// Setup: 3 grants in ascending timestamp order —
+//   - grant 1 (oldest):  expired
+//   - grant 2 (middle):  expired
+//   - grant 3 (newest):  valid (future expiry)
+//
+// The store is wrapped with limitingStore{maxRecords: 2} so only 2 messages are
+// returned from ListMessages.
+//
+//   - With Reverse: true  → store returns [grant3, grant2]; both visible; grant3 is
+//     valid → Resolve returns Resolved. ✓
+//   - Without Reverse: true → store returns [grant1, grant2]; both expired →
+//     Resolve returns DeadEnd. ✗
+//
+// The test confirms Resolved. To prove it would fail without Reverse: true,
+// temporarily remove that flag from findValidGrant and re-run — the test fails
+// with DeadEnd. (campfire-213 / fix 9d)
 func TestResolve_NewestGrantFoundDespiteTruncation(t *testing.T) {
 	env := newTrustTestEnv(t, 2)
 	ctx := context.Background()
 
-	// Post two grants: an older expired one and a newer valid one.
-	// The expired grant has a smaller timestamp.
-	env.postGrant(t, 0, env.pubkey(1), pastExpiry()) // older, expired
+	// Post 3 grants in timestamp order: two expired, then one valid.
+	env.postGrant(t, 0, env.pubkey(1), pastExpiry()) // grant 1 — oldest, expired
 	time.Sleep(2 * time.Millisecond)
-	env.postGrant(t, 0, env.pubkey(1), futureExpiry()) // newer, valid
+	env.postGrant(t, 0, env.pubkey(1), pastExpiry()) // grant 2 — middle, expired
+	time.Sleep(2 * time.Millisecond)
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry()) // grant 3 — newest, valid
 
-	// Without fix 9d (Reverse: true), an oldest-first read truncated to 1 would
-	// return only the expired grant and Resolve would return DeadEnd.
-	// With fix 9d, the newest-first read returns the valid grant and Resolve
-	// returns Resolved.
+	// Wrap ids[1]'s store to return at most 2 messages per ListMessages call.
+	// This forces store-level truncation: only 2 of the 3 grants are visible.
 	//
-	// We exercise this through the real Resolve pipeline — if Reverse is not
-	// applied, the timestamp sort within findValidGrant still works correctly
-	// (it sorts all fetched candidates), but truncation before that sort is
-	// where the failure occurs. Since both grants are present in the store here,
-	// the real truncation scenario is validated by TestFindValidGrant_SingleRevokeRead;
-	// this test verifies that the newest grant wins when both are present.
-	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+	// With Reverse: true (the fix): the store sorts DESC before truncating, so it
+	// returns [grant3, grant2]. grant3 is valid → Resolved.
+	//
+	// Without Reverse: true (the bug): the store sorts ASC, returns [grant1,
+	// grant2]. Both expired → DeadEnd.
+	limitedStore := &limitingStore{Store: env.stores[1], maxRecords: 2}
+	limitedClient := protocol.New(limitedStore, env.identities[1])
+
+	out := delegation.Resolve(ctx, limitedClient, env.campfireIDRaw, env.pubkey(1), env.anchors(0))
 
 	r, ok := out.(delegation.Resolved)
 	if !ok {
-		t.Fatalf("expected Resolved (newest grant used), got %T: %+v", out, out)
+		t.Fatalf("expected Resolved (newest grant visible after truncation), got %T: %+v", out, out)
 	}
 	if !r.Anchor.Equal(env.pubkey(0)) {
-		t.Errorf("expected anchor to be ids[0]")
+		t.Errorf("expected anchor to be ids[0], got %x", r.Anchor)
 	}
 }
