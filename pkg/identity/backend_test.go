@@ -217,3 +217,111 @@ func TestIdentitySignWithBackend_NilBackend(t *testing.T) {
 		t.Error("nil-backend fallback signature does not verify")
 	}
 }
+
+// --- Identity.NewSigner tests (campfire-c5f) ---
+
+// TestNewSigner_FileKey verifies that NewSigner works with a plain file-backed
+// identity (no Backend). Sign and PublicKey must match the identity's key.
+func TestNewSigner_FileKey(t *testing.T) {
+	id, err := Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	signer := id.NewSigner()
+	if signer == nil {
+		t.Fatal("NewSigner returned nil")
+	}
+
+	// PublicKey must match.
+	if !signer.PublicKey().Equal(id.PublicKey) {
+		t.Error("NewSigner().PublicKey() does not match identity.PublicKey")
+	}
+
+	msg := []byte("campfire newsigner file-key test")
+	sig, err := signer.Sign(msg)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if len(sig) != ed25519.SignatureSize {
+		t.Errorf("signature length = %d, want %d", len(sig), ed25519.SignatureSize)
+	}
+	if !ed25519.Verify(id.PublicKey, msg, sig) {
+		t.Error("NewSigner signature does not verify against identity public key")
+	}
+}
+
+// TestNewSigner_SSHAgentBackend verifies that NewSigner delegates to the
+// SSHAgentBackend when one is configured. Uses an in-process keyring — no
+// SSH_AUTH_SOCK required.
+func TestNewSigner_SSHAgentBackend(t *testing.T) {
+	ring := agent.NewKeyring()
+
+	pub, _, fp, err := addKeyToKeyring(ring, "newsigner-agent-key")
+	if err != nil {
+		t.Fatalf("addKeyToKeyring: %v", err)
+	}
+
+	b, err := NewSSHAgentBackendFromKeyring(ring, fp)
+	if err != nil {
+		t.Fatalf("NewSSHAgentBackendFromKeyring: %v", err)
+	}
+	defer b.Close()
+
+	// Construct a synthetic identity with only the public key + backend set
+	// (mirrors the production case where the agent holds the private key).
+	id := &Identity{
+		PublicKey: pub,
+		Backend:   b,
+	}
+
+	signer := id.NewSigner()
+
+	// PublicKey must come from the backend.
+	if !signer.PublicKey().Equal(pub) {
+		t.Error("NewSigner().PublicKey() does not match agent key")
+	}
+
+	msg := []byte("campfire newsigner ssh-agent test")
+	sig, err := signer.Sign(msg)
+	if err != nil {
+		t.Fatalf("Sign (ssh-agent backend): %v", err)
+	}
+	if len(sig) != ed25519.SignatureSize {
+		t.Errorf("signature length = %d, want %d", len(sig), ed25519.SignatureSize)
+	}
+	if !ed25519.Verify(pub, msg, sig) {
+		t.Error("NewSigner (ssh-agent backend) signature does not verify")
+	}
+}
+
+// TestNewSigner_PublicKeyBackendMismatch verifies that when a Backend is set,
+// NewSigner().PublicKey() returns the backend's public key (not id.PublicKey),
+// ensuring callers get a consistent view even if id.PublicKey is zeroed.
+func TestNewSigner_PublicKeyBackendMismatch(t *testing.T) {
+	ring := agent.NewKeyring()
+
+	pub, _, fp, err := addKeyToKeyring(ring, "mismatch-test-key")
+	if err != nil {
+		t.Fatalf("addKeyToKeyring: %v", err)
+	}
+
+	b, err := NewSSHAgentBackendFromKeyring(ring, fp)
+	if err != nil {
+		t.Fatalf("NewSSHAgentBackendFromKeyring: %v", err)
+	}
+	defer b.Close()
+
+	// Identity has a different (dummy) public key but Backend is set.
+	id := &Identity{
+		PublicKey: make(ed25519.PublicKey, ed25519.PublicKeySize), // all zeros
+		Backend:   b,
+	}
+
+	signer := id.NewSigner()
+
+	// When Backend is set, PublicKey must come from the backend.
+	if !signer.PublicKey().Equal(pub) {
+		t.Error("NewSigner().PublicKey() should return backend public key when Backend is configured")
+	}
+}

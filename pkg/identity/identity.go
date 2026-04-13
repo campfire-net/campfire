@@ -206,6 +206,41 @@ func (id *Identity) SignWithBackend(message []byte) ([]byte, error) {
 	return id.Sign(message), nil
 }
 
+// NewSigner returns a Signer that uses this identity's signing key.
+// When the identity has a Backend configured (e.g. SSHAgentBackend), signing
+// is delegated to it. Otherwise the in-memory private key is used.
+//
+// The returned Signer satisfies the message.Signer interface by structural
+// typing (same Sign/PublicKey signature), avoiding an import cycle between
+// pkg/identity and pkg/message.
+//
+// Use this instead of constructing message.NewEd25519Signer(id.PrivateKey, id.PublicKey)
+// at every call site — doing so bypasses the Backend and always uses the file key.
+func (id *Identity) NewSigner() *IdentitySigner {
+	return &IdentitySigner{id: id}
+}
+
+// IdentitySigner adapts an Identity (with optional Backend) to the message.Signer
+// interface. It is returned by Identity.NewSigner and satisfies message.Signer
+// structurally without importing pkg/message.
+type IdentitySigner struct {
+	id *Identity
+}
+
+// Sign signs message using the identity's Backend if configured, otherwise
+// falls back to the in-memory private key. Implements message.Signer.
+func (s *IdentitySigner) Sign(msg []byte) ([]byte, error) {
+	return s.id.SignWithBackend(msg)
+}
+
+// PublicKey returns the identity's Ed25519 public key. Implements message.Signer.
+func (s *IdentitySigner) PublicKey() ed25519.PublicKey {
+	if s.id.Backend != nil {
+		return s.id.Backend.PublicKey()
+	}
+	return s.id.PublicKey
+}
+
 // Verify checks a signature against this identity's public key.
 func (id *Identity) Verify(message, sig []byte) bool {
 	return ed25519.Verify(id.PublicKey, message, sig)
