@@ -274,6 +274,14 @@ func LoadConfig(globalDir, projectDir string) (*Config, []ConfigLayer, []string,
 		}
 	}
 
+	// Validate: identity.fingerprint is required when identity.backend = "ssh-agent".
+	// This check runs on the FINAL merged Config (after all layers are applied) so that
+	// backend and fingerprint set in different config layers (e.g. backend in global config,
+	// fingerprint in project config) are both visible before the check fires.
+	if merged.Identity.Backend == "ssh-agent" && merged.Identity.Fingerprint == "" {
+		return nil, nil, nil, fmt.Errorf("config: identity.fingerprint is required when identity.backend = \"ssh-agent\"")
+	}
+
 	return &merged, layers, warnings, nil
 }
 
@@ -615,13 +623,6 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 			dst.Scope.OperationClasses = merged
 			contributed = append(contributed, "scope.operation_classes")
 		}
-	}
-
-	// Validate: identity.fingerprint is required when identity.backend = "ssh-agent".
-	// Check after all fields are merged so a layer that sets only backend OR only
-	// fingerprint doesn't fail prematurely — the full merged state is what matters.
-	if dst.Identity.Backend == "ssh-agent" && dst.Identity.Fingerprint == "" {
-		return nil, nil, fmt.Errorf("config %s: identity.fingerprint is required when identity.backend = \"ssh-agent\"", path)
 	}
 
 	return contributed, warnings, nil
