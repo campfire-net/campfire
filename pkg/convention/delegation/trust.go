@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/message"
@@ -157,6 +158,16 @@ func Resolve(
 	sender ed25519.PublicKey,
 	anchors []ed25519.PublicKey,
 ) Outcome {
+	// 9c: Validate campfireID length before use. An empty or short campfireID
+	// would produce a malformed hex string that silently matches nothing or
+	// produces wrong-length keys (campfire-13b).
+	if len(campfireID) == 0 {
+		return InvalidGrant{Err: errors.New("campfireID is empty")}
+	}
+	if len(campfireID) != ed25519.PublicKeySize {
+		return InvalidGrant{Err: fmt.Errorf("campfireID must be %d bytes, got %d", ed25519.PublicKeySize, len(campfireID))}
+	}
+
 	campfireHex := hex.EncodeToString(campfireID)
 	now := time.Now()
 	chain := make([]GrantInfo, 0)
@@ -214,59 +225,81 @@ func findValidGrant(
 ) (*GrantInfo, *protocol.Message, error) {
 	childHex := hex.EncodeToString(childPubkey)
 
-	// Read identity:granted messages from the campfire (local only), capped at
-	// MaxGrantReadLimit to prevent a grant-flood from blowing memory (campfire-d38).
+	// 9d: Read identity:granted messages newest-first (Reverse: true). When the
+	// result is truncated by MaxGrantReadLimit, newest-first ordering ensures the
+	// Limit preserves the most-recent grants — an attacker who floods old junk
+	// grants cannot hide a legitimate newer grant behind the truncation boundary
+	// (campfire-213).
 	result, err := client.Read(protocol.ReadRequest{
 		CampfireID: campfireHex,
 		Tags:       []string{GrantedTag},
 		SkipSync:   true,
 		Limit:      MaxGrantReadLimit,
+		Reverse:    true,
 	})
 	if err != nil {
 		// Surface the store error instead of silently mapping to DeadEnd
 		// (campfire-188). Resolve converts this into a ReadError Outcome.
-		return nil, nil, fmt.Errorf("%w: reading grants: %v", ErrStoreRead, err)
+		return nil, nil, fmt.Errorf("%w: reading grants: %w", ErrStoreRead, err)
 	}
 
 	// Collect candidates matching this child pubkey.
+	// 9a: Normalize ChildPubkey to lowercase so uppercase-hex grants match the
+	// lowercase childHex produced by hex.EncodeToString (campfire-f37).
 	var candidates []grantCandidate
 	for _, msg := range result.Messages {
 		var gp GrantPayload
 		if err := json.Unmarshal(msg.Payload, &gp); err != nil {
 			continue
 		}
+		gp.ChildPubkey = strings.ToLower(gp.ChildPubkey) // 9a: normalize case
 		if gp.ChildPubkey != childHex {
 			continue
 		}
 		candidates = append(candidates, grantCandidate{msg: msg, gp: gp})
 	}
 
-	// Sort descending by Timestamp (most-recent-first).
+	// Sort descending by Timestamp (most-recent-first). The Read is already
+	// Reverse: true, but we re-sort to guarantee order regardless of store behaviour.
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].msg.Timestamp > candidates[j].msg.Timestamp
 	})
+
+	// 9b: Pre-fetch all revocations for childHex ONCE before the candidate loop.
+	// The previous approach called isRevoked() inside the loop, each call doing a
+	// full client.Read — O(N*M) store reads per trust-walk, enabling DoS via grant
+	// flood (campfire-75f). Pre-fetching is O(N) total: one read, one in-memory set.
+	revokeMessages, revokeErr := client.Read(protocol.ReadRequest{
+		CampfireID: campfireHex,
+		Tags:       []string{RevokedTag},
+		SkipSync:   true,
+		Limit:      MaxGrantReadLimit,
+	})
+	if revokeErr != nil {
+		return nil, nil, fmt.Errorf("%w: reading revocations: %w", ErrStoreRead, revokeErr)
+	}
+	// Build a set of (parentHex, grantTimestamp) pairs that have been revoked.
+	// buildRevokedSet returns a function that answers "is this grant revoked?"
+	// given (parentHex, grantTimestamp).
+	revokedSet := buildRevokedSet(revokeMessages.Messages, childHex)
 
 	for i := range candidates {
 		c := &candidates[i]
 
 		// Re-construct a message.Message for ValidateGrant (needs VerifySignature).
-		rawMsg := protoMsgToRaw(c.msg)
+		rawMsg, err := protoMsgToRaw(c.msg)
+		if err != nil {
+			// Malformed sender hex — treat as invalid grant and skip.
+			continue
+		}
 
 		if err := ValidateGrant(rawMsg, campfireHex, now); err != nil {
 			// Per spec §4: skip invalid grants and try the next candidate.
 			continue
 		}
 
-		// Validation passed. Check for a revocation from the same parent.
-		revoked, revokeErr := isRevoked(client, campfireHex, childHex, c.msg.Sender, c.msg.Timestamp)
-		if revokeErr != nil {
-			// Store error on revoke lookup — surface as ReadError rather than
-			// silently treating the grant as revoked (campfire-188). A store
-			// failure is not the same as "revoked"; conflating them is a
-			// correctness bug for any caller that relies on the Outcome type.
-			return nil, nil, revokeErr
-		}
-		if revoked {
+		// 9b: Use pre-fetched revocation set instead of calling isRevoked() per candidate.
+		if revokedSet(c.msg.Sender, c.msg.Timestamp) {
 			// Revoked; try the next (older) grant.
 			continue
 		}
@@ -301,43 +334,42 @@ func findValidGrant(
 	return nil, nil, nil
 }
 
-// isRevoked checks whether a newer identity:revoked message from parentHex for
-// childHex exists in the campfire, posted strictly after grantTimestamp.
+// buildRevokedSet scans the pre-fetched revocation messages for childHex and
+// returns a function that reports whether a grant from parentHex at grantTimestamp
+// has been revoked. A grant is revoked if a revoke message from the same parent
+// for the same child exists with Timestamp > grantTimestamp.
 //
-// Store errors are wrapped in ErrStoreRead and propagated up. findValidGrant's
-// caller (Resolve) converts that to a ReadError Outcome so the caller can tell
-// "revoke lookup failed" apart from "no revocation found" (campfire-188).
-func isRevoked(
-	client *protocol.Client,
-	campfireHex string,
-	childHex string,
-	parentHex string,
-	grantTimestamp int64,
-) (bool, error) {
-	result, err := client.Read(protocol.ReadRequest{
-		CampfireID: campfireHex,
-		Tags:       []string{RevokedTag},
-		Sender:     parentHex,
-		SkipSync:   true,
-		Limit:      MaxGrantReadLimit,
-	})
-	if err != nil {
-		return false, fmt.Errorf("%w: reading revocations: %v", ErrStoreRead, err)
-	}
-
-	for _, msg := range result.Messages {
-		if msg.Timestamp <= grantTimestamp {
-			continue
-		}
+// This pre-computation converts the O(N*M) per-candidate isRevoked() call into a
+// single O(N) pass over the revocation log, eliminating the DoS vector described
+// in campfire-75f.
+func buildRevokedSet(revokeMessages []protocol.Message, childHex string) func(parentHex string, grantTimestamp int64) bool {
+	// parentHex → list of revoke timestamps (all revocations of childHex from that parent).
+	// 9a: Normalize childPubkey case in revoke payloads (campfire-f37).
+	parentRevokes := make(map[string][]int64)
+	for _, msg := range revokeMessages {
 		var rp revokePayload
 		if err := json.Unmarshal(msg.Payload, &rp); err != nil {
 			continue
 		}
-		if rp.ChildPubkey == childHex {
-			return true, nil
+		rp.ChildPubkey = strings.ToLower(rp.ChildPubkey) // 9a: normalize case
+		if rp.ChildPubkey != childHex {
+			continue
 		}
+		parentRevokes[msg.Sender] = append(parentRevokes[msg.Sender], msg.Timestamp)
 	}
-	return false, nil
+
+	return func(parentHex string, grantTimestamp int64) bool {
+		timestamps, ok := parentRevokes[parentHex]
+		if !ok {
+			return false
+		}
+		for _, ts := range timestamps {
+			if ts > grantTimestamp {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // protoMsgToRaw converts a protocol.Message back to a message.Message so that
@@ -358,8 +390,11 @@ func isRevoked(
 // should add a ValidateGrantFromProto overload that accepts protocol.Message directly
 // (hex-decode once, then validate), letting us delete protoMsgToRaw and the
 // intermediate allocation. Track as campfire-1b1.
-func protoMsgToRaw(pm protocol.Message) *message.Message {
-	senderBytes, _ := hex.DecodeString(pm.Sender)
+func protoMsgToRaw(pm protocol.Message) (*message.Message, error) {
+	senderBytes, err := hex.DecodeString(pm.Sender)
+	if err != nil {
+		return nil, fmt.Errorf("protoMsgToRaw: invalid sender hex: %w", err)
+	}
 	return &message.Message{
 		ID:          pm.ID,
 		Sender:      senderBytes,
@@ -368,5 +403,5 @@ func protoMsgToRaw(pm protocol.Message) *message.Message {
 		Antecedents: pm.Antecedents,
 		Timestamp:   pm.Timestamp,
 		Signature:   pm.Signature,
-	}
+	}, nil
 }

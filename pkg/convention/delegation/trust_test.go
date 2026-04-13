@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +39,24 @@ func (s *listErrAfterNStore) ListMessages(campfireID string, afterTimestamp int6
 		return nil, s.err
 	}
 	return s.Store.ListMessages(campfireID, afterTimestamp, filter...)
+}
+
+// limitingStore wraps a real store.Store and caps the number of messages
+// returned by ListMessages to at most maxRecords. Combined with the store's
+// Reverse ordering, this simulates MaxGrantReadLimit truncation at the store
+// layer — used to prove that Reverse: true in findValidGrant preserves
+// newest-first ordering under truncation (campfire-213 / fix 9d).
+type limitingStore struct {
+	store.Store
+	maxRecords int
+}
+
+func (s *limitingStore) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
+	msgs, err := s.Store.ListMessages(campfireID, afterTimestamp, filter...)
+	if err != nil || s.maxRecords <= 0 || len(msgs) <= s.maxRecords {
+		return msgs, err
+	}
+	return msgs[:s.maxRecords], nil
 }
 
 // trustTestEnv is the scaffold for trust resolution integration tests.
@@ -584,5 +603,245 @@ func TestResolve_RevokeStoreReadError_ReturnsReadError(t *testing.T) {
 	}
 	if !errors.Is(re.Err, delegation.ErrStoreRead) {
 		t.Errorf("expected Err to wrap ErrStoreRead, got %v", re.Err)
+	}
+}
+
+// ---- Security hardening regression tests (campfire-ed7) ----
+
+// postGrantWithChildHex sends an identity:granted message with a caller-specified
+// child_pubkey hex string (may be uppercase or otherwise non-canonical).
+// This is the test-only escape hatch for 9a regression tests.
+func (e *trustTestEnv) postGrantWithChildHex(t *testing.T, parentIdx int, childHex string, expiresAt int64) {
+	t.Helper()
+	payload := map[string]interface{}{
+		"child_pubkey": childHex,
+		"campfire_id":  e.campfireHex,
+		"expires_at":   expiresAt,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshalling grant payload: %v", err)
+	}
+	if _, err := e.clients[parentIdx].Send(protocol.SendRequest{
+		CampfireID: e.campfireHex,
+		Payload:    b,
+		Tags:       []string{delegation.GrantedTag},
+	}); err != nil {
+		t.Fatalf("posting grant from %d: %v", parentIdx, err)
+	}
+	e.syncAll(t)
+}
+
+// postRevokeWithChildHex sends an identity:revoked message with a caller-specified
+// child_pubkey hex string. Used to test uppercase-hex revocation (9a).
+func (e *trustTestEnv) postRevokeWithChildHex(t *testing.T, parentIdx int, childHex string) {
+	t.Helper()
+	payload := map[string]interface{}{
+		"child_pubkey": childHex,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshalling revoke payload: %v", err)
+	}
+	if _, err := e.clients[parentIdx].Send(protocol.SendRequest{
+		CampfireID: e.campfireHex,
+		Payload:    b,
+		Tags:       []string{delegation.RevokedTag},
+	}); err != nil {
+		t.Fatalf("posting revoke from %d: %v", parentIdx, err)
+	}
+	e.syncAll(t)
+}
+
+// TestResolve_UppercaseHexRevoke verifies that a revocation message whose
+// child_pubkey is uppercase hex is correctly matched against the lowercase childHex
+// produced by hex.EncodeToString. Before fix 9a, the case mismatch caused the
+// revocation to be silently ignored and the grant to resolve as Resolved instead
+// of DeadEnd (campfire-f37).
+func TestResolve_UppercaseHexRevoke(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	childHexLower := hex.EncodeToString(env.pubkey(1))
+	childHexUpper := strings.ToUpper(childHexLower)
+
+	// Post grant with lowercase child_pubkey (normal path).
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry())
+
+	// Post revocation with UPPERCASE child_pubkey — must still match.
+	env.postRevokeWithChildHex(t, 0, childHexUpper)
+
+	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	_, ok := out.(delegation.DeadEnd)
+	if !ok {
+		t.Fatalf("expected DeadEnd (uppercase revoke applied), got %T: %+v", out, out)
+	}
+	_ = childHexLower
+}
+
+// TestResolve_UppercaseHexGrant verifies that a grant message whose child_pubkey
+// is uppercase hex is correctly matched when resolving (9a: lowercase normalization
+// in the grant filtering path, campfire-f37).
+func TestResolve_UppercaseHexGrant(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	childHexUpper := strings.ToUpper(hex.EncodeToString(env.pubkey(1)))
+
+	// Post grant with UPPERCASE child_pubkey.
+	env.postGrantWithChildHex(t, 0, childHexUpper, futureExpiry())
+
+	out := delegation.Resolve(ctx, env.clients[1], env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	r, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved (uppercase grant matched), got %T: %+v", out, out)
+	}
+	if !r.Anchor.Equal(env.pubkey(0)) {
+		t.Errorf("expected anchor to be ids[0]")
+	}
+}
+
+// countRevokeReadStore counts how many times ListMessages is called with the
+// RevokedTag filter. Used to assert O(N) revoke reads in 9b.
+type countRevokeReadStore struct {
+	store.Store
+	count int32 // atomic read count
+}
+
+func (s *countRevokeReadStore) ListMessages(campfireID string, afterTimestamp int64, filter ...store.MessageFilter) ([]store.MessageRecord, error) {
+	if len(filter) > 0 {
+		for _, tag := range filter[0].Tags {
+			if tag == delegation.RevokedTag {
+				atomic.AddInt32(&s.count, 1)
+				break
+			}
+		}
+	}
+	return s.Store.ListMessages(campfireID, afterTimestamp, filter...)
+}
+
+// TestFindValidGrant_SingleRevokeRead asserts that findValidGrant (exercised via
+// Resolve) reads revocations exactly once regardless of how many grant candidates
+// exist for the child. Before fix 9b, each candidate triggered a separate
+// client.Read for revocations — O(N*M) reads enabling a DoS via grant flood
+// (campfire-75f). After fix 9b, revocations are pre-fetched once.
+func TestFindValidGrant_SingleRevokeRead(t *testing.T) {
+	const numGrants = 5
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	// Post numGrants valid grants for ids[1] from ids[0] with small time offsets.
+	for i := 0; i < numGrants; i++ {
+		env.postGrant(t, 0, env.pubkey(1), futureExpiry())
+		time.Sleep(time.Millisecond) // ensure distinct timestamps
+	}
+
+	// Wrap ids[1]'s store to count revoke reads.
+	counting := &countRevokeReadStore{Store: env.stores[1]}
+	countingClient := protocol.New(counting, env.identities[1])
+
+	out := delegation.Resolve(ctx, countingClient, env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	_, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved, got %T: %+v", out, out)
+	}
+
+	// With pre-fetched revocations (9b), there must be exactly one revoke read
+	// regardless of how many grant candidates existed.
+	if got := atomic.LoadInt32(&counting.count); got != 1 {
+		t.Errorf("expected exactly 1 revoke read, got %d (O(N) violation)", got)
+	}
+}
+
+// TestResolve_EmptyCampfireID verifies that Resolve rejects an empty campfireID
+// (9c: campfireID length validation, campfire-13b).
+func TestResolve_EmptyCampfireID(t *testing.T) {
+	env := newTrustTestEnv(t, 1)
+	ctx := context.Background()
+
+	out := delegation.Resolve(ctx, env.clients[0], []byte{}, env.pubkey(0), env.anchors(0))
+
+	ig, ok := out.(delegation.InvalidGrant)
+	if !ok {
+		t.Fatalf("expected InvalidGrant for empty campfireID, got %T: %+v", out, out)
+	}
+	if ig.Err == nil {
+		t.Error("expected non-nil Err in InvalidGrant")
+	}
+}
+
+// TestResolve_ShortCampfireID verifies that Resolve rejects a campfireID that is
+// shorter than 32 bytes (9c: campfireID length validation, campfire-13b).
+func TestResolve_ShortCampfireID(t *testing.T) {
+	env := newTrustTestEnv(t, 1)
+	ctx := context.Background()
+
+	shortID := make([]byte, 16) // only 16 bytes — wrong length
+
+	out := delegation.Resolve(ctx, env.clients[0], shortID, env.pubkey(0), env.anchors(0))
+
+	ig, ok := out.(delegation.InvalidGrant)
+	if !ok {
+		t.Fatalf("expected InvalidGrant for short campfireID, got %T: %+v", out, out)
+	}
+	if ig.Err == nil {
+		t.Error("expected non-nil Err in InvalidGrant")
+	}
+}
+
+// TestResolve_NewestGrantFoundDespiteTruncation verifies that fix 9d (Reverse:
+// true on the grant Read) is load-bearing: when the store returns only the
+// newest N grants due to truncation, Resolve finds a valid grant even if all
+// older grants are expired.
+//
+// Setup: 3 grants in ascending timestamp order —
+//   - grant 1 (oldest):  expired
+//   - grant 2 (middle):  expired
+//   - grant 3 (newest):  valid (future expiry)
+//
+// The store is wrapped with limitingStore{maxRecords: 2} so only 2 messages are
+// returned from ListMessages.
+//
+//   - With Reverse: true  → store returns [grant3, grant2]; both visible; grant3 is
+//     valid → Resolve returns Resolved. ✓
+//   - Without Reverse: true → store returns [grant1, grant2]; both expired →
+//     Resolve returns DeadEnd. ✗
+//
+// The test confirms Resolved. To prove it would fail without Reverse: true,
+// temporarily remove that flag from findValidGrant and re-run — the test fails
+// with DeadEnd. (campfire-213 / fix 9d)
+func TestResolve_NewestGrantFoundDespiteTruncation(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	// Post 3 grants in timestamp order: two expired, then one valid.
+	env.postGrant(t, 0, env.pubkey(1), pastExpiry()) // grant 1 — oldest, expired
+	time.Sleep(2 * time.Millisecond)
+	env.postGrant(t, 0, env.pubkey(1), pastExpiry()) // grant 2 — middle, expired
+	time.Sleep(2 * time.Millisecond)
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry()) // grant 3 — newest, valid
+
+	// Wrap ids[1]'s store to return at most 2 messages per ListMessages call.
+	// This forces store-level truncation: only 2 of the 3 grants are visible.
+	//
+	// With Reverse: true (the fix): the store sorts DESC before truncating, so it
+	// returns [grant3, grant2]. grant3 is valid → Resolved.
+	//
+	// Without Reverse: true (the bug): the store sorts ASC, returns [grant1,
+	// grant2]. Both expired → DeadEnd.
+	limitedStore := &limitingStore{Store: env.stores[1], maxRecords: 2}
+	limitedClient := protocol.New(limitedStore, env.identities[1])
+
+	out := delegation.Resolve(ctx, limitedClient, env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	r, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved (newest grant visible after truncation), got %T: %+v", out, out)
+	}
+	if !r.Anchor.Equal(env.pubkey(0)) {
+		t.Errorf("expected anchor to be ids[0], got %x", r.Anchor)
 	}
 }
