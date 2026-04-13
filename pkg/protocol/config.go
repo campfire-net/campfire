@@ -613,6 +613,13 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 		}
 	}
 
+	// Validate: identity.fingerprint is required when identity.backend = "ssh-agent".
+	// Check after all fields are merged so a layer that sets only backend OR only
+	// fingerprint doesn't fail prematurely — the full merged state is what matters.
+	if dst.Identity.Backend == "ssh-agent" && dst.Identity.Fingerprint == "" {
+		return nil, fmt.Errorf("config %s: identity.fingerprint is required when identity.backend = \"ssh-agent\"", path)
+	}
+
 	return contributed, nil
 }
 

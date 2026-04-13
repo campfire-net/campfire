@@ -127,6 +127,16 @@ func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
 		configOpts = append(configOpts, WithPresentAs(cfg.Identity.PresentAs))
 	}
 
+	// identity.backend → WithBackend (only when set in config)
+	if cfg.Identity.Backend != "" && cfg.Identity.Backend != defaultBackend {
+		configOpts = append(configOpts, WithBackend(cfg.Identity.Backend))
+	}
+
+	// identity.fingerprint → WithFingerprint (only when set in config)
+	if cfg.Identity.Fingerprint != "" {
+		configOpts = append(configOpts, WithFingerprint(cfg.Identity.Fingerprint))
+	}
+
 	// Build final option list: config-derived first, then caller overrides.
 	finalOpts := append(configOpts, optFuncs...)
 
@@ -281,6 +291,20 @@ func Init(configDir string, optFuncs ...Option) (*Client, *InitResult, error) {
 		}
 		id = generated
 		result.IdentityCreated = true
+	}
+
+	// Wire the signing backend when opts.backend = "ssh-agent".
+	// opts.fingerprint must be non-empty (validated by InitWithConfig via mergeLayer,
+	// or enforced at the call site when using WithBackend/WithFingerprint directly).
+	if opts.backend == "ssh-agent" {
+		if opts.fingerprint == "" {
+			return nil, nil, fmt.Errorf("protocol.Init: identity.fingerprint is required when backend = \"ssh-agent\"")
+		}
+		backend, err := identity.NewSSHAgentBackend(opts.fingerprint)
+		if err != nil {
+			return nil, nil, fmt.Errorf("protocol.Init: ssh-agent backend: %w", err)
+		}
+		id.Backend = backend
 	}
 
 	rawStore, err := store.Open(result.StorePath)

@@ -31,6 +31,15 @@ type options struct {
 	// scope, when set (non-zero Campfires or OperationClasses), restricts which
 	// campfires and operation classes this client may access.
 	scope ScopeConfig
+
+	// backend specifies the signing backend for root-identity operations.
+	// Valid values: "file" (default) or "ssh-agent".
+	// When "ssh-agent", fingerprint must also be set.
+	backend string
+
+	// fingerprint is the SHA256 fingerprint of the ssh-agent key to use for signing.
+	// Required when backend = "ssh-agent". Format: "SHA256:...".
+	fingerprint string
 }
 
 // defaultOptions returns the options struct with all defaults applied.
@@ -108,5 +117,22 @@ func WithPresentAs(campfireID string) Option {
 func WithScope(cfg ScopeConfig) Option {
 	return func(o *options) {
 		o.scope = cfg
+	}
+}
+
+// WithBackend sets the signing backend for root-identity operations.
+// Valid values: "file" (default) or "ssh-agent".
+// When "ssh-agent" is specified, WithFingerprint must also be provided.
+func WithBackend(backend string) Option {
+	return func(o *options) {
+		o.backend = backend
+	}
+}
+
+// WithFingerprint sets the SHA256 fingerprint of the ssh-agent key to use
+// for signing. Required when backend = "ssh-agent". Format: "SHA256:...".
+func WithFingerprint(fingerprint string) Option {
+	return func(o *options) {
+		o.fingerprint = fingerprint
 	}
 }
