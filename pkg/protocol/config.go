@@ -18,7 +18,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,10 +218,11 @@ func LoadConfig(globalDir, projectDir string) (*Config, []ConfigLayer, []string,
 		}
 		layers = append(layers, layer)
 		if !layer.Skipped {
-			contributed, err := mergeLayer(&merged, raw, globalPath, true)
+			contributed, warn, err := mergeLayer(&merged, raw, globalPath, true)
 			if err != nil {
 				return nil, nil, nil, err
 			}
+			warnings = append(warnings, warn...)
 			layers[len(layers)-1].Fields = contributed
 		}
 	}
@@ -241,10 +241,11 @@ func LoadConfig(globalDir, projectDir string) (*Config, []ConfigLayer, []string,
 		}
 		layers = append(layers, layer)
 		if !layer.Skipped {
-			contributed, err := mergeLayer(&merged, raw, path, false)
+			contributed, warn, err := mergeLayer(&merged, raw, path, false)
 			if err != nil {
 				return nil, nil, nil, err
 			}
+			warnings = append(warnings, warn...)
 			layers[len(layers)-1].Fields = contributed
 		}
 	}
@@ -262,10 +263,11 @@ func LoadConfig(globalDir, projectDir string) (*Config, []ConfigLayer, []string,
 				}
 				layers = append(layers, layer)
 				if !layer.Skipped {
-					contributed, err := mergeLayer(&merged, raw, projectPath, false)
+					contributed, warn, err := mergeLayer(&merged, raw, projectPath, false)
 					if err != nil {
 						return nil, nil, nil, err
 					}
+					warnings = append(warnings, warn...)
 					layers[len(layers)-1].Fields = contributed
 				}
 			}
@@ -459,14 +461,16 @@ func isOwnerTrusted(dirPath string) bool {
 
 // mergeLayer applies a parsed rawConfig into the current merged Config.
 // isGlobal controls whether naming.root is applied.
-// Returns the list of field names that were contributed by this layer, or an
-// error if a field value fails format validation.
-func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]string, error) {
+// Returns the list of field names contributed by this layer, any non-fatal
+// warnings (e.g. skipped invalid anchors), and an error if a field value fails
+// format validation.
+func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]string, []string, error) {
 	if raw == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	var contributed []string
+	var warnings []string
 
 	// identity.file — scalar: deepest wins (non-empty overrides).
 	if raw.Identity.File != "" {
@@ -483,7 +487,7 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 	// identity.backend — scalar: "file" or "ssh-agent". deepest wins.
 	if raw.Identity.Backend != "" {
 		if raw.Identity.Backend != "file" && raw.Identity.Backend != "ssh-agent" {
-			return nil, fmt.Errorf("config %s: identity.backend %q is not valid (expected \"file\" or \"ssh-agent\")", path, raw.Identity.Backend)
+			return nil, nil, fmt.Errorf("config %s: identity.backend %q is not valid (expected \"file\" or \"ssh-agent\")", path, raw.Identity.Backend)
 		}
 		dst.Identity.Backend = raw.Identity.Backend
 		contributed = append(contributed, "identity.backend")
@@ -499,19 +503,19 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 	// Set by cf home be, cleared by cf home be --self.
 	if raw.Identity.PresentAs != "" {
 		if !hexIDRe.MatchString(raw.Identity.PresentAs) {
-			return nil, fmt.Errorf("config %s: identity.present_as %q is not a valid campfire ID (expected 64 lowercase hex characters)", path, raw.Identity.PresentAs)
+			return nil, nil, fmt.Errorf("config %s: identity.present_as %q is not a valid campfire ID (expected 64 lowercase hex characters)", path, raw.Identity.PresentAs)
 		}
 		dst.Identity.PresentAs = raw.Identity.PresentAs
 		contributed = append(contributed, "identity.present_as")
 	}
 
 	// identity.trust.anchors — list: project configs EXTEND (not override) the global list.
-	// Invalid anchor strings are logged as warnings and skipped (not fatal).
+	// Invalid anchor strings are returned as warnings and skipped (not fatal).
 	if len(raw.Identity.Trust.Anchors) > 0 {
 		for _, anchor := range raw.Identity.Trust.Anchors {
 			key, err := decodeAnchor(anchor)
 			if err != nil {
-				log.Printf("config %s: identity.trust.anchors: skipping invalid anchor %q: %v", path, anchor, err)
+				warnings = append(warnings, fmt.Sprintf("identity.trust.anchors: skipping invalid anchor %q: %v", anchor, err))
 				continue
 			}
 			// Deduplicate: skip if already present (byte-level equality).
@@ -617,10 +621,10 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 	// Check after all fields are merged so a layer that sets only backend OR only
 	// fingerprint doesn't fail prematurely — the full merged state is what matters.
 	if dst.Identity.Backend == "ssh-agent" && dst.Identity.Fingerprint == "" {
-		return nil, fmt.Errorf("config %s: identity.fingerprint is required when identity.backend = \"ssh-agent\"", path)
+		return nil, nil, fmt.Errorf("config %s: identity.fingerprint is required when identity.backend = \"ssh-agent\"", path)
 	}
 
-	return contributed, nil
+	return contributed, warnings, nil
 }
 
 // mergeList merges a new list into an existing list.
