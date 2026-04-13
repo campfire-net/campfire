@@ -845,3 +845,74 @@ func TestResolve_NewestGrantFoundDespiteTruncation(t *testing.T) {
 		t.Errorf("expected anchor to be ids[0], got %x", r.Anchor)
 	}
 }
+
+// TestFindValidGrant_AtLimit verifies that findValidGrant correctly reads grants
+// even when the store truncates near the read limit. This simulates the behavior
+// when MaxGrantReadLimit causes store reads to return fewer grants than would
+// normally be posted.
+func TestFindValidGrant_AtLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	env := newTrustTestEnv(t, 2)
+
+	// Post a valid grant from ids[0] to ids[1].
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry())
+
+	// Create a store that truncates to 1 result, forcing the read to hit the limit.
+	limitedStore := &limitingStore{Store: env.stores[0], maxRecords: 1}
+	limitedClient := protocol.New(limitedStore, env.identities[0])
+
+	// Call Resolve with the limited client. Even though the store truncates,
+	// the valid grant should be found and a Resolved outcome returned.
+	out := delegation.Resolve(ctx, limitedClient, env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	r, ok := out.(delegation.Resolved)
+	if !ok {
+		t.Fatalf("expected Resolved even with store limit, got %T: %+v", out, out)
+	}
+	if !r.Anchor.Equal(env.pubkey(0)) {
+		t.Errorf("expected anchor to be ids[0], got %x", r.Anchor)
+	}
+}
+
+// TestOutcome_InterfaceSatisfied verifies that each Outcome type implements
+// the Outcome interface and can be type-asserted and called.
+func TestOutcome_InterfaceSatisfied(t *testing.T) {
+	// Test Resolved.
+	resolved := delegation.Resolved{
+		Anchor: make([]byte, 32),
+	}
+	var o delegation.Outcome = resolved
+	if o == nil {
+		t.Error("Resolved should satisfy Outcome interface")
+	}
+
+	// Test DeadEnd.
+	deadEnd := delegation.DeadEnd{}
+	o = deadEnd
+	if o == nil {
+		t.Error("DeadEnd should satisfy Outcome interface")
+	}
+
+	// Test InvalidGrant.
+	invalidGrant := delegation.InvalidGrant{}
+	o = invalidGrant
+	if o == nil {
+		t.Error("InvalidGrant should satisfy Outcome interface")
+	}
+
+	// Test DepthExceeded.
+	depthExceeded := delegation.DepthExceeded{}
+	o = depthExceeded
+	if o == nil {
+		t.Error("DepthExceeded should satisfy Outcome interface")
+	}
+
+	// Test ReadError.
+	readError := delegation.ReadError{Err: delegation.ErrStoreRead}
+	o = readError
+	if o == nil {
+		t.Error("ReadError should satisfy Outcome interface")
+	}
+}

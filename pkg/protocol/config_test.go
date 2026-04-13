@@ -1408,3 +1408,136 @@ func TestMergeLayer_InvalidAnchor_ReturnsWarning(t *testing.T) {
 		t.Errorf("expected \"identity.trust.anchors\" in contributed, got: %v", contributed)
 	}
 }
+
+// TestMergeLayer_InvalidPresentAs verifies that an invalid present_as value
+// (not 64 lowercase hex characters) is rejected with an error.
+func TestMergeLayer_InvalidPresentAs(t *testing.T) {
+	raw := &rawConfig{}
+	raw.Identity.PresentAs = "not-a-valid-hex-string"
+
+	var dst Config
+	_, _, err := mergeLayer(&dst, raw, "/fake/config.toml", false)
+	if err == nil {
+		t.Fatal("mergeLayer should reject invalid present_as")
+	}
+	if !strings.Contains(err.Error(), "present_as") {
+		t.Errorf("error should mention present_as, got: %v", err)
+	}
+}
+
+// TestMergeLayer_Error verifies that a config with an invalid backend value
+// results in an error from mergeLayer.
+func TestMergeLayer_Error(t *testing.T) {
+	raw := &rawConfig{}
+	raw.Identity.Backend = "invalid-backend-name"
+
+	var dst Config
+	_, _, err := mergeLayer(&dst, raw, "/fake/config.toml", false)
+	if err == nil {
+		t.Fatal("mergeLayer should reject invalid backend")
+	}
+	if !strings.Contains(err.Error(), "invalid-backend-name") {
+		t.Errorf("error should mention the bad value, got: %v", err)
+	}
+}
+
+// TestLoadConfig_AncestorWalkUp verifies that LoadConfig walks up the directory
+// tree (when behavior.walk_up is enabled) to find and merge ancestor .cf/config.toml files.
+func TestLoadConfig_AncestorWalkUp(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Create a global config directory (no config files).
+	globalDir := filepath.Join(tmp, "global")
+	if err := os.MkdirAll(globalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an ancestor project directory with a config that enables walk_up.
+	ancestorDir := filepath.Join(tmp, "projects", "ancestor")
+	writeConfig(t, filepath.Join(ancestorDir, ".cf", configFilename), `
+[identity]
+display_name = "Ancestor Agent"
+
+[behavior]
+walk_up = true
+`)
+
+	// Create a nested project directory deeper in the tree.
+	nestedDir := filepath.Join(ancestorDir, "subdir", "nested")
+	writeConfig(t, filepath.Join(nestedDir, ".cf", configFilename), `
+[identity]
+display_name = "Nested Agent"
+`)
+
+	// LoadConfig from nested should walk up and find ancestor config.
+	cfg, layers, warns, err := LoadConfig(globalDir, nestedDir)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Logf("warnings: %v", warns)
+	}
+
+	// Verify that the nested (deepest) config's display_name won.
+	if cfg.Identity.DisplayName != "Nested Agent" {
+		t.Errorf("display_name: got %q, want %q", cfg.Identity.DisplayName, "Nested Agent")
+	}
+
+	// Verify that walk_up was inherited from the ancestor.
+	if cfg.Behavior.WalkUp != true {
+		t.Errorf("walk_up: got %v, want true", cfg.Behavior.WalkUp)
+	}
+
+	// Verify that at least 2 layers were applied (ancestor and nested).
+	if len(layers) < 2 {
+		t.Errorf("expected at least 2 layers, got %d", len(layers))
+	}
+}
+
+// TestIsHexString_Empty verifies that an empty string returns false.
+func TestIsHexString_Empty(t *testing.T) {
+	if isHexString("") {
+		t.Error("isHexString(\"\") should return false")
+	}
+}
+
+// TestIsHexString_Uppercase verifies that uppercase hex characters are recognized.
+func TestIsHexString_Uppercase(t *testing.T) {
+	if !isHexString("ABCDEF0123456789") {
+		t.Error("isHexString should accept uppercase hex")
+	}
+}
+
+// TestIsHexString_Mixed verifies that mixed-case hex is recognized.
+func TestIsHexString_Mixed(t *testing.T) {
+	if !isHexString("aBcDeF0123456789") {
+		t.Error("isHexString should accept mixed-case hex")
+	}
+}
+
+// TestIsHexString_NonHex verifies that non-hex characters are rejected.
+func TestIsHexString_NonHex(t *testing.T) {
+	if isHexString("0123456789GHIJKL") {
+		t.Error("isHexString should reject non-hex characters")
+	}
+}
+
+// TestMergeList_EmptyNewList verifies that calling mergeList with an empty
+// new list returns the original existing list unchanged.
+func TestMergeList_EmptyNewList(t *testing.T) {
+	existing := []string{"a", "b", "c"}
+	result := mergeList(existing, []string{})
+	if len(result) != 3 || result[0] != "a" || result[1] != "b" || result[2] != "c" {
+		t.Errorf("mergeList with empty new list should return existing: got %v", result)
+	}
+}
+
+// TestMergeList_ReplaceEmptyList verifies that mergeList with ["!replace"]
+// returns an empty slice.
+func TestMergeList_ReplaceEmptyList(t *testing.T) {
+	existing := []string{"a", "b", "c"}
+	result := mergeList(existing, []string{"!replace"})
+	if len(result) != 0 {
+		t.Errorf("mergeList with bare !replace should return empty slice: got %v", result)
+	}
+}
