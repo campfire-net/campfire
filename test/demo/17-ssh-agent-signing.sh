@@ -111,11 +111,9 @@ echo "Delegate joined"
 # ---------------------------------------------------------------------------
 section "Root grants delegate (signing goes through ssh-agent backend)"
 # ---------------------------------------------------------------------------
-EXPIRES_AT=$(( $(date +%s) + 7 * 86400 ))
-GRANT_PAYLOAD="{\"child_pubkey\":\"$DELEGATE_PUB\",\"campfire_id\":\"$CF_ID\",\"expires_at\":$EXPIRES_AT}"
-
-cf send "$CF_ID" --cf-home "$ROOT_HOME" --tag identity:granted "$GRANT_PAYLOAD" >/dev/null 2>&1
-echo "Root granted delegate"
+GRANT_OUT=$(cf trust grant "$CF_ID" "$DELEGATE_PUB" --ttl 168h --cf-home "$ROOT_HOME" 2>/dev/null)
+echo "Root granted delegate (signed via ssh-agent)"
+echo "$GRANT_OUT"
 
 # ---------------------------------------------------------------------------
 section "Verify delegate is trusted"

@@ -82,13 +82,11 @@ cf join "$CF_ID" --cf-home "$SESSION_HOME" 2>/dev/null
 echo "Session joined campfire"
 
 # ---------------------------------------------------------------------------
-section "Human grants session a 24-hour subkey authorization"
+section "Human grants session a 24-hour subkey authorization (cf trust grant)"
 # ---------------------------------------------------------------------------
-EXPIRES_AT=$(( $(date +%s) + 86400 ))
-GRANT_PAYLOAD="{\"child_pubkey\":\"$SESSION_PUB\",\"campfire_id\":\"$CF_ID\",\"expires_at\":$EXPIRES_AT}"
-
-cf send "$CF_ID" --cf-home "$HUMAN_HOME" --tag identity:granted "$GRANT_PAYLOAD" >/dev/null 2>&1
+GRANT_OUT=$(cf trust grant "$CF_ID" "$SESSION_PUB" --ttl 24h --cf-home "$HUMAN_HOME" 2>/dev/null)
 echo "Human granted session (24h TTL)"
+echo "$GRANT_OUT"
 
 # ---------------------------------------------------------------------------
 section "Session resolves its own trust chain"
@@ -138,14 +136,14 @@ cf trust resolve "$CF_ID" "$SESSION_PUB" --cf-home "$VERIFIER_HOME" >/dev/null 2
 assert_eq "Post-cleanup resolve exits 0" "0" "$POST_CLEANUP_EXIT"
 
 # ---------------------------------------------------------------------------
-section "Human revokes session subkey"
+section "Human revokes session subkey (cf trust revoke)"
 # ---------------------------------------------------------------------------
 # The session process is gone, but a rogue-agent scenario is exactly this:
 # you find out later that the session should not have had authority, and
 # you revoke retroactively so its past work stops being trusted.
-REVOKE_PAYLOAD="{\"child_pubkey\":\"$SESSION_PUB\",\"campfire_id\":\"$CF_ID\"}"
-cf send "$CF_ID" --cf-home "$HUMAN_HOME" --tag identity:revoked "$REVOKE_PAYLOAD" >/dev/null 2>&1
+REVOKE_OUT=$(cf trust revoke "$CF_ID" "$SESSION_PUB" --cf-home "$HUMAN_HOME" 2>/dev/null)
 echo "Human revoked session subkey"
+echo "$REVOKE_OUT"
 
 cf read "$CF_ID" --cf-home "$VERIFIER_HOME" --all >/dev/null 2>&1 || true
 

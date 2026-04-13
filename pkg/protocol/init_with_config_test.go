@@ -47,6 +47,18 @@ func writeInitConfigFile(t *testing.T, path, content string) {
 // TestInitWithConfig_GlobalConfig verifies that a global config file that sets
 // transport.endpoint is reflected in the resolved config and InitResult.ConfigLayers.
 func TestInitWithConfig_GlobalConfig(t *testing.T) {
+	// Isolate from real config cascade: chdir to a temp dir so ancestor walk
+	// doesn't pick up .cf/config.toml files from the real working directory
+	// (which may contain auto_join beacons that cause Init to hang).
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) }) //nolint:errcheck
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
 	globalDir := t.TempDir()
 
 	customEndpoint := "https://custom.endpoint.example.com"

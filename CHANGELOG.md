@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.19.0 — trust delegation hardening (2026-04-13)
+
+Security hardening, ssh-agent signing backend, and code quality fixes for the identity delegation system. 7 PRs, 48 demo assertions passing.
+
+### Features
+
+- **SSH-agent signing backend**: `Identity.NewSigner()` routes all root-scoped signing through `SigningBackend` when configured. Five call sites updated: `sendFilesystem`, `sendGitHub`, `sendP2PHTTP`, `postRecenterClaim`, `sendFuture`. Config: `[identity] backend = "ssh-agent"` + `fingerprint = "SHA256:..."` in `.cf/config.toml`. Private key never enters the process — signing delegated to ssh-agent via `SSH_AUTH_SOCK`.
+- **`cf trust revoke`**: New CLI command — `cf trust revoke <campfire-id> <child-pubkey> [--json]`. Posts a signed `identity:revoked` message. Human and JSON output modes.
+- **Config cascade split-layer**: `backend = "ssh-agent"` in global config + `fingerprint` in project config now works correctly. Validation moved from per-layer to post-cascade.
+
+### Security
+
+- **Hex case normalization**: `findValidGrant` and `buildRevokedSet` normalize `child_pubkey` to lowercase before comparison. An uppercase-hex revocation now correctly matches a lowercase-hex grant.
+- **campfireID validation**: `Resolve` rejects empty and wrong-length campfire IDs at entry, before any store reads.
+- **O(N) revocation lookup**: Replaced per-candidate `isRevoked()` (O(N*M) store reads) with `buildRevokedSet` — a single pre-fetch pass over revocation messages. Eliminates DoS via grant flood.
+- **Truncation safety**: Grant and revocation reads use `Reverse: true` so `MaxGrantReadLimit` truncation preserves the newest messages. Implemented in both SQLite and Azure Table Storage stores.
+- **Signature verification on all signing paths**: `agentBackendDirect.Sign` (in-process test path) now verifies the returned signature, matching `SSHAgentBackend.Sign`.
+
+### Bug Fixes
+
+- **aztable `Reverse` flag**: `aztable.ListMessages` now respects `MessageFilter.Reverse` — sorts DESC when true, matching the SQLite store. Previously ignored, breaking truncation safety in production.
+- **Revoke read ordering**: The revocation pre-fetch in `findValidGrant` now uses `Reverse: true`, preventing truncation from hiding recent revocations under flood.
+- **`protoMsgToRaw` error handling**: Malformed sender hex in grant messages is now surfaced as an error and the grant is skipped, instead of proceeding with nil/empty sender bytes.
+- **`mergeLayer` warnings**: Invalid trust anchors are returned as warnings in the `([]string, []string, error)` return instead of calling `log.Printf`. All three callers propagate warnings.
+- **CompositeResolver atomic merge**: Chain and Anchor fields are adopted atomically from the first resolver that sets `TrustResolved=true`, preventing attribution of chain evidence from a non-trust-resolved resolver.
+- **`ErrStoreRead` wrapping**: Inner store errors now wrapped with `%w` (not `%v`), making them inspectable via `errors.Is`.
+- **`TestInitWithConfig_GlobalConfig` hang**: Test now isolates from ancestor config walk to prevent hanging on `.cf/config.toml` files with `auto_join` beacons.
+
+### Tests
+
+- 12 new delegation regression tests (hex normalization, O(N) revocation, campfireID validation, truncation safety, store error wrapping)
+- 5 new ssh-agent config tests (backend construction, fingerprint validation, sign verification, split-layer cascade)
+- 4 new NewSigner integration tests (file key, ssh-agent backend, public key mismatch, full send path)
+- 12 new coverage tests (config security paths, mergeLayer errors, ancestor walk-up, delegation gaps)
+- Demo 15 updated: uses `cf trust grant` / `cf trust revoke` CLI instead of raw `cf send`
+- Demo 16 updated: uses `cf trust grant` / `cf trust revoke` CLI
+- Demo 17 updated: uses `cf trust grant` CLI for ssh-agent grant
+- Demo 18 (NEW): v0.19 hardening — 19 assertions covering hex case normalization, campfireID validation, TTL enforcement, JSON output, split-layer config cascade
+- Full `go test ./...` green (43 packages)
+
 ## v0.18.1 — delegation write path (2026-04-11)
 
 Finishes the v0.18 identity delegation feature. v0.18.0 shipped grant validation and trust resolution (the read half) but left issuance as a hand-marshal operation; v0.18.1 adds the SDK helper and CLI command so callers can write grants with one function call.

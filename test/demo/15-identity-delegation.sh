@@ -70,14 +70,11 @@ RESOLVE_OUT=$(cf trust resolve "$CF_ID" "$ROOT_PUB" --cf-home "$ROOT_HOME" 2>/de
 assert_contains "Root resolves as trust anchor" "$RESOLVE_OUT" "Resolved"
 
 # ---------------------------------------------------------------------------
-section "Root grants delegate"
+section "Root grants delegate (cf trust grant)"
 # ---------------------------------------------------------------------------
-# expires_at = now + 7 days (in seconds)
-EXPIRES_AT=$(( $(date +%s) + 7 * 86400 ))
-GRANT_PAYLOAD="{\"child_pubkey\":\"$DELEGATE_PUB\",\"campfire_id\":\"$CF_ID\",\"expires_at\":$EXPIRES_AT}"
-
-cf send "$CF_ID" --cf-home "$ROOT_HOME" --tag identity:granted "$GRANT_PAYLOAD" >/dev/null 2>&1
+GRANT_OUT=$(cf trust grant "$CF_ID" "$DELEGATE_PUB" --ttl 168h --cf-home "$ROOT_HOME" 2>/dev/null)
 echo "Root granted delegate"
+echo "$GRANT_OUT"
 
 # ---------------------------------------------------------------------------
 section "Verify delegate is trusted"
@@ -95,11 +92,9 @@ assert_eq "cf trust resolve exits 0 for delegate" "0" "$RESOLVE_EXIT"
 # ---------------------------------------------------------------------------
 section "Delegate grants leaf (2-hop chain)"
 # ---------------------------------------------------------------------------
-LEAF_EXPIRES_AT=$(( $(date +%s) + 6 * 86400 ))
-LEAF_GRANT_PAYLOAD="{\"child_pubkey\":\"$LEAF_PUB\",\"campfire_id\":\"$CF_ID\",\"expires_at\":$LEAF_EXPIRES_AT}"
-
-cf send "$CF_ID" --cf-home "$DELEGATE_HOME" --tag identity:granted "$LEAF_GRANT_PAYLOAD" >/dev/null 2>&1
+LEAF_GRANT_OUT=$(cf trust grant "$CF_ID" "$LEAF_PUB" --ttl 144h --cf-home "$DELEGATE_HOME" 2>/dev/null)
 echo "Delegate granted leaf"
+echo "$LEAF_GRANT_OUT"
 
 # Sync leaf's store so both grants (root→delegate, delegate→leaf) are visible.
 cf read "$CF_ID" --cf-home "$LEAF_HOME" --all >/dev/null 2>&1 || true
@@ -112,12 +107,11 @@ cf trust resolve "$CF_ID" "$LEAF_PUB" --cf-home "$LEAF_HOME" >/dev/null 2>&1 || 
 assert_eq "cf trust resolve exits 0 for leaf (2-hop)" "0" "$LEAF_RESOLVE_EXIT"
 
 # ---------------------------------------------------------------------------
-section "Root revokes delegate"
+section "Root revokes delegate (cf trust revoke)"
 # ---------------------------------------------------------------------------
-REVOKE_PAYLOAD="{\"child_pubkey\":\"$DELEGATE_PUB\",\"campfire_id\":\"$CF_ID\"}"
-
-cf send "$CF_ID" --cf-home "$ROOT_HOME" --tag identity:revoked "$REVOKE_PAYLOAD" >/dev/null 2>&1
+REVOKE_OUT=$(cf trust revoke "$CF_ID" "$DELEGATE_PUB" --cf-home "$ROOT_HOME" 2>/dev/null)
 echo "Root revoked delegate"
+echo "$REVOKE_OUT"
 
 # All agents sync to pick up the revocation.
 cf read "$CF_ID" --cf-home "$DELEGATE_HOME" --all >/dev/null 2>&1 || true
@@ -146,11 +140,9 @@ section "Root re-grants delegate"
 # Small sleep to ensure the re-grant timestamp is strictly after the revoke.
 sleep 1
 
-REGRANT_EXPIRES_AT=$(( $(date +%s) + 7 * 86400 ))
-REGRANT_PAYLOAD="{\"child_pubkey\":\"$DELEGATE_PUB\",\"campfire_id\":\"$CF_ID\",\"expires_at\":$REGRANT_EXPIRES_AT}"
-
-cf send "$CF_ID" --cf-home "$ROOT_HOME" --tag identity:granted "$REGRANT_PAYLOAD" >/dev/null 2>&1
+REGRANT_OUT=$(cf trust grant "$CF_ID" "$DELEGATE_PUB" --ttl 168h --cf-home "$ROOT_HOME" 2>/dev/null)
 echo "Root re-granted delegate"
+echo "$REGRANT_OUT"
 
 # All agents sync to pick up the new grant.
 cf read "$CF_ID" --cf-home "$DELEGATE_HOME" --all >/dev/null 2>&1 || true
