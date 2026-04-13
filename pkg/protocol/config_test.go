@@ -1351,3 +1351,60 @@ fingerprint = "SHA256:project"
 		t.Errorf("fingerprint = %q, want \"SHA256:project\"", cfg.Identity.Fingerprint)
 	}
 }
+
+// TestMergeLayer_InvalidAnchor_ReturnsWarning verifies that mergeLayer returns a
+// warning (not a fatal error) when identity.trust.anchors contains an invalid hex
+// string, and that the valid anchors in the same list are still applied.
+// Regression for campfire-13f.
+func TestMergeLayer_InvalidAnchor_ReturnsWarning(t *testing.T) {
+	// Valid Ed25519 public key (32 bytes, hex-encoded).
+	validKey := make([]byte, 32)
+	for i := range validKey {
+		validKey[i] = byte(i + 1)
+	}
+	validHex := hex.EncodeToString(validKey)
+
+	raw := &rawConfig{}
+	raw.Identity.Trust.Anchors = []string{
+		"NOT-VALID-HEX",
+		validHex,
+	}
+
+	var dst Config
+	contributed, warnings, err := mergeLayer(&dst, raw, "/fake/config.toml", false)
+	if err != nil {
+		t.Fatalf("mergeLayer returned error for invalid anchor; want warning: %v", err)
+	}
+
+	// The valid anchor must be applied.
+	if len(dst.Identity.TrustAnchors) != 1 {
+		t.Fatalf("expected 1 trust anchor applied, got %d", len(dst.Identity.TrustAnchors))
+	}
+
+	// A warning must be returned for the invalid anchor.
+	if len(warnings) == 0 {
+		t.Error("expected at least one warning for the invalid anchor, got none")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "NOT-VALID-HEX") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning mentioning \"NOT-VALID-HEX\", got: %v", warnings)
+	}
+
+	// identity.trust.anchors must be in contributed (even though one was skipped).
+	hasContrib := false
+	for _, c := range contributed {
+		if c == "identity.trust.anchors" {
+			hasContrib = true
+			break
+		}
+	}
+	if !hasContrib {
+		t.Errorf("expected \"identity.trust.anchors\" in contributed, got: %v", contributed)
+	}
+}

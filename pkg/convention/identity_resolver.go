@@ -241,13 +241,14 @@ func (c *CompositeResolver) Resolve(ctx context.Context, senderPubkey ed25519.Pu
 		if info.TrustResolved && !merged.TrustResolved {
 			merged.TrustResolved = true
 			merged.Provenance["trust_resolved"] = name
-		}
-		// Merge Chain/Anchor from first resolver that resolved trust.
-		if merged.Chain == nil && info.Chain != nil {
-			merged.Chain = info.Chain
-		}
-		if merged.Anchor == nil && info.Anchor != nil {
-			merged.Anchor = info.Anchor
+			// Chain and Anchor are evidence of trust resolution — adopt them
+			// from the same resolver that set TrustResolved=true.
+			if info.Chain != nil {
+				merged.Chain = info.Chain
+			}
+			if info.Anchor != nil {
+				merged.Anchor = info.Anchor
+			}
 		}
 	}
 	return merged, nil

@@ -296,6 +296,16 @@ func TestCompositeResolver_MergesCache_AndGrantChain(t *testing.T) {
 	if len(info.Chain) != 1 {
 		t.Errorf("expected chain length 1, got %d", len(info.Chain))
 	}
+	// Provenance: identity_verified from cache, trust_resolved from grant-chain.
+	if info.Provenance == nil {
+		t.Fatal("expected Provenance map to be non-nil")
+	}
+	if got := info.Provenance["identity_verified"]; got != "cache" {
+		t.Errorf("Provenance[identity_verified] = %q; want %q", got, "cache")
+	}
+	if got := info.Provenance["trust_resolved"]; got != "grant-chain" {
+		t.Errorf("Provenance[trust_resolved] = %q; want %q", got, "grant-chain")
+	}
 }
 
 // --- Test 4: Server with GrantChainResolver → handler reads req.Identity.Chain ---
@@ -563,5 +573,74 @@ func TestFromConfig_EmptyAnchors_Warns(t *testing.T) {
 	}
 	if info.Chain != nil {
 		t.Errorf("expected Chain==nil for fail-closed resolver, got %v", info.Chain)
+	}
+}
+
+// --- Test 8: CompositeResolver Chain comes from TrustResolved setter (10d) ---
+
+// fakeChainResolver is a stub IdentityResolver that returns a fixed IdentityInfo
+// (including Chain and Anchor) regardless of the sender pubkey. Used to isolate
+// CompositeResolver Chain/Anchor merge logic in 10d tests.
+type fakeChainResolver struct {
+	name string
+	info convention.IdentityInfo
+}
+
+func (f *fakeChainResolver) Name() string { return f.name }
+func (f *fakeChainResolver) Resolve(_ context.Context, senderPubkey ed25519.PublicKey) (convention.IdentityInfo, error) {
+	out := f.info
+	out.MachineKey = senderPubkey
+	return out, nil
+}
+
+// TestCompositeResolver_ChainFromTrustResolver verifies that Chain and Anchor are
+// adopted from the resolver that set TrustResolved=true, not from an earlier resolver
+// that set Chain without TrustResolved. Regression for campfire-1dc.
+func TestCompositeResolver_ChainFromTrustResolver(t *testing.T) {
+	env := newGrantChainTestEnv(t, 3)
+
+	// fake-a: sets Chain but TrustResolved=false.
+	chainA := []delegation.GrantInfo{{MessageID: "grant-from-fake-a"}}
+	anchorA := env.pubkey(2)
+	fakeA := &fakeChainResolver{
+		name: "fake-a",
+		info: convention.IdentityInfo{
+			Chain:         chainA,
+			Anchor:        anchorA,
+			TrustResolved: false,
+		},
+	}
+
+	// fake-b: sets TrustResolved=true with a different Chain.
+	chainB := []delegation.GrantInfo{{MessageID: "grant-from-fake-b"}}
+	anchorB := env.pubkey(0)
+	fakeB := &fakeChainResolver{
+		name: "fake-b",
+		info: convention.IdentityInfo{
+			Chain:         chainB,
+			Anchor:        anchorB,
+			TrustResolved: true,
+		},
+	}
+
+	composite := convention.NewCompositeResolver(fakeA, fakeB)
+	info, err := composite.Resolve(context.Background(), env.pubkey(1))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if !info.TrustResolved {
+		t.Error("expected TrustResolved=true")
+	}
+
+	// Chain must come from fake-b (the TrustResolved setter), not from fake-a.
+	if len(info.Chain) != 1 || info.Chain[0].MessageID != "grant-from-fake-b" {
+		t.Errorf("expected Chain from fake-b (grant-from-fake-b), got %+v", info.Chain)
+	}
+	if info.Anchor == nil || !info.Anchor.Equal(anchorB) {
+		t.Errorf("expected Anchor from fake-b (%x), got %x", anchorB, info.Anchor)
+	}
+	if info.Provenance["trust_resolved"] != "fake-b" {
+		t.Errorf("Provenance[trust_resolved] = %q; want %q", info.Provenance["trust_resolved"], "fake-b")
 	}
 }
