@@ -40,11 +40,9 @@ func TestSendFilesystem_SSHAgentBackend(t *testing.T) {
 	defer b.Close()
 
 	// Build a synthetic identity: public key from the agent, no private key,
-	// Backend configured. This mirrors the production ssh-agent case.
-	agentID := &identity.Identity{
-		PublicKey: pub,
-		Backend:   b,
-	}
+	// backend configured. This mirrors the production ssh-agent case.
+	agentID := &identity.Identity{PublicKey: pub}
+	agentID.SetBackend(b)
 
 	// Set up test store and filesystem campfire.
 	_, s, transportDir := setupTestEnv(t)

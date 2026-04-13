@@ -154,7 +154,7 @@ func TestIdentitySignWithBackend_File(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileBackend: %v", err)
 	}
-	id.Backend = fb
+	id.SetBackend(fb)
 
 	msg := []byte("test file backend via Identity.SignWithBackend")
 	sig, err := id.SignWithBackend(msg)
@@ -185,10 +185,8 @@ func TestIdentitySignWithBackend_SSHAgent(t *testing.T) {
 	// Build a synthetic Identity with only the public key and the backend set.
 	// (In practice, ssh-agent-backed identities still have a public key from the
 	// identity file; the private key may be empty/zeroed since the agent holds it.)
-	id := &Identity{
-		PublicKey: pub,
-		Backend:   b,
-	}
+	id := &Identity{PublicKey: pub}
+	id.SetBackend(b)
 
 	msg := []byte("test ssh-agent backend via Identity.SignWithBackend")
 	sig, err := id.SignWithBackend(msg)
@@ -317,10 +315,8 @@ func TestNewSigner_SSHAgentBackend(t *testing.T) {
 
 	// Construct a synthetic identity with only the public key + backend set
 	// (mirrors the production case where the agent holds the private key).
-	id := &Identity{
-		PublicKey: pub,
-		Backend:   b,
-	}
+	id := &Identity{PublicKey: pub}
+	id.SetBackend(b)
 
 	signer := id.NewSigner()
 
@@ -359,16 +355,14 @@ func TestNewSigner_PublicKeyBackendMismatch(t *testing.T) {
 	}
 	defer b.Close()
 
-	// Identity has a different (dummy) public key but Backend is set.
-	id := &Identity{
-		PublicKey: make(ed25519.PublicKey, ed25519.PublicKeySize), // all zeros
-		Backend:   b,
-	}
+	// Identity has a different (dummy) public key but backend is set.
+	id := &Identity{PublicKey: make(ed25519.PublicKey, ed25519.PublicKeySize)} // all zeros
+	id.SetBackend(b)
 
 	signer := id.NewSigner()
 
-	// When Backend is set, PublicKey must come from the backend.
+	// When backend is set, PublicKey must come from the backend.
 	if !signer.PublicKey().Equal(pub) {
-		t.Error("NewSigner().PublicKey() should return backend public key when Backend is configured")
+		t.Error("NewSigner().PublicKey() should return backend public key when backend is configured")
 	}
 }

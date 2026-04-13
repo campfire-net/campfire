@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -296,19 +297,34 @@ func Init(configDir string, optFuncs ...Option) (*Client, *InitResult, error) {
 	// Wire the signing backend when opts.backend = "ssh-agent".
 	// opts.fingerprint must be non-empty (validated by InitWithConfig via mergeLayer,
 	// or enforced at the call site when using WithBackend/WithFingerprint directly).
+	// sshBackend is declared outside the if block so the socket can be closed
+	// on store.Open failure (otherwise the net.Conn leaks).
+	var sshBackend *identity.SSHAgentBackend
 	if opts.backend == "ssh-agent" {
 		if opts.fingerprint == "" {
 			return nil, nil, fmt.Errorf("protocol.Init: identity.fingerprint is required when backend = \"ssh-agent\"")
 		}
-		backend, err := identity.NewSSHAgentBackend(opts.fingerprint)
-		if err != nil {
-			return nil, nil, fmt.Errorf("protocol.Init: ssh-agent backend: %w", err)
+		var berr error
+		sshBackend, berr = identity.NewSSHAgentBackend(opts.fingerprint)
+		if berr != nil {
+			return nil, nil, fmt.Errorf("protocol.Init: ssh-agent backend: %w", berr)
 		}
-		id.Backend = backend
+		id.SetBackend(sshBackend)
+		// Verify the backend key matches the identity key to prevent silent
+		// mismatches (e.g. wrong fingerprint in config, or key rotation that
+		// didn't update both files).
+		if !bytes.Equal(sshBackend.PublicKey(), id.PublicKey) {
+			_ = sshBackend.Close()
+			return nil, nil, fmt.Errorf("protocol.Init: ssh-agent backend key does not match identity public key — check that identity.fingerprint points to the correct key")
+		}
 	}
 
 	rawStore, err := store.Open(result.StorePath)
 	if err != nil {
+		// Close the SSH socket to avoid a net.Conn leak.
+		if sshBackend != nil {
+			_ = sshBackend.Close()
+		}
 		return nil, nil, fmt.Errorf("protocol.Init: opening store: %w", err)
 	}
 

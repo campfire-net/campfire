@@ -89,55 +89,6 @@ type SSHAgentBackend struct {
 	agentClient agent.ExtendedAgent
 }
 
-// SSHAgentBackendFromKeyring creates an SSHAgentBackend backed by an
-// in-process agent.Agent keyring. Used in tests (no SSH_AUTH_SOCK needed).
-// The caller is responsible for having pre-added the key to the keyring.
-func SSHAgentBackendFromKeyring(ring agent.Agent, fingerprint string) (*SSHAgentBackend, error) {
-	if fingerprint == "" {
-		return nil, errors.New("identity/backend: SSHAgentBackend requires a non-empty fingerprint")
-	}
-
-	// Find the matching key in the keyring.
-	keys, err := ring.List()
-	if err != nil {
-		return nil, fmt.Errorf("identity/backend: listing agent keys: %w", err)
-	}
-
-	var matchedSSHPub gossh.PublicKey
-	var matchedPub ed25519.PublicKey
-	for _, k := range keys {
-		fp := gossh.FingerprintSHA256(k)
-		if fp == fingerprint {
-			// Parse the key blob to get a gossh.CryptoPublicKey.
-			parsed, err := gossh.ParsePublicKey(k.Marshal())
-			if err != nil {
-				return nil, fmt.Errorf("identity/backend: parsing agent key: %w", err)
-			}
-			cpk, ok := parsed.(gossh.CryptoPublicKey)
-			if !ok {
-				return nil, fmt.Errorf("identity/backend: key %s does not implement CryptoPublicKey", fingerprint)
-			}
-			ed, ok := cpk.CryptoPublicKey().(ed25519.PublicKey)
-			if !ok {
-				return nil, fmt.Errorf("identity/backend: key %s is not an ed25519 key", fingerprint)
-			}
-			matchedSSHPub = k
-			matchedPub = ed
-			break
-		}
-	}
-
-	if matchedSSHPub == nil {
-		return nil, fmt.Errorf("identity/backend: no key with fingerprint %s found in agent", fingerprint)
-	}
-
-	return &SSHAgentBackend{
-		fingerprint: fingerprint,
-		pub:         matchedPub,
-		sshPub:      matchedSSHPub,
-	}, nil
-}
-
 // agentFromRing is a thin wrapper for the in-process keyring path (tests only).
 // It stores the agent.Agent directly rather than going through a socket.
 type agentBackendDirect struct {

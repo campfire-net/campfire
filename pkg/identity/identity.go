@@ -29,11 +29,17 @@ type Identity struct {
 	PrivateKey ed25519.PrivateKey `json:"private_key"`
 	CreatedAt  int64              `json:"created_at"`
 
-	// Backend is the optional signing backend for root-scoped signing.
+	// backend is the optional signing backend for root-scoped signing.
 	// When non-nil, SignWithBackend delegates to it instead of using PrivateKey.
 	// Machine daemons, Claude sessions, and workers must not set this field.
-	Backend SigningBackend `json:"-"`
+	backend SigningBackend `json:"-"`
 }
+
+// SetBackend sets the signing backend for root-scoped signing.
+func (id *Identity) SetBackend(b SigningBackend) { id.backend = b }
+
+// HasBackend reports whether a signing backend is configured.
+func (id *Identity) HasBackend() bool { return id.backend != nil }
 
 // identityFile is the on-disk JSON representation. Version 0 (absent field)
 // and version 1 are both treated as plain (unwrapped) for backward compat.
@@ -200,8 +206,8 @@ func (id *Identity) Sign(message []byte) []byte {
 // Machine daemons, Claude sessions, and workers should use Sign directly
 // (not this method), since they never configure a Backend.
 func (id *Identity) SignWithBackend(message []byte) ([]byte, error) {
-	if id.Backend != nil {
-		return id.Backend.Sign(message)
+	if id.backend != nil {
+		return id.backend.Sign(message)
 	}
 	return id.Sign(message), nil
 }
@@ -235,8 +241,8 @@ func (s *IdentitySigner) Sign(msg []byte) ([]byte, error) {
 
 // PublicKey returns the identity's Ed25519 public key. Implements message.Signer.
 func (s *IdentitySigner) PublicKey() ed25519.PublicKey {
-	if s.id.Backend != nil {
-		return s.id.Backend.PublicKey()
+	if s.id.backend != nil {
+		return s.id.backend.PublicKey()
 	}
 	return s.id.PublicKey
 }
