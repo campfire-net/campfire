@@ -644,3 +644,28 @@ func TestCompositeResolver_ChainFromTrustResolver(t *testing.T) {
 		t.Errorf("Provenance[trust_resolved] = %q; want %q", info.Provenance["trust_resolved"], "fake-b")
 	}
 }
+
+// TestFromConfig_NilConfig verifies that FromConfig handles a nil config
+// gracefully without panicking, and returns a functional (fail-closed) resolver.
+func TestFromConfig_NilConfig(t *testing.T) {
+	env := newGrantChainTestEnv(t, 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Call FromConfig with nil config.
+	resolver := convention.FromConfig(env.clients[0], env.campfireHex, nil)
+	if resolver == nil {
+		t.Fatal("FromConfig should return a non-nil resolver even for nil config")
+	}
+
+	// Resolver should be functional but fail-closed (no trust anchors).
+	// Attempting to resolve any sender should return untrusted (TrustResolved = false).
+	info, err := resolver.Resolve(ctx, env.pubkey(1))
+	if err != nil {
+		t.Fatalf("Resolve should not error for nil config: %v", err)
+	}
+	if info.TrustResolved {
+		t.Error("resolver with nil config should fail-closed (TrustResolved = false)")
+	}
+}
