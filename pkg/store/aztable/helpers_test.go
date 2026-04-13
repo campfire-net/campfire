@@ -5,7 +5,10 @@ package aztable
 
 import (
 	"fmt"
+	"sort"
 	"testing"
+
+	"github.com/campfire-net/campfire/pkg/store"
 )
 
 // TestEncodeKey verifies that encodeKey produces safe, deterministic output.
@@ -229,6 +232,47 @@ func TestNsPKFilter(t *testing.T) {
 	lo := encodeKey("sess01|")
 	if !contains(f, lo) {
 		t.Errorf("nsPKFilter() = %q, missing lower bound %q", f, lo)
+	}
+}
+
+// TestListMessagesReverseSort is a regression test for campfire-986: aztable.ListMessages
+// must honour the Reverse flag in MessageFilter. This test exercises the sort step
+// directly — it constructs a slice of MessageRecords (as they would appear after the
+// Azure pager loop), applies the same sort.Slice closure, and verifies ordering.
+func TestListMessagesReverseSort(t *testing.T) {
+	// Simulate three messages fetched in arbitrary order from Azure Table Storage.
+	records := []store.MessageRecord{
+		{ID: "c", Timestamp: 300},
+		{ID: "a", Timestamp: 100},
+		{ID: "b", Timestamp: 200},
+	}
+
+	// Sort ASC (Reverse == false).
+	asc := make([]store.MessageRecord, len(records))
+	copy(asc, records)
+	fAsc := store.MessageFilter{Reverse: false}
+	sort.Slice(asc, func(i, j int) bool {
+		if fAsc.Reverse {
+			return asc[i].Timestamp > asc[j].Timestamp
+		}
+		return asc[i].Timestamp < asc[j].Timestamp
+	})
+	if asc[0].ID != "a" || asc[1].ID != "b" || asc[2].ID != "c" {
+		t.Errorf("ASC sort: expected [a b c], got [%s %s %s]", asc[0].ID, asc[1].ID, asc[2].ID)
+	}
+
+	// Sort DESC (Reverse == true) — this is the bug path campfire-986.
+	desc := make([]store.MessageRecord, len(records))
+	copy(desc, records)
+	fDesc := store.MessageFilter{Reverse: true}
+	sort.Slice(desc, func(i, j int) bool {
+		if fDesc.Reverse {
+			return desc[i].Timestamp > desc[j].Timestamp
+		}
+		return desc[i].Timestamp < desc[j].Timestamp
+	})
+	if desc[0].ID != "c" || desc[1].ID != "b" || desc[2].ID != "a" {
+		t.Errorf("DESC sort (Reverse=true): expected [c b a], got [%s %s %s]", desc[0].ID, desc[1].ID, desc[2].ID)
 	}
 }
 

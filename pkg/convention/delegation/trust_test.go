@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -873,6 +874,80 @@ func TestFindValidGrant_AtLimit(t *testing.T) {
 	}
 	if !r.Anchor.Equal(env.pubkey(0)) {
 		t.Errorf("expected anchor to be ids[0], got %x", r.Anchor)
+	}
+}
+
+// TestResolve_NewestRevokeFoundDespiteTruncation is a regression test for
+// campfire-5eb: findValidGrant must use Reverse:true when reading revocations
+// so that, under store-level truncation, the newest revocation is preserved.
+//
+// Setup:
+//   - ids[0] (anchor) grants ids[1] (valid, future expiry).
+//   - 3 old "noise" revocations for ids[1] are injected directly into the store
+//     with timestamps older than the real grant.
+//   - A real revocation is posted AFTER the grant (newer timestamp).
+//   - The store is wrapped with limitingStore{maxRecords: 2} so only 2 messages
+//     are returned per ListMessages call.
+//
+//   - With Reverse:true (the fix): DESC ordering preserves [real_revoke, noise1];
+//     real_revoke.Timestamp > grant.Timestamp → revoked → DeadEnd. ✓
+//   - Without Reverse:true (the bug): ASC ordering returns [noise1, noise2]; both
+//     precede the grant timestamp → revokedSet returns false → Resolved (wrong). ✗
+func TestResolve_NewestRevokeFoundDespiteTruncation(t *testing.T) {
+	env := newTrustTestEnv(t, 2)
+	ctx := context.Background()
+
+	// Post the valid grant.
+	env.postGrant(t, 0, env.pubkey(1), futureExpiry())
+	time.Sleep(2 * time.Millisecond)
+
+	// Record the grant timestamp so we can use it to anchor old noise revokes.
+	// The grant is the most recent message in the store at this point.
+	// We need old noise revokes with timestamps BEFORE the grant so they don't
+	// themselves trigger revocation (revokedSet only fires when ts > grantTimestamp).
+	// We'll inject them as store records directly — postRevoke would give them
+	// current timestamps (after the grant), which would also work but would make
+	// the test less precise. Instead, inject 3 old records with small timestamps.
+	childHex := hex.EncodeToString(env.pubkey(1))
+	parentHex := hex.EncodeToString(env.pubkey(0))
+	noisePayload, err := json.Marshal(map[string]string{"child_pubkey": childHex})
+	if err != nil {
+		t.Fatalf("marshal noise payload: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		noiseRec := store.MessageRecord{
+			ID:          fmt.Sprintf("noise-revoke-%d", i),
+			CampfireID:  env.campfireHex,
+			Sender:      parentHex,
+			Payload:     noisePayload,
+			Tags:        []string{delegation.RevokedTag},
+			Antecedents: []string{},
+			Timestamp:   int64(i + 1), // tiny timestamps — well before the grant
+			Signature:   []byte("placeholder"), // not verified by buildRevokedSet
+			Provenance:  []message.ProvenanceHop{},
+		}
+		for _, s := range env.stores {
+			s.AddMessage(noiseRec) //nolint:errcheck
+		}
+	}
+
+	// Post the real revocation (newest timestamp — must be preserved under truncation).
+	time.Sleep(2 * time.Millisecond)
+	env.postRevoke(t, 0, env.pubkey(1))
+
+	// Wrap ids[1]'s store to return at most 2 messages per ListMessages call.
+	// With Reverse:true (fix): DESC order → [real_revoke, noise2]; real_revoke has
+	// timestamp > grant → revoked → DeadEnd (correct).
+	// Without Reverse:true (bug): ASC order → [noise0, noise1]; both have tiny
+	// timestamps < grant → not revoked → Resolved (wrong).
+	limitedStore := &limitingStore{Store: env.stores[1], maxRecords: 2}
+	limitedClient := protocol.New(limitedStore, env.identities[1])
+
+	out := delegation.Resolve(ctx, limitedClient, env.campfireIDRaw, env.pubkey(1), env.anchors(0))
+
+	_, ok := out.(delegation.DeadEnd)
+	if !ok {
+		t.Fatalf("expected DeadEnd (real revoke visible after truncation with Reverse:true), got %T: %+v", out, out)
 	}
 }
 

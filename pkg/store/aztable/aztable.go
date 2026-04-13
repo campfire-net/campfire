@@ -564,8 +564,11 @@ func (ts *TableStore) ListMessages(campfireID string, afterTimestamp int64, filt
 		}
 	}
 
-	// Sort by timestamp.
+	// Sort by timestamp, respecting the Reverse flag (campfire-986).
 	sort.Slice(msgs, func(i, j int) bool {
+		if f.Reverse {
+			return msgs[i].Timestamp > msgs[j].Timestamp
+		}
 		return msgs[i].Timestamp < msgs[j].Timestamp
 	})
 
