@@ -134,8 +134,8 @@ func (c *Client) NewSession(ttl time.Duration) (*Session, string, error) {
 		EphemeralPrivKey: ephPriv,
 		TransportConfig:  transportConfigBytes,
 		TTL:              ttl,
-		CreatorPub:       c.identity.PublicKey,
-		CreatorPriv:      c.identity.PrivateKey,
+		CreatorPub:    c.identity.PublicKey,
+		CreatorSigner: c.identity.NewSigner().Sign,
 	})
 	if err != nil {
 		os.RemoveAll(tmpDir)

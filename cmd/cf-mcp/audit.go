@@ -352,10 +352,7 @@ func (aw *AuditWriter) postMessage(payload string, tags []string) error {
 		}}
 	}
 
-	auditSigner, err := message.NewEd25519Signer(aw.agentID.PrivateKey, aw.agentID.PublicKey)
-	if err != nil {
-		return fmt.Errorf("creating signer for audit message: %w", err)
-	}
+	auditSigner := aw.agentID.NewSigner()
 	msg, err := message.NewMessage(auditSigner, []byte(payload), tags, nil)
 	if err != nil {
 		return fmt.Errorf("creating audit message: %w", err)

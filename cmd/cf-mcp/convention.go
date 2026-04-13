@@ -620,10 +620,7 @@ func (s *server) sendMessageHTTPMode(st store.Store, agentID *identity.Identity,
 		return nil, fmt.Errorf("not recognized as a member in the transport directory")
 	}
 
-	agentSigner, err := message.NewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("creating signer: %w", err)
-	}
+	agentSigner := agentID.NewSigner()
 	msg, err := message.NewMessage(agentSigner, payload, tags, antecedents)
 	if err != nil {
 		return nil, fmt.Errorf("creating message: %w", err)

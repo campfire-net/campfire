@@ -3388,10 +3388,7 @@ func (s *server) handleDM(id interface{}, params map[string]interface{}) jsonRPC
 		// TransportDir, which is the external HTTP address), so protocol.Client
 		// cannot resolve the campfire key via its sendP2PHTTP path.
 		var buildErr error
-		dmSigner, signerErr := message.NewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
-		if signerErr != nil {
-			return errResponse(id, -32000, fmt.Sprintf("creating signer: %v", signerErr))
-		}
+		dmSigner := agentID.NewSigner()
 		msg, buildErr = message.NewMessage(dmSigner, []byte(payload), dmTags, nil)
 		if buildErr != nil {
 			return errResponse(id, -32000, fmt.Sprintf("creating message: %v", buildErr))
