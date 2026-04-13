@@ -707,7 +707,10 @@ func signRequest(req *http.Request, id *identity.Identity, body []byte) {
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
 	signedPayload := buildSignedPayload(timestamp, nonce, body)
-	sig := id.Sign(signedPayload)
+	sig, err := id.SignWithBackend(signedPayload)
+	if err != nil {
+		panic("signRequest: signing failed: " + err.Error())
+	}
 
 	req.Header.Set("X-Campfire-Sender", id.PublicKeyHex())
 	req.Header.Set("X-Campfire-Nonce", nonce)

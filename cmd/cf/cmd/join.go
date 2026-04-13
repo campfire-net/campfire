@@ -564,10 +564,7 @@ func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, t
 	tr.RegisterCampfire(campfireID, issueNumber)
 
 	// Post a campfire:join-request signed message so the creator can observe it.
-	joinSigner, err := message.NewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
-	if err != nil {
-		return fmt.Errorf("creating signer for join-request: %w", err)
-	}
+	joinSigner := agentID.NewSigner()
 	joinReqMsg, err := message.NewMessage(
 		joinSigner,
 		[]byte(fmt.Sprintf(`{"joiner":"%s"}`, agentID.PublicKeyHex())),

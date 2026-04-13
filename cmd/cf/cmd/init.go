@@ -365,10 +365,7 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity, durable bool)
 	if err != nil {
 		return "", "", fmt.Errorf("marshaling introduce-me payload: %w", err)
 	}
-	agentSigner, err := message.NewEd25519Signer(agentID.PrivateKey, agentID.PublicKey)
-	if err != nil {
-		return "", "", fmt.Errorf("creating agent signer: %w", err)
-	}
+	agentSigner := agentID.NewSigner()
 	introduceMsg, err := message.NewMessage(agentSigner, introduceMeBytes, []string{convention.IdentityIntroductionTag}, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("creating introduce-me message: %w", err)
