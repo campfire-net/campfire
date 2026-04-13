@@ -291,6 +291,11 @@ func (b *SSHAgentBackend) Sign(message []byte) ([]byte, error) {
 	if len(sig.Blob) != ed25519.SignatureSize {
 		return nil, fmt.Errorf("identity/backend: unexpected signature blob length %d (want %d)", len(sig.Blob), ed25519.SignatureSize)
 	}
+	// Verify the signature before returning — catches a malfunctioning or
+	// malicious agent that returns a syntactically valid but incorrect signature.
+	if !ed25519.Verify(b.pub, message, sig.Blob) {
+		return nil, fmt.Errorf("identity/backend: ssh-agent returned invalid signature for key %s", b.fingerprint)
+	}
 	return sig.Blob, nil
 }
 
