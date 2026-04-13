@@ -93,7 +93,15 @@ type TokenParams struct {
 	CreatorPub ed25519.PublicKey
 
 	// CreatorPriv is the creator's Ed25519 private key used to sign the token.
+	// Deprecated: prefer CreatorSigner to support backend-delegated signing (e.g.
+	// ssh-agent). CreatorPriv is used as a fallback when CreatorSigner is nil.
 	CreatorPriv ed25519.PrivateKey
+
+	// CreatorSigner is an optional signing function that produces the creator
+	// signature. When non-nil it is used instead of CreatorPriv, allowing the
+	// token to be signed by a backend (e.g. SSHAgentBackend) without exposing
+	// the private key. The function must return a 64-byte Ed25519 signature.
+	CreatorSigner func([]byte) ([]byte, error)
 }
 
 // DecodedToken holds the verified content of a session token.
@@ -147,7 +155,16 @@ func EncodeTokenWithExpiry(p TokenParams, expiry time.Time) (string, error) {
 		return "", fmt.Errorf("encoding token payload: %w", err)
 	}
 
-	sig := ed25519.Sign(p.CreatorPriv, payloadBytes)
+	var sig []byte
+	if p.CreatorSigner != nil {
+		var signErr error
+		sig, signErr = p.CreatorSigner(payloadBytes)
+		if signErr != nil {
+			return "", fmt.Errorf("signing token payload: %w", signErr)
+		}
+	} else {
+		sig = ed25519.Sign(p.CreatorPriv, payloadBytes)
+	}
 	if len(sig) != ed25519.SignatureSize {
 		return "", fmt.Errorf("unexpected signature size: %d", len(sig))
 	}
