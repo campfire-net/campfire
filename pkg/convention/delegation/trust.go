@@ -269,11 +269,16 @@ func findValidGrant(
 	// The previous approach called isRevoked() inside the loop, each call doing a
 	// full client.Read — O(N*M) store reads per trust-walk, enabling DoS via grant
 	// flood (campfire-75f). Pre-fetching is O(N) total: one read, one in-memory set.
+	// 9e: Read revocations newest-first (Reverse: true) to mirror the grant read
+	// ordering. When truncated by MaxGrantReadLimit, newest-first ensures we keep
+	// the most-recent revocations — an attacker flooding old revoke messages cannot
+	// hide a legitimate newer revocation behind the truncation boundary (campfire-5eb).
 	revokeMessages, revokeErr := client.Read(protocol.ReadRequest{
 		CampfireID: campfireHex,
 		Tags:       []string{RevokedTag},
 		SkipSync:   true,
 		Limit:      MaxGrantReadLimit,
+		Reverse:    true,
 	})
 	if revokeErr != nil {
 		return nil, nil, fmt.Errorf("%w: reading revocations: %w", ErrStoreRead, revokeErr)
