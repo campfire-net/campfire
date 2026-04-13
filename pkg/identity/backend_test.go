@@ -200,6 +200,53 @@ func TestIdentitySignWithBackend_SSHAgent(t *testing.T) {
 	}
 }
 
+// TestAgentBackendDirect_Sign_InvalidSignatureRejected is a regression test for
+// campfire-cb1: agentBackendDirect.Sign must verify the returned signature and
+// return an error when it is invalid, consistent with SSHAgentBackend.Sign.
+//
+// We simulate a malfunctioning agent by constructing a backend whose stored
+// public key (b.pub) does NOT match the key the agent actually signs with.
+// The agent returns a valid signature for its own key, but ed25519.Verify
+// against the mismatched b.pub will fail — exactly the case that the missing
+// check would have silently passed before.
+func TestAgentBackendDirect_Sign_InvalidSignatureRejected(t *testing.T) {
+	ring := agent.NewKeyring()
+
+	// Add signing key to the ring.
+	_, _, fp, err := addKeyToKeyring(ring, "signer-key")
+	if err != nil {
+		t.Fatalf("addKeyToKeyring: %v", err)
+	}
+
+	// Generate a DIFFERENT ed25519 public key (the "wrong" key we'll inject).
+	wrongPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	// Build a normal backend for the signing key.
+	b, err := NewSSHAgentBackendFromKeyring(ring, fp)
+	if err != nil {
+		t.Fatalf("NewSSHAgentBackendFromKeyring: %v", err)
+	}
+	defer b.Close()
+
+	// Cast to the concrete type (we're in the same package) and replace b.pub
+	// with the wrong public key. Now the agent signs with the real key but
+	// Verify checks against wrongPub — it must fail.
+	direct, ok := b.(*agentBackendDirect)
+	if !ok {
+		t.Fatalf("expected *agentBackendDirect, got %T", b)
+	}
+	direct.pub = wrongPub
+
+	msg := []byte("campfire cb1 regression: direct backend sign verify mismatch")
+	_, signErr := direct.Sign(msg)
+	if signErr == nil {
+		t.Fatal("agentBackendDirect.Sign must return an error when the signature does not verify (regression: cb1)")
+	}
+}
+
 // TestIdentitySignWithBackend_NilBackend verifies that SignWithBackend falls
 // back to Sign (in-memory key) when no Backend is configured.
 func TestIdentitySignWithBackend_NilBackend(t *testing.T) {

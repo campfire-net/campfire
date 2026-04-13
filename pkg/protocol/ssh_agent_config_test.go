@@ -197,6 +197,88 @@ func TestSSHAgentBackend_SignVerify_ValidSignature(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_SSHAgent_SplitLayerSucceeds is a regression test for campfire-ca3:
+// fingerprint validation must NOT fire per-layer. When backend="ssh-agent" is set in
+// global config and fingerprint is set in project config, the global layer must NOT
+// fail even though at that point fingerprint="" in the intermediate merged state.
+// The validation must run only AFTER all layers are merged.
+//
+// Before the fix, mergeLayer fired validation on intermediate state, causing the
+// global layer (backend="ssh-agent", fingerprint="") to return an error even when
+// the project layer would have contributed the fingerprint. After the fix, LoadConfig
+// must succeed and return a Config with both fields populated.
+func TestLoadConfig_SSHAgent_SplitLayerSucceeds(t *testing.T) {
+	// Global config sets backend only.
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "config.toml")
+	if err := os.WriteFile(globalCfg, []byte(`[identity]
+backend = "ssh-agent"
+`), 0600); err != nil {
+		t.Fatalf("write global config: %v", err)
+	}
+
+	// Project config sets fingerprint only (via .cf/config.toml).
+	projectDir := t.TempDir()
+	cfDir := filepath.Join(projectDir, ".cf")
+	if err := os.MkdirAll(cfDir, 0700); err != nil {
+		t.Fatalf("mkdir .cf: %v", err)
+	}
+	projectCfg := filepath.Join(cfDir, "config.toml")
+	if err := os.WriteFile(projectCfg, []byte(`[identity]
+fingerprint = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+`), 0600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+
+	// LoadConfig must succeed — both backend and fingerprint are present in the
+	// final merged config (just from different layers). This is the regression
+	// check: before the fix, the global layer would error because fingerprint="" at
+	// the time mergeLayer ran for the global layer.
+	cfg, _, _, err := protocol.LoadConfig(globalDir, projectDir)
+	if err != nil {
+		t.Fatalf("regression campfire-ca3: LoadConfig returned error for valid split-layer config: %v", err)
+	}
+	if cfg.Identity.Backend != "ssh-agent" {
+		t.Errorf("expected backend=ssh-agent, got %q", cfg.Identity.Backend)
+	}
+	if cfg.Identity.Fingerprint == "" {
+		t.Errorf("expected fingerprint to be populated from project layer, got empty string")
+	}
+}
+
+// TestLoadConfig_SSHAgent_MissingFingerprintBothLayers verifies that when no layer
+// supplies a fingerprint, the post-cascade check fires correctly.
+func TestLoadConfig_SSHAgent_MissingFingerprintBothLayers(t *testing.T) {
+	// Global config sets backend, no fingerprint anywhere.
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "config.toml")
+	if err := os.WriteFile(globalCfg, []byte(`[identity]
+backend = "ssh-agent"
+`), 0600); err != nil {
+		t.Fatalf("write global config: %v", err)
+	}
+
+	// Project config with no identity settings.
+	projectDir := t.TempDir()
+	cfDir := filepath.Join(projectDir, ".cf")
+	if err := os.MkdirAll(cfDir, 0700); err != nil {
+		t.Fatalf("mkdir .cf: %v", err)
+	}
+	projectCfg := filepath.Join(cfDir, "config.toml")
+	if err := os.WriteFile(projectCfg, []byte(`[behavior]
+`), 0600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+
+	_, _, _, err := protocol.LoadConfig(globalDir, projectDir)
+	if err == nil {
+		t.Fatal("LoadConfig must return an error when no fingerprint is provided for ssh-agent backend")
+	}
+	if !sshContains(err.Error(), "fingerprint is required") {
+		t.Errorf("error should mention 'fingerprint is required', got: %q", err)
+	}
+}
+
 // sshContains is a simple substring helper for error message checks in ssh_agent tests.
 func sshContains(s, sub string) bool {
 	if len(sub) == 0 {
