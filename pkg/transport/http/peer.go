@@ -630,7 +630,7 @@ func RegisterOnRelay(relayURL string, cf *CampfireDescriptor, agentID *AgentDesc
 		return nil, fmt.Errorf("building create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	signRequestWithKey(req, agentID.PublicKeyHex, agentID.PrivateKey, bodyBytes)
+	signRequestWithAgent(req, agentID, bodyBytes)
 
 	resp, err := relayClient.Do(req)
 	if err != nil {
@@ -665,23 +665,37 @@ type CampfireDescriptor struct {
 type AgentDescriptor struct {
 	PublicKeyHex string
 	PrivateKey   []byte
+	// Signer is an optional signing function. When set, it is used instead of
+	// ed25519.Sign(PrivateKey, ...) so that callers with a backend (e.g. SSH
+	// agent) route all signing through that backend. If nil, PrivateKey is used
+	// directly (backward-compatible default for callers without a backend).
+	Signer func([]byte) ([]byte, error)
 }
 
-// signRequestWithKey is like signRequest but takes raw key bytes instead of
-// an identity.Identity, to avoid the circular import between pkg/transport/http
-// and pkg/identity.
-func signRequestWithKey(req *http.Request, pubKeyHex string, privKey []byte, body []byte) {
+// signRequestWithAgent signs a relay request using the AgentDescriptor's Signer
+// when available, falling back to direct ed25519.Sign(PrivateKey) when not.
+func signRequestWithAgent(req *http.Request, agentID *AgentDescriptor, body []byte) {
 	nonceBytes := make([]byte, 16)
 	if _, err := randRead(nonceBytes); err != nil {
-		panic("signRequestWithKey: rand.Read failed: " + err.Error())
+		panic("signRequestWithAgent: rand.Read failed: " + err.Error())
 	}
 	nonce := hex.EncodeToString(nonceBytes)
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
 	signedPayload := buildSignedPayload(timestamp, nonce, body)
-	sig := ed25519.Sign(privKey, signedPayload)
 
-	req.Header.Set("X-Campfire-Sender", pubKeyHex)
+	var sig []byte
+	if agentID.Signer != nil {
+		var err error
+		sig, err = agentID.Signer(signedPayload)
+		if err != nil {
+			panic("signRequestWithAgent: signing failed: " + err.Error())
+		}
+	} else {
+		sig = ed25519.Sign(agentID.PrivateKey, signedPayload)
+	}
+
+	req.Header.Set("X-Campfire-Sender", agentID.PublicKeyHex)
 	req.Header.Set("X-Campfire-Nonce", nonce)
 	req.Header.Set("X-Campfire-Timestamp", timestamp)
 	req.Header.Set("X-Campfire-Signature", base64.StdEncoding.EncodeToString(sig))

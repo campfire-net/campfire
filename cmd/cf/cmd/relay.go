@@ -47,6 +47,7 @@ func registerOnRelay(cf *campfire.Campfire, agentID *identity.Identity, s store.
 	agentDesc := &cfhttp.AgentDescriptor{
 		PublicKeyHex: agentID.PublicKeyHex(),
 		PrivateKey:   agentID.PrivateKey,
+		Signer:       agentID.NewSigner().Sign,
 	}
 
 	// Register on relay (fetch relay-info + POST /campfire/create).
