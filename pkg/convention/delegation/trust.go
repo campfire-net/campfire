@@ -352,6 +352,20 @@ func buildRevokedSet(revokeMessages []protocol.Message, childHex string) func(pa
 	// 9a: Normalize childPubkey case in revoke payloads (campfire-f37).
 	parentRevokes := make(map[string][]int64)
 	for _, msg := range revokeMessages {
+		// campfire-c62: Verify the revocation message signature before trusting
+		// msg.Sender. An attacker who can write directly to the filesystem
+		// transport can inject revocation messages with a forged Sender field.
+		// protoMsgToRaw converts the hex-Sender protocol.Message back to a
+		// []byte-Sender message.Message so VerifySignature can check the Ed25519
+		// signature over the canonical wire payload.
+		rawMsg, err := protoMsgToRaw(msg)
+		if err != nil {
+			continue // malformed sender hex — skip
+		}
+		if !rawMsg.VerifySignature() {
+			continue // invalid signature — skip forged revocation
+		}
+
 		var rp revokePayload
 		if err := json.Unmarshal(msg.Payload, &rp); err != nil {
 			continue

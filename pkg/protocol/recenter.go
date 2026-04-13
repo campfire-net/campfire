@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -89,7 +90,15 @@ func (c *Client) maybeRecenter(configDir string) error {
 
 // isAlreadyLinked checks whether the current context key already has a
 // delegation cert in the center campfire. A delegation cert is a message
-// with tag "delegation-cert" where the payload contains this key's hex.
+// with tag "delegation-cert" where the payload contains this key's hex,
+// and both signatures (CenterSig and NewKeySig) verify against the canonical
+// payload.
+//
+// campfire-8dd: The previous implementation returned true when NewKeyHex
+// matched without verifying either signature. An attacker who can write
+// directly to the filesystem transport could inject a delegation-cert with
+// any NewKeyHex value, causing isAlreadyLinked to suppress the authorize
+// hook and prevent legitimate recentering.
 func (c *Client) isAlreadyLinked(centerID string) bool {
 	result, err := c.Read(ReadRequest{
 		CampfireID: centerID,
@@ -105,11 +114,47 @@ func (c *Client) isAlreadyLinked(centerID string) bool {
 		if err := json.Unmarshal(msg.Payload, &claim); err != nil {
 			continue
 		}
-		if claim.NewKeyHex == myKeyHex {
-			return true
+		if claim.NewKeyHex != myKeyHex {
+			continue
 		}
+		// campfire-8dd: Verify both signatures before accepting the claim.
+		// A forged claim with the right NewKeyHex but invalid signatures must
+		// not suppress the authorize hook.
+		canonicalPayload := RecenterCanonicalPayload(claim.NewKeyHex, claim.CenterID)
+
+		// Decode and verify center key signature.
+		centerPubKey, err := hexDecodePublicKey(centerID)
+		if err != nil {
+			continue // malformed center ID — skip
+		}
+		if !ed25519.Verify(centerPubKey, canonicalPayload, claim.CenterSig) {
+			continue // invalid center signature — skip forged claim
+		}
+
+		// Decode and verify new key signature.
+		newPubKey, err := hexDecodePublicKey(claim.NewKeyHex)
+		if err != nil {
+			continue // malformed new key — skip
+		}
+		if !ed25519.Verify(newPubKey, canonicalPayload, claim.NewKeySig) {
+			continue // invalid new key signature — skip forged claim
+		}
+
+		return true
 	}
 	return false
+}
+
+// hexDecodePublicKey decodes a hex-encoded ed25519 public key string.
+func hexDecodePublicKey(hexStr string) (ed25519.PublicKey, error) {
+	b, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid public key length: %d", len(b))
+	}
+	return ed25519.PublicKey(b), nil
 }
 
 // postRecenterClaim creates and posts a two-signature claim to the center
