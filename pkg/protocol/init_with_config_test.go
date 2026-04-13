@@ -50,14 +50,7 @@ func TestInitWithConfig_GlobalConfig(t *testing.T) {
 	// Isolate from real config cascade: chdir to a temp dir so ancestor walk
 	// doesn't pick up .cf/config.toml files from the real working directory
 	// (which may contain auto_join beacons that cause Init to hang).
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(origDir) }) //nolint:errcheck
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(t.TempDir())
 
 	globalDir := t.TempDir()
 
@@ -107,16 +100,8 @@ func TestInitWithConfig_NoConfig(t *testing.T) {
 	// Use an empty directory as globalDir — no config.toml present.
 	globalDir := t.TempDir()
 
-	// Isolate from real config cascade: chdir to a temp dir so ancestor walk
-	// doesn't pick up .cf/config.toml files from the real working directory.
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(origDir) }) //nolint:errcheck
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	// Isolate from real config cascade.
+	t.Chdir(t.TempDir())
 
 	client, result, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
 	if err != nil {
@@ -151,6 +136,7 @@ func TestInitWithConfig_NoConfig(t *testing.T) {
 // identity.file, InitResult.IdentitySource is set to "config".
 func TestInitWithConfig_IdentityFromConfig(t *testing.T) {
 	globalDir := t.TempDir()
+	t.Chdir(globalDir) // Isolate from ancestor .cf/config.toml auto_join beacons.
 
 	// Write a global config that sets identity.file explicitly.
 	writeInitConfigFile(t,
@@ -187,14 +173,7 @@ func TestInitWithConfig_AutoJoined(t *testing.T) {
 	globalDir := t.TempDir()
 
 	// Isolate from real config cascade.
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(origDir) }) //nolint:errcheck
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(t.TempDir())
 
 	// Use a well-formed hex campfire ID that won't be reachable.
 	// InitWithConfig should attempt auto-join, fail, and record a warning.
@@ -273,14 +252,7 @@ endpoint = "`+projectEndpoint+`"
 	globalDir := t.TempDir()
 
 	// Change CWD to the project dir — InitWithConfig uses os.Getwd() for cascade walk.
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(origDir) }) //nolint:errcheck
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("chdir %s: %v", projectDir, err)
-	}
+	t.Chdir(projectDir)
 
 	// Call InitWithConfig with WithConfigDir pointing to the empty global dir.
 	// The cascade walk should discover projectDir/.cf/config.toml via CWD.
@@ -316,6 +288,7 @@ endpoint = "`+projectEndpoint+`"
 // the config files examined during the cascade, including their source labels.
 func TestInitWithConfig_ConfigLayers(t *testing.T) {
 	globalDir := t.TempDir()
+	t.Chdir(globalDir) // Isolate from ancestor .cf/config.toml auto_join beacons.
 
 	// Write a global config file.
 	writeInitConfigFile(t,
@@ -422,6 +395,9 @@ func TestInitWithConfig_AutoJoin_Success(t *testing.T) {
 		`[behavior]
 auto_join = ["`+beaconStr+`"]
 `)
+	// Isolate from ancestor .cf/config.toml which may contain dozens of
+	// auto_join beacons that hang the test trying to sync stale campfires.
+	t.Chdir(globalDir)
 
 	client, result, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
 	if err != nil {
@@ -472,6 +448,8 @@ func TestInitWithConfig_AutoJoin_AlreadyMember(t *testing.T) {
 		`[behavior]
 auto_join = ["`+beaconStr+`"]
 `)
+	// Isolate from ancestor .cf/config.toml (same reason as AutoJoin_Success).
+	t.Chdir(globalDir)
 
 	// First InitWithConfig: should join.
 	client1, result1, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
@@ -520,6 +498,7 @@ func TestInitWithConfig_PresentAs(t *testing.T) {
 	presentAsID := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 
 	globalDir := t.TempDir()
+	t.Chdir(globalDir) // Isolate from ancestor .cf/config.toml auto_join beacons.
 	writeInitConfigFile(t,
 		filepath.Join(globalDir, "config.toml"),
 		`[identity]
@@ -549,6 +528,7 @@ func TestInitWithConfig_PresentAs_CallerOverrides(t *testing.T) {
 	callerID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 	globalDir := t.TempDir()
+	t.Chdir(globalDir) // Isolate from ancestor .cf/config.toml auto_join beacons.
 	writeInitConfigFile(t,
 		filepath.Join(globalDir, "config.toml"),
 		`[identity]
@@ -579,14 +559,7 @@ present_as = "`+configID+`"
 // the auto-join entry is silently skipped without attempting a join.
 func TestInitWithConfig_AutoJoin_AlreadyMember_PreSeeded(t *testing.T) {
 	// Isolate from real config cascade.
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(origDir) }) //nolint:errcheck
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(t.TempDir())
 
 	_, _, baseDir := makeFilesystemBeaconString(t)
 
@@ -653,6 +626,8 @@ auto_join = ["`+campfireID+`"]
 // it contains 'cf join' instructions so the user knows what to do next.
 func TestInitWithConfig_AutoJoin_FailureWarning(t *testing.T) {
 	globalDir := t.TempDir()
+	// Isolate from ancestor .cf/config.toml (same reason as AutoJoin_Success).
+	t.Chdir(globalDir)
 
 	// Use a well-formed hex campfire ID that won't be reachable.
 	// InitWithConfig should attempt auto-join, fail, and produce an actionable warning.
@@ -714,6 +689,10 @@ auto_join = ["`+fakeCampfireID+`"]
 func TestInitWithConfig_CFHomeEnv(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CF_HOME", dir)
+	// Change into the temp dir so the config cascade does not discover the
+	// project's .cf/config.toml (which may contain dozens of auto_join beacons
+	// that hang the test trying to sync stale campfires).
+	t.Chdir(dir)
 
 	// No WithConfigDir — resolveGlobalDir must fall back to CF_HOME.
 	client, result, err := protocol.InitWithConfig()
