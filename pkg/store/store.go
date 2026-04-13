@@ -820,6 +820,7 @@ type MessageFilter struct {
 	Sender             string
 	RespectCompaction  bool
 	AfterReceivedAt    int64 // if > 0, overrides afterTimestamp; filters by received_at
+	Reverse            bool  // if true, return messages in descending timestamp order (newest-first)
 }
 
 // ListMessages returns messages for a campfire, ordered by timestamp.
@@ -897,8 +898,12 @@ func (s *SQLiteStore) ListMessages(campfireID string, afterTimestamp int64, filt
 		args = append(args, escapedSender)
 	}
 
+	orderDir := "ASC"
+	if f.Reverse {
+		orderDir = "DESC"
+	}
 	query := `SELECT id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance, sender_campfire_id
-	          FROM messages WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY timestamp`
+	          FROM messages WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY timestamp ` + orderDir
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {

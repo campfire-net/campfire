@@ -55,6 +55,12 @@ type ReadRequest struct {
 
 	// Limit caps the number of returned messages. 0 means no limit.
 	Limit int
+
+	// Reverse requests messages in descending timestamp order (newest-first).
+	// When combined with Limit, this returns the newest Limit messages rather
+	// than the oldest. Useful when a caller needs the most-recent records and
+	// cannot afford to read the entire history (e.g. grant flood mitigation).
+	Reverse bool
 }
 
 // ReadResult is the return value from a Read operation.
@@ -134,6 +140,7 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 		ExcludeTagPrefixes: req.ExcludeTagPrefixes,
 		Sender:             req.Sender,
 		RespectCompaction:  !req.IncludeCompacted,
+		Reverse:            req.Reverse,
 	}
 
 	msgs, err := c.store.ListMessages(req.CampfireID, req.AfterTimestamp, f)
