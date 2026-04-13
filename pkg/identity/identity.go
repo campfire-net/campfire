@@ -191,10 +191,23 @@ func Exists(path string) bool {
 	return err == nil
 }
 
-// Sign signs the given message with the identity's private key.
-// This is the backward-compatible form — always uses the in-memory private key.
-// For root identities that may have a Backend configured, use SignWithBackend.
+// Sign signs the given message with the identity's signing key.
+// When a Backend is configured (e.g. SSHAgentBackend), signing is delegated to
+// it so that the raw private key is never used directly. Falls back to
+// ed25519.Sign(PrivateKey, ...) when no backend is set.
+//
+// Callers that need an error-returning form should use SignWithBackend directly.
+// Sign panics on backend failure to preserve the []byte return signature used
+// throughout the codebase (same failure mode as the previous unconditional
+// ed25519.Sign call).
 func (id *Identity) Sign(message []byte) []byte {
+	if id.backend != nil {
+		sig, err := id.backend.Sign(message)
+		if err != nil {
+			panic("identity.Sign: backend signing failed: " + err.Error())
+		}
+		return sig
+	}
 	return ed25519.Sign(id.PrivateKey, message)
 }
 
