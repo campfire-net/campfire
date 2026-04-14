@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.19.1 — ssh-agent signing completeness + signature verification (2026-04-14)
+
+Follow-up security hardening from v0.19.0 review/sweep findings. All signing paths now route through the backend when configured. Signature verification added to previously unverified read paths.
+
+### Security
+
+- **Signature verification on revocation read path**: `buildRevokedSet` now calls `VerifySignature()` on each revocation message before trusting `msg.Sender`. Forged revocations injected via filesystem transport are silently skipped. (campfire-c62)
+- **Signature verification on recenter claims**: `isAlreadyLinked` now verifies both `CenterSig` and `NewKeySig` on `RecenterClaim` payloads. Forged `delegation-cert` messages can no longer suppress the authorize hook. (campfire-8dd)
+- **RegisterOnRelay routes through backend**: Added `Signer` func field to `AgentDescriptor`. Relay registration now uses `NewSigner().Sign` instead of extracting raw `PrivateKey`. (campfire-fc9)
+- **Identity.Sign() delegates to backend**: When a `SigningBackend` is configured, `Sign()` now routes through it. All callers get backend signing automatically — no more silent fallback to in-memory keys. (campfire-fc9)
+- **Init key mismatch check**: `protocol.Init` now verifies `sshBackend.PublicKey() == id.PublicKey` before proceeding. Returns a clear error on mismatch and closes the socket. (campfire-ca5)
+
+### Bug Fixes
+
+- **SSH-agent signing completeness**: `signRequest` in HTTP transport now calls `SignWithBackend` instead of `Sign`. Session token `EncodeToken` accepts a `CreatorSigner` interface (backward-compatible fallback to `CreatorPriv`). Five CLI call sites migrated from `NewEd25519Signer(PrivateKey)` to `NewSigner()`. (campfire-997, campfire-f32, campfire-f25)
+- **Socket leak in Init**: `NewSSHAgentBackend()` socket is now closed on `store.Open` failure and key mismatch. (campfire-76b)
+- **InitWithConfig test isolation**: All `InitWithConfig` tests now use `t.Chdir()` to isolate from ancestor `.cf/config.toml` auto-join beacons that caused 600s test timeouts.
+
+### Cleanup
+
+- **Deleted `SSHAgentBackendFromKeyring`**: Panic-prone exported function with nil `agentClient` removed. Superseded by `NewSSHAgentBackendFromKeyring`. (campfire-2a4)
+- **Deleted `resolveRelayFromConfig`**: Defined and tested but never called in production. (campfire-64c)
+- **Unexported `Identity.Backend`**: Changed to `backend` with `SetBackend()`/`HasBackend()` accessors. Prevents direct mutation of the signing backend. (campfire-803)
+
 ## v0.19.0 — trust delegation hardening (2026-04-13)
 
 Security hardening, ssh-agent signing backend, and code quality fixes for the identity delegation system. 7 PRs, 48 demo assertions passing.
