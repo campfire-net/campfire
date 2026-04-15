@@ -108,12 +108,26 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 		return nil, err
 	}
 
+	// Membership enforcement (campfire-2fc). A non-member must get a typed error,
+	// not a silent empty result. Without this gate, a caller probing a campfire
+	// they are not admitted to sees the same shape as an empty campfire —
+	// masking auth bugs at development time and hiding failure modes at runtime.
+	// The filesystem-transport bypass (a sibling process reading messages
+	// directly off disk) is a separate architectural question (campfire-894);
+	// this gate closes the SDK-level surface, nothing more.
+	m, err := c.store.GetMembership(req.CampfireID)
+	if err != nil {
+		return nil, fmt.Errorf("protocol.Client.Read: querying membership: %w", err)
+	}
+	if m == nil {
+		return nil, &ErrNotMember{CampfireID: req.CampfireID}
+	}
+
 	// For p2p-http campfires where the caller is a CLI client (not the hosted
 	// server), read directly from the relay — the relay is the store. No local
 	// copy, no sync, no cursor mismatch between clock domains. Skip when
 	// SkipSync is set (the MCP server path) since the server IS the relay.
-	m, _ := c.store.GetMembership(req.CampfireID)
-	if m != nil && transport.ResolveType(*m) == transport.TypePeerHTTP && !req.SkipSync && c.syncer != nil {
+	if transport.ResolveType(*m) == transport.TypePeerHTTP && !req.SkipSync && c.syncer != nil {
 		result, err := c.readFromHTTPPeers(req, m)
 		if err != nil {
 			log.Printf("campfire: relay read(%s): %v — falling back to local store", req.CampfireID, err)

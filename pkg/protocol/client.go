@@ -241,7 +241,7 @@ func (c *Client) Send(req SendRequest) (*message.Message, error) {
 		return nil, fmt.Errorf("querying membership: %w", err)
 	}
 	if m == nil {
-		return nil, fmt.Errorf("not a member of campfire %s", shortID(req.CampfireID))
+		return nil, &ErrNotMember{CampfireID: req.CampfireID}
 	}
 
 	if err := checkRoleCanSend(m.Role, req.Tags); err != nil {

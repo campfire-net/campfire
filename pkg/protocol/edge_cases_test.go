@@ -542,3 +542,128 @@ func TestEvict_MissingMemberPubKeyHex(t *testing.T) {
 		t.Fatal("Evict with empty MemberPubKeyHex: expected error, got nil")
 	}
 }
+
+// --- Read/Send/Subscribe membership enforcement (campfire-2fc) ---
+//
+// These tests assert that protocol.Client.Read, Send, and Subscribe return
+// *ErrNotMember when the caller is not a member of the target campfire.
+// Before the fix, Read returned a silent empty ReadResult (no error), Send
+// returned a stringly-typed error that did not satisfy IsNotMemberError, and
+// Subscribe had no membership check at all (subscribers polled forever against
+// an empty local store).
+//
+// The fix closes the silent-failure surface so auth bugs trip loudly in tests
+// and at runtime. The filesystem-transport bypass (a sibling process reading
+// /tmp/cf-session-*/messages/*.cbor directly via fs.ForDir) is a separate
+// architectural question tracked in campfire-894 — out of scope for this fix.
+
+// TestRead_NotMember_ReturnsErrNotMember verifies that Client.Read returns
+// *ErrNotMember when the caller has no membership record for the target
+// campfire, rather than silently returning an empty ReadResult.
+func TestRead_NotMember_ReturnsErrNotMember(t *testing.T) {
+	client := newJoinClient(t)
+
+	// A well-formed campfire ID that the client has never joined.
+	unknownID := strings.Repeat("a", 64)
+	result, err := client.Read(protocol.ReadRequest{CampfireID: unknownID})
+	if err == nil {
+		t.Fatalf("Read on non-member campfire: expected error, got nil (result=%+v)", result)
+	}
+	if result != nil {
+		t.Errorf("Read on non-member campfire: expected nil result, got %+v", result)
+	}
+	var notMember *protocol.ErrNotMember
+	if !protocol.IsNotMemberError(err, &notMember) {
+		t.Fatalf("Read on non-member campfire: expected *ErrNotMember, got: %T %v", err, err)
+	}
+	if notMember.CampfireID != unknownID {
+		t.Errorf("ErrNotMember.CampfireID = %q, want %q", notMember.CampfireID, unknownID)
+	}
+}
+
+// TestRead_Member_StillWorks is a regression check: the membership gate added
+// by the fix must not break reads for legitimate members.
+func TestRead_Member_StillWorks(t *testing.T) {
+	client := newJoinClient(t)
+	campfireID, _ := createFSCampfire(t, client, "open")
+
+	want := "hello from a member"
+	_, err := client.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte(want),
+		Tags:       []string{"status"},
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	result, err := client.Read(protocol.ReadRequest{CampfireID: campfireID})
+	if err != nil {
+		t.Fatalf("Read as member: unexpected error: %v", err)
+	}
+	assertContainsPayload(t, result.Messages, want, "Read as member")
+}
+
+// TestSend_NotMember_ReturnsErrNotMember verifies that Client.Send returns
+// *ErrNotMember (not a stringly-typed error) when the caller is not a member
+// of the target campfire. IsNotMemberError must return true.
+func TestSend_NotMember_ReturnsErrNotMember(t *testing.T) {
+	client := newJoinClient(t)
+
+	unknownID := strings.Repeat("b", 64)
+	_, err := client.Send(protocol.SendRequest{
+		CampfireID: unknownID,
+		Payload:    []byte("should not be sendable"),
+		Tags:       []string{"status"},
+	})
+	if err == nil {
+		t.Fatal("Send on non-member campfire: expected error, got nil")
+	}
+	var notMember *protocol.ErrNotMember
+	if !protocol.IsNotMemberError(err, &notMember) {
+		t.Fatalf("Send on non-member campfire: expected *ErrNotMember, got: %T %v", err, err)
+	}
+	if notMember.CampfireID != unknownID {
+		t.Errorf("ErrNotMember.CampfireID = %q, want %q", notMember.CampfireID, unknownID)
+	}
+}
+
+// TestSubscribe_NotMember_SurfacesErrNotMember verifies that Client.Subscribe
+// surfaces *ErrNotMember via Subscription.Err() and closes the Messages channel
+// when the caller has no membership. Before the fix, Subscribe polled forever
+// against an empty local store with no signal.
+func TestSubscribe_NotMember_SurfacesErrNotMember(t *testing.T) {
+	client := newJoinClient(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	unknownID := strings.Repeat("c", 64)
+	sub := client.Subscribe(ctx, protocol.SubscribeRequest{
+		CampfireID:   unknownID,
+		PollInterval: 30 * time.Millisecond,
+	})
+
+	// Messages channel must close (the subscription terminates cleanly).
+	select {
+	case msg, ok := <-sub.Messages():
+		if ok {
+			t.Fatalf("Subscribe on non-member campfire: unexpected message delivered: %+v", msg)
+		}
+		// ok == false means closed — good.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe on non-member campfire: channel did not close within 2s")
+	}
+
+	err := sub.Err()
+	if err == nil {
+		t.Fatal("Subscribe on non-member campfire: Err() returned nil, expected *ErrNotMember")
+	}
+	var notMember *protocol.ErrNotMember
+	if !protocol.IsNotMemberError(err, &notMember) {
+		t.Fatalf("Subscribe on non-member campfire: expected *ErrNotMember via Err(), got: %T %v", err, err)
+	}
+	if notMember.CampfireID != unknownID {
+		t.Errorf("ErrNotMember.CampfireID = %q, want %q", notMember.CampfireID, unknownID)
+	}
+}
