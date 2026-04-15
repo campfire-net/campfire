@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.19.2 — membership enforcement on Read/Send/Subscribe (2026-04-15)
+
+Closes the silent-failure surface where non-members could call `Client.Read`
+and receive an empty `ReadResult` with no error signal. Source: adversarial
+veracity test in the legion repo (`cmd/we/membership_boundary_e2e_test.go`
+commit `7323fc4`) documenting DEFECT-3.
+
+### Security
+
+- **`Client.Read` enforces membership**: a caller with no membership record
+  for the target campfire now gets `*ErrNotMember` instead of a silent empty
+  result. The gate runs after the scope/operation checks and before any
+  sync or store query. (campfire-2fc)
+- **`Client.Send` uses typed `*ErrNotMember`**: replaces the stringly-typed
+  `fmt.Errorf("not a member of campfire %s", …)`. `IsNotMemberError` now
+  returns true for Send non-member errors, matching `Members`, `Leave`, and
+  the new `Read` behavior. (campfire-2fc)
+- **`Client.Subscribe` surfaces `*ErrNotMember`**: the subscription goroutine
+  polls via `Read`, so the new Read error propagates through
+  `Subscription.Err()` and closes the channel instead of polling forever
+  against an empty local store. (campfire-2fc)
+
+### Known limitations carried forward
+
+- The filesystem transport at `pkg/transport/fs` still allows any process
+  with read access to the campfire directory to call `fs.ForDir(...)` and
+  bypass the SDK entirely. This is the same-host trust assumption
+  documented in legion's `docs/design/constellation-private-tools-convention.md`
+  §Risks #7. The architectural question — whether campfire should offer a
+  mutually-untrusted-same-host transport — is tracked in campfire-894 and
+  is out of scope for this patch release.
+
 ## v0.19.1 — ssh-agent signing completeness + signature verification (2026-04-14)
 
 Follow-up security hardening from v0.19.0 review/sweep findings. All signing paths now route through the backend when configured. Signature verification added to previously unverified read paths.
