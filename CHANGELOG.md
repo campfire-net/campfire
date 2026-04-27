@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.19.3 — InvalidInput Outcome variant in trust resolution (2026-04-27)
+
+Resolves a long-standing type confusion in `delegation.Resolve`: malformed
+`campfireID` input (empty or wrong length) was returned as `InvalidGrant`,
+which semantically means "a grant message was found but failed validation."
+Callers switching on `Outcome` to diagnose failures could surface "invalid
+grant" messages for what is really a caller programming error. (campfireagent-8a7)
+
+### API
+
+- **New `Outcome` variant `InvalidInput`** in `pkg/convention/delegation`.
+  Returned by `Resolve` when `campfireID` is empty or not exactly
+  `ed25519.PublicKeySize` bytes. Carries the same descriptive `Err` as
+  before — only the wrapping type changed.
+- **`InvalidGrant` is no longer returned for input errors.** Existing
+  `case delegation.InvalidGrant:` arms continue to handle real grant
+  validation failures (signature, campfire_id mismatch, expired, ceiling
+  violated, malformed payload) — those paths are unchanged.
+- **CLI: `cf trust resolve` distinguishes the two cases.** Both the human
+  and JSON output paths emit a separate `InvalidInput` status with a
+  "malformed campfire ID" message, distinct from the `InvalidGrant`
+  message about a bad grant in the chain.
+
+### Compatibility
+
+Adding a variant to the sealed `Outcome` interface is additive for callers
+using non-exhaustive type switches with a `default` clause. Callers using
+exhaustive switches (the only one in-tree was `cmd/cf/cmd/trust_resolve.go`,
+updated in this release) will see a missing-case warning and should add an
+`InvalidInput` arm.
+
 ## v0.19.2 — membership enforcement on Read/Send/Subscribe (2026-04-15)
 
 Closes the silent-failure surface where non-members could call `Client.Read`
