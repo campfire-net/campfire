@@ -758,24 +758,25 @@ func TestFindValidGrant_SingleRevokeRead(t *testing.T) {
 }
 
 // TestResolve_EmptyCampfireID verifies that Resolve rejects an empty campfireID
-// (9c: campfireID length validation, campfire-13b).
+// as InvalidInput (9c: campfireID length validation, campfire-13b; campfireagent-8a7).
 func TestResolve_EmptyCampfireID(t *testing.T) {
 	env := newTrustTestEnv(t, 1)
 	ctx := context.Background()
 
 	out := delegation.Resolve(ctx, env.clients[0], []byte{}, env.pubkey(0), env.anchors(0))
 
-	ig, ok := out.(delegation.InvalidGrant)
+	ii, ok := out.(delegation.InvalidInput)
 	if !ok {
-		t.Fatalf("expected InvalidGrant for empty campfireID, got %T: %+v", out, out)
+		t.Fatalf("expected InvalidInput for empty campfireID, got %T: %+v", out, out)
 	}
-	if ig.Err == nil {
-		t.Error("expected non-nil Err in InvalidGrant")
+	if ii.Err == nil {
+		t.Error("expected non-nil Err in InvalidInput")
 	}
 }
 
 // TestResolve_ShortCampfireID verifies that Resolve rejects a campfireID that is
-// shorter than 32 bytes (9c: campfireID length validation, campfire-13b).
+// shorter than 32 bytes as InvalidInput (9c: campfireID length validation,
+// campfire-13b; campfireagent-8a7).
 func TestResolve_ShortCampfireID(t *testing.T) {
 	env := newTrustTestEnv(t, 1)
 	ctx := context.Background()
@@ -784,12 +785,12 @@ func TestResolve_ShortCampfireID(t *testing.T) {
 
 	out := delegation.Resolve(ctx, env.clients[0], shortID, env.pubkey(0), env.anchors(0))
 
-	ig, ok := out.(delegation.InvalidGrant)
+	ii, ok := out.(delegation.InvalidInput)
 	if !ok {
-		t.Fatalf("expected InvalidGrant for short campfireID, got %T: %+v", out, out)
+		t.Fatalf("expected InvalidInput for short campfireID, got %T: %+v", out, out)
 	}
-	if ig.Err == nil {
-		t.Error("expected non-nil Err in InvalidGrant")
+	if ii.Err == nil {
+		t.Error("expected non-nil Err in InvalidInput")
 	}
 }
 
@@ -975,6 +976,13 @@ func TestOutcome_InterfaceSatisfied(t *testing.T) {
 	o = invalidGrant
 	if o == nil {
 		t.Error("InvalidGrant should satisfy Outcome interface")
+	}
+
+	// Test InvalidInput.
+	invalidInput := delegation.InvalidInput{}
+	o = invalidInput
+	if o == nil {
+		t.Error("InvalidInput should satisfy Outcome interface")
 	}
 
 	// Test DepthExceeded.

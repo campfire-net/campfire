@@ -66,7 +66,8 @@ type GrantInfo struct {
 }
 
 // Outcome is the sealed interface returned by Resolve.
-// Callers switch on the concrete type: Resolved, DeadEnd, InvalidGrant, DepthExceeded.
+// Callers switch on the concrete type: Resolved, DeadEnd, InvalidGrant,
+// InvalidInput, DepthExceeded, ReadError.
 type Outcome interface{ outcome() }
 
 // Resolved means the sender traces back to a trust anchor via a valid,
@@ -99,6 +100,16 @@ type InvalidGrant struct {
 	Err error
 }
 
+// InvalidInput means Resolve was called with a malformed argument — the
+// campfireID is empty or not exactly ed25519.PublicKeySize bytes. This is a
+// caller programming error, not a property of the trust log; it is returned as
+// a distinct Outcome so callers do not surface "invalid grant" messages for
+// bad input (campfire-13b length validation paths).
+type InvalidInput struct {
+	// Err describes which input was malformed and how.
+	Err error
+}
+
 // DepthExceeded means the walk hit MaxChainDepth without reaching a trust anchor.
 // This indicates a pathological or cyclic delegation chain.
 type DepthExceeded struct {
@@ -125,6 +136,7 @@ type ReadError struct {
 func (Resolved) outcome()      {}
 func (DeadEnd) outcome()       {}
 func (InvalidGrant) outcome()  {}
+func (InvalidInput) outcome()  {}
 func (DepthExceeded) outcome() {}
 func (ReadError) outcome()     {}
 
@@ -150,7 +162,7 @@ type grantCandidate struct {
 // anchors is the list of trusted anchor pubkeys; if sender is in this list,
 // Resolved is returned immediately with an empty chain.
 //
-// Returns one of: Resolved, DeadEnd, InvalidGrant, DepthExceeded.
+// Returns one of: Resolved, DeadEnd, InvalidGrant, InvalidInput, DepthExceeded, ReadError.
 func Resolve(
 	_ context.Context,
 	client *protocol.Client,
@@ -160,12 +172,14 @@ func Resolve(
 ) Outcome {
 	// 9c: Validate campfireID length before use. An empty or short campfireID
 	// would produce a malformed hex string that silently matches nothing or
-	// produces wrong-length keys (campfire-13b).
+	// produces wrong-length keys (campfire-13b). Returned as InvalidInput
+	// (not InvalidGrant) — this is a caller programming error, distinct from
+	// "a grant message failed validation."
 	if len(campfireID) == 0 {
-		return InvalidGrant{Err: errors.New("campfireID is empty")}
+		return InvalidInput{Err: errors.New("campfireID is empty")}
 	}
 	if len(campfireID) != ed25519.PublicKeySize {
-		return InvalidGrant{Err: fmt.Errorf("campfireID must be %d bytes, got %d", ed25519.PublicKeySize, len(campfireID))}
+		return InvalidInput{Err: fmt.Errorf("campfireID must be %d bytes, got %d", ed25519.PublicKeySize, len(campfireID))}
 	}
 
 	campfireHex := hex.EncodeToString(campfireID)

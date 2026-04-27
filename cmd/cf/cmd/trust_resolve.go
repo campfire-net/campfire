@@ -128,6 +128,11 @@ func printResolveHuman(outcome delegation.Outcome, campfireID, senderArg string)
 		}
 		os.Exit(1)
 
+	case delegation.InvalidInput:
+		fmt.Printf("InvalidInput: malformed campfire ID\n")
+		fmt.Printf("  Error: %v\n", o.Err)
+		os.Exit(1)
+
 	case delegation.DepthExceeded:
 		fmt.Printf("DepthExceeded: chain for %s exceeded maximum depth in campfire %s\n", short(senderArg), short(campfireID))
 		fmt.Printf("  Walked %d hop(s) without reaching a trust anchor.\n", len(o.Chain))
@@ -191,6 +196,12 @@ func printResolveJSON(outcome delegation.Outcome, campfireID, senderArg string) 
 		}
 		if o.BadGrant != nil {
 			r.BadGrant = o.BadGrant.ID
+		}
+		exitCode = 1
+	case delegation.InvalidInput:
+		r.Status = "InvalidInput"
+		if o.Err != nil {
+			r.Error = o.Err.Error()
 		}
 		exitCode = 1
 	case delegation.DepthExceeded:
