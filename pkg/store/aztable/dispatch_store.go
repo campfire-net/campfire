@@ -530,6 +530,15 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 		}
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: get: %w", err)
 	}
+	// Stale-ETag check: compare callerETag against the current ETag from Azure.
+	// We do this in-process rather than relying solely on IfMatch in UpdateEntity
+	// because Azurite does not reliably enforce IfMatch on UpdateEntity — letting
+	// stale writes succeed in the emulator.
+	if string(resp.ETag) != callerETag {
+		return fmt.Errorf("%w: stale ETag on %s/%s (caller=%q server=%q)",
+			convention.ErrConcurrentModification, campfireID, messageID, callerETag, resp.ETag)
+	}
+
 	var current map[string]any
 	if err := json.Unmarshal(resp.Value, &current); err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: unmarshal: %w", err)
