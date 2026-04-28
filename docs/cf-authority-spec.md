@@ -26,6 +26,43 @@ different canonical form lose signature validity.
 
 ---
 
+## §0 — Delegation Extent Invariant
+
+**Invariant:** An owner may delegate any action scope they hold. No one may delegate
+identity. Reserved ops cap at depth 1.
+
+This invariant establishes the outer boundary of what the delegation system can express.
+Three sub-claims compose it, each independently enforced:
+
+**Sub-claim (a) — scope delegation:** An owner holds a set of action scopes rooted in
+their ownership relation to a campfire. They may delegate any action scope they hold
+downward in the chain. The system places no floor on what an owner may share — only a
+ceiling on what a delegate may claim (see §1.5 for scope intersection rules; see D6
+clamping order in `0.30-deal-breakers.md`).
+
+**Sub-claim (b) — identity is not delegable:** Identity — the binding between an Ed25519
+key and the authorization flows anchored to it — is not a scope and cannot appear in any
+grant payload. No one may delegate identity. An agent may receive action scopes, but the
+chain root's identity cannot be laundered through a delegate. The `chain_to` predicate
+enforces this structurally: it anchors to a 32-byte Ed25519 public key, not to a claimed
+identity string; there is no wire-level mechanism for an intermediate to present itself as
+the root. Attempts to construct a chain that re-roots authority in a delegated key are
+defeated by the chain-walk verification (§4.2, §4.3; D3 in `0.30-deal-breakers.md`).
+
+**Sub-claim (c) — reserved ops cap at depth 1:** The ten reserved operations
+(`disband | evict | admit | grant | revoke | delegation-grant | delegation-revoke |
+delegation-accept | member-roster | compaction`) carry a protocol-level depth floor of
+1 — they may be held by an owner (depth 0) or delegated to a direct agent (depth 1), but
+not delegated further. Reserved ops cap at depth 1. This is a protocol-level floor that no
+convention declaration and no parent grant can lower (D5 in `0.30-deal-breakers.md`). The
+depth cap is enforced by the reserved-op floor check before the convention declaration is
+consulted.
+
+**Design references:** OPEN-002; `0.30-design.md` §2; D5 (reserved-op floor,
+`0.30-deal-breakers.md` §D5); D6 (clamping order, `0.30-deal-breakers.md` §D6).
+
+---
+
 ## §1 — Grant CBOR Layout
 
 ### §1.1 Capability tuple

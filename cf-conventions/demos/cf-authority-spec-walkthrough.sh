@@ -489,6 +489,83 @@ for ref in "${REFS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# §O — Operator delegation extent invariant (campfireagent-ace)
+#
+# Three sub-claims, each tested independently:
+#   (a) owner may delegate any action scope they hold
+#   (b) no one may delegate identity (absolute prohibition)
+#   (c) reserved ops cap at depth 1 (cross-reference to D5)
+# Plus: cross-references from D5 and D6 in 0.30-deal-breakers.md
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== §O — Operator delegation extent invariant (campfireagent-ace) ==="
+
+DEAL_BREAKERS="docs/0.30-deal-breakers.md"
+
+# (a) Sub-claim: owner may delegate any action scope they hold
+# Look for the phrase "any action scope" in the authority spec
+if grep -q 'any action scope' "$SPEC"; then
+  ok "(a) 'any action scope' delegation claim present in spec"
+else
+  fail "(a) 'any action scope' delegation claim MISSING from spec"
+fi
+
+# (b) Sub-claim: no one may delegate identity (absolute prohibition)
+# Confirm "delegate identity" appears in spec only as a prohibition, not a permission.
+# Step 1: the prohibition phrase must exist
+if grep -q 'may not delegate identity\|cannot delegate identity\|No one may delegate identity\|must not delegate identity' "$SPEC"; then
+  ok "(b) absolute prohibition on delegating identity present in spec"
+else
+  fail "(b) absolute prohibition on delegating identity MISSING from spec"
+fi
+
+# Step 2: adversarial — confirm "delegate identity" does NOT appear in any
+# affirmative (non-prohibition) context. Scan both docs.
+# Acceptable occurrences contain negation words in the same line.
+NEGATION_WORDS='no one\|may not\|cannot\|must not\|never\|prohibited\|prohibition\|no.*delegate identity\|identity.*no'
+IDENTITY_LINES=$(grep -i 'delegate identity' "$SPEC" "$DEAL_BREAKERS" 2>/dev/null || true)
+if [[ -n "$IDENTITY_LINES" ]]; then
+  # Every occurrence must contain a negation word
+  AFFIRMATIVE=$(echo "$IDENTITY_LINES" | grep -iv "$NEGATION_WORDS" || true)
+  if [[ -z "$AFFIRMATIVE" ]]; then
+    ok "(b) adversarial: 'delegate identity' appears ONLY in prohibition context (both docs)"
+  else
+    fail "(b) adversarial: 'delegate identity' found in non-prohibition context: $AFFIRMATIVE"
+  fi
+else
+  fail "(b) adversarial: 'delegate identity' not found in either doc — invariant not stated"
+fi
+
+# (c) Sub-claim: reserved ops cap at depth 1
+# The spec must state this explicitly (the invariant text says "Reserved ops cap at depth 1")
+if grep -q 'Reserved ops cap at depth 1\|reserved ops.*depth 1\|reserved.*cap.*depth 1' "$SPEC"; then
+  ok "(c) 'reserved ops cap at depth 1' stated in spec"
+else
+  fail "(c) 'reserved ops cap at depth 1' MISSING from spec"
+fi
+
+# (c) Cross-reference: D5 in deal-breakers must state the depth cap for reserved ops
+if grep -q 'depth 1\|depth: 1\|cap.*depth.*1\|reserved.*depth.*1' "$DEAL_BREAKERS"; then
+  ok "(c) D5 in deal-breakers references depth-1 cap for reserved ops"
+else
+  fail "(c) D5 in deal-breakers does not reference depth-1 cap for reserved ops"
+fi
+
+# Cross-reference from D5 in deal-breakers to the invariant in cf-authority-spec.md
+if grep -A20 '## D5' "$DEAL_BREAKERS" | grep -q 'cf-authority-spec\|delegation extent\|any action scope\|may not delegate identity'; then
+  ok "D5 in deal-breakers cross-references the delegation extent invariant"
+else
+  fail "D5 in deal-breakers does not cross-reference the delegation extent invariant"
+fi
+
+# Cross-reference from D6 in deal-breakers to the invariant in cf-authority-spec.md
+if grep -A20 '## D6' "$DEAL_BREAKERS" | grep -q 'cf-authority-spec\|delegation extent\|any action scope\|may not delegate identity'; then
+  ok "D6 in deal-breakers cross-references the delegation extent invariant"
+else
+  fail "D6 in deal-breakers does not cross-reference the delegation extent invariant"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
