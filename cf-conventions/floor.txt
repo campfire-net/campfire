@@ -1,0 +1,18 @@
+# cf-conventions floor declaration
+#
+# This file declares the minimum cf-protocol version that cf-conventions
+# 1.0 requires. Go's MVS enforces this in the multi-module layout.
+# In the current single-module layout, scripts/check-floor.sh reads this
+# file and verifies the available version satisfies the floor.
+#
+# Format: "cf-protocol v<MAJOR>.<MINOR>.<PATCH>"
+# One non-comment line only.
+#
+# Policy: cf-conventions v1.x requires cf-protocol >= this floor.
+# Bump this when cf-conventions starts using a new cf-protocol API that
+# did not exist in earlier cf-protocol versions.
+# Reserved-op LIST additions to cf-protocol are major bumps (not minors);
+# update this floor and cf-protocol/COMPATIBILITY.md accordingly.
+#
+# Reference: docs/design/cross-module-versioning.md §4.5
+cf-protocol v0.19.0
