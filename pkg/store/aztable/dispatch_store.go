@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
 	"github.com/campfire-net/campfire/pkg/convention"
 )
@@ -30,10 +31,30 @@ const (
 	conventionDispatchedTable = "CampfireConventionDispatched"
 )
 
+// dispatchTableClient is the subset of aztables.Client methods used by
+// TableDispatchStore. Extracted into an interface so tests can substitute a
+// deterministic in-memory CAS implementation that reliably enforces IfMatch
+// conditions. Azurite does not enforce IfMatch consistently under concurrent
+// write pressure, making the CAS contract tests non-deterministic.
+// Production code always uses *aztables.Client, which satisfies this interface.
+type dispatchTableClient interface {
+	GetEntity(ctx context.Context, partitionKey, rowKey string, options *aztables.GetEntityOptions) (aztables.GetEntityResponse, error)
+	AddEntity(ctx context.Context, entity []byte, options *aztables.AddEntityOptions) (aztables.AddEntityResponse, error)
+	UpdateEntity(ctx context.Context, entity []byte, options *aztables.UpdateEntityOptions) (aztables.UpdateEntityResponse, error)
+	UpsertEntity(ctx context.Context, entity []byte, options *aztables.UpsertEntityOptions) (aztables.UpsertEntityResponse, error)
+	DeleteEntity(ctx context.Context, partitionKey, rowKey string, options *aztables.DeleteEntityOptions) (aztables.DeleteEntityResponse, error)
+	NewListEntitiesPager(listOptions *aztables.ListEntitiesOptions) *runtime.Pager[aztables.ListEntitiesResponse]
+}
+
+// Compile-time assertion: *aztables.Client satisfies dispatchTableClient.
+var _ dispatchTableClient = (*aztables.Client)(nil)
+
 // TableDispatchStore implements convention.DispatchStore against Azure Table Storage.
+// The cursors and dispatched fields accept the dispatchTableClient interface so that
+// tests can inject a deterministic in-memory CAS store without Azurite.
 type TableDispatchStore struct {
-	cursors    *aztables.Client // CampfireConventionCursors
-	dispatched *aztables.Client // CampfireConventionDispatched
+	cursors    dispatchTableClient // CampfireConventionCursors
+	dispatched dispatchTableClient // CampfireConventionDispatched
 }
 
 // NewDispatchStore connects to Azure Table Storage and ensures the cursor and
@@ -44,26 +65,29 @@ func NewDispatchStore(connectionString string) (*TableDispatchStore, error) {
 		return nil, fmt.Errorf("aztable: DispatchStore: creating service client: %w", err)
 	}
 
-	s := &TableDispatchStore{}
-	tables := []struct {
-		name   string
-		target **aztables.Client
-	}{
-		{conventionCursorsTable, &s.cursors},
-		{conventionDispatchedTable, &s.dispatched},
-	}
-
 	ctx := context.Background()
-	for _, t := range tables {
-		client := svc.NewClient(t.name)
+	tableNames := []string{conventionCursorsTable, conventionDispatchedTable}
+	clients := make([]*aztables.Client, len(tableNames))
+	for i, name := range tableNames {
+		client := svc.NewClient(name)
 		_, createErr := client.CreateTable(ctx, nil)
 		if createErr != nil && !isTableExistsError(createErr) {
-			return nil, fmt.Errorf("aztable: DispatchStore: ensuring table %s: %w", t.name, createErr)
+			return nil, fmt.Errorf("aztable: DispatchStore: ensuring table %s: %w", name, createErr)
 		}
-		*t.target = client
+		clients[i] = client
 	}
 
-	return s, nil
+	return &TableDispatchStore{
+		cursors:    clients[0],
+		dispatched: clients[1],
+	}, nil
+}
+
+// NewDispatchStoreFromClients constructs a TableDispatchStore from pre-built
+// table clients. Intended for tests that need to inject a deterministic
+// in-memory CAS store in place of Azurite.
+func NewDispatchStoreFromClients(cursors, dispatched dispatchTableClient) *TableDispatchStore {
+	return &TableDispatchStore{cursors: cursors, dispatched: dispatched}
 }
 
 // ---------------------------------------------------------------------------
@@ -530,21 +554,26 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 		}
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: get: %w", err)
 	}
-	// Stale-ETag check: compare callerETag against the current ETag from Azure.
-	// We do this in-process rather than relying solely on IfMatch in UpdateEntity
-	// because Azurite does not reliably enforce IfMatch on UpdateEntity — letting
-	// stale writes succeed in the emulator.
-	if string(resp.ETag) != callerETag {
-		return fmt.Errorf("%w: stale ETag on %s/%s (caller=%q server=%q)",
-			convention.ErrConcurrentModification, campfireID, messageID, callerETag, resp.ETag)
-	}
 
 	var current map[string]any
 	if err := json.Unmarshal(resp.Value, &current); err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: unmarshal: %w", err)
 	}
+	// Check BilledAt before the stale-ETag guard so that a second billing attempt
+	// always returns ErrAlreadyBilled (not ErrConcurrentModification), regardless
+	// of whether the ETag changed since the caller's read.
 	if billedAt := toInt64(current["BilledAt"]); billedAt != 0 {
 		return fmt.Errorf("%w: campfireID=%q messageID=%q", convention.ErrAlreadyBilled, campfireID, messageID)
+	}
+
+	// Stale-ETag check: compare callerETag against the current ETag from Azure.
+	// We do this in-process rather than relying solely on IfMatch in UpdateEntity
+	// because Azurite does not reliably enforce IfMatch on UpdateEntity — letting
+	// stale writes succeed in the emulator. This check fires only when BilledAt == 0
+	// (above), so it correctly rejects stale-ETag attempts to bill an unbilled record.
+	if string(resp.ETag) != callerETag {
+		return fmt.Errorf("%w: stale ETag on %s/%s (caller=%q server=%q)",
+			convention.ErrConcurrentModification, campfireID, messageID, callerETag, resp.ETag)
 	}
 
 	// Minimal merge entity — only sets BilledAt; leaves all other fields untouched.

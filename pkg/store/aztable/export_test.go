@@ -89,18 +89,19 @@ func (s *TableDispatchStore) MarkBilledWithBarrier(ctx context.Context, campfire
 		return fmt.Errorf("aztable: DispatchStore.MarkBilledWithBarrier: get: %w", err)
 	}
 
-	// Stale-ETag check mirrors production MarkBilled.
-	if string(resp.ETag) != callerETag {
-		return fmt.Errorf("%w: stale ETag on %s/%s (caller=%q server=%q)",
-			convention.ErrConcurrentModification, campfireID, messageID, callerETag, resp.ETag)
-	}
-
 	var current map[string]any
 	if err := json.Unmarshal(resp.Value, &current); err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilledWithBarrier: unmarshal: %w", err)
 	}
+	// Check BilledAt before stale-ETag (mirrors production MarkBilled ordering).
 	if billedAt := toInt64(current["BilledAt"]); billedAt != 0 {
 		return fmt.Errorf("%w: campfireID=%q messageID=%q", convention.ErrAlreadyBilled, campfireID, messageID)
+	}
+
+	// Stale-ETag check mirrors production MarkBilled.
+	if string(resp.ETag) != callerETag {
+		return fmt.Errorf("%w: stale ETag on %s/%s (caller=%q server=%q)",
+			convention.ErrConcurrentModification, campfireID, messageID, callerETag, resp.ETag)
 	}
 
 	// Signal that the read phase is complete, then wait for the barrier.
