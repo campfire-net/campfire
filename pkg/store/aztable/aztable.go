@@ -1368,7 +1368,18 @@ func encodeKey(s string) string {
 }
 
 // getEntity retrieves a single entity by PK/RK. Returns nil if not found.
-func getEntity(ctx context.Context, client *aztables.Client, pk, rk string) (map[string]any, error) {
+// tableEntityClient is the minimal interface for shared entity helper functions.
+// Both *aztables.Client (via TableStore) and dispatchTableClient (via
+// TableDispatchStore) satisfy this interface, allowing the helpers to be used
+// from both store implementations without type assertions.
+type tableEntityClient interface {
+	GetEntity(ctx context.Context, partitionKey, rowKey string, options *aztables.GetEntityOptions) (aztables.GetEntityResponse, error)
+	AddEntity(ctx context.Context, entity []byte, options *aztables.AddEntityOptions) (aztables.AddEntityResponse, error)
+	UpsertEntity(ctx context.Context, entity []byte, options *aztables.UpsertEntityOptions) (aztables.UpsertEntityResponse, error)
+	DeleteEntity(ctx context.Context, partitionKey, rowKey string, options *aztables.DeleteEntityOptions) (aztables.DeleteEntityResponse, error)
+}
+
+func getEntity(ctx context.Context, client tableEntityClient, pk, rk string) (map[string]any, error) {
 	resp, err := client.GetEntity(ctx, pk, rk, nil)
 	if err != nil {
 		if isNotFoundError(err) {
@@ -1384,7 +1395,7 @@ func getEntity(ctx context.Context, client *aztables.Client, pk, rk string) (map
 }
 
 // upsertEntity writes an entity using merge-or-insert semantics.
-func upsertEntity(ctx context.Context, client *aztables.Client, entity map[string]any) error {
+func upsertEntity(ctx context.Context, client tableEntityClient, entity map[string]any) error {
 	data, err := json.Marshal(entity)
 	if err != nil {
 		return err
@@ -1396,7 +1407,7 @@ func upsertEntity(ctx context.Context, client *aztables.Client, entity map[strin
 }
 
 // insertEntity writes an entity only if it doesn't exist (INSERT OR IGNORE semantics).
-func insertEntity(ctx context.Context, client *aztables.Client, entity map[string]any) error {
+func insertEntity(ctx context.Context, client tableEntityClient, entity map[string]any) error {
 	data, err := json.Marshal(entity)
 	if err != nil {
 		return err
@@ -1413,7 +1424,7 @@ func insertEntity(ctx context.Context, client *aztables.Client, entity map[strin
 }
 
 // deleteEntity removes a single entity. Ignores not-found.
-func deleteEntity(ctx context.Context, client *aztables.Client, pk, rk string) error {
+func deleteEntity(ctx context.Context, client tableEntityClient, pk, rk string) error {
 	_, err := client.DeleteEntity(ctx, pk, rk, nil)
 	if err != nil && !isNotFoundError(err) {
 		return err
