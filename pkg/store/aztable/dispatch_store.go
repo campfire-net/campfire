@@ -530,21 +530,28 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 		}
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: get: %w", err)
 	}
-	// Stale-ETag check: compare callerETag against the current ETag from Azure.
-	// We do this in-process rather than relying solely on IfMatch in UpdateEntity
-	// because Azurite does not reliably enforce IfMatch on UpdateEntity — letting
-	// stale writes succeed in the emulator.
-	if string(resp.ETag) != callerETag {
-		return fmt.Errorf("%w: stale ETag on %s/%s (caller=%q server=%q)",
-			convention.ErrConcurrentModification, campfireID, messageID, callerETag, resp.ETag)
-	}
-
 	var current map[string]any
 	if err := json.Unmarshal(resp.Value, &current); err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: unmarshal: %w", err)
 	}
+	// Check BilledAt before the stale-ETag guard: a second billing attempt must
+	// return ErrAlreadyBilled even when the caller holds a stale ETag.
+	// ErrAlreadyBilled is the canonical signal that the record is already billed;
+	// ErrConcurrentModification is a retryable concurrency error. Returning
+	// ErrAlreadyBilled here prevents a re-billing retry from succeeding
+	// (campfire-agent-7d4).
 	if billedAt := toInt64(current["BilledAt"]); billedAt != 0 {
 		return fmt.Errorf("%w: campfireID=%q messageID=%q", convention.ErrAlreadyBilled, campfireID, messageID)
+	}
+
+	// Stale-ETag check: compare callerETag against the current ETag from Azure.
+	// We do this in-process rather than relying solely on IfMatch in UpdateEntity
+	// because Azurite does not reliably enforce IfMatch on UpdateEntity — letting
+	// stale writes succeed in the emulator. This check fires only when BilledAt == 0
+	// (above), so it correctly rejects stale-ETag attempts to bill an unbilled record.
+	if string(resp.ETag) != callerETag {
+		return fmt.Errorf("%w: stale ETag on %s/%s (caller=%q server=%q)",
+			convention.ErrConcurrentModification, campfireID, messageID, callerETag, resp.ETag)
 	}
 
 	// Minimal merge entity — only sets BilledAt; leaves all other fields untouched.
