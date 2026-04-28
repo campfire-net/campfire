@@ -1141,10 +1141,129 @@ The following `campfire:*` tags are defined as of this revision. All require `fu
 | `campfire:compact` | Compaction event — marks messages superseded | P1 |
 | `campfire:view` | Named view definition | P1 |
 | `campfire:member-role-changed` | A member's role was changed | P1 |
+| `campfire:visibility-changed` | Campfire flipped from public to private | 0.30 |
+| `session:open` | Session campfire opened — lifecycle anchor alongside `campfire:rekey` | 0.30 |
+| `session:close` | Session campfire closed — lifecycle anchor alongside `campfire:rekey` | 0.30 |
 
 **Member-signed exceptions.** `campfire:invite`, `campfire:vouch`, and `campfire:revoke` are signed by individual members, not the campfire key. All other `campfire:*` tags are signed by the campfire.
 
 **P1 additions.** `campfire:compact`, `campfire:view`, and `campfire:member-role-changed` were introduced in the automaton substrate feature set. They extend the reserved namespace to cover log management (compact), persistent query definition (view), and role governance (member-role-changed).
+
+**0.30 additions.** `campfire:visibility-changed`, `session:open`, and `session:close` were introduced in the cf 0.30 Layer-1 freeze. See §cf-protocol 1.0 Layer-1 Additions below.
+
+**Ratified L1 reserved tags (non-`campfire:` namespace).** The following tags were de facto reserved since P0 and are now explicitly enumerated as part of the `cf-protocol` 1.0 freeze. They are member-signed (covered by the sender's signature), not campfire-key-signed:
+
+| Tag | Description | Introduced in |
+|-----|-------------|---------------|
+| `future` | Commitment pending fulfillment — a message the sender expects will be satisfied | P0 (ratified 0.30) |
+| `fulfills` | Satisfies a prior `future` — must include the future's ID in `antecedents` | P0 (ratified 0.30) |
+
+## cf-protocol 1.0 Layer-1 Additions
+
+This section documents the Layer-1 additions ratified as part of the `cf-protocol` 1.0 freeze for cf 0.30. All items in this section are wire-format frozen: implementations MUST NOT alter their semantics without a major-version bump to `cf-protocol`.
+
+### campfire:visibility-changed
+
+`campfire:visibility-changed` is a campfire-key-signed system event. It fires when a campfire transitions from public to private (i.e., its join protocol changes from `open` to `invite-only`). The tag requires the campfire's own key for signing — it is NOT a member-signed exception. Receivers MUST reject any `campfire:visibility-changed` message whose signature does not verify against the campfire's public key.
+
+**Field layout:**
+
+```
+campfire:visibility-changed payload {
+  previous_join_protocol: string   # "open" — the prior join policy
+  new_join_protocol:      string   # "invite-only" — the new join policy
+  changed_at:             uint64   # unix nanosecond timestamp of the change
+}
+```
+
+**Semantics.** The event fires exactly once per public→private transition. The campfire emits the event before enforcing the new policy so that currently-connected members can observe the change and update their records. The event does not imply member eviction — existing members retain their membership unless separately evicted.
+
+**Consumer obligations.** Members MUST treat this event as authoritative for the campfire's current join policy. Agents that cache join-protocol state MUST invalidate their cache on receipt. Discovery components (beacons, named entries) MUST reflect the updated policy at their next refresh. Agents that advertise the campfire's join protocol to third parties MUST NOT continue advertising `open` after observing this event. Failing to respond to `campfire:visibility-changed` exposes downstream agents to a stale join-policy attack (a campfire claims to be open after going private).
+
+**Placement.** Sits at L1 alongside `campfire:rekey` in the system-event vocabulary. Closes OPEN-016.
+
+### session:open / session:close
+
+`session:open` and `session:close` are campfire-key-signed L1 system events that bracket the lifecycle of an ephemeral session campfire. Both tags require the campfire's own key for signing — they are NOT member-signed exceptions. Receivers MUST reject any `session:open` or `session:close` message whose signature does not verify against the session campfire's public key.
+
+**session:open field layout:**
+
+```
+session:open payload {
+  session_id:                    string   # campfire ID of this session campfire
+  parent_grant_chain_root:       string   # hex-encoded public key of the chain root (human)
+  dispatcher_capability_template: object  # capability template intersected with worker grants
+  until:                         uint64   # session expiry in unix nanoseconds
+}
+```
+
+**session:close field layout:**
+
+```
+session:close payload {
+  session_id:  string   # campfire ID of this session campfire
+  closed_at:   uint64   # unix nanosecond timestamp of closure
+  reason:      string   # "expired" | "orchestrator-closed" | "eviction"
+}
+```
+
+**Semantics.** `session:open` is emitted by the session creator (orchestrator) when a new session campfire is initialized. It anchors the session at the human chain root and records the capability bounds for all worker grants issued under the session. `session:close` is emitted by the orchestrator when a session ends — either because `until` has elapsed or the orchestrator explicitly ends the session. Session campfire messages may be compacted aggressively after `session:close` (default operator policy: 24h retention after close). Grant lineage survives compaction because issued `delegation:grant` messages live in the owner's identity campfire, not in the session campfire — see §Client.Await Contract below for the fulfillment ordering rule that governs grant-backed futures.
+
+**Placement.** Sits at L1 alongside `campfire:rekey` and `campfire:visibility-changed` in the system-event vocabulary. Closes OPEN-004 §3.
+
+### future / fulfills Reserved Tags — L1 Freeze Ratification
+
+The `"future"` and `"fulfills"` tags are ratified as Layer-1 frozen reserved tags. They were de facto reserved at P0 (see §Futures and Fulfillment above) but are now explicitly enumerated as part of the `cf-protocol` 1.0 freeze. Their DAG semantics — the `antecedents` field as a CBOR-frozen typed array of message IDs, the `"future"` tag meaning "commitment pending fulfillment," and the `"fulfills"` tag meaning "this message satisfies the referenced future" — are frozen together with the message envelope and cannot be split into a separate layer-3 convention.
+
+**Why now.** Three constraints require explicit ratification at 1.0 freeze time:
+
+1. **Wire format already fuses them.** `Antecedents []string` sits at CBOR field 5 of the signed envelope alongside payload, tags, and timestamp. The sender's signature covers the antecedents bytes whether a receiver projects them or not. A "message-only" consumer is already verifying antecedent bytes.
+
+2. **`Client.Await` is a Layer-1 read primitive** alongside `Send` and `Read`. It reads the `"fulfills"` tag and antecedents directly from the store without convention-layer mediation. Fulfillment is not optional projection — it is a first-class read operation.
+
+3. **Every named consumer uses both.** rd, dontguess, social, the reach, freeso, and hosted customers all use antecedents and fulfillment together with the message envelope. The speculative "leaner consumer" who wants signed event log without DAG does not exist, and per the standing rule no protocol surface is justified by an unnamed consumer.
+
+**What this does not freeze.** Activation semantics remain agent-local. The protocol defines what an antecedent and a fulfillment ARE — not what a consumer must DO when it sees one. Convention authors may declare `antecedents: none` for their operations; this is convention-level behavior configuration, not a Layer-1 carve-out of structure.
+
+The reserved-tag table is updated to include `"future"` and `"fulfills"` alongside the `campfire:*` namespace. These tags do not carry the `campfire:` prefix and are therefore member-signed (the sender's key covers them), not campfire-key-signed. Closes OPEN-001.
+
+### Reserved-Op Floor LIST
+
+The following ten operations form the **reserved-op floor**: a protocol-level minimum that no convention declaration and no parent grant can lower. Convention authors are not in the trusted computing base for these operations. The clamping order is fixed and one-directional: owner ceiling > parent grant > convention declaration. No convention may declare access to a reserved op without a grant from a principal with owner-level authority in the relevant campfire.
+
+**Canonical list:**
+
+```
+disband | evict | admit | grant | revoke |
+delegation-grant | delegation-revoke | delegation-accept |
+member-roster | compaction
+```
+
+**Architecture.** The LIST lives at Layer 1 (`cf-protocol/internal/reserved-ops.go`); the ENFORCER (intercepts dispatch, consults the L1 list) lives at Layer 2 (the dispatch interceptor); the EVALUATOR (applies actual grant-chain policy) lives at Layer 3 `cf-authority`. Convention declarations that reference a reserved op are validated against this list at parse time. Any op that appears in the list but is absent from a caller's grant chain results in `DENY(reserved-op-floor)`. Closes OPEN-003.
+
+### Antecedent/Fulfillment Fusion
+
+Antecedent links and fulfillment semantics are inseparable from the signed-message substrate. The `antecedents` field is part of the signed message envelope (CBOR field 5 of the canonical layout, covered by the sender signature). The `"future"` and `"fulfills"` reserved tags and the `Client.Await` contract are Layer-1 primitives, not Layer-3 projections. `cf-protocol` 1.0 freezes them together with the envelope, signatures, and hop chain — there is no `cf-protocol-without-DAG` profile, no `cf-causality` Layer-3 carve-out, and no internal sub-package boundary that promises future separability.
+
+**Rationale (closes OPEN-001).** Three constraints rule out separation. (1) Wire-format reality: the antecedents bytes are in the signed envelope; a "message-only" consumer either projects them or ignores them, and ignoring them invites chain-fabrication attacks that the threat model defends against. (2) `Client.Await` reads `"fulfills"` tags and antecedents at Layer 1 today — fulfillment is not optional projection. (3) Every named portfolio consumer uses antecedents and fulfillment together with messages. The speculative "leaner consumer" who wants signed event log without DAG is not named, and per the standing rule no carve-out is justified by an unnamed consumer.
+
+**What this does not say.** Activation semantics remain agent-local — the protocol defines what an antecedent and a fulfillment ARE, not what a consumer must DO when it sees one. A consumer that receives a message with unfulfilled antecedents MAY wait, act speculatively, or ignore antecedent state. The graph is data; interpretation is local.
+
+### Client.Await Contract
+
+`Client.Await` is a Layer-1 read primitive. Its contract is wire-frozen at `cf-protocol` 1.0.
+
+**Predicate.** A message M fulfills future F if and only if:
+- M carries the `"fulfills"` tag, AND
+- F's message ID appears in M's `antecedents` array.
+
+Both conditions are required. A message that carries `"fulfills"` but does not reference the target ID in antecedents is NOT a fulfillment of that future. A message that references the target ID in antecedents but does not carry `"fulfills"` is a dependent, not a fulfillment.
+
+**Fulfillment ordering — earliest-timestamp wins.** When multiple messages fulfill the same future (concurrent fulfillments), `Client.Await` returns the fulfillment with the earliest timestamp. Ties are broken by lexicographically smaller message ID. This ordering is deterministic: two implementations given the same set of fulfilling messages will always return the same winner. The winning message is returned; the other fulfillments remain in the campfire log and are accessible via direct read. Implementations MUST apply this ordering rule — selecting a random fulfillment or returning all fulfillments is a protocol violation.
+
+**Why deterministic ordering matters.** Futures used for escalation (agent awaits a ruling) and for session-worker grant issuance (orchestrator awaits `identity:introduce`) both have at most one legitimate fulfillment in practice. The ordering rule handles the adversarial case where a malicious actor sends a second `"fulfills"`-tagged message to race the legitimate fulfillment. Because earliest-timestamp wins, the legitimate fulfillment (posted first by the authorized principal) wins. The tiebreaker on message ID ensures the rule is fully deterministic even when an adversary manufactures a message with an identical timestamp.
+
+**Timeout.** An `Await` with a specified timeout exits with `ErrAwaitTimeout` when the deadline expires before a fulfillment appears. An `Await` with no timeout (zero value) blocks until fulfilled or context-cancelled. Negative timeout values are rejected at call time.
 
 ## Wire Format
 
