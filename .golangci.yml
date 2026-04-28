@@ -1,0 +1,108 @@
+# .golangci.yml — golangci-lint configuration for the campfire reference implementation.
+#
+# Layer-boundary enforcement (design v2 §4.6):
+#   L1 = pkg/protocol (and supporting substrate: pkg/message, pkg/campfire, etc.)
+#   L2 = pkg/convention (convention machinery: parser, executor, dispatcher, server)
+#   L3 = convention implementations (pkg/trust, pkg/naming, etc.)
+#
+# See CONTRIBUTING.md §Cross-Layer Import Policy for the full policy,
+# exemption process, and list of tracked allowances.
+
+version: "2"
+
+linters:
+  enable:
+    - depguard
+
+  settings:
+    depguard:
+      rules:
+        # Default rule: lax mode (deny-only). This overrides depguard's built-in
+        # default allowlist (which only permits stdlib), making all project imports
+        # allowed unless a more specific rule below denies them.
+        #
+        # The deny entry is a non-existent package used purely to satisfy depguard's
+        # requirement that each rule have at least one allow OR deny entry.
+        main-allow-all:
+          list-mode: lax
+          deny:
+            - pkg: "github.com/campfire-net/campfire/internal/DEPGUARD_PLACEHOLDER_NONEXISTENT"
+              desc: "placeholder — do not remove; required to activate lax (deny-only) mode for all other imports"
+
+        # B1 — L1 must not import L2.
+        #
+        # pkg/protocol is the Layer-1 campfire substrate: message envelope, signatures,
+        # hop chain, store interface, transports. It must not import convention machinery.
+        # Convention machinery depends on the protocol substrate, not the reverse.
+        #
+        # Applies to: all non-test files directly inside pkg/protocol.
+        # Exempt: *_test.go files, which may cross layers for integration tests.
+        #
+        # Tracked allowances: none. This boundary is currently clean.
+        #
+        # To add an allowance: follow CONTRIBUTING.md §Cross-Layer Import Policy.
+        L1-no-convention:
+          list-mode: lax
+          files:
+            - "**/pkg/protocol/**/*.go"
+            - "**/pkg/protocol/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/campfire-net/campfire/pkg/convention"
+              desc: "B1: L1 (pkg/protocol) must not import L2 (pkg/convention). See CONTRIBUTING.md §Cross-Layer Import Policy (design v2 §4.6)"
+
+        # B2 — L2 must not import L3.
+        #
+        # pkg/convention is the Layer-2 convention machinery. It declares interfaces
+        # (GateEvaluator, ProvenanceChecker) whose default implementations live in L3
+        # (pkg/trust, pkg/naming). The machinery must not import its own implementations.
+        #
+        # Applies to: all non-test, non-exempted files in pkg/convention.
+        # Exempt: *_test.go files, seed.go, parser.go (tracked allowances, see below).
+        #
+        # Tracked allowances:
+        #   - pkg/convention/seed.go — imports pkg/naming for TagNamePrefix/TagPrefix
+        #     constants. Pending: seed.go moves to L3 (cf-convention-extension) in 0.30
+        #     (design v2 §4.3). Once moved, this allowance and exemption are removed.
+        #     Citation: design v2 §4.3, OPEN-018.
+        #
+        #   - pkg/convention/parser.go — imports pkg/naming for TagPrefix constants
+        #     used in the parser's deny list. Pending: same migration as seed.go; or
+        #     extract TagPrefix constants to a shared L1/L2 package (pkg/tagspec).
+        #     Citation: design v2 §4.1 (internal/tagspec extraction), OPEN-018.
+        #
+        # To add an allowance: follow CONTRIBUTING.md §Cross-Layer Import Policy.
+        L2-no-naming:
+          list-mode: lax
+          files:
+            - "**/pkg/convention/**/*.go"
+            - "**/pkg/convention/*.go"
+            - "!**/pkg/convention/seed.go"
+            - "!**/pkg/convention/parser.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/campfire-net/campfire/pkg/naming"
+              desc: "B2: L2 (pkg/convention) must not import L3 (pkg/naming). See CONTRIBUTING.md §Cross-Layer Import Policy (design v2 §4.6). Exemptions for seed.go and parser.go are tracked in CONTRIBUTING.md pending §4.3 migration."
+
+        # B3 — L3 must not import L2 internal sub-packages.
+        #
+        # L3 implementations (pkg/trust, pkg/naming) are permitted to import the public
+        # pkg/convention API. They must NOT import internal sub-packages:
+        #   - pkg/convention/delegation (delegation machinery internals)
+        #   - pkg/convention/declarations (declaration parser internals)
+        #
+        # Applies to: all non-test files in pkg/trust and pkg/naming.
+        # Tracked allowances: none. This boundary is currently clean.
+        L3-no-convention-internals:
+          list-mode: lax
+          files:
+            - "**/pkg/trust/**/*.go"
+            - "**/pkg/trust/*.go"
+            - "**/pkg/naming/**/*.go"
+            - "**/pkg/naming/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/campfire-net/campfire/pkg/convention/delegation"
+              desc: "B3: L3 must use pkg/convention public API, not internal sub-packages. See CONTRIBUTING.md §Cross-Layer Import Policy (design v2 §4.6)"
+            - pkg: "github.com/campfire-net/campfire/pkg/convention/declarations"
+              desc: "B3: L3 must use pkg/convention public API, not internal sub-packages. See CONTRIBUTING.md §Cross-Layer Import Policy (design v2 §4.6)"

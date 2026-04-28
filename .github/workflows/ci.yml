@@ -7,6 +7,27 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run golangci-lint (depguard layer boundaries)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.4.0
+          # --fast-only: runs only fast linters (depguard is fast).
+          # This keeps CI fast while still enforcing all layer-boundary rules.
+          # Full type-checking linters are excluded; use `go vet` for that.
+          args: --fast-only
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -22,7 +43,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Run tests
         run: go test ./...
