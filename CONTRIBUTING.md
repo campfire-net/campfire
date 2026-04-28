@@ -147,6 +147,36 @@ go test ./tests/...
 
 New features should include tests. Bug fixes should include a test that would have caught the bug.
 
+## Versioning Policy
+
+Campfire uses two go modules with independent semver cadences:
+
+- **`cf-protocol`** — long-term wire stability. The v1.0 wire format is
+  intended to remain the production major indefinitely. Reserved-op LIST
+  additions are **major** bumps (not minor) because consumers may rely on
+  the list being complete.
+
+- **`cf-conventions`** — backward-compatible minors within a major; majors
+  are expected as layer-3 wire formats evolve. cf-authority, cf-discovery,
+  and other L3 packages freeze their wire formats at `cf-conventions` major
+  events.
+
+**When you change `cf-protocol`'s exported surface**, CI will tell you if
+`cf-conventions`'s floor needs a bump. Check `cf-conventions/floor.txt` and
+run `bash scripts/check-floor.sh` to verify.
+
+**When you change `cf-conventions`'s wire format**, decide: is this a minor
+(backward-compatible addition) or a major (breaking change)? Breaking changes
+ship in a new major branch. See `cf-conventions/COMPATIBILITY.md` for the
+full policy.
+
+**Do not pin a minor** in consumer `go.mod` files — pin at major only.
+Pinning a minor over-constrains MVS and will cause spurious incompatibility
+errors in multi-consumer binaries.
+
+See `cf-conventions/COMPATIBILITY.md` and `cf-protocol/COMPATIBILITY.md`
+for the full versioning policy and compatibility matrix.
+
 ## Security Issues
 
 **Do not open public issues for security vulnerabilities.** See [SECURITY.md](SECURITY.md) for the responsible disclosure process.
