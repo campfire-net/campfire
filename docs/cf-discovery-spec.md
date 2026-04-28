@@ -468,4 +468,217 @@ apply:
 
 ---
 
+## 11. Post-Join Verification (Tier 2 — Honeypot Defense)
+
+### 11.1 Overview
+
+When a client auto-joins a campfire via Tier-2 scoped auto-join (§3.2 of
+0.30-design.md), the beacon's `join_protocol: "open"` claim is
+**tainted-by-construction** — the signature proves the campfire operator
+published this claim, but does NOT prove the campfire currently honors it.
+A hostile operator could advertise `join_protocol: "open"` in a beacon,
+wait for a non-member to auto-join, and then harvest the mandatory rekey
+that fires on member admission ("honeypot-rekey harvest").
+
+Post-join verification closes this attack by requiring the joiner to
+**observe** the campfire's behavior before committing to membership.
+
+### 11.2 Chosen Mechanism: probe-write-then-observe
+
+**Decision (OPEN-015):** The chosen post-join verification mechanism is
+**probe-write-then-observe**.
+
+The alternative considered and rejected was **member-set Merkle-compare on
+first sync** — computing a Merkle root of the returned member set and
+comparing it against a value the inviter encoded in the invite token. That
+approach was rejected for three reasons:
+
+1. **Invite-token coupling.** Member-set Merkle-compare requires the inviter
+   to encode a member-set commitment in the token at invite time. Tier-2
+   scoped auto-join is designed for configured namespace roots, not invite
+   flows — there is no inviter embedding a token, so there is no commitment
+   to compare against.
+2. **State staleness.** The member set returned on first sync may differ
+   from the commitment if members joined or left between invite issuance and
+   the joiner's first sync. This produces false-positive verification
+   failures in normal operation.
+3. **Complexity.** Merkle-compare adds ~150 LOC of hash-tree machinery plus
+   a commitment-encoding scheme in the invite token format. The
+   probe-write-then-observe mechanism reuses the existing send/read
+   primitives already present in the protocol client.
+
+**Probe-write-then-observe** was chosen because:
+- It exercises the same send/read path every member uses — no new
+  primitives.
+- It directly detects enforcement-mode campfires (campfires that silently
+  drop non-member writes or queue them for operator review rather than
+  delivering them openly).
+- It fires per-hop in multi-hop chain resolution, providing the same
+  protection depth-1 and depth-n (see OPEN-005 round-2 doc,
+  multi-level-snippet-chain.md).
+- LOC budget: ~30 LOC addition to the `AutoJoinFunc` scaffold at
+  `naming/resolve.go:121-126`.
+
+### 11.3 Mechanism Steps
+
+After the transport-level join completes (identity admitted, rekey
+received), but before the joiner records the campfire as a trusted
+member in local state, the client executes the following probe:
+
+1. **Send a probe message.** The joiner sends a benign, schema-neutral
+   message to the campfire. The message MUST be tagged `discovery:probe`
+   and MUST contain no content other than the probe tag and the joiner's
+   signature. The probe message is transient — it carries no meaning and
+   MUST NOT be interpreted as content by other members.
+
+2. **Read back the probe.** The joiner reads the campfire's message stream
+   and checks whether the probe message appears. A campfire that is
+   genuinely open MUST deliver the joiner's own message back to them on
+   read (all members see all messages, including their own).
+
+3. **Compare.** If the probe message appears in the read result within the
+   verification timeout (default: 5 seconds), verification passes. If the
+   probe message does NOT appear — because the campfire silently dropped
+   it, queued it for moderation, or filtered it — verification fails.
+
+4. **On pass:** The joiner records the campfire as a trusted Tier-2
+   member. Normal reads and convention dispatches proceed.
+
+5. **On fail (unjoin trigger):** The joiner executes the unjoin protocol
+   (§11.4).
+
+### 11.4 Unjoin Trigger and Protocol
+
+Verification failure means the campfire is behaving inconsistently with
+its advertised `join_protocol: "open"` claim — this is the **honeypot
+scenario**: a campfire that advertises open membership but enforces
+non-open semantics to harvest joiner identity from the admission rekey.
+
+When verification fails, the client MUST:
+
+1. **Leave the campfire.** Issue a protocol-level leave, removing the
+   campfire from the local member list and preventing further message
+   reads.
+
+2. **Sign and post an unjoin-declaration.** Before leaving, the joiner
+   signs and posts an `unjoin-declaration` message to the campfire with
+   the following fields:
+   - `campfire_id` — the campfire being unjoined.
+   - `reason` — the string `"probe-verification-failed"`.
+   - `observed_inconsistency` — a human-readable description of the
+     inconsistency observed (e.g., `"probe message not visible on read
+     after join"`).
+   - `probe_msg_id` — the message ID of the probe that was not returned.
+   - `joiner_pubkey` — the joiner's Ed25519 public key hex.
+
+   The unjoin-declaration is signed by the **joiner's own Ed25519 key**.
+   The signed claim is: "I joined this campfire, observed inconsistent
+   state (probe message not returned), and am unjoining." The campfire
+   operator can read this declaration; the campfire cannot suppress it
+   because the joiner is still a member at the moment of posting.
+
+3. **Degrade the discovery entry.** Mark the campfire's snippet in the
+   parent namespace as degraded with reason `"post-join-verification-failed"`.
+   The degraded entry remains visible to the user with a warning indicator;
+   it is NOT silently removed. Future auto-join attempts for the same
+   campfire are suppressed until the user explicitly clears the degraded
+   status or the parent namespace republishes a fresh snippet.
+
+4. **Do not retry automatically.** Automatic retry after unjoin is
+   prohibited. A campfire that fails verification once is not retried by
+   the auto-join path. The user may manually attempt a direct join
+   (outside the auto-join path), at which point verification runs again.
+
+### 11.5 Unjoin Signature Contract
+
+The unjoin-declaration message has the following signing contract:
+
+- **Who signs:** The **joiner** — the identity that attempted to join and
+  observed the inconsistency. The campfire operator does NOT sign the
+  unjoin-declaration.
+- **What is signed:** The canonical signing payload is the UTF-8 encoding
+  of `discovery:unjoin-declaration\n<json-object>`, where `<json-object>`
+  is the JSON serialization of the five unjoin fields
+  (`campfire_id`, `reason`, `observed_inconsistency`, `probe_msg_id`,
+  `joiner_pubkey`) in canonical field order.
+- **Why the joiner signs:** The joiner's signature makes the inconsistency
+  claim attributable and non-repudiable. A third party reading the
+  unjoin-declaration can verify (a) the declaration came from the key that
+  joined, (b) the declared probe_msg_id matches the probe message on
+  record, and (c) the joiner's pubkey matches the admitted member — all
+  without trusting the campfire operator.
+- **What the signature does NOT prove:** The signature proves the joiner
+  sent the unjoin-declaration, not that the campfire is definitively
+  hostile. The campfire operator may have a legitimate explanation (e.g.,
+  a race condition during rekey). The unjoin-declaration is a forensic
+  record, not a verdict.
+
+### 11.6 Honeypot Scenario: Concrete Detection
+
+The following concrete scenario MUST be detectable by the
+probe-write-then-observe mechanism:
+
+**Scenario: Enforcement-mode campfire with open beacon.**
+
+1. Operator publishes a campfire with beacon advertising
+   `join_protocol: "open"`.
+2. The campfire is internally configured in enforcement mode: new members
+   are admitted at the identity layer (rekey fires, joiner gets the
+   shared key), but the campfire silently drops or queues messages from
+   members who have not been explicitly approved by the operator.
+3. A Tier-2 auto-join fires for the campfire (e.g., it is a registered
+   namespace root in roll-up config).
+4. The joiner is admitted (identity rekey fires — the operator has
+   harvested the joiner's rekey event and the joiner's public key from
+   the admission flow).
+5. The joiner sends the `discovery:probe` message.
+6. The campfire drops the probe (enforcement mode suppresses it).
+7. The joiner reads the campfire and does NOT see the probe message.
+8. **Verification fires:** unjoin-declaration is posted and signed by the
+   joiner. The joiner leaves. The snippet is degraded.
+
+**Detection is guaranteed** because in an open campfire, the sender
+always sees their own messages on read — this is a protocol invariant
+(all members receive all messages, including their own, in delivery
+order). An enforcement-mode campfire that suppresses member messages
+necessarily violates this invariant, which is exactly what the probe
+detects.
+
+**A second concrete scenario: write-invisible campfire.**
+
+A campfire that delivers reads normally but silently drops all writes
+from new members (to prevent participation while harvesting join events)
+is detected identically: the probe write is dropped, the read returns
+no probe, verification fails.
+
+### 11.7 Verification at Every Hop
+
+In multi-hop namespace resolution (OPEN-005), post-join verification
+fires at **every hop** where the resolver auto-joins an intermediate
+namespace campfire, not just at the top hop. A hostile intermediate
+namespace campfire (e.g., `metropolis` in `freeso.metropolis.lot42`)
+cannot evade verification by being positioned at depth 2 — the
+`AutoJoinFunc` in `naming/resolve.go` runs probe-write-then-observe
+every time it joins a new campfire in the chain.
+
+If verification fails at any hop, the chain truncates at that hop and
+the failure is propagated up: the resolver returns an error indicating
+which namespace failed verification, and the entire resolution is
+treated as degraded.
+
+### 11.8 Conformance Requirements
+
+Implementers of cf-discovery Stage 0 (post-join verification) MUST:
+
+1. Implement probe-write-then-observe as described in §11.3.
+2. Execute verification after every Tier-2 auto-join before recording the
+   campfire as trusted in local state.
+3. Post the signed unjoin-declaration (§11.5) before leaving on failure.
+4. Degrade the discovery entry on failure; never silently suppress it.
+5. Suppress automatic retry after a verification failure.
+6. Run verification at every hop in multi-hop chain resolution (§11.7).
+7. Cover the honeypot scenario (§11.6) in automated tests.
+
+---
+
 *End of cf-discovery 1.0 snippet schema specification.*
