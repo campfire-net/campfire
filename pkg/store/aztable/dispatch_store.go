@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
 	"github.com/campfire-net/campfire/pkg/convention"
 )
@@ -549,7 +548,7 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 	if err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: marshal: %w", err)
 	}
-	etag := azcore.ETag(callerETag)
+	etag := resp.ETag
 	_, updateErr := s.dispatched.UpdateEntity(ctx, data, &aztables.UpdateEntityOptions{
 		UpdateMode: aztables.UpdateModeMerge,
 		IfMatch:    &etag,

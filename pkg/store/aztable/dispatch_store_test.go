@@ -735,8 +735,23 @@ func helperCreateUnbilledRecord(t *testing.T, s *aztable.TableDispatchStore, cfI
 }
 
 // TestDispatchStore_MarkBilled_ConcurrentRace verifies that when two goroutines
-// both read the same ETag and race to call MarkBilled, exactly one succeeds and
-// the other gets ErrConcurrentModification.
+// both hold the same ETag and race to call MarkBilled, exactly one succeeds and
+// the other gets a rejection error (ErrConcurrentModification or ErrAlreadyBilled).
+//
+// Design:
+//
+//  1. Both goroutines read the same initial ETag before starting the race.
+//
+//  2. A read barrier (readyWg + writeGate) ensures both goroutines complete their
+//     GetEntity reads before either issues its UpdateEntity write. This maximises
+//     the race window and prevents the sequential read→write→read→write interleaving
+//     that would give both goroutines fresh ETags and allow both writes to succeed.
+//
+//  3. After the barrier, both writes are released simultaneously with the same
+//     callerETag. MarkBilledWithBarrier compares callerETag against resp.ETag after
+//     GET; the loser sees the winner's updated resp.ETag and gets ErrConcurrentModification.
+//     If the winner writes fast enough that the loser's GET already sees BilledAt != 0,
+//     the loser gets ErrAlreadyBilled. Both are correct rejections.
 func TestDispatchStore_MarkBilled_ConcurrentRace(t *testing.T) {
 	s := newTestDispatchStore(t)
 	ctx := context.Background()
@@ -744,32 +759,40 @@ func TestDispatchStore_MarkBilled_ConcurrentRace(t *testing.T) {
 	msgID := unique("msg")
 	serverID := unique("server")
 
-	// Create a fulfilled, unbilled record and capture the ETag.
+	// Create a fulfilled, unbilled record and capture the initial ETag.
 	etag := helperCreateUnbilledRecord(t, s, cfID, msgID, serverID)
 
-	// Two goroutines race with the same ETag.
+	// readyWg counts down as each goroutine finishes its GetEntity read.
+	// writeGate is closed once both reads are done, releasing both writes.
+	var readyWg sync.WaitGroup
+	readyWg.Add(2)
+	writeGate := make(chan struct{})
+
+	afterRead := func() {
+		readyWg.Done() // signal this goroutine's read is done
+		<-writeGate    // wait until both reads are done before writing
+	}
+
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
-	gate := make(chan struct{}) // synchronize start
 
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			<-gate // wait for both goroutines to be ready
-			errs[idx] = s.MarkBilled(ctx, cfID, msgID, etag)
+			errs[idx] = s.MarkBilledWithBarrier(ctx, cfID, msgID, etag, afterRead)
 		}(i)
 	}
 
-	close(gate) // release both goroutines simultaneously
+	// Wait for both reads to complete, then release both writes simultaneously.
+	readyWg.Wait()
+	close(writeGate)
 	wg.Wait()
 
 	// Exactly one should succeed; the other should get a rejection error.
 	// With the re-billing guard, the loser may get either:
-	//   - ErrConcurrentModification: if its read completed before the winner's write
-	//     (the ETag-gated write fails with 412 on the already-updated record)
-	//   - ErrAlreadyBilled: if its read completed after the winner's write
-	//     (the read sees BilledAt != 0 and rejects before attempting the write)
+	//   - ErrConcurrentModification: stale-ETag check fires (winner's write changed resp.ETag)
+	//   - ErrAlreadyBilled: loser's GET sees BilledAt != 0 after winner completes
 	// Both are correct rejections; both prevent double-billing.
 	wins := 0
 	rejected := 0
