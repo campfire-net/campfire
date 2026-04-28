@@ -77,10 +77,56 @@ Changes to the reference implementation (`cmd/`, `pkg/`, `tests/`) follow standa
 
 No waiting period required. Fast turnaround is the goal.
 
+## Cross-Layer Import Policy
+
+The implementation is organized into four layers enforced by `depguard` (configured in `.golangci.yml`):
+
+| Layer | Packages | Description |
+|-------|----------|-------------|
+| L1 | `pkg/protocol`, substrate packages | Campfire substrate: message envelope, signatures, hop chain, transports |
+| L2 | `pkg/convention` | Convention machinery: parser, executor, dispatcher, server |
+| L3 | `pkg/trust`, `pkg/naming`, other convention implementations | RFC convention implementations |
+| L4 | `cmd/cf`, `cmd/cf-mcp`, `cmd/cf-functions` | Deployment binaries |
+
+**The rule:** lower layers must not import higher layers. Specifically:
+
+- **B1:** `pkg/protocol` (L1) must not import `pkg/convention` (L2).
+- **B2:** `pkg/convention` (L2) must not import `pkg/naming`, `pkg/trust`, or other L3 packages.
+- **B3:** L3 packages must not import `pkg/convention` internal sub-packages (`delegation`, `declarations`); use only the public `pkg/convention` API.
+
+### Integration-test exemption
+
+Test files (`*_test.go`) may cross layers for integration and end-to-end tests. For example, `pkg/protocol` integration tests legitimately set up convention servers to test the full stack. This exemption is enforced in `.golangci.yml`: depguard boundary rules apply only to non-test files.
+
+### Current tracked allowances
+
+These are known layer-boundary crossings that are permitted while the corresponding refactor is in progress. Every allowance requires a spec-section citation.
+
+| File | Import | Reason | Spec citation | Status |
+|------|--------|--------|--------------|--------|
+| `pkg/convention/seed.go` | `pkg/naming` | Uses `naming.TagNamePrefix`, `naming.TagPrefix` constants for convention tag registration. Pending migration of `seed.go` to L3 (`cf-convention-extension`) per §4.3. | design v2 §4.3, OPEN-018 | Pending §4.3 migration |
+| `pkg/convention/parser.go` | `pkg/naming` | Uses `naming.TagPrefix` in the parser's deny list for naming-reserved tag prefixes. Same migration path as `seed.go`; alternatively, constants move to `pkg/protocol/internal/tagspec` per §4.1. | design v2 §4.1, §4.3, OPEN-018 | Pending §4.3 migration or §4.1 tagspec extraction |
+| `pkg/store/aztable` | `pkg/convention` | Implements `convention.DispatchStore` against Azure Table Storage. This is a concrete store backend for the convention system, not a layer violation. The store package is infrastructure that supports L2. | design v2 §4 (store as L2 infrastructure) | Permanent allowance |
+
+### How to add a new exemption
+
+If your PR requires an import that violates one of the layer boundaries above:
+
+1. **Exhaust alternatives first.** Can you use an interface? Can the constant or type move to a lower layer? Can the dependency direction be reversed?
+
+2. **If the crossing is justified**, add a file-level exemption to `.golangci.yml` and a row to the tracked allowances table above. Every exemption requires:
+   - A citation of the spec section that justifies the crossing (e.g., "design v2 §4.3 — pending migration").
+   - A clear migration path or justification for why this is a permanent allowance.
+   - A linked issue or work item tracking the migration (if it is temporary).
+
+3. **Submit the change to `.golangci.yml` and `CONTRIBUTING.md` in the same PR** as the code change that requires the exemption. Do not add an exemption without a corresponding code explanation.
+
+Unexempted boundary violations fail CI (the `Lint` job runs `golangci-lint run --fast-only`).
+
 ## Code Style
 
 - **Go standard**: format with `gofmt`, check with `go vet`
-- No linter config beyond the standard toolchain — if `gofmt` and `go vet` are happy, the style is fine
+- Run `golangci-lint run --fast-only` before submitting — depguard enforces layer boundaries
 - Keep functions small and focused
 - Prefer clarity over cleverness
 - Comments explain why, not what
