@@ -20,12 +20,9 @@ jobs:
           go-version: '1.25'
 
       - name: Run golangci-lint (depguard layer boundaries)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.4.0
-          # --fast-only: runs only fast linters (depguard is fast).
-          # This keeps CI fast while still enforcing all layer-boundary rules.
-          # Full type-checking linters are excluded; use `go vet` for that.
           args: --fast-only
 
   test:
