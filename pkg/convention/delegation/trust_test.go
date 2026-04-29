@@ -24,6 +24,11 @@ import (
 	"github.com/campfire-net/campfire/pkg/transport/fs"
 )
 
+// storeSeq is a process-wide counter for generating unique in-memory store names.
+// Required because -count=N runs the same test N times in the same process; each
+// run must use distinct SQLite in-memory database names to remain isolated.
+var storeSeq atomic.Int64
+
 // listErrAfterNStore wraps a real store.Store and injects an error on the
 // Nth ListMessages call (1-based). Used to test ReadError outcomes without
 // requiring an external mock framework.
@@ -72,12 +77,15 @@ type trustTestEnv struct {
 }
 
 // newTrustTestEnv sets up a filesystem campfire with n member identities.
-// Each identity gets its own SQLite store and protocol.Client.
+// Each identity gets its own SQLite in-memory store and protocol.Client.
+// In-memory stores avoid disk I/O, making each test run ~10× faster and
+// preventing TestResolve_DepthExceeded (12 stores) from taking 4+ seconds
+// under -race, which caused the full delegation suite to time out at high
+// -count values (root cause of the reported hang — campfireagent-90f).
 // Index 0 is conventionally the "root" (anchor) identity.
 func newTrustTestEnv(t *testing.T, n int) *trustTestEnv {
 	t.Helper()
 
-	storeDir := t.TempDir()
 	transportDir := t.TempDir()
 
 	// Generate campfire identity.
@@ -146,7 +154,13 @@ func newTrustTestEnv(t *testing.T, n int) *trustTestEnv {
 	stores := make([]store.Store, n)
 
 	for i := 0; i < n; i++ {
-		s, err := store.Open(filepath.Join(storeDir, ids[i].PublicKeyHex()[:8]+".db"))
+		// Use a unique in-memory store name to avoid both intra-run collisions
+		// (N stores per test) and inter-run collisions (-count=N runs same test N
+		// times in the same process). The storeSeq counter is process-wide and
+		// monotonically increasing, so each store gets a unique name.
+		seq := storeSeq.Add(1)
+		storeName := fmt.Sprintf("trust_test_%d_%s", seq, ids[i].PublicKeyHex()[:16])
+		s, err := store.OpenMemory(storeName)
 		if err != nil {
 			t.Fatalf("opening store %d: %v", i, err)
 		}

@@ -212,6 +212,82 @@ func TestOpenClose(t *testing.T) {
 	}
 }
 
+// TestOpenMemory_BasicRoundTrip verifies that OpenMemory returns a working Store
+// that can add and retrieve memberships, confirming schema + migration apply.
+func TestOpenMemory_BasicRoundTrip(t *testing.T) {
+	s, err := OpenMemory("test_openMemory_basic")
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer s.Close()
+
+	m := Membership{
+		CampfireID:    "cf_mem_basic",
+		TransportDir:  "/tmp/fake",
+		JoinProtocol:  "open",
+		Role:          "full",
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	}
+	if err := s.AddMembership(m); err != nil {
+		t.Fatalf("AddMembership: %v", err)
+	}
+	got, err := s.GetMembership("cf_mem_basic")
+	if err != nil {
+		t.Fatalf("GetMembership: %v", err)
+	}
+	if got == nil || got.CampfireID != "cf_mem_basic" {
+		t.Errorf("GetMembership returned unexpected result: %+v", got)
+	}
+}
+
+// TestOpenMemory_Isolation verifies that two OpenMemory calls with different names
+// produce isolated databases — data written to one is not visible in the other.
+func TestOpenMemory_Isolation(t *testing.T) {
+	s1, err := OpenMemory("test_isolation_a")
+	if err != nil {
+		t.Fatalf("OpenMemory(a): %v", err)
+	}
+	defer s1.Close()
+
+	s2, err := OpenMemory("test_isolation_b")
+	if err != nil {
+		t.Fatalf("OpenMemory(b): %v", err)
+	}
+	defer s2.Close()
+
+	m := Membership{
+		CampfireID:    "cf_isolation_test",
+		TransportDir:  "/tmp/fake",
+		JoinProtocol:  "open",
+		Role:          "full",
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	}
+	if err := s1.AddMembership(m); err != nil {
+		t.Fatalf("s1.AddMembership: %v", err)
+	}
+
+	// s2 must not see the membership written to s1.
+	got, err := s2.GetMembership("cf_isolation_test")
+	if err != nil {
+		t.Fatalf("s2.GetMembership: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected isolation: s2 should not see s1's membership, got %+v", got)
+	}
+}
+
+// TestOpenMemory_EmptyNameError verifies that OpenMemory rejects an empty name.
+func TestOpenMemory_EmptyNameError(t *testing.T) {
+	_, err := OpenMemory("")
+	if err == nil {
+		t.Fatal("expected error for empty name, got nil")
+	}
+}
+
 func TestAddListMembership(t *testing.T) {
 	s := testStore(t)
 
