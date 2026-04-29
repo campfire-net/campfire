@@ -193,6 +193,8 @@ The `role` field records the membership role of the relaying node at the time of
 
 A bridge relay sets role to `"blind-relay"` on forwarded messages regardless of the bridge's actual membership role. This marks the hop as a blind relay for provenance tier computation (see **Membership Roles** below). The role annotation is per-hop, not a membership change — the bridge's membership role is unchanged.
 
+For the bridge transport relay model (re-publish vs pass-through modes, non-goals, and threat model), see [`cf-protocol/docs/bridge.md`](../cf-protocol/docs/bridge.md).
+
 The membership hash allows verification without embedding the full member list. Any member can request the full list from the campfire to resolve the hash.
 
 A message originating in a deeply nested campfire and reaching an agent five levels up carries five hops. Each hop is independently verifiable. The full chain proves the path the message traveled and the state of each campfire at the time of relay.
