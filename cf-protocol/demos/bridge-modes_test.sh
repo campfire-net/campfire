@@ -2,7 +2,10 @@
 # cf-protocol/demos/bridge-modes_test.sh
 #
 # TDD test for campfireagent-7a4: asserts bridge.md exists and contains
-# all six required sections before the demo script is run.
+# all required sections. Updated post-veracity-finding to assert:
+#   - 0.30.0 documents re-publish mode only
+#   - pass-through is documented as planned (not implemented)
+#   - no fictional Forward field claims as implemented API
 #
 # Run:
 #   cd ~/projects/campfire
@@ -14,6 +17,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRIDGE_DOC="$REPO_ROOT/cf-protocol/docs/bridge.md"
+BRIDGE_GO="$REPO_ROOT/pkg/protocol/bridge.go"
 
 PASS=0
 FAIL=0
@@ -27,6 +31,30 @@ assert_contains() {
   else
     echo "  FAIL: $description" >&2
     FAIL=$((FAIL + 1))
+  fi
+}
+
+assert_not_contains() {
+  local description="$1"
+  local pattern="$2"
+  if grep -q "$pattern" "$BRIDGE_DOC" 2>/dev/null; then
+    echo "  FAIL: $description (found but should not exist)" >&2
+    FAIL=$((FAIL + 1))
+  else
+    echo "  PASS: $description"
+    PASS=$((PASS + 1))
+  fi
+}
+
+assert_go_not_contains() {
+  local description="$1"
+  local pattern="$2"
+  if grep -q "$pattern" "$BRIDGE_GO" 2>/dev/null; then
+    echo "  FAIL: $description (found in bridge.go but should not exist)" >&2
+    FAIL=$((FAIL + 1))
+  else
+    echo "  PASS: $description"
+    PASS=$((PASS + 1))
   fi
 }
 
@@ -47,14 +75,14 @@ else
 fi
 echo ""
 
-# ── Step 2: six required sections ─────────────────────────────────────────
+# ── Step 2: required sections ─────────────────────────────────────────────
 echo "Checking required sections:"
-assert_contains "Section: Modes"                         "## Modes"
-assert_contains "Section: When to Use"                   "## When to Use"
-assert_contains "Section: The Blind-Relay Role"          "## The Blind-Relay Role"
-assert_contains "Section: What Bridge Does NOT Do"       "## What Bridge Does NOT Do"
-assert_contains "Section: Pass-Through Threat Model"     "## Pass-Through Threat Model"
-assert_contains "Section: Hosted-Reader Case Study"      "## Hosted-Reader Case Study"
+assert_contains "Section: Mode (re-publish)"              "## Mode"
+assert_contains "Section: When to Use"                    "## When to Use"
+assert_contains "Section: The Blind-Relay Role"           "## The Blind-Relay Role"
+assert_contains "Section: What Bridge Does NOT Do"        "## What Bridge Does NOT Do"
+assert_contains "Section: Planned for 0.30.x"             "## Planned for 0.30.x"
+assert_contains "Section: Hosted-Reader Case Study"       "## Hosted-Reader Case Study"
 echo ""
 
 # ── Step 3: non-goals — adversarial condition ──────────────────────────────
@@ -64,7 +92,22 @@ assert_contains "States bridge does not decrypt/re-sign"      "decrypt"
 assert_contains "States bridge does not cache"                "cache"
 echo ""
 
-# ── Step 4: cross-links ────────────────────────────────────────────────────
+# ── Step 4: 0.30.0 is re-publish only; pass-through is planned ────────────
+echo "Checking 0.30.0 implementation status:"
+assert_contains "0.30.0 mentioned as re-publish baseline"     "0.30.0"
+assert_contains "Pass-through documented as planned"          "Planned"
+assert_contains "rd item campfireagent-4a0 referenced"        "campfireagent-4a0"
+echo ""
+
+# ── Step 5: no fictional Forward field claims ──────────────────────────────
+echo "Checking no fictional Forward flag documentation:"
+assert_not_contains "No 'Forward: true' as implemented API"  "Forward: true"
+assert_not_contains "No 'Forward: false' as implemented API" "Forward: false"
+assert_go_not_contains "Forward field absent from BridgeOptions struct" \
+  "Forward[[:space:]]bool"
+echo ""
+
+# ── Step 6: cross-links ────────────────────────────────────────────────────
 echo "Checking cross-links:"
 assert_contains "Links to protocol-spec.md"   "protocol-spec.md"
 echo ""
