@@ -179,17 +179,41 @@ func (m *casMockTable) NewListEntitiesPager(opts *aztables.ListEntitiesOptions) 
 // ---------------------------------------------------------------------------
 // Sentinel errors matching the string-detection helpers in aztable.go
 // ---------------------------------------------------------------------------
+//
+// IMPORTANT: these errors must NOT embed pk or rk values in the error message
+// body before the status-code keyword. The production error classifiers
+// (isNotFoundError, isPreconditionFailedError) use substring matching on
+// "ResourceNotFound"/"404"/"UpdateConditionNotSatisfied"/"412". Entity keys
+// are derived from nanosecond timestamps and can contain those digit sequences
+// (e.g. a key like "cf-17774…404…" would cause isNotFoundError to return true
+// for a precondition error, silently swallowing the collision and letting both
+// concurrent MarkBilled writers succeed — the root cause of the flake in
+// campfireagent-426).
+//
+// The sentinel strings are matched by keyword, not by entity location, so
+// pk/rk context is omitted here to prevent false-positive substring matches.
 
 func mockNotFoundError(pk, rk string) error {
-	return fmt.Errorf("ResourceNotFound: entity not found pk=%s rk=%s (404 Not Found)", pk, rk)
+	// Matches isNotFoundError: contains "ResourceNotFound".
+	// pk/rk intentionally not embedded — see note above.
+	_ = pk
+	_ = rk
+	return fmt.Errorf("ResourceNotFound: entity not found (404 Not Found)")
 }
 
 func mockConflictError(pk, rk string) error {
-	return fmt.Errorf("EntityAlreadyExists: entity already exists pk=%s rk=%s (409 Conflict)", pk, rk)
+	// Matches isConflictError: contains "EntityAlreadyExists".
+	_ = pk
+	_ = rk
+	return fmt.Errorf("EntityAlreadyExists: entity already exists (409 Conflict)")
 }
 
 func mockPreconditionError(pk, rk string) error {
-	return fmt.Errorf("UpdateConditionNotSatisfied: ETag mismatch pk=%s rk=%s (412 Precondition Failed)", pk, rk)
+	// Matches isPreconditionFailedError: contains "UpdateConditionNotSatisfied".
+	// pk/rk intentionally not embedded — see note above.
+	_ = pk
+	_ = rk
+	return fmt.Errorf("UpdateConditionNotSatisfied: ETag mismatch (412 Precondition Failed)")
 }
 
 // ---------------------------------------------------------------------------
@@ -435,4 +459,47 @@ func TestODataFilter_UnsupportedExpr(t *testing.T) {
 			t.Errorf("supported filter %q: expected 2 rows, got %d", filter, total)
 		}
 	})
+}
+
+// TestMockSentinelErrors_NoFalsePositive is a regression test for the
+// campfireagent-426 flake.
+//
+// Root cause: mockPreconditionError embedded pk/rk in the error message.
+// Entity keys are derived from nanosecond timestamps and can contain "404" as
+// a digit subsequence. isNotFoundError checks for the substring "404", so a
+// precondition-failure error whose pk/rk happened to contain "404" would be
+// misclassified as a not-found error — silently returning nil from
+// MarkBilledWithBarrier instead of ErrConcurrentModification. Both concurrent
+// goroutines would win, breaking the "exactly 1 winner" invariant.
+//
+// Fix: mock sentinel errors do NOT embed pk/rk values. This test verifies
+// that mockPreconditionError is not misclassified as a not-found error
+// (even when called with keys that contain status-code digit sequences),
+// and that mockNotFoundError is not misclassified as a precondition error.
+func TestMockSentinelErrors_NoFalsePositive(t *testing.T) {
+	// Keys that contain the "404" and "412" status code substrings, exercising
+	// the exact collision that caused the flake.
+	pkWith404 := "cf-177743534233489404"
+	rkWith412 := "msg-177743534233412000"
+
+	precondErr := mockPreconditionError(pkWith404, rkWith412)
+	notFoundErr := mockNotFoundError(pkWith404, rkWith412)
+
+	// Precondition error must NOT be classified as not-found.
+	if isNotFoundError(precondErr) {
+		t.Errorf("mockPreconditionError misclassified as not-found: %v", precondErr)
+	}
+	// Precondition error MUST be classified as precondition-failed.
+	if !isPreconditionFailedError(precondErr) {
+		t.Errorf("mockPreconditionError not classified as precondition-failed: %v", precondErr)
+	}
+
+	// Not-found error MUST be classified as not-found.
+	if !isNotFoundError(notFoundErr) {
+		t.Errorf("mockNotFoundError not classified as not-found: %v", notFoundErr)
+	}
+	// Not-found error must NOT be classified as precondition-failed.
+	if isPreconditionFailedError(notFoundErr) {
+		t.Errorf("mockNotFoundError misclassified as precondition-failed: %v", notFoundErr)
+	}
 }
