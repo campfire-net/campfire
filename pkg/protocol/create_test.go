@@ -27,13 +27,6 @@ import (
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
-// portBaseCreate returns a per-process port offset for create_test.go.
-// Range: 22000 + pid%500. Distinct from other protocol test files.
-// (portBaseFROST=21000, portBaseP2P uses httptest so no port conflicts).
-func portBaseCreate() int {
-	return 22000 + (os.Getpid() % 500)
-}
-
 // TestCreate runs all Create+Join sub-tests.
 func TestCreate(t *testing.T) {
 	t.Run("FilesystemRoundTrip", testCreateFilesystemRoundTrip)
@@ -127,6 +120,7 @@ func testCreateFilesystemRoundTrip(t *testing.T) {
 }
 
 // testCreateP2PHTTPRoundTrip: Create+Join+Send+Read over real in-process HTTP servers.
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testCreateP2PHTTPRoundTrip(t *testing.T) {
 	t.Helper()
 
@@ -143,17 +137,11 @@ func testCreateP2PHTTPRoundTrip(t *testing.T) {
 		cfhttp.OverridePollTransportForTest(http.DefaultTransport)
 	})
 
-	base := portBaseCreate()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+0)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+1)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-	endpointB := fmt.Sprintf("http://%s", addrB)
-
 	transportDirA := t.TempDir()
 	transportDirB := t.TempDir()
 	beaconDir := t.TempDir()
 
-	// Client A: creator with its own store and transport.
+	// Client A: creator with its own store and transport (OS-assigned port).
 	configDirA := t.TempDir()
 	clientA, _, err := protocol.Init(configDirA)
 	if err != nil {
@@ -162,12 +150,13 @@ func testCreateP2PHTTPRoundTrip(t *testing.T) {
 	t.Cleanup(func() { clientA.Close() })
 
 	sA := clientA.ClientStore()
-	trA := cfhttp.New(addrA, sA)
+	trA := cfhttp.New("127.0.0.1:0", sA)
 	if err := trA.Start(); err != nil {
 		t.Fatalf("Start transport A: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	endpointA := fmt.Sprintf("http://%s", trA.Addr())
 
 	createResult, err := clientA.Create(protocol.CreateRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trA, MyEndpoint: endpointA, Dir: transportDirA},
@@ -178,7 +167,7 @@ func testCreateP2PHTTPRoundTrip(t *testing.T) {
 	}
 	campfireID := createResult.CampfireID
 
-	// Client B: joiner with its own store and transport.
+	// Client B: joiner with its own store and transport (OS-assigned port).
 	configDirB := t.TempDir()
 	clientB, _, err := protocol.Init(configDirB)
 	if err != nil {
@@ -187,12 +176,13 @@ func testCreateP2PHTTPRoundTrip(t *testing.T) {
 	t.Cleanup(func() { clientB.Close() })
 
 	sB := clientB.ClientStore()
-	trB := cfhttp.New(addrB, sB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("Start transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	endpointB := fmt.Sprintf("http://%s", trB.Addr())
 
 	if _, err := clientB.Join(protocol.JoinRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
@@ -353,6 +343,7 @@ func testCreateSelfAdmitted(t *testing.T) {
 
 // testCreateDKGCompleted: after Create() with threshold=2 on P2P HTTP transport,
 // store.GetThresholdShare() returns non-nil share.
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testCreateDKGCompleted(t *testing.T) {
 	t.Helper()
 
@@ -365,10 +356,6 @@ func testCreateDKGCompleted(t *testing.T) {
 		})
 	})
 
-	base := portBaseCreate()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+2)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-
 	transportDir := t.TempDir()
 	beaconDir := t.TempDir()
 
@@ -379,12 +366,13 @@ func testCreateDKGCompleted(t *testing.T) {
 	}
 	t.Cleanup(func() { client.Close() })
 
-	tr := cfhttp.New(addrA, client.ClientStore())
+	tr := cfhttp.New("127.0.0.1:0", client.ClientStore())
 	if err := tr.Start(); err != nil {
 		t.Fatalf("Start transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	endpointA := fmt.Sprintf("http://%s", tr.Addr())
 
 	result, err := client.Create(protocol.CreateRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: tr, MyEndpoint: endpointA, Dir: transportDir},

@@ -34,12 +34,6 @@ import (
 	fsTransport "github.com/campfire-net/campfire/pkg/transport/fs"
 )
 
-// portBaseEvict returns a per-process port base for evict_test.go.
-// Range: 24000 + pid%500. Distinct from other protocol test files.
-func portBaseEvict() int {
-	return 24000 + (os.Getpid() % 500)
-}
-
 // newEvictClient creates a fresh protocol.Client with a new identity and SQLite store.
 func newEvictClient(t *testing.T) *protocol.Client {
 	t.Helper()
@@ -204,22 +198,16 @@ func testEvictRemovesFromMembers(t *testing.T) {
 // A creates P2P HTTP campfire with threshold=2, 3 members (A, B, C join).
 // All 3 can send. A evicts B. After evict: A sends with new DKG shares (succeeds).
 // Old group public key != new group public key.
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testEvictDKGRekey(t *testing.T) {
 	t.Helper()
 
 	_ = http.DefaultClient // ensure net/http is used
 
-	base := portBaseEvict()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+10)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+11)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+12)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-	endpointB := fmt.Sprintf("http://%s", addrB)
-	endpointC := fmt.Sprintf("http://%s", addrC)
-
 	clientA := newEvictClient(t)
 	sA := clientA.ClientStore()
-	trA := startHTTPTransport(t, addrA, sA)
+	trA := startHTTPTransport(t, "127.0.0.1:0", sA)
+	endpointA := fmt.Sprintf("http://%s", trA.Addr())
 
 	transportDirA := t.TempDir()
 	beaconDir := t.TempDir()
@@ -239,7 +227,8 @@ func testEvictDKGRekey(t *testing.T) {
 	// B joins.
 	clientB := newEvictClient(t)
 	sB := clientB.ClientStore()
-	trB := startHTTPTransport(t, addrB, sB)
+	trB := startHTTPTransport(t, "127.0.0.1:0", sB)
+	endpointB := fmt.Sprintf("http://%s", trB.Addr())
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
@@ -252,7 +241,8 @@ func testEvictDKGRekey(t *testing.T) {
 	// C joins.
 	clientC := newEvictClient(t)
 	sC := clientC.ClientStore()
-	trC := startHTTPTransport(t, addrC, sC)
+	trC := startHTTPTransport(t, "127.0.0.1:0", sC)
+	endpointC := fmt.Sprintf("http://%s", trC.Addr())
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trC, MyEndpoint: endpointC, PeerEndpoint: endpointA, Dir: transportDirC},
@@ -431,20 +421,14 @@ func c_updateStoreForRekey(t *testing.T, sA, sC store.Store, cPubKeyHex, newCamp
 // After evict, B starts an HTTP server with its OLD threshold share.
 // A sends a message requiring B as co-signer. This must fail because
 // B's old share is for the old group, not the new one.
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testEvictedMemberCannotCoSign(t *testing.T) {
 	t.Helper()
 
-	base := portBaseEvict()
-	addrA2 := fmt.Sprintf("127.0.0.1:%d", base+20)
-	addrB2 := fmt.Sprintf("127.0.0.1:%d", base+21)
-	addrC2 := fmt.Sprintf("127.0.0.1:%d", base+22)
-	endpointA2 := fmt.Sprintf("http://%s", addrA2)
-	endpointB2 := fmt.Sprintf("http://%s", addrB2)
-	endpointC2 := fmt.Sprintf("http://%s", addrC2)
-
 	clientA := newEvictClient(t)
 	sA := clientA.ClientStore()
-	trA := startHTTPTransport(t, addrA2, sA)
+	trA := startHTTPTransport(t, "127.0.0.1:0", sA)
+	endpointA2 := fmt.Sprintf("http://%s", trA.Addr())
 
 	transportDirA := t.TempDir()
 	beaconDir := t.TempDir()
@@ -461,7 +445,8 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 	// B joins and captures its old threshold share.
 	clientB := newEvictClient(t)
 	sB := clientB.ClientStore()
-	trB := startHTTPTransport(t, addrB2, sB)
+	trB := startHTTPTransport(t, "127.0.0.1:0", sB)
+	endpointB2 := fmt.Sprintf("http://%s", trB.Addr())
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB2, PeerEndpoint: endpointA2, Dir: transportDirB},
@@ -485,7 +470,8 @@ func testEvictedMemberCannotCoSign(t *testing.T) {
 	// C joins.
 	clientC := newEvictClient(t)
 	sC := clientC.ClientStore()
-	trC := startHTTPTransport(t, addrC2, sC)
+	trC := startHTTPTransport(t, "127.0.0.1:0", sC)
+	endpointC2 := fmt.Sprintf("http://%s", trC.Addr())
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trC, MyEndpoint: endpointC2, PeerEndpoint: endpointA2, Dir: transportDirC},
