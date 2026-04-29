@@ -547,6 +547,57 @@ member in local state, the client executes the following probe:
 5. **On fail (unjoin trigger):** The joiner executes the unjoin protocol
    (§11.4).
 
+#### §11.3.1 Probe Timeout False-Positives on High-Latency Campfires
+
+The 5-second verification timeout conflates two **distinct** timeout failure
+modes that require different responses:
+
+**Timeout due to suppression (honeypot):** The campfire received the probe
+write but silently dropped or queued it — the probe never entered the
+message stream. This is the enforcement-mode honeypot scenario (§11.6).
+The probe message will never appear regardless of how long the joiner waits.
+→ **Correct response: unjoin-declaration + leave.**
+
+**Timeout due to latency (false-positive risk):** The campfire accepted the
+probe write and the message is in the stream, but the joiner's read call
+returned before the message was delivered — because the campfire is on a
+high-latency network path (e.g., a relay with > 5 s round-trip, a campfire
+hosted in a distant region, or a backpressured HTTP transport). The probe
+message would appear if the joiner waited longer. This failure mode is
+indistinguishable from suppression at the transport level within the default
+timeout window.
+→ **False-positive risk: the joiner unjoins a legitimate open campfire.**
+
+**The spec does not currently provide a mechanical way to distinguish the two
+modes.** A suppressed probe and a delayed probe look identical to the joiner
+within the timeout window. The design accepts this ambiguity with the following
+acknowledged trade-off:
+
+- The 5-second default is intentionally aggressive. It optimizes for
+  fast honeypot detection at the cost of false-positive risk on high-latency
+  campfires.
+- Operators of high-latency campfires (or clients connecting across
+  high-latency paths) SHOULD configure a longer probe timeout via the
+  `discovery.probe_timeout` config key (e.g., `30s` or `60s`). The default
+  of 5 seconds is appropriate for co-located or low-latency deployments.
+- A false-positive unjoin-declaration is forensically benign: the joiner
+  leaves, the snippet is degraded, and the operator can inspect the
+  declaration and identify the timeout as a latency event (probe_msg_id
+  will be present in the campfire's message log, proving the probe was
+  delivered). The joiner may manually re-join outside the auto-join path.
+
+**If a future implementation can distinguish the modes mechanically** (e.g.,
+by checking a transport-level acknowledgement from the send step before
+starting the observe timeout), the behavior SHOULD be updated to:
+- On send-not-acknowledged: treat as suppression → unjoin immediately.
+- On send-acknowledged but observe-timeout: treat as latency → retry with
+  backoff up to a configurable maximum, then degrade (not unjoin).
+
+Until such a transport-level send acknowledgement is available, the 5-second
+timeout with operator-configurable override is the correct posture. File a
+follow-up item if you are implementing the mechanical distinction (it requires
+transport changes and is out of scope for this spec clarification).
+
 ### 11.4 Unjoin Trigger and Protocol
 
 Verification failure means the campfire is behaving inconsistently with
