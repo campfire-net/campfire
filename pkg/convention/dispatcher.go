@@ -11,9 +11,16 @@ import (
 	"sync"
 	"time"
 
+	cfprotocol "github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 )
+
+// ErrReservedOp is returned by RegisterTier1Handler and RegisterTier2Handler
+// when the operationName is one of the ten L1-frozen reserved operations.
+// It is also used as the sentinel for Dispatch to short-circuit reserved ops
+// at the L2 enforcement point (campfireagent-935, protocol-spec.md §Reserved-Op Floor).
+var ErrReservedOp = fmt.Errorf("reserved-op-floor: operation is a reserved L1 operation and cannot be dispatched by a convention server")
 
 // conventionKey is the composite key used to look up dispatch registrations.
 type conventionKey struct {
@@ -97,13 +104,20 @@ func NewConventionDispatcher(s DispatchStore, logger *log.Logger) *ConventionDis
 // RegisterTier1Handler registers a pure-Go convention handler for a specific
 // (campfireID, conventionName, operationName) triple.
 // If a handler was already registered for that triple, it is replaced.
+//
+// Returns ErrReservedOp if operationName is one of the ten L1-frozen reserved
+// operations (campfireagent-935: Stage 1 reserved-op enforcement). The reserved
+// floor cannot be lowered by any convention declaration or parent grant.
 func (d *ConventionDispatcher) RegisterTier1Handler(
 	campfireID, conventionName, operationName string,
 	serverClient *protocol.Client,
 	handler HandlerFunc,
 	serverID string,
 	forgeAccountID string,
-) {
+) error {
+	if cfprotocol.IsReservedOp(operationName) {
+		return fmt.Errorf("convention dispatcher: operation %q is reserved (reserved-op floor, L1 §§2.4): %w", operationName, ErrReservedOp)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.registry[conventionKey{
@@ -117,18 +131,25 @@ func (d *ConventionDispatcher) RegisterTier1Handler(
 		ForgeAccountID: forgeAccountID,
 		Client:         serverClient,
 	}
+	return nil
 }
 
 // RegisterTier2Handler registers an HTTP-based convention handler for a specific
 // (campfireID, conventionName, operationName) triple.
 // If a handler was already registered for that triple, it is replaced.
+//
+// Returns ErrReservedOp if operationName is one of the ten L1-frozen reserved
+// operations (campfireagent-935: Stage 1 reserved-op enforcement).
 func (d *ConventionDispatcher) RegisterTier2Handler(
 	campfireID, conventionName, operationName string,
 	handlerURL string,
 	serverClient *protocol.Client,
 	serverID string,
 	forgeAccountID string,
-) {
+) error {
+	if cfprotocol.IsReservedOp(operationName) {
+		return fmt.Errorf("convention dispatcher: operation %q is reserved (reserved-op floor, L1 §§2.4): %w", operationName, ErrReservedOp)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.registry[conventionKey{
@@ -142,6 +163,7 @@ func (d *ConventionDispatcher) RegisterTier2Handler(
 		ForgeAccountID: forgeAccountID,
 		Client:         serverClient,
 	}
+	return nil
 }
 
 // conventionOpPayload is the JSON payload for a convention:operation invocation message.
@@ -192,6 +214,12 @@ func isConventionInvocationTag(tag string) bool {
 // Dispatch checks a message for convention operation invocation tags and dispatches
 // to the appropriate registered handler. It is non-blocking — actual dispatch work
 // runs in a goroutine. Returns true if a handler was found and dispatch was initiated.
+//
+// Reserved-op enforcement (campfireagent-935): if the operation name is one of the
+// ten L1-frozen reserved operations, Dispatch returns false without invoking any
+// handler. This is the L2 enforcement point (the dispatch interceptor). The check
+// fires even when a handler has been registered for the operation — defence-in-depth
+// against Registration bypass paths.
 func (d *ConventionDispatcher) Dispatch(ctx context.Context, campfireID string, msg *store.MessageRecord) bool {
 	if !hasConventionInvocationTag(msg.Tags) {
 		return false
@@ -203,6 +231,14 @@ func (d *ConventionDispatcher) Dispatch(ctx context.Context, campfireID string, 
 		return false
 	}
 	if op.Convention == "" || op.Operation == "" {
+		return false
+	}
+
+	// L2 reserved-op enforcement: block dispatch of any reserved operation.
+	// This enforces the protocol-spec.md §Reserved-Op Floor at the dispatch
+	// interceptor layer regardless of what is in the registry.
+	if cfprotocol.IsReservedOp(op.Operation) {
+		d.logger.Printf("convention dispatcher: blocked reserved op %q (campfire=%s, msg=%s)", op.Operation, campfireID, msg.ID)
 		return false
 	}
 
@@ -236,6 +272,15 @@ func (d *ConventionDispatcher) DispatchWithCancel(ctx context.Context, cancel co
 		return false
 	}
 	if op.Convention == "" || op.Operation == "" {
+		return false
+	}
+
+	// L2 reserved-op enforcement (campfireagent-935): block reserved ops here too.
+	if cfprotocol.IsReservedOp(op.Operation) {
+		if cancel != nil {
+			cancel()
+		}
+		d.logger.Printf("convention dispatcher: blocked reserved op %q (campfire=%s, msg=%s)", op.Operation, campfireID, msg.ID)
 		return false
 	}
 
