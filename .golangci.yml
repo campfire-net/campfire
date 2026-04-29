@@ -85,6 +85,38 @@ linters:
             - pkg: "github.com/campfire-net/campfire/pkg/naming"
               desc: "B2: L2 (pkg/convention) must not import L3 (pkg/naming). See CONTRIBUTING.md §Cross-Layer Import Policy (design v2 §4.6). Exemptions for seed.go and parser.go are tracked in CONTRIBUTING.md pending §4.3 migration."
 
+        # L1-narrow — cf-protocol/ must not import cf-conventions (or any future L2/L3 layer).
+        #
+        # cf-protocol/ is the Layer-1 substrate module. Its public packages and
+        # internal/ sub-packages must never import convention machinery, authority
+        # evaluators, or any other L2/L3 package. The only allowed imports are
+        # stdlib, external deps, and other cf-protocol/ packages.
+        #
+        # Applies to: all non-test Go files under cf-protocol/.
+        # Exempt: *_test.go files, which may use test infrastructure.
+        #
+        # This is the design v2 §4.6 L1-narrow rule applied to the cf-protocol
+        # directory. When cf-protocol becomes a separate go module, this rule
+        # will enforce the module boundary via go.mod instead.
+        #
+        # Adversarial test: cf-protocol/protocol/depguard_test.go proves this
+        # rule fires on an intentional violation.
+        L1-narrow:
+          list-mode: lax
+          files:
+            - "**/cf-protocol/**/*.go"
+            - "**/cf-protocol/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/campfire-net/campfire/cf-conventions"
+              desc: "L1-narrow: cf-protocol/ must not import cf-conventions (L2). See design v2 §4.6"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/**"
+              desc: "L1-narrow: cf-protocol/ must not import any cf-conventions sub-package (L2/L3). See design v2 §4.6"
+            - pkg: "github.com/campfire-net/campfire/pkg/convention"
+              desc: "L1-narrow: cf-protocol/ must not import convention machinery (L2). See design v2 §4.6"
+            - pkg: "github.com/campfire-net/campfire/pkg/convention/**"
+              desc: "L1-narrow: cf-protocol/ must not import convention sub-packages (L2). See design v2 §4.6"
+
         # B3 — L3 must not import L2 internal sub-packages.
         #
         # L3 implementations (pkg/trust, pkg/naming) are permitted to import the public
