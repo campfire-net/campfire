@@ -105,6 +105,15 @@ func (c *Client) Evict(req EvictRequest) (*EvictResult, error) {
 		return nil, fmt.Errorf("protocol.Client.Evict: not a member of campfire %s", shortID(req.CampfireID))
 	}
 
+	// Serialize membership mutations for this campfire. The lock covers the full
+	// read-membership -> (optional) run-DKG -> write-new-campfire-ID sequence.
+	// DKG is local (in-process), so no network I/O is held under the lock.
+	// This prevents two concurrent Evict calls from racing through rekeyAfterEvict
+	// with inconsistent membership snapshots (FIX-1/MB1).
+	mu := c.membershipLock(req.CampfireID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	switch transport.ResolveType(*m) {
 	case transport.TypePeerHTTP:
 		return c.evictP2PHTTP(req, m)

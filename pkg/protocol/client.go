@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/campfire"
@@ -95,8 +96,14 @@ type Syncer interface {
 // the local store before querying. For HTTP-transport campfires, messages are
 // delivered via push, so sync is skipped.
 //
+// Membership-mutation operations (Admit, Leave, Evict, Disband) on the same
+// campfire ID are serialized via membershipMu -- a per-campfire write lock that
+// prevents concurrent DKG runs from operating on inconsistent membership
+// snapshots. The lock is NOT held across network I/O (DKG is local).
+//
 // Client is NOT safe for concurrent use from multiple goroutines without external
-// synchronization. Each goroutine should use its own Client.
+// synchronization for non-membership operations. Each goroutine should use its
+// own Client for those operations.
 type Client struct {
 	store         store.Store
 	identity      *identity.Identity
@@ -106,6 +113,23 @@ type Client struct {
 	enforcer      *ScopeEnforcer    // nil when no scope restrictions apply
 	profileCache  *ProfileCache     // disk-persisting display name cache; nil when using New() directly
 	syncer        Syncer            // optional; when set, called before read/subscribe/await operations
+
+	// membershipMu serializes membership-mutation operations (Admit, Leave, Evict,
+	// Disband) on a per-campfire basis. Keyed by campfire ID; values are *sync.Mutex.
+	// Initialized lazily via membershipLock(). A sync.Map is used so that the
+	// per-campfire mutex can be created without holding a global lock.
+	membershipMu sync.Map
+}
+
+// membershipLock returns the per-campfire mutex for campfireID, creating it if
+// needed. The caller must call mu.Unlock() when done.
+//
+// Lock scope MUST NOT include network I/O. DKG is local (in-process), so the
+// lock can safely wrap the full read-membership -> run-DKG -> write-new-ID
+// sequence without risk of deadlock from a network call.
+func (c *Client) membershipLock(campfireID string) *sync.Mutex {
+	actual, _ := c.membershipMu.LoadOrStore(campfireID, &sync.Mutex{})
+	return actual.(*sync.Mutex)
 }
 
 // ProfileCache returns the disk-persisting display name cache for this client.

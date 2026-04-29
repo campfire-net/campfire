@@ -419,6 +419,12 @@ func (c *Client) Admit(req AdmitRequest) error {
 		role = campfire.RoleFull
 	}
 
+	// Serialize membership mutations for this campfire (unified lock with Leave,
+	// Evict, and Disband -- FIX-1/MB1).
+	mu := c.membershipLock(req.CampfireID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	switch transport.ResolveType(*m) {
 	case transport.TypePeerHTTP:
 		return c.admitP2PHTTP(req.CampfireID, req.MemberPubKeyHex, role)
