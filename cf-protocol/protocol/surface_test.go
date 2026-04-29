@@ -56,6 +56,33 @@ func TestReservedTagsAccessible(t *testing.T) {
 	}
 }
 
+// TestReservedOpsAccessible verifies the reserved-op floor symbols are exported
+// from the cf-protocol public surface (campfireagent-935).
+func TestReservedOpsAccessible(t *testing.T) {
+	const wantCount = 10
+	if got := len(cfprotocol.ReservedOps); got != wantCount {
+		t.Errorf("ReservedOps: want %d ops, got %d", wantCount, got)
+	}
+
+	// IsReservedOp must return true for known reserved ops.
+	knownReserved := []string{"disband", "evict", "admit", "grant", "revoke",
+		"delegation-grant", "delegation-revoke", "delegation-accept",
+		"member-roster", "compaction"}
+	for _, op := range knownReserved {
+		if !cfprotocol.IsReservedOp(op) {
+			t.Errorf("IsReservedOp(%q) = false, want true", op)
+		}
+	}
+
+	// IsReservedOp must return false for non-reserved ops.
+	nonReserved := []string{"claim", "publish", "subscribe", "my-op", ""}
+	for _, op := range nonReserved {
+		if cfprotocol.IsReservedOp(op) {
+			t.Errorf("IsReservedOp(%q) = true, want false", op)
+		}
+	}
+}
+
 // TestTransportInterfaceExists verifies the Transport interface is exported.
 func TestTransportInterfaceExists(t *testing.T) {
 	// Verify FilesystemTransport implements Transport.

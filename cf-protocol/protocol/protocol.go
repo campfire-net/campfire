@@ -14,6 +14,7 @@
 //   - Request/result types for every Client method.
 //   - Reserved tags: TagFuture ("future") and TagFulfills ("fulfills") — the DAG
 //     primitive pair frozen at wire level.
+//   - Reserved ops: IsReservedOp / ReservedOps — the 10-op floor frozen at L1.
 //   - Error sentinels: ErrAwaitTimeout, ErrNotMember, ErrScopeDenied.
 //
 // # Deliberately NOT in the public surface
@@ -40,7 +41,10 @@
 // consumers until the physical move is complete in a later stage.
 package protocol
 
-import pkgprotocol "github.com/campfire-net/campfire/pkg/protocol"
+import (
+	pkgprotocol "github.com/campfire-net/campfire/pkg/protocol"
+	reservedops "github.com/campfire-net/campfire/cf-protocol/internal/reserved-ops"
+)
 
 // ── Reserved tags (wire-level primitives, frozen at cf-protocol 1.0) ─────────
 
@@ -182,3 +186,24 @@ var InitWithConfig = pkgprotocol.InitWithConfig
 // Useful for tests and for embedded use cases where the caller manages
 // the store lifecycle directly.
 var New = pkgprotocol.New
+
+// ── Reserved-op floor (L1 freeze, campfireagent-935) ──────────────────────────
+
+// ReservedOps is the authoritative list of the ten reserved operations frozen
+// at cf-protocol 1.0. No convention declaration and no parent grant can lower
+// the gate on any of these ops; they require owner-level authority.
+//
+// This is the public re-export of cf-protocol/internal/reserved-ops.ReservedOps.
+// L2 enforcement (pkg/convention dispatcher) MUST reference this list so that
+// the single source of truth stays at L1.
+//
+// Wire value: sorted for stable iteration. Additions are MAJOR bumps
+// (the F6 Commitment — see cf-protocol/COMPATIBILITY.md).
+var ReservedOps = reservedops.ReservedOps
+
+// IsReservedOp reports whether op is one of the ten reserved operations.
+// L2 enforcement code (convention dispatcher) calls this before registering or
+// dispatching any convention operation. Returns true for all ops in ReservedOps.
+//
+// This is the public re-export of cf-protocol/internal/reserved-ops.IsReserved.
+var IsReservedOp = reservedops.IsReserved
