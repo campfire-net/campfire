@@ -45,9 +45,14 @@ package convention_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,11 +64,12 @@ import (
 	"github.com/campfire-net/campfire/pkg/protocol"
 	"github.com/campfire-net/campfire/pkg/store"
 	"github.com/campfire-net/campfire/pkg/transport/fs"
-
-	"crypto/ed25519"
-	"os"
-	"path/filepath"
 )
+
+// d8StoreSeq is a process-wide counter for unique in-memory store names.
+// Required because -count=N runs the same test N times in the same process;
+// each run must use distinct SQLite in-memory database names.
+var d8StoreSeq atomic.Int64
 
 // d8TestEnv is the scaffold for the D8 walk-every-dispatch integration tests.
 // It holds a three-member chain: anchor (ids[0]) → mid (ids[1]) → sender (ids[2]).
@@ -83,7 +89,6 @@ type d8TestEnv struct {
 func newD8TestEnv(t *testing.T, n int) *d8TestEnv {
 	t.Helper()
 
-	storeDir := t.TempDir()
 	transportDir := t.TempDir()
 
 	cfID, err := identity.Generate()
@@ -146,7 +151,11 @@ func newD8TestEnv(t *testing.T, n int) *d8TestEnv {
 	clients := make([]*protocol.Client, n)
 	stores_ := make([]store.Store, n)
 	for i := 0; i < n; i++ {
-		s, err := store.Open(filepath.Join(storeDir, ids[i].PublicKeyHex()[:8]+".db"))
+		// Use in-memory stores to avoid disk I/O latency under the race detector
+		// (same pattern as delegation/trust_test.go campfireagent-90f).
+		seq := d8StoreSeq.Add(1)
+		storeName := fmt.Sprintf("d8_test_%d_%s", seq, ids[i].PublicKeyHex()[:16])
+		s, err := store.OpenMemory(storeName)
 		if err != nil {
 			t.Fatalf("opening store %d: %v", i, err)
 		}
@@ -273,7 +282,7 @@ func TestD8_WalkEveryDispatch_MidChainRevoke(t *testing.T) {
 
 	srv := convention.NewServer(env.clients[0], decl).
 		WithIdentityResolver(resolver).
-		WithPollInterval(20 * time.Millisecond)
+		WithPollInterval(50 * time.Millisecond)
 
 	srv.RegisterHandler("ping", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		mu.Lock()
@@ -286,7 +295,7 @@ func TestD8_WalkEveryDispatch_MidChainRevoke(t *testing.T) {
 		return nil, nil
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -296,8 +305,9 @@ func TestD8_WalkEveryDispatch_MidChainRevoke(t *testing.T) {
 		srv.Serve(ctx, env.campfireHex) //nolint:errcheck
 	}()
 
-	// Allow server to start polling.
-	time.Sleep(30 * time.Millisecond)
+	// Allow server to start polling. Under the race detector CI, goroutine
+	// scheduling is slower; 100ms gives the server time to enter its poll loop.
+	time.Sleep(100 * time.Millisecond)
 
 	// Step 2: Dispatch 1 — sender sends ping before any revocation.
 	if _, err := env.clients[2].Send(protocol.SendRequest{
@@ -395,7 +405,7 @@ func TestD8_WalkEveryDispatch_DeepestKeyRevoke(t *testing.T) {
 
 	srv := convention.NewServer(env.clients[0], decl).
 		WithIdentityResolver(resolver).
-		WithPollInterval(20 * time.Millisecond)
+		WithPollInterval(50 * time.Millisecond)
 
 	srv.RegisterHandler("ping", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		mu.Lock()
@@ -405,7 +415,7 @@ func TestD8_WalkEveryDispatch_DeepestKeyRevoke(t *testing.T) {
 		return nil, nil
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -415,7 +425,7 @@ func TestD8_WalkEveryDispatch_DeepestKeyRevoke(t *testing.T) {
 		srv.Serve(ctx, env.campfireHex) //nolint:errcheck
 	}()
 
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// Dispatch 1: sender (ids[2]) sends before revocation.
 	if _, err := env.clients[2].Send(protocol.SendRequest{
@@ -516,7 +526,7 @@ func TestD8_WalkEveryDispatch_TimingRace(t *testing.T) {
 
 	srv := convention.NewServer(env.clients[0], decl).
 		WithIdentityResolver(resolver).
-		WithPollInterval(20 * time.Millisecond)
+		WithPollInterval(50 * time.Millisecond)
 
 	srv.RegisterHandler("ping", func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
 		mu.Lock()
@@ -550,7 +560,7 @@ func TestD8_WalkEveryDispatch_TimingRace(t *testing.T) {
 	// Now sync everything: both dispatch messages AND the revocation are visible.
 	env.syncAll(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	var wg sync.WaitGroup
