@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -267,7 +268,15 @@ func evalODataPrimitive(entity map[string]any, expr string) bool {
 			return v <= num
 		}
 	}
-	return true
+	// Default-deny: unrecognised filter expression does NOT match any row.
+	// Returning true here would silently return ALL rows when a new filter
+	// pattern is added but not yet taught to the mock — masking bugs.
+	// Supported patterns: string " eq '<val>'", numeric " eq/gt/lt/ge/le <n>".
+	// Callers verified (2026-04-29): evalODataOr (via evalODataAnd/mockMatchesFilter),
+	// exercised by: TestODataFilter_UnsupportedExpr (new), TestCAS_MarkBilled_* via
+	// ListUnbilledDispatches, helperCASSetupUnbilled, NewListEntitiesPager usage in
+	// ListStaleDispatches / ListExpiredDispatches — none rely on default-allow.
+	return false
 }
 
 func parseStringEq(expr string) (field, val string, ok bool) {
@@ -349,4 +358,81 @@ func pkrkFromJSON(data []byte) (pk, rk string, err error) {
 // Used by CAS contract tests in dispatch_store_cas_test.go.
 func NewMockDispatchStore() *TableDispatchStore {
 	return NewDispatchStoreFromClients(newCASMockTable(), newCASMockTable())
+}
+
+// TestODataFilter_UnsupportedExpr verifies that evalODataPrimitive returns false
+// (default-deny) for filter expressions that it does not recognise.
+//
+// Before the fix, it returned true — silently returning ALL rows when a caller
+// supplied a filter the mock didn't understand (e.g. " ne ", " contains ", or
+// a PartitionKey range filter). This would mask bugs in future callers.
+func TestODataFilter_UnsupportedExpr(t *testing.T) {
+	tbl := newCASMockTable()
+
+	// Seed two rows with distinct PartitionKeys.
+	entity := func(pk, rk string) []byte {
+		b, _ := json.Marshal(map[string]any{
+			"PartitionKey": pk,
+			"RowKey":       rk,
+			"Status":       "fulfilled",
+		})
+		return b
+	}
+	ctx := context.Background()
+	if _, err := tbl.AddEntity(ctx, entity("pk-a", "rk-1"), nil); err != nil {
+		t.Fatalf("AddEntity pk-a: %v", err)
+	}
+	if _, err := tbl.AddEntity(ctx, entity("pk-b", "rk-2"), nil); err != nil {
+		t.Fatalf("AddEntity pk-b: %v", err)
+	}
+
+	unsupportedFilters := []string{
+		"Status ne 'fulfilled'",                      // ne operator — not implemented
+		"substringof('foo', Status)",                 // OData function — not implemented
+		"PartitionKey ge 'pk-a' and PartitionKey lt 'pk-z'", // range filter — not implemented
+		"unknownField bogusOp 42",                    // completely unrecognised expression
+	}
+
+	for _, filter := range unsupportedFilters {
+		filter := filter
+		t.Run(filter, func(t *testing.T) {
+			pager := tbl.NewListEntitiesPager(&aztables.ListEntitiesOptions{
+				Filter: &filter,
+			})
+			var rows []aztables.ListEntitiesResponse
+			for pager.More() {
+				page, err := pager.NextPage(ctx)
+				if err != nil {
+					t.Fatalf("NextPage: %v", err)
+				}
+				rows = append(rows, page)
+			}
+			var total int
+			for _, page := range rows {
+				total += len(page.Entities)
+			}
+			if total != 0 {
+				t.Errorf("unsupported filter %q: expected 0 rows (default-deny), got %d", filter, total)
+			}
+		})
+	}
+
+	// Sanity: a supported filter still returns matching rows.
+	t.Run("supported_filter_still_works", func(t *testing.T) {
+		filter := "Status eq 'fulfilled'"
+		pager := tbl.NewListEntitiesPager(&aztables.ListEntitiesOptions{
+			Filter: &filter,
+		})
+		var total int
+		for pager.More() {
+			page, err := pager.NextPage(ctx)
+			if err != nil {
+				t.Fatalf("NextPage: %v", err)
+			}
+			total += len(page.Entities)
+		}
+		if total != 2 {
+			t.Errorf("supported filter %q: expected 2 rows, got %d", filter, total)
+		}
+	})
 }
