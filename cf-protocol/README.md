@@ -49,6 +49,15 @@ rejected outright instead of being silently pinned.
 
 ### How cf Detects an Ephemeral Filesystem
 
+> ⚠️ **The `CF_NO_PINS` mechanism described below is PLANNED for 0.30.x and
+> is NOT IMPLEMENTED in 0.30.0.** Setting `CF_NO_PINS=1` in 0.30.0 has no
+> effect — `pkg/trust/pin.go` contains no env-var bypass codepath and no
+> write probe. For stateless deployments today, use the operator alternatives
+> documented in [Operator Action Required](#operator-action-required-to-enable-convention-trust-without-tofu)
+> (`cf trust pin` pre-seeding or `[trust]` in config.toml).
+>
+> Implementation tracked in: campfireagent-7ad
+
 `cf` detects an ephemeral filesystem using the following heuristics, evaluated
 at `PinStore` initialization:
 

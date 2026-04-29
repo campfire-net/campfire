@@ -107,18 +107,28 @@ assert_contains "README names stateless-deployment categories (Lambda/Wasm/Docke
     "$README_CONTENT" \
     "Lambda"
 
-# ── Assertion 5: Disable mechanism documented ───────────────────────────────
-section "5. TOFU disable mechanism documented"
-assert_contains "README documents CF_NO_PINS environment variable" \
+# ── Assertion 5: Disable mechanism documented as PLANNED (NOT IMPLEMENTED) ──
+# CF_NO_PINS is forward-spec only in 0.30.0. The README must:
+#   a. Still document CF_NO_PINS so operators know the planned interface.
+#   b. Include a prominent warning that it is NOT IMPLEMENTED in 0.30.0.
+#   c. State it is PLANNED for 0.30.x.
+section "5. TOFU disable mechanism documented as PLANNED / NOT IMPLEMENTED"
+assert_contains "README documents CF_NO_PINS environment variable (forward-spec)" \
     "$README_CONTENT" \
     "CF_NO_PINS"
 
-assert_contains "README states TOFU is refused in ephemeral filesystems" \
+assert_contains "README warns that CF_NO_PINS is NOT IMPLEMENTED in 0.30.0" \
     "$README_CONTENT" \
-    "refuses"
+    "NOT IMPLEMENTED in 0.30.0"
 
-# ── Assertion 6: Alternatives documented ────────────────────────────────────
-section "6. Alternatives to TOFU documented"
+assert_contains "README states CF_NO_PINS is PLANNED for 0.30.x" \
+    "$README_CONTENT" \
+    "PLANNED for 0.30.x"
+
+# ── Assertion 6: Alternatives documented as CURRENTLY IMPLEMENTED ────────────
+# Operator alternatives (cf trust pin pre-seeding, [trust] config.toml) are
+# the ONLY working mechanisms in 0.30.0 and must be clearly documented.
+section "6. Operator alternatives documented (implemented today)"
 assert_contains "README documents explicit key pinning as alternative" \
     "$README_CONTENT" \
     "cf trust pin"
@@ -126,6 +136,10 @@ assert_contains "README documents explicit key pinning as alternative" \
 assert_contains "README documents operator-supplied trust as alternative" \
     "$README_CONTENT" \
     "operator"
+
+assert_contains "README directs readers to Operator Alternatives for 0.30.0" \
+    "$README_CONTENT" \
+    "operator alternatives"
 
 # ── Adversarial: security posture difference explicitly stated ───────────────
 section "Adversarial: security posture difference explicitly stated"
