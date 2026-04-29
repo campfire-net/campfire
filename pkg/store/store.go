@@ -457,6 +457,39 @@ func Open(path string) (Store, error) {
 	}, nil
 }
 
+// OpenMemory opens an in-memory SQLite store with the given unique name.
+// All instances with the same name share the same in-memory database (SQLite
+// shared-cache URI mode), so callers must pass a unique name per logical store.
+//
+// OpenMemory is intended for tests that need fast store creation without disk
+// I/O. Production code should use Open.
+func OpenMemory(name string) (Store, error) {
+	if name == "" {
+		return nil, fmt.Errorf("OpenMemory: name must not be empty")
+	}
+	// file:<name>?mode=memory&cache=shared opens a named in-memory database.
+	// The cache=shared flag is required to keep the database alive as long as
+	// at least one connection is open. Without it, the database is destroyed
+	// as soon as sql.Open returns and no *sql.DB holds a connection.
+	dsn := "file:" + name + "?mode=memory&cache=shared"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("opening in-memory database %q: %w", name, err)
+	}
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initializing schema for %q: %w", name, err)
+	}
+	if err := runMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("running migrations for %q: %w", name, err)
+	}
+	return &SQLiteStore{
+		db:              db,
+		supersededCache: make(map[string]supersededCacheEntry),
+	}, nil
+}
+
 // Close closes the database.
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
