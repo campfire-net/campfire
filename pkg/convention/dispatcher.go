@@ -313,6 +313,8 @@ func (d *ConventionDispatcher) dispatch(
 		defer cancel()
 	}
 	// Deduplication: mark as dispatched (insert-if-not-exists).
+	// Use the request context here: if it is already cancelled, the dedup
+	// insert may fail fast (on real stores), which is fine — we just skip.
 	inserted, err := d.store.MarkDispatched(ctx, campfireID, msg.ID, entry.ServerID, entry.ForgeAccountID, op.Convention, op.Operation)
 	if err != nil {
 		d.logger.Printf("convention dispatcher: MarkDispatched(%s/%s): %v", campfireID, msg.ID, err)
@@ -323,13 +325,25 @@ func (d *ConventionDispatcher) dispatch(
 		return
 	}
 
-	d.invokeHandler(ctx, campfireID, msg, op, entry)
+	// cleanupCtx is detached from the request context so that post-handler
+	// bookkeeping (CAS status updates, cursor advancement) always completes
+	// even when ctx is cancelled. This prevents the race between a cancelled
+	// handler returning and the test/caller observing the "failed" status
+	// while the goroutine is still writing to the store under a closed context.
+	cleanupCtx := context.Background()
+	d.invokeHandler(ctx, cleanupCtx, campfireID, msg, op, entry)
 }
 
 // invokeHandler calls the registered handler for a message and updates the
 // dispatch store. It is called from dispatch() (after deduplication) and from
 // the fallback sweep (bypassing deduplication, which tracks attempts separately
 // via RedispatchCount). Must be called in a goroutine.
+//
+// ctx is the request context passed to the handler. cleanupCtx is used for all
+// post-handler store operations (CAS updates, cursor advancement, metering) and
+// must NOT be cancelled when ctx is cancelled — it is typically context.Background().
+// This separation prevents the race where ctx cancellation causes store writes to
+// fail or race with test cleanup after the "failed" status is already visible.
 //
 // To guard against double-dispatch (a slow original handler completing after
 // the sweep has re-dispatched), invokeHandler snapshots the RedispatchCount
@@ -338,13 +352,17 @@ func (d *ConventionDispatcher) dispatch(
 // check fails and the stale handler's result is silently discarded.
 func (d *ConventionDispatcher) invokeHandler(
 	ctx context.Context,
+	cleanupCtx context.Context,
 	campfireID string,
 	msg *store.MessageRecord,
 	op conventionOpPayload,
 	entry *dispatchEntry,
 ) {
 	// Snapshot the current generation before invoking the handler.
-	gen, err := d.store.GetRedispatchCount(ctx, campfireID, msg.ID)
+	// Use cleanupCtx here: the record was just inserted by MarkDispatched so it
+	// exists; using a non-cancellable context avoids a spurious failure if ctx
+	// is already cancelled before we reach this point.
+	gen, err := d.store.GetRedispatchCount(cleanupCtx, campfireID, msg.ID)
 	if err != nil {
 		d.logger.Printf("convention dispatcher: GetRedispatchCount(%s/%s): %v", campfireID, msg.ID, err)
 		return
@@ -354,9 +372,9 @@ func (d *ConventionDispatcher) invokeHandler(
 	var tokensConsumed int64
 
 	if entry.Tier == 1 {
-		status, tokensConsumed = d.dispatchTier1(ctx, campfireID, msg, op, entry, gen)
+		status, tokensConsumed = d.dispatchTier1(ctx, cleanupCtx, campfireID, msg, op, entry, gen)
 	} else {
-		status, tokensConsumed = d.dispatchTier2(ctx, campfireID, msg, op, entry, gen)
+		status, tokensConsumed = d.dispatchTier2(ctx, cleanupCtx, campfireID, msg, op, entry, gen)
 	}
 
 	// If the handler's result was rejected by CAS (generation mismatch),
@@ -372,9 +390,10 @@ func (d *ConventionDispatcher) invokeHandler(
 		return
 	}
 
-	// Fire metering hook.
+	// Fire metering hook. Use cleanupCtx so the hook fires even if the request
+	// context was cancelled (billing must be accurate regardless of caller state).
 	if d.MeteringHook != nil {
-		d.MeteringHook(ctx, ConventionMeterEvent{
+		d.MeteringHook(cleanupCtx, ConventionMeterEvent{
 			CampfireID:     campfireID,
 			Convention:     op.Convention,
 			Operation:      op.Operation,
@@ -387,8 +406,9 @@ func (d *ConventionDispatcher) invokeHandler(
 		})
 	}
 
-	// Advance cursor.
-	if _, err := d.store.AdvanceCursor(ctx, entry.ServerID, campfireID, msg.Timestamp); err != nil {
+	// Advance cursor using cleanupCtx: cursor advancement is bookkeeping that
+	// must succeed regardless of the request context state.
+	if _, err := d.store.AdvanceCursor(cleanupCtx, entry.ServerID, campfireID, msg.Timestamp); err != nil {
 		d.logger.Printf("convention dispatcher: AdvanceCursor(%s/%s): %v", campfireID, msg.ID, err)
 	}
 }
@@ -396,10 +416,16 @@ func (d *ConventionDispatcher) invokeHandler(
 // dispatchTier1 calls a registered Go handler and sends a fulfillment response.
 // The gen parameter is the RedispatchCount snapshot taken before the handler was
 // invoked; it is used for CAS-guarded status updates to prevent double-dispatch.
+//
+// ctx is the request context passed to the handler.
+// cleanupCtx is used for all post-handler store operations and must not be
+// cancelled when ctx is cancelled (typically context.Background()).
+//
 // Returns the final status string ("fulfilled", "failed", "stale", or "not_found")
 // and the number of tokens consumed by the handler (0 if not reported).
 func (d *ConventionDispatcher) dispatchTier1(
 	ctx context.Context,
+	cleanupCtx context.Context,
 	campfireID string,
 	msg *store.MessageRecord,
 	op conventionOpPayload,
@@ -429,7 +455,8 @@ func (d *ConventionDispatcher) dispatchTier1(
 	if err != nil {
 		d.logger.Printf("convention dispatcher: handler error (msg %s): %v", msg.ID, err)
 		// Mark failed only if we still own this generation.
-		ok, notFound, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen)
+		// Use cleanupCtx so the CAS write succeeds even when ctx is cancelled.
+		ok, notFound, casErr := d.store.MarkFailedCAS(cleanupCtx, campfireID, msg.ID, gen)
 		if casErr != nil {
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 			return "failed", 0
@@ -440,15 +467,21 @@ func (d *ConventionDispatcher) dispatchTier1(
 		if !ok {
 			return "stale", 0
 		}
-		// Send error fulfillment after confirming we own the generation.
-		if sendErr := d.sendErrorFulfillment(campfireID, msg.ID, err, entry.Client); sendErr != nil {
-			d.logger.Printf("convention dispatcher: send error fulfillment (msg %s): %v", msg.ID, sendErr)
+		// Skip error fulfillment when the handler returned because the request
+		// context was cancelled. The requester already knows they cancelled —
+		// sending an error fulfillment would race with test/caller cleanup and
+		// provides no useful information to a context that is no longer active.
+		if ctx.Err() == nil {
+			if sendErr := d.sendErrorFulfillment(campfireID, msg.ID, err, entry.Client); sendErr != nil {
+				d.logger.Printf("convention dispatcher: send error fulfillment (msg %s): %v", msg.ID, sendErr)
+			}
 		}
 		return "failed", 0
 	}
 
 	// CAS-guard the fulfillment: only proceed if no re-dispatch has occurred.
-	ok, notFound, casErr := d.store.MarkFulfilledCAS(ctx, campfireID, msg.ID, gen)
+	// Use cleanupCtx so the CAS write is not affected by ctx cancellation.
+	ok, notFound, casErr := d.store.MarkFulfilledCAS(cleanupCtx, campfireID, msg.ID, gen)
 	if casErr != nil {
 		d.logger.Printf("convention dispatcher: MarkFulfilledCAS (msg %s): %v", msg.ID, casErr)
 		return "failed", 0
@@ -466,7 +499,7 @@ func (d *ConventionDispatcher) dispatchTier1(
 			d.logger.Printf("convention dispatcher: send fulfillment (msg %s): %v", msg.ID, sendErr)
 			// Revert to failed since the fulfillment message couldn't be sent.
 			// Must use CAS to avoid overwriting a newer generation's status.
-			if ok, notFound, markErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); markErr != nil {
+			if ok, notFound, markErr := d.store.MarkFailedCAS(cleanupCtx, campfireID, msg.ID, gen); markErr != nil {
 				d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, markErr)
 			} else if notFound {
 				// Record was deleted between MarkFulfilledCAS and sendFulfillment.
@@ -481,7 +514,7 @@ func (d *ConventionDispatcher) dispatchTier1(
 		tokensConsumed = resp.TokensConsumed
 		// Record handler-reported token consumption for billing.
 		if resp.TokensConsumed > 0 {
-			if err := d.store.SetTokensConsumed(ctx, campfireID, msg.ID, resp.TokensConsumed); err != nil {
+			if err := d.store.SetTokensConsumed(cleanupCtx, campfireID, msg.ID, resp.TokensConsumed); err != nil {
 				d.logger.Printf("convention dispatcher: SetTokensConsumed (msg %s): %v", msg.ID, err)
 			}
 		}
@@ -492,10 +525,15 @@ func (d *ConventionDispatcher) dispatchTier1(
 
 // dispatchTier2 POSTs a message to a registered HTTP handler URL.
 // The gen parameter is the RedispatchCount snapshot for CAS-guarded status updates.
+//
+// ctx is used for the HTTP request (respects cancellation).
+// cleanupCtx is used for all store CAS updates (must not be cancelled with ctx).
+//
 // Returns the final status string ("fulfilled", "failed", "stale", or "not_found")
 // and tokens consumed (always 0 for Tier 2 — the handler self-reports via the store).
 func (d *ConventionDispatcher) dispatchTier2(
 	ctx context.Context,
+	cleanupCtx context.Context,
 	campfireID string,
 	msg *store.MessageRecord,
 	op conventionOpPayload,
@@ -525,7 +563,7 @@ func (d *ConventionDispatcher) dispatchTier2(
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 marshal (msg %s): %v", msg.ID, err)
-		if ok, notFound, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
+		if ok, notFound, casErr := d.store.MarkFailedCAS(cleanupCtx, campfireID, msg.ID, gen); casErr != nil {
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 		} else if notFound {
 			return "not_found", 0
@@ -538,7 +576,7 @@ func (d *ConventionDispatcher) dispatchTier2(
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, entry.HandlerURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 build request (msg %s): %v", msg.ID, err)
-		if ok, notFound, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
+		if ok, notFound, casErr := d.store.MarkFailedCAS(cleanupCtx, campfireID, msg.ID, gen); casErr != nil {
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 		} else if notFound {
 			return "not_found", 0
@@ -552,7 +590,7 @@ func (d *ConventionDispatcher) dispatchTier2(
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
 		d.logger.Printf("convention dispatcher: tier2 POST (msg %s): %v", msg.ID, err)
-		if ok, notFound, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
+		if ok, notFound, casErr := d.store.MarkFailedCAS(cleanupCtx, campfireID, msg.ID, gen); casErr != nil {
 			d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 		} else if notFound {
 			return "not_found", 0
@@ -564,7 +602,7 @@ func (d *ConventionDispatcher) dispatchTier2(
 	resp.Body.Close()
 
 	if resp.StatusCode == http.StatusAccepted {
-		ok, notFound, casErr := d.store.MarkFulfilledCAS(ctx, campfireID, msg.ID, gen)
+		ok, notFound, casErr := d.store.MarkFulfilledCAS(cleanupCtx, campfireID, msg.ID, gen)
 		if casErr != nil {
 			d.logger.Printf("convention dispatcher: MarkFulfilledCAS (msg %s): %v", msg.ID, casErr)
 			return "failed", 0
@@ -580,7 +618,7 @@ func (d *ConventionDispatcher) dispatchTier2(
 
 	// Non-202 response is treated as failure.
 	d.logger.Printf("convention dispatcher: tier2 POST status %d (msg %s)", resp.StatusCode, msg.ID)
-	if ok, notFound, casErr := d.store.MarkFailedCAS(ctx, campfireID, msg.ID, gen); casErr != nil {
+	if ok, notFound, casErr := d.store.MarkFailedCAS(cleanupCtx, campfireID, msg.ID, gen); casErr != nil {
 		d.logger.Printf("convention dispatcher: MarkFailedCAS (msg %s): %v", msg.ID, casErr)
 	} else if notFound {
 		return "not_found", 0
