@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 26-probe-timeout-disambiguation.sh — §11.3 probe timeout false-positive risk.
+# 27-probe-timeout-disambiguation.sh — §11.3 probe timeout false-positive risk.
 #
 # Verifies that cf-discovery-spec.md §11.3 contains a subsection that disambiguates
 # two distinct timeout failure modes:
