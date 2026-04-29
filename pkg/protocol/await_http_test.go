@@ -21,12 +21,6 @@ import (
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
-// portBaseAwaitHTTP returns a reproducible base port for the HTTP Await test.
-// Uses a high-numbered port range unlikely to collide with other test suites.
-func portBaseAwaitHTTP() int {
-	return 42800
-}
-
 // TestClientAwait_HTTPPollBroker verifies that Client.Await resolves correctly
 // in HTTP/PollBroker mode (campfire-agent-5sc).
 //
@@ -39,17 +33,17 @@ func portBaseAwaitHTTP() int {
 // This test covers the gap: syncIfFilesystem is a no-op for HTTP transports,
 // so without PollBroker wiring, Await would only check on the poll interval
 // rather than being woken by message delivery.
+//
+// Ports: OS-assigned via "127.0.0.1:0" to eliminate hardcoded-port conflicts
+// under parallel test execution (campfireagent-b82).
 func TestClientAwait_HTTPPollBroker(t *testing.T) {
-	base := portBaseAwaitHTTP()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+0)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+1)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-	endpointB := fmt.Sprintf("http://%s", addrB)
-
-	// Node A: creator.
+	// Node A: creator. Use OS-assigned port ("127.0.0.1:0"); read actual addr
+	// via tr.Addr() after Start() to construct the endpoint URL.
 	clientA := newAwaitHTTPClient(t)
 	sA := clientA.ClientStore()
-	trA := startAwaitHTTPTransport(t, addrA, sA)
+	trA := startAwaitHTTPTransport(t, "127.0.0.1:0", sA)
+	addrA := trA.Addr()
+	endpointA := fmt.Sprintf("http://%s", addrA)
 
 	transportDirA := t.TempDir()
 	createResult, err := clientA.Create(protocol.CreateRequest{
@@ -61,10 +55,12 @@ func TestClientAwait_HTTPPollBroker(t *testing.T) {
 	}
 	campfireID := createResult.CampfireID
 
-	// Node B: joiner.
+	// Node B: joiner. Also OS-assigned port.
 	clientB := newAwaitHTTPClient(t)
 	sB := clientB.ClientStore()
-	trB := startAwaitHTTPTransport(t, addrB, sB)
+	trB := startAwaitHTTPTransport(t, "127.0.0.1:0", sB)
+	addrB := trB.Addr()
+	endpointB := fmt.Sprintf("http://%s", addrB)
 
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
