@@ -22,10 +22,8 @@ func TestHandleSyncInvalidSince(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+380)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr1 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr1)
 
 	url := fmt.Sprintf("%s/campfire/%s/sync?since=notanumber", ep, campfireID)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -55,10 +53,8 @@ func TestHandlePollInvalidTimeout(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+381)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr2 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr2)
 
 	url := fmt.Sprintf("%s/campfire/%s/poll?since=0&timeout=notanumber", ep, campfireID)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -89,10 +85,8 @@ func TestHandlePollTimeoutCapReturnsNormally(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+382)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr3 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr3)
 
 	// Pre-store a message so the initial sync returns immediately.
 	storeMessageRecord(t, s, campfireID, id)

@@ -15,16 +15,13 @@ package http_test
 //      sends a MembershipEvent "delivery" with empty endpoint to switch to pull —
 //      endpoint is removed from the host store (no more push delivery).
 //
-// All transports use dynamic port allocation (freeDeliveryE2EAddr) to avoid
-// conflicts with any static port block. SSRF validation is overridden at test
-// start so localhost endpoints are accepted by the server-side join handler.
-//
-// Port block: dynamic (freeDeliveryE2EAddr pattern — no static offset used).
+// All transports use OS-assigned ports (127.0.0.1:0) to avoid conflicts.
+// SSRF validation is overridden at test start so localhost endpoints are
+// accepted by the server-side join handler.
 
 import (
 	"crypto/ed25519"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,19 +34,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
-
-// freeDeliveryE2EAddr discovers a free ephemeral port and returns "127.0.0.1:<port>".
-// Named to avoid collision with freeRelayAddr in relay_auth_test.go.
-func freeDeliveryE2EAddr(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("freeDeliveryE2EAddr: %v", err)
-	}
-	addr := ln.Addr().String()
-	ln.Close()
-	return addr
-}
 
 // newDeliveryE2ECampfire generates a campfire keypair, writes the CBOR state to a
 // temp dir, adds the membership to s, and returns the campfire ID hex, state dir,
@@ -93,20 +77,19 @@ func newDeliveryE2ECampfire(t *testing.T, s store.Store, modes []string) (campfi
 	return
 }
 
-// startDeliveryE2ETransport starts a cfhttp.Transport at addr with the given store
-// and key provider. It registers a cleanup to stop the transport.
-func startDeliveryE2ETransport(t *testing.T, addr string, s store.Store, id *identity.Identity, keyProvider func(string) ([]byte, []byte, error)) *cfhttp.Transport {
+// startDeliveryE2ETransport starts a cfhttp.Transport with an OS-assigned port.
+// It registers a cleanup to stop the transport and returns the started transport.
+func startDeliveryE2ETransport(t *testing.T, s store.Store, id *identity.Identity, keyProvider func(string) ([]byte, []byte, error)) *cfhttp.Transport {
 	t.Helper()
-	ep := fmt.Sprintf("http://%s", addr)
-	tr := cfhttp.New(addr, s)
-	tr.SetSelfInfo(id.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	if keyProvider != nil {
 		tr.SetKeyProvider(keyProvider)
 	}
 	if err := tr.Start(); err != nil {
-		t.Fatalf("starting transport at %s: %v", addr, err)
+		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	tr.SetSelfInfo(id.PublicKeyHex(), epOf(tr))
 	return tr
 }
 
@@ -163,16 +146,13 @@ func TestDeliveryE2E_ThreeInstanceAllPaths(t *testing.T) {
 	idWest := tempIdentity(t)
 	idCentral := tempIdentity(t)
 
-	addrEast := freeDeliveryE2EAddr(t)
-	addrWest := freeDeliveryE2EAddr(t)
-	addrCentral := freeDeliveryE2EAddr(t)
-	epEast := fmt.Sprintf("http://%s", addrEast)
-	epWest := fmt.Sprintf("http://%s", addrWest)
-	epCentral := fmt.Sprintf("http://%s", addrCentral)
+	trEast := startDeliveryE2ETransport(t, sEast, idEast, keyProvider)
+	trWest := startDeliveryE2ETransport(t, sWest, idWest, keyProvider)
+	trCentral := startDeliveryE2ETransport(t, sCentral, idCentral, keyProvider)
 
-	startDeliveryE2ETransport(t, addrEast, sEast, idEast, keyProvider)
-	startDeliveryE2ETransport(t, addrWest, sWest, idWest, keyProvider)
-	startDeliveryE2ETransport(t, addrCentral, sCentral, idCentral, keyProvider)
+	epEast := epOf(trEast)
+	epWest := epOf(trWest)
+	epCentral := epOf(trCentral)
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -307,11 +287,9 @@ func TestDeliveryE2E_PullOnlyCampfireRejectsEndpoint(t *testing.T) {
 	}
 
 	idHost := tempIdentity(t)
-	addrHost := freeDeliveryE2EAddr(t)
-	startDeliveryE2ETransport(t, addrHost, sHost, idHost, keyProvider)
+	trHost := startDeliveryE2ETransport(t, sHost, idHost, keyProvider)
+	epHost := epOf(trHost)
 	time.Sleep(30 * time.Millisecond)
-
-	epHost := fmt.Sprintf("http://%s", addrHost)
 
 	joiner := tempIdentity(t)
 	// Join with a non-empty endpoint — should be rejected (400) by the pull-only campfire.
@@ -345,13 +323,10 @@ func TestDeliveryE2E_SwitchPullToPush(t *testing.T) {
 	idHost := tempIdentity(t)
 	idMember := tempIdentity(t)
 
-	addrHost := freeDeliveryE2EAddr(t)
-	addrMember := freeDeliveryE2EAddr(t)
-	epHost := fmt.Sprintf("http://%s", addrHost)
-	epMember := fmt.Sprintf("http://%s", addrMember)
-
-	startDeliveryE2ETransport(t, addrHost, sHost, idHost, keyProvider)
-	startDeliveryE2ETransport(t, addrMember, sMember, idMember, keyProvider)
+	trHost := startDeliveryE2ETransport(t, sHost, idHost, keyProvider)
+	trMember := startDeliveryE2ETransport(t, sMember, idMember, keyProvider)
+	epHost := epOf(trHost)
+	epMember := epOf(trMember)
 	time.Sleep(50 * time.Millisecond)
 
 	// Join WITHOUT endpoint (pull mode — accepted regardless of DeliveryModes).
@@ -455,13 +430,10 @@ func TestDeliveryE2E_SwitchPushToPull(t *testing.T) {
 	idHost := tempIdentity(t)
 	idMember := tempIdentity(t)
 
-	addrHost := freeDeliveryE2EAddr(t)
-	addrMember := freeDeliveryE2EAddr(t)
-	epHost := fmt.Sprintf("http://%s", addrHost)
-	epMember := fmt.Sprintf("http://%s", addrMember)
-
-	startDeliveryE2ETransport(t, addrHost, sHost, idHost, keyProvider)
-	startDeliveryE2ETransport(t, addrMember, sMember, idMember, keyProvider)
+	trHost := startDeliveryE2ETransport(t, sHost, idHost, keyProvider)
+	trMember := startDeliveryE2ETransport(t, sMember, idMember, keyProvider)
+	epHost := epOf(trHost)
+	epMember := epOf(trMember)
 	time.Sleep(50 * time.Millisecond)
 
 	// Join WITH endpoint (push mode — accepted because DeliveryModes includes "push").

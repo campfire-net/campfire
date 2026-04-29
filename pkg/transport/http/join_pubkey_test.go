@@ -30,7 +30,7 @@ import (
 // The campfire state is written with DeliveryModes=["pull","push"] so that
 // joiners providing an endpoint are accepted (the delivery mode validation
 // added in campfire-agent-9er requires push support for endpoint joins).
-func setupJoinServer(t *testing.T, portOffset int) (campfireID, ep string, sHost store.Store) {
+func setupJoinServer(t *testing.T) (campfireID, ep string, sHost store.Store) {
 	t.Helper()
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -72,12 +72,7 @@ func setupJoinServer(t *testing.T, portOffset int) (campfireID, ep string, sHost
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+portOffset)
-	ep = fmt.Sprintf("http://%s", addr)
-
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -88,6 +83,8 @@ func setupJoinServer(t *testing.T, portOffset int) (campfireID, ep string, sHost
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep = epOf(tr)
+	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	return campfireID, ep, sHost
@@ -131,7 +128,7 @@ func TestJoinPubkeyInjectionPrevented(t *testing.T) {
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
 
-	campfireID, ep, sHost := setupJoinServer(t, 300)
+	campfireID, ep, sHost := setupJoinServer(t)
 
 	// keyA is the real signer identity.
 	keyA, err := identity.Generate()
@@ -189,7 +186,7 @@ func TestJoinMatchingPubkeyWorks(t *testing.T) {
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
 
-	campfireID, ep, sHost := setupJoinServer(t, 305)
+	campfireID, ep, sHost := setupJoinServer(t)
 
 	// Normal joiner: signs with keyA and puts keyA in body.
 	keyA, err := identity.Generate()

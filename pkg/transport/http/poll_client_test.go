@@ -1,7 +1,6 @@
 package http_test
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
@@ -18,10 +17,8 @@ func TestPollReceivesMessages(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+120)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr1 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr1)
 
 	// Pre-store 2 messages.
 	rec1 := storeMessageRecord(t, s, campfireID, id)
@@ -49,10 +46,8 @@ func TestPollClientTimeout(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+121)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr2 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr2)
 
 	cursor := time.Now().UnixNano()
 	start := time.Now()
@@ -83,10 +78,8 @@ func TestPollAuthFailure(t *testing.T) {
 	// Only idServer is a member; idStranger is not registered.
 	addPeerEndpoint(t, s, campfireID, idServer.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+122)
-	startTransportWithSelf(t, addr, s, idServer)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr3 := startTransportWithSelf(t, s, idServer)
+	ep := epOf(_tr3)
 
 	// idStranger not in peer list → 403 (member check fails).
 	_, _, err := cfhttp.Poll(ep, campfireID, 0, 1, idStranger)
@@ -104,10 +97,8 @@ func TestPollCursorAdvances(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+123)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr4 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr4)
 
 	// Store 1 message.
 	storeMessageRecord(t, s, campfireID, id)
@@ -144,10 +135,8 @@ func TestPollReturnsCorrectMessageContent(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+124)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr5 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr5)
 
 	// Deliver a message via the HTTP transport (which stores it).
 	msg := newTestMessage(t, id)

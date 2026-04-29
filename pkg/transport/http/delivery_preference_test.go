@@ -27,7 +27,7 @@ func TestDeliveryEventSetEndpoint(t *testing.T) {
 	cfhttp.OverrideValidateJoinerEndpointForTest()
 	t.Cleanup(cfhttp.RestoreValidateJoinerEndpoint)
 
-	campfireID, ep, s := setupDeliveryModeServer(t, 560, []string{campfire.DeliveryModePull, campfire.DeliveryModePush})
+	campfireID, ep, s := setupDeliveryModeServer(t, []string{campfire.DeliveryModePull, campfire.DeliveryModePush})
 	member := tempIdentity(t)
 	addPeerEndpoint(t, s, campfireID, member.PublicKeyHex())
 
@@ -64,7 +64,7 @@ func TestDeliveryEventSetEndpoint(t *testing.T) {
 // TestDeliveryEventClearEndpoint verifies that sending a "delivery" event with an
 // empty endpoint removes the stored endpoint (member switches to pull).
 func TestDeliveryEventClearEndpoint(t *testing.T) {
-	campfireID, ep, s := setupDeliveryModeServer(t, 561, []string{campfire.DeliveryModePull, campfire.DeliveryModePush})
+	campfireID, ep, s := setupDeliveryModeServer(t, []string{campfire.DeliveryModePull, campfire.DeliveryModePush})
 	member := tempIdentity(t)
 
 	// Store an initial endpoint for this member.
@@ -101,7 +101,7 @@ func TestDeliveryEventClearEndpoint(t *testing.T) {
 // TestDeliveryEventRejectedPullOnly verifies that sending a "delivery" event with
 // a non-empty endpoint is rejected (400) when the campfire is pull-only.
 func TestDeliveryEventRejectedPullOnly(t *testing.T) {
-	campfireID, ep, s := setupDeliveryModeServer(t, 562, []string{campfire.DeliveryModePull})
+	campfireID, ep, s := setupDeliveryModeServer(t, []string{campfire.DeliveryModePull})
 	member := tempIdentity(t)
 	addPeerEndpoint(t, s, campfireID, member.PublicKeyHex())
 
@@ -119,7 +119,7 @@ func TestDeliveryEventRejectedPullOnly(t *testing.T) {
 // Member != senderHex is rejected (400) — a member cannot change another member's
 // delivery preference.
 func TestDeliveryEventRejectedMemberMismatch(t *testing.T) {
-	campfireID, ep, s := setupDeliveryModeServer(t, 563, []string{campfire.DeliveryModePull, campfire.DeliveryModePush})
+	campfireID, ep, s := setupDeliveryModeServer(t, []string{campfire.DeliveryModePull, campfire.DeliveryModePush})
 
 	senderA := tempIdentity(t)
 	senderB := tempIdentity(t)

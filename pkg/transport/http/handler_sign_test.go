@@ -96,14 +96,6 @@ func TestFROSTSign2of3OverHTTP(t *testing.T) {
 	addPeer(sA, idC.PublicKeyHex(), "http://127.0.0.1:3")
 	addPeer(sB, idC.PublicKeyHex(), "http://127.0.0.1:3")
 
-	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+60)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+61)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+62)
-	epA := fmt.Sprintf("http://%s", addrA)
-	epB := fmt.Sprintf("http://%s", addrB)
-	epC := fmt.Sprintf("http://%s", addrC)
-
 	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(cfID)
@@ -114,29 +106,36 @@ func TestFROSTSign2of3OverHTTP(t *testing.T) {
 		}
 	}
 
-	trA := cfhttp.New(addrA, sA)
-	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trA := cfhttp.New("127.0.0.1:0", sA)
 	trA.SetThresholdShareProvider(buildShareProvider(sA))
 	if err := trA.Start(); err != nil {
 		t.Fatalf("starting transport A: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(buildShareProvider(sB))
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 
-	trC := cfhttp.New(addrC, sC)
-	trC.SetSelfInfo(idC.PublicKeyHex(), epC)
+	trC := cfhttp.New("127.0.0.1:0", sC)
 	trC.SetThresholdShareProvider(buildShareProvider(sC))
 	if err := trC.Start(); err != nil {
 		t.Fatalf("starting transport C: %v", err)
 	}
 	t.Cleanup(func() { trC.Stop() }) //nolint:errcheck
+
+	// Derive endpoints from bound addresses (after Start).
+	epA := epOf(trA)
+	epB := epOf(trB)
+	epC := epOf(trC)
+
+	// SetSelfInfo after Start so the endpoint contains the real port.
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trC.SetSelfInfo(idC.PublicKeyHex(), epC)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -250,12 +249,8 @@ func TestHandleSignRound2WithoutRound1(t *testing.T) {
 		t.Fatalf("storing share B: %v", err)
 	}
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+63)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo("", epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
 		share, err := sB.GetThresholdShare(cfID)
 		if err != nil || share == nil {
@@ -268,6 +263,8 @@ func TestHandleSignRound2WithoutRound1(t *testing.T) {
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	epB := epOf(trB)
+	trB.SetSelfInfo("", epB)
 
 	// Post a round=2 request for a session_id that was never initialised with round=1.
 	req := cfhttp.SignRoundRequest{
@@ -340,12 +337,8 @@ func TestHandleSignArbitraryBytesRejected(t *testing.T) {
 		t.Fatalf("storing share B: %v", err)
 	}
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+64)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
 		share, err := sB.GetThresholdShare(cfID)
 		if err != nil || share == nil {
@@ -357,6 +350,7 @@ func TestHandleSignArbitraryBytesRejected(t *testing.T) {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
 	time.Sleep(20 * time.Millisecond)
 
 	// Attempt to sign arbitrary bytes — must be rejected.
@@ -434,12 +428,8 @@ func TestHandleSignValidMessageSignInputAccepted(t *testing.T) {
 		t.Fatalf("storing share B: %v", err)
 	}
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+65)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
 		share, err := sB.GetThresholdShare(cfID)
 		if err != nil || share == nil {
@@ -451,6 +441,7 @@ func TestHandleSignValidMessageSignInputAccepted(t *testing.T) {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build a valid CBOR-encoded MessageSignInput.
@@ -527,12 +518,8 @@ func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
 		t.Fatalf("storing share B: %v", err)
 	}
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+66)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
 		share, err := sB.GetThresholdShare(cfID)
 		if err != nil || share == nil {
@@ -544,6 +531,7 @@ func TestHandleSignValidHopSignInputAccepted(t *testing.T) {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build a valid CBOR-encoded HopSignInput with the MessageID that exists in store.
@@ -625,12 +613,8 @@ func TestHandleSignFabricatedHopMessageIDAccepted(t *testing.T) {
 		t.Fatalf("storing share B: %v", err)
 	}
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+69)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
 		share, err := sB.GetThresholdShare(cfID)
 		if err != nil || share == nil {
@@ -642,6 +626,7 @@ func TestHandleSignFabricatedHopMessageIDAccepted(t *testing.T) {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
 	time.Sleep(20 * time.Millisecond)
 
 	campfirePub := make([]byte, 32)
@@ -735,12 +720,8 @@ func TestHandleSignNonMemberRejected(t *testing.T) {
 		t.Fatalf("storing share B: %v", err)
 	}
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+67)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo("", epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
 		share, err := sB.GetThresholdShare(cfID)
 		if err != nil || share == nil {
@@ -753,6 +734,8 @@ func TestHandleSignNonMemberRejected(t *testing.T) {
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	epB := epOf(trB)
+	trB.SetSelfInfo("", epB)
 
 	// Build a minimal round-1 request body (content doesn't matter — 403 fires before parsing).
 	req := cfhttp.SignRoundRequest{
@@ -824,12 +807,8 @@ func TestHandleSignWrongCampfireRejected(t *testing.T) {
 		t.Fatalf("storing share: %v", err)
 	}
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+68)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo("", epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
 		share, err := sB.GetThresholdShare(cfID)
 		if err != nil || share == nil {
@@ -842,6 +821,8 @@ func TestHandleSignWrongCampfireRejected(t *testing.T) {
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	epB := epOf(trB)
+	trB.SetSelfInfo("", epB)
 
 	req := cfhttp.SignRoundRequest{
 		SessionID: "wrong-campfire-session",

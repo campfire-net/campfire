@@ -97,14 +97,6 @@ func TestPathVectorE2E(t *testing.T) {
 	}
 
 	// ── Transport setup ───────────────────────────────────────────────────────
-	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+520)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+521)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+522)
-	epA := fmt.Sprintf("http://%s", addrA)
-	epB := fmt.Sprintf("http://%s", addrB)
-	epC := fmt.Sprintf("http://%s", addrC)
-
 	makeKP := func(priv ed25519.PrivateKey, pub ed25519.PublicKey) func(string) ([]byte, []byte, error) {
 		return func(id string) ([]byte, []byte, error) {
 			if id == campfireID {
@@ -114,29 +106,33 @@ func TestPathVectorE2E(t *testing.T) {
 		}
 	}
 
-	trA := cfhttp.New(addrA, sA)
-	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trA := cfhttp.New("127.0.0.1:0", sA)
 	trA.SetKeyProvider(makeKP(cfPriv, cfPub))
 	if err := trA.Start(); err != nil {
 		t.Fatalf("trA.Start: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetKeyProvider(makeKP(cfPriv, cfPub))
 	if err := trB.Start(); err != nil {
 		t.Fatalf("trB.Start: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 
-	trC := cfhttp.New(addrC, sC)
-	trC.SetSelfInfo(idC.PublicKeyHex(), epC)
+	trC := cfhttp.New("127.0.0.1:0", sC)
 	trC.SetKeyProvider(makeKP(cfPriv, cfPub))
 	if err := trC.Start(); err != nil {
 		t.Fatalf("trC.Start: %v", err)
 	}
 	t.Cleanup(func() { trC.Stop() }) //nolint:errcheck
+
+	epA := epOf(trA)
+	epB := epOf(trB)
+	epC := epOf(trC)
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trC.SetSelfInfo(idC.PublicKeyHex(), epC)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -307,14 +303,6 @@ func TestPathVectorWithdrawalE2E(t *testing.T) {
 		addPeerEndpoint(t, sC, campfireID, pubkey)
 	}
 
-	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+523)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+524)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+525)
-	epA := fmt.Sprintf("http://%s", addrA)
-	epB := fmt.Sprintf("http://%s", addrB)
-	epC := fmt.Sprintf("http://%s", addrC)
-
 	makeKP := func(priv ed25519.PrivateKey, pub ed25519.PublicKey) func(string) ([]byte, []byte, error) {
 		return func(id string) ([]byte, []byte, error) {
 			if id == campfireID {
@@ -324,29 +312,33 @@ func TestPathVectorWithdrawalE2E(t *testing.T) {
 		}
 	}
 
-	trA := cfhttp.New(addrA, sA)
-	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trA := cfhttp.New("127.0.0.1:0", sA)
 	trA.SetKeyProvider(makeKP(cfPriv, cfPub))
 	if err := trA.Start(); err != nil {
 		t.Fatalf("trA.Start: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetKeyProvider(makeKP(cfPriv, cfPub))
 	if err := trB.Start(); err != nil {
 		t.Fatalf("trB.Start: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 
-	trC := cfhttp.New(addrC, sC)
-	trC.SetSelfInfo(idC.PublicKeyHex(), epC)
+	trC := cfhttp.New("127.0.0.1:0", sC)
 	trC.SetKeyProvider(makeKP(cfPriv, cfPub))
 	if err := trC.Start(); err != nil {
 		t.Fatalf("trC.Start: %v", err)
 	}
 	t.Cleanup(func() { trC.Stop() }) //nolint:errcheck
+
+	epA := epOf(trA)
+	epB := epOf(trB)
+	epC := epOf(trC)
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trC.SetSelfInfo(idC.PublicKeyHex(), epC)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -425,17 +417,12 @@ func TestPathVectorLegacyFallback(t *testing.T) {
 		addPeerEndpoint(t, sC, campfireID, pubkey)
 	}
 
-	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+526)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+527)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+528)
-	epA := fmt.Sprintf("http://%s", addrA)
-	epB := fmt.Sprintf("http://%s", addrB)
-	epC := fmt.Sprintf("http://%s", addrC)
-
-	trA := startTransportWithKey(t, addrA, sA, idA, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addrB, sB, idB, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addrC, sC, idC, campfireID, cfPriv, cfPub)
+	trA := startTransportWithKey(t, sA, idA, campfireID, cfPriv, cfPub)
+	trB := startTransportWithKey(t, sB, idB, campfireID, cfPriv, cfPub)
+	trC := startTransportWithKey(t, sC, idC, campfireID, cfPriv, cfPub)
+	epA := epOf(trA)
+	epB := epOf(trB)
+	epC := epOf(trC)
 
 	// Both tB and tC are local peers of tA.
 	trA.AddPeer(campfireID, idB.PublicKeyHex(), epB)
@@ -512,14 +499,6 @@ func TestPathVectorBeaconChainPathGrowth(t *testing.T) {
 		addPeerEndpoint(t, sC, campfireID, pubkey)
 	}
 
-	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+529)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+530)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+531)
-	epA := fmt.Sprintf("http://%s", addrA)
-	epB := fmt.Sprintf("http://%s", addrB)
-	epC := fmt.Sprintf("http://%s", addrC)
-
 	makeKP := func(priv ed25519.PrivateKey, pub ed25519.PublicKey) func(string) ([]byte, []byte, error) {
 		return func(id string) ([]byte, []byte, error) {
 			if id == campfireID {
@@ -529,29 +508,33 @@ func TestPathVectorBeaconChainPathGrowth(t *testing.T) {
 		}
 	}
 
-	trA := cfhttp.New(addrA, sA)
-	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trA := cfhttp.New("127.0.0.1:0", sA)
 	trA.SetKeyProvider(makeKP(cfPriv, cfPub))
 	if err := trA.Start(); err != nil {
 		t.Fatalf("trA.Start: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetKeyProvider(makeKP(cfPriv, cfPub))
 	if err := trB.Start(); err != nil {
 		t.Fatalf("trB.Start: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 
-	trC := cfhttp.New(addrC, sC)
-	trC.SetSelfInfo(idC.PublicKeyHex(), epC)
+	trC := cfhttp.New("127.0.0.1:0", sC)
 	trC.SetKeyProvider(makeKP(cfPriv, cfPub))
 	if err := trC.Start(); err != nil {
 		t.Fatalf("trC.Start: %v", err)
 	}
 	t.Cleanup(func() { trC.Stop() }) //nolint:errcheck
+
+	epA := epOf(trA)
+	epB := epOf(trB)
+	epC := epOf(trC)
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trC.SetSelfInfo(idC.PublicKeyHex(), epC)
 
 	time.Sleep(20 * time.Millisecond)
 

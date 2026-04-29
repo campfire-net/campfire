@@ -25,7 +25,6 @@ package http_test
 import (
 	"crypto/ed25519"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,20 +37,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
-
-// freeRelayAddr returns a "127.0.0.1:<port>" address using an ephemeral port.
-// It briefly opens a listener to discover a free port, then closes it.
-// Named freeRelayAddr to avoid collision with freeAddr in peer_join_test.go.
-func freeRelayAddr(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("finding free port: %v", err)
-	}
-	addr := ln.Addr().String()
-	ln.Close()
-	return addr
-}
 
 func TestRelayAuth_ThreeInstanceRelay(t *testing.T) {
 	// Override SSRF validation for localhost endpoints (TestMain sets this globally,
@@ -103,13 +88,6 @@ func TestRelayAuth_ThreeInstanceRelay(t *testing.T) {
 		t.Fatalf("East AddMembership: %v", err)
 	}
 
-	addrEast := freeRelayAddr(t)
-	addrWest := freeRelayAddr(t)
-	addrCentral := freeRelayAddr(t)
-	epEast := fmt.Sprintf("http://%s", addrEast)
-	epWest := fmt.Sprintf("http://%s", addrWest)
-	epCentral := fmt.Sprintf("http://%s", addrCentral)
-
 	keyProvider := func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -117,34 +95,37 @@ func TestRelayAuth_ThreeInstanceRelay(t *testing.T) {
 		return nil, nil, fmt.Errorf("campfire not found: %s", id)
 	}
 
-	// Start East transport (hosts the campfire, has the key provider).
-	trEast := cfhttp.New(addrEast, sEast)
-	trEast.SetSelfInfo(idEast.PublicKeyHex(), epEast)
+	// Start all three transports with OS-assigned ports.
+	trEast := cfhttp.New("127.0.0.1:0", sEast)
 	trEast.SetKeyProvider(keyProvider)
 	if err := trEast.Start(); err != nil {
 		t.Fatalf("starting East: %v", err)
 	}
 	t.Cleanup(func() { trEast.Stop() }) //nolint:errcheck
 
-	// Start West transport (member, has key provider for outbound signing).
-	trWest := cfhttp.New(addrWest, sWest)
-	trWest.SetSelfInfo(idWest.PublicKeyHex(), epWest)
+	trWest := cfhttp.New("127.0.0.1:0", sWest)
 	trWest.SetKeyProvider(keyProvider)
 	if err := trWest.Start(); err != nil {
 		t.Fatalf("starting West: %v", err)
 	}
 	t.Cleanup(func() { trWest.Stop() }) //nolint:errcheck
 
-	// Start Central transport (member, has key provider for outbound signing).
-	trCentral := cfhttp.New(addrCentral, sCentral)
-	trCentral.SetSelfInfo(idCentral.PublicKeyHex(), epCentral)
+	trCentral := cfhttp.New("127.0.0.1:0", sCentral)
 	trCentral.SetKeyProvider(keyProvider)
 	if err := trCentral.Start(); err != nil {
 		t.Fatalf("starting Central: %v", err)
 	}
 	t.Cleanup(func() { trCentral.Stop() }) //nolint:errcheck
 
-	time.Sleep(50 * time.Millisecond) // let listeners start
+	// Derive endpoints from actual bound ports.
+	epEast := epOf(trEast)
+	epWest := epOf(trWest)
+	epCentral := epOf(trCentral)
+	trEast.SetSelfInfo(idEast.PublicKeyHex(), epEast)
+	trWest.SetSelfInfo(idWest.PublicKeyHex(), epWest)
+	trCentral.SetSelfInfo(idCentral.PublicKeyHex(), epCentral)
+
+	time.Sleep(50 * time.Millisecond) // let listeners settle
 
 	// West joins East's campfire (with endpoint, so East can relay back to West).
 	resultWest, err := cfhttp.Join(epEast, campfireID, idWest, epWest)

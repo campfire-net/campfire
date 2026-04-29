@@ -69,16 +69,14 @@ func TestRekeyPathTraversalRejected(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+180)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build minimal rekey message.
@@ -202,16 +200,14 @@ func TestRekeyPathTraversalAbsoluteRelative(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+181)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
 	time.Sleep(20 * time.Millisecond)
 
 	rekeyPayload, _ := json.Marshal(map[string]string{"old": oldCampfireID, "new": newCampfireID})
@@ -293,12 +289,8 @@ func TestJoinSSRFPrivateIPRejected(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+182)
-	ep := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -309,6 +301,8 @@ func TestJoinSSRFPrivateIPRejected(t *testing.T) {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep := epOf(tr)
+	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	privateEndpoints := []string{
@@ -370,12 +364,8 @@ func TestJoinValidEndpointAccepted(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+183)
-	ep := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -386,6 +376,8 @@ func TestJoinValidEndpointAccepted(t *testing.T) {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep := epOf(tr)
+	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	// Empty endpoint is allowed.
@@ -437,12 +429,8 @@ func TestJoinFileSchemeRejected(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+184)
-	ep := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -453,6 +441,8 @@ func TestJoinFileSchemeRejected(t *testing.T) {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep := epOf(tr)
+	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	joinerEphemeral, _ := ecdh.X25519().GenerateKey(rand.Reader)
@@ -486,10 +476,8 @@ func TestJoinFileSchemeRejected(t *testing.T) {
 // non-zero ReadTimeout, WriteTimeout, and IdleTimeout values.
 func TestServerTimeoutsConfigured(t *testing.T) {
 	s := tempStore(t)
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+185)
 
-	tr := cfhttp.New(addr, s)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	srv := tr.HTTPServer()
 	if srv == nil {
 		t.Fatal("HTTPServer() returned nil")
@@ -530,12 +518,8 @@ func TestRequestBodySizeLimit(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+186)
-	ep := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, s)
-	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -546,6 +530,8 @@ func TestRequestBodySizeLimit(t *testing.T) {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep := epOf(tr)
+	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build a body larger than 4 MiB.
@@ -609,12 +595,8 @@ func TestValidateJoinerEndpointUnit(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+187)
-	ep := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -625,6 +607,8 @@ func TestValidateJoinerEndpointUnit(t *testing.T) {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep := epOf(tr)
+	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	cases := []struct {
@@ -702,12 +686,8 @@ func TestIsPrivateIPExtendedRanges(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+188)
-	ep := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -718,6 +698,8 @@ func TestIsPrivateIPExtendedRanges(t *testing.T) {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep := epOf(tr)
+	tr.SetSelfInfo(idA.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	// All of these are private/reserved and must be rejected with 400.
@@ -784,10 +766,8 @@ func TestDeliverSenderSpoofingRejected(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, m1.PublicKeyHex())
 	addPeerEndpoint(t, s, campfireID, m2.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+189)
-	startTransportWithSelf(t, addr, s, m1)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr1 := startTransportWithSelf(t, s, m1)
+	ep := epOf(_tr1)
 
 	// Build a message legitimately authored by M2 (msg.Sender = M2 pubkey, signed by M2),
 	// then tamper with the payload so VerifySignature() fails.
@@ -836,10 +816,8 @@ func TestDeliverInvalidMessageSigRejected(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, m1.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+190)
-	startTransportWithSelf(t, addr, s, m1)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr2 := startTransportWithSelf(t, s, m1)
+	ep := epOf(_tr2)
 
 	// Create a legitimate message.
 	msg, err := message.NewMessage(message.MustNewEd25519Signer(m1.PrivateKey, m1.PublicKey), []byte("original payload"), []string{"test"}, nil)
@@ -919,10 +897,8 @@ func TestDeliverObserverRejected(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpointWithRole(t, s, campfireID, observer.PublicKeyHex(), "observer")
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+191)
-	startTransportWithSelf(t, addr, s, creator)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr3 := startTransportWithSelf(t, s, creator)
+	ep := epOf(_tr3)
 
 	req := buildSignedDeliverRequest(t, ep, campfireID, observer, []string{"test"})
 	resp, err := http.DefaultClient.Do(req)
@@ -947,10 +923,8 @@ func TestDeliverObserverSystemMessageRejected(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpointWithRole(t, s, campfireID, observer.PublicKeyHex(), "observer")
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+192)
-	startTransportWithSelf(t, addr, s, creator)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr4 := startTransportWithSelf(t, s, creator)
+	ep := epOf(_tr4)
 
 	for _, tag := range []string{"campfire:compact", "campfire:rekey", "campfire:member-joined"} {
 		t.Run(tag, func(t *testing.T) {
@@ -979,10 +953,8 @@ func TestDeliverWriterRegularMessageAllowed(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpointWithRole(t, s, campfireID, writer.PublicKeyHex(), "writer")
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+193)
-	startTransportWithSelf(t, addr, s, creator)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr5 := startTransportWithSelf(t, s, creator)
+	ep := epOf(_tr5)
 
 	req := buildSignedDeliverRequest(t, ep, campfireID, writer, []string{"test"})
 	resp, err := http.DefaultClient.Do(req)
@@ -1007,10 +979,8 @@ func TestDeliverWriterSystemMessageRejected(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpointWithRole(t, s, campfireID, writer.PublicKeyHex(), "writer")
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+194)
-	startTransportWithSelf(t, addr, s, creator)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr6 := startTransportWithSelf(t, s, creator)
+	ep := epOf(_tr6)
 
 	for _, tag := range []string{"campfire:compact", "campfire:rekey", "campfire:member-joined"} {
 		t.Run(tag, func(t *testing.T) {
@@ -1039,10 +1009,8 @@ func TestDeliverMemberRoleAllowed(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpointWithRole(t, s, campfireID, member.PublicKeyHex(), "member")
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+195)
-	startTransportWithSelf(t, addr, s, creator)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr7 := startTransportWithSelf(t, s, creator)
+	ep := epOf(_tr7)
 
 	for _, tags := range [][]string{{"test"}, {"campfire:compact"}, {"campfire:rekey"}} {
 		req := buildSignedDeliverRequest(t, ep, campfireID, member, tags)
@@ -1068,10 +1036,8 @@ func TestDeliverSelfAlwaysAllowed(t *testing.T) {
 	addMembership(t, s, campfireID)
 	// Self node not in peer_endpoints — it's identified by selfPubKeyHex.
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+196)
-	startTransportWithSelf(t, addr, s, creator)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr8 := startTransportWithSelf(t, s, creator)
+	ep := epOf(_tr8)
 
 	// Self delivers both a regular message and a system message.
 	for _, tags := range [][]string{{"test"}, {"campfire:compact"}} {
@@ -1099,10 +1065,8 @@ func TestDeliverCreatorRoleAllowed(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpointWithRole(t, s, campfireID, creator.PublicKeyHex(), "creator")
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+197)
-	startTransportWithSelf(t, addr, s, self)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr9 := startTransportWithSelf(t, s, self)
+	ep := epOf(_tr9)
 
 	for _, tags := range [][]string{{"test"}, {"campfire:rekey"}} {
 		req := buildSignedDeliverRequest(t, ep, campfireID, creator, tags)
@@ -1131,10 +1095,8 @@ func TestDeliverDefaultRoleAllowed(t *testing.T) {
 	// Add peer without explicit role (defaults to "member").
 	addPeerEndpoint(t, s, campfireID, peer.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+198)
-	startTransportWithSelf(t, addr, s, self)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr10 := startTransportWithSelf(t, s, self)
+	ep := epOf(_tr10)
 
 	req := buildSignedDeliverRequest(t, ep, campfireID, peer, []string{"test"})
 	resp, err := http.DefaultClient.Do(req)
@@ -1165,10 +1127,8 @@ func TestDeliverLegacyMemberRoleSystemMessageAllowed(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpointWithRole(t, s, campfireID, peer.PublicKeyHex(), "member")
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+201)
-	startTransportWithSelf(t, addr, s, self)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr11 := startTransportWithSelf(t, s, self)
+	ep := epOf(_tr11)
 
 	for _, tag := range []string{"campfire:compact", "campfire:rekey", "campfire:member-joined"} {
 		t.Run(tag, func(t *testing.T) {
@@ -1207,10 +1167,8 @@ func TestDeliverMalformedCBORBodyReturns400(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, sender.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+199)
-	startTransportWithSelf(t, addr, s, sender)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr12 := startTransportWithSelf(t, s, sender)
+	ep := epOf(_tr12)
 
 	// Build a valid CBOR payload that is NOT a message.Message.
 	// A map with string keys produces valid CBOR that will either decode into a
@@ -1254,10 +1212,8 @@ func TestDeliverNonMapCBORBodyReturns400(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, sender.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+200)
-	startTransportWithSelf(t, addr, s, sender)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr13 := startTransportWithSelf(t, s, sender)
+	ep := epOf(_tr13)
 
 	// Encode a plain integer as CBOR — this is valid CBOR but cannot unmarshal
 	// into message.Message (a struct), so cfencoding.Unmarshal must return an error.

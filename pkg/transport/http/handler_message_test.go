@@ -54,10 +54,8 @@ func TestRelayDeliverMemberAllowed(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idA.PublicKeyHex())
 	addPeerEndpoint(t, s, campfireID, idB.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+440)
-	startTransportWithSelf(t, addr, s, idA)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr1 := startTransportWithSelf(t, s, idA)
+	ep := epOf(_tr1)
 
 	// A signs the message.
 	msg := newTestMessage(t, idA)
@@ -100,10 +98,8 @@ func TestRelayDeliverSenderAttributed(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idA.PublicKeyHex())
 	addPeerEndpoint(t, s, campfireID, idB.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+444)
-	startTransportWithSelf(t, addr, s, idA)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr2 := startTransportWithSelf(t, s, idA)
+	ep := epOf(_tr2)
 
 	// A signs the message.
 	msg := newTestMessage(t, idA)
@@ -158,10 +154,8 @@ func TestRelayDeliverNonMemberForbidden(t *testing.T) {
 	// Only A is a member; C is not.
 	addPeerEndpoint(t, s, campfireID, idA.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+441)
-	startTransportWithSelf(t, addr, s, idA)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr3 := startTransportWithSelf(t, s, idA)
+	ep := epOf(_tr3)
 
 	// A signs the message.
 	msg := newTestMessage(t, idA)
@@ -207,10 +201,8 @@ func TestRelayDeliverObserverForbidden(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idA.PublicKeyHex())
 	addPeerEndpointWithRole(t, s, campfireID, idC.PublicKeyHex(), "observer")
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+443)
-	startTransportWithSelf(t, addr, s, idA)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr4 := startTransportWithSelf(t, s, idA)
+	ep := epOf(_tr4)
 
 	// A signs the message.
 	msg := newTestMessage(t, idA)
@@ -249,10 +241,8 @@ func TestDirectDeliverStillWorks(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, idA.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+442)
-	startTransportWithSelf(t, addr, s, idA)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr5 := startTransportWithSelf(t, s, idA)
+	ep := epOf(_tr5)
 
 	// A signs and delivers its own message (direct, no relay).
 	msg := newTestMessage(t, idA)
@@ -275,10 +265,8 @@ func TestDeliverForgedProvenanceHopRejected(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, idA.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+445)
-	startTransportWithSelf(t, addr, s, idA)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr6 := startTransportWithSelf(t, s, idA)
+	ep := epOf(_tr6)
 
 	// A signs a valid message.
 	msg := newTestMessage(t, idA)
@@ -346,10 +334,8 @@ func TestHandleDeliver_GetPeerRoleStoreError(t *testing.T) {
 	// Wrap: ListPeerEndpoints succeeds (from realStore), GetPeerRole always errors.
 	wrapped := &getPeerRoleErrorStore{Store: realStore}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+540)
-	startTransportWithSelf(t, addr, wrapped, idA)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr7 := startTransportWithSelf(t, wrapped, idA)
+	ep := epOf(_tr7)
 
 	// B signs and delivers a message (B != self → GetPeerRole is called → error → 500).
 	msg := newTestMessage(t, idB)

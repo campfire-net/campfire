@@ -29,7 +29,7 @@ package http_test
 //     code calls time.Unix(0, joinedAt) which expects nanoseconds, causing all
 //     join timestamps to render as 1970-01-01T00:00:00Z.
 //
-// Port block: 660–679 (this file uses 660).
+// Port: OS-assigned (127.0.0.1:0).
 
 import (
 	"fmt"
@@ -87,9 +87,8 @@ func TestCrossTransportE2E(t *testing.T) {
 	//   - Open join protocol (any agent can join)
 	//   - Pull-only delivery (relay mode: no push endpoints required)
 	//   - Real SQLite store backing all handler state
-	//
-	// Port 660 is claimed by this test (block 660–679 reserved for this file).
-	campfireID, ep, sHost := setupRelayServer(t, 660)
+	//   - OS-assigned port (no static allocation).
+	campfireID, ep, sHost := setupRelayServer(t)
 
 	// Generate Agent B's identity (the endpointless joiner).
 	agentB, err := identity.Generate()

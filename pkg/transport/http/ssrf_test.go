@@ -125,9 +125,8 @@ func TestJoinRejectsPrivateEndpoint(t *testing.T) {
 	s := tempStore(t)
 	addMembership(t, s, campfireID)
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+420)
-	tr := startTransport(t, addr, s)
+	tr := startTransport(t, "127.0.0.1:0", s)
+	addr := tr.Addr()
 
 	// Minimal key provider so the handler doesn't bail at "join not supported".
 	campfirePriv := make([]byte, 64)

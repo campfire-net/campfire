@@ -29,7 +29,7 @@ import (
 // setupDeliveryModeServer starts a transport with a campfire whose DeliveryModes
 // are written to disk. stateDir is the transport dir; campfireID is the key hex.
 // modes is the slice stored in CampfireState.DeliveryModes (nil = omit field).
-func setupDeliveryModeServer(t *testing.T, portOffset int, modes []string) (campfireID, ep string, sHost store.Store) {
+func setupDeliveryModeServer(t *testing.T, modes []string) (campfireID, ep string, sHost store.Store) {
 	t.Helper()
 
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
@@ -74,12 +74,7 @@ func setupDeliveryModeServer(t *testing.T, portOffset int, modes []string) (camp
 		t.Fatalf("adding membership: %v", addErr)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+portOffset)
-	ep = fmt.Sprintf("http://%s", addr)
-
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -90,6 +85,8 @@ func setupDeliveryModeServer(t *testing.T, portOffset int, modes []string) (camp
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep = epOf(tr)
+	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	return campfireID, ep, sHost
@@ -98,7 +95,7 @@ func setupDeliveryModeServer(t *testing.T, portOffset int, modes []string) (camp
 // TestJoinEndpointRejectedWhenPullOnly verifies that joining with an endpoint
 // is rejected (400) when the campfire's DeliveryModes is ["pull"].
 func TestJoinEndpointRejectedWhenPullOnly(t *testing.T) {
-	campfireID, ep, _ := setupDeliveryModeServer(t, 540, []string{campfire.DeliveryModePull})
+	campfireID, ep, _ := setupDeliveryModeServer(t, []string{campfire.DeliveryModePull})
 
 	joiner, err := identity.Generate()
 	if err != nil {
@@ -127,7 +124,7 @@ func TestJoinEndpointRejectedWhenPullOnly(t *testing.T) {
 // TestJoinEndpointAcceptedWhenPushSupported verifies that joining with an endpoint
 // succeeds (200) when the campfire's DeliveryModes includes "push".
 func TestJoinEndpointAcceptedWhenPushSupported(t *testing.T) {
-	campfireID, ep, sHost := setupDeliveryModeServer(t, 541,
+	campfireID, ep, sHost := setupDeliveryModeServer(t,
 		[]string{campfire.DeliveryModePull, campfire.DeliveryModePush})
 
 	joiner, err := identity.Generate()
@@ -171,7 +168,7 @@ func TestJoinEndpointAcceptedWhenPushSupported(t *testing.T) {
 // TestJoinNoEndpointSucceedsOnPullOnly verifies that joining without an endpoint
 // succeeds (200) regardless of DeliveryModes.
 func TestJoinNoEndpointSucceedsOnPullOnly(t *testing.T) {
-	campfireID, ep, _ := setupDeliveryModeServer(t, 542, []string{campfire.DeliveryModePull})
+	campfireID, ep, _ := setupDeliveryModeServer(t, []string{campfire.DeliveryModePull})
 
 	joiner, err := identity.Generate()
 	if err != nil {
@@ -197,7 +194,7 @@ func TestJoinNoEndpointSucceedsOnPullOnly(t *testing.T) {
 // so joining with an endpoint is rejected (400).
 func TestJoinEndpointRejectedWhenNilDeliveryModes(t *testing.T) {
 	// Pass nil modes — the CBOR field will be omitted (backward compat).
-	campfireID, ep, _ := setupDeliveryModeServer(t, 543, nil)
+	campfireID, ep, _ := setupDeliveryModeServer(t, nil)
 
 	joiner, err := identity.Generate()
 	if err != nil {

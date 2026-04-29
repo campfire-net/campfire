@@ -18,6 +18,11 @@ import (
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
+// epOf returns the HTTP endpoint URL for a transport after Start().
+func epOf(tr *cfhttp.Transport) string {
+	return "http://" + tr.Addr()
+}
+
 func tempStore(t *testing.T) store.Store {
 	t.Helper()
 	dir := t.TempDir()
@@ -56,7 +61,7 @@ func addMembership(t *testing.T, s store.Store, campfireID string) {
 
 func startTransport(t *testing.T, addr string, s store.Store) *cfhttp.Transport {
 	t.Helper()
-	tr := cfhttp.New(addr, s)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	if err := tr.Start(); err != nil {
 		t.Fatalf("starting transport on %s: %v", addr, err)
 	}
@@ -74,48 +79,6 @@ func newTestMessage(t *testing.T, id *identity.Identity) *message.Message {
 	return msg
 }
 
-// portBase returns a per-process base port to avoid conflicts between parallel test runs.
-// Each test file is assigned a dedicated non-overlapping block of offsets. When adding a
-// new test, use the next free offset within the owning file's block. When adding a new
-// file, claim the next free block (increment by 20) and register it here.
-//
-// Port allocation table (offset blocks, each 20 wide):
-//
-//	  0 -  19: http_test.go               (used:  0-13)
-//	 20 -  39: send_read_test.go          (used: 20-26)
-//	 40 -  59: frost_sign_e2e_test.go     (used: 40-41)
-//	 60 -  79: handler_sign_test.go       (used: 60-69)
-//	 80 -  99: sign_race_test.go          (used: 80-82)
-//	100 - 119: poll_handler_test.go       (used: 100-112)
-//	120 - 139: poll_client_test.go        (used: 120-124)
-//	140 - 159: auth_test.go              (used: 140-152)
-//	160 - 179: evict_auth_test.go         (used: 160-163)
-//	180 - 219: security_test.go          (used: 180-202; 40-port block, extra tests)
-//	220 - 249: rekey_test.go             (used: 220-230; 226+threshold covers 227-228)
-//	250 - 259: rekey_replay_test.go      (used: 250-251)
-//	260 - 279: replay_protection_test.go  (used: 260-266)
-//	280 - 299: join_peer_disclosure_test.go (used: 280-283)
-//	300 - 319: join_pubkey_test.go        (used: 300, 305)
-//	320 - 339: (reserved)
-//	340 - 359: invite_only_join_test.go   (used: 340, 345, 350, 355)
-//	360 - 379: membership_event_test.go   (used: 360-362)
-//	380 - 399: handler_message_params_test.go (used: 380-382)
-//	400 - 419: handler_sync_malformed_test.go (used: 400-401)
-//	420 - 439: ssrf_test.go               (used: 420)
-//	440 - 459: handler_message_test.go    (used: 440-444)
-//	460 - 499: forwarding_test.go         (used: 460-472)
-//	500 - 519: beacon_readvert_test.go    (used: 500-506)
-//	520 - 539: pathvector_e2e_test.go     (used: 520-531)
-//	540 - 559: join_delivery_test.go      (used: 540-543)
-//	560 - 579: delivery_preference_test.go (used: 560-563)
-//	580 - 619: delivery_e2e_test.go        (dynamic ports via freeDeliveryE2EAddr — no static offsets)
-//	620 - 639: join_admit_test.go          (used: 620-624)
-//	640 - 659: endpointless_member_test.go (used: 640-641)
-//	660 - 679: cross_transport_e2e_test.go (used: 660)
-func portBase() int {
-	return 19000 + (os.Getpid() % 500)
-}
-
 // TestDeliverAndSync verifies that two transports can exchange messages.
 func TestDeliverAndSync(t *testing.T) {
 	campfireID := "test-campfire-1"
@@ -130,14 +93,10 @@ func TestDeliverAndSync(t *testing.T) {
 	addPeerEndpoint(t, s2, campfireID, id1.PublicKeyHex())
 	addPeerEndpoint(t, s2, campfireID, id2.PublicKeyHex())
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+0)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+1)
+	startTransport(t, "127.0.0.1:0", s1)
+	tr2 := startTransport(t, "127.0.0.1:0", s2)
 
-	startTransport(t, addr1, s1)
-	startTransport(t, addr2, s2)
-
-	ep2 := fmt.Sprintf("http://%s", addr2)
+	ep2 := epOf(tr2)
 
 	// id1 delivers a message to transport 2
 	msg := newTestMessage(t, id1)
@@ -166,10 +125,8 @@ func TestSyncSince(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+2)
-	startTransport(t, addr, s)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(tr)
 
 	msg1 := newTestMessage(t, id)
 	if err := cfhttp.Deliver(ep, campfireID, msg1, id); err != nil {
@@ -206,10 +163,8 @@ func TestInvalidSignatureRejected(t *testing.T) {
 	s := tempStore(t)
 	addMembership(t, s, campfireID)
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+3)
-	startTransport(t, addr, s)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(tr)
 
 	// Build request body signed by id2 but claiming sender is id1 → 401
 	msg := newTestMessage(t, id1)
@@ -242,10 +197,8 @@ func TestMissingSignatureHeadersRejected(t *testing.T) {
 	s := tempStore(t)
 	addMembership(t, s, campfireID)
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+4)
-	startTransport(t, addr, s)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(tr)
 
 	msg := newTestMessage(t, id)
 	body, _ := cfencoding.Marshal(msg)
@@ -277,14 +230,11 @@ func TestDeliverToAll(t *testing.T) {
 	addPeerEndpoint(t, s1, campfireID, id.PublicKeyHex())
 	addPeerEndpoint(t, s2, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+5)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+6)
-	startTransport(t, addr1, s1)
-	startTransport(t, addr2, s2)
+	tr1 := startTransport(t, "127.0.0.1:0", s1)
+	tr2 := startTransport(t, "127.0.0.1:0", s2)
 
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2)
 
 	msg := newTestMessage(t, id)
 	errs := cfhttp.DeliverToAll([]string{ep1, ep2}, campfireID, msg, id)
@@ -324,14 +274,11 @@ func TestMembershipNotification(t *testing.T) {
 	// id2 must be a member of s1's campfire to send membership notifications.
 	addPeerEndpoint(t, s1, campfireID, id2.PublicKeyHex())
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+7)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+8)
-	tr1 := startTransport(t, addr1, s1)
-	startTransport(t, addr2, s2)
+	tr1 := startTransport(t, "127.0.0.1:0", s1)
+	tr2x := startTransport(t, "127.0.0.1:0", s2)
 
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2x)
 
 	// id2 notifies tr1 it joined
 	joinEvent := cfhttp.MembershipEvent{
@@ -400,13 +347,8 @@ func TestJoinKeyExchange(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+9)
-	epA := fmt.Sprintf("http://%s", addrA)
-
 	// Start transport for Agent A with a key provider that returns the campfire keypair.
-	trA := cfhttp.New(addrA, sA)
-	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trA := cfhttp.New("127.0.0.1:0", sA)
 	trA.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -417,6 +359,8 @@ func TestJoinKeyExchange(t *testing.T) {
 		t.Fatalf("starting transport A: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
+	epA := epOf(trA)
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
 	time.Sleep(20 * time.Millisecond)
 
 	// Agent B (joiner) sends join request.
@@ -474,10 +418,8 @@ func TestMembershipJoinIdentityInjectionRejected(t *testing.T) {
 	// Add attacker as a member so membership check passes.
 	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: attacker.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+10)
-	ep := fmt.Sprintf("http://%s", addr)
-	startTransport(t, addr, s)
+	tr := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(tr)
 
 	body, err := json.Marshal(cfhttp.MembershipEvent{
 		Event:    "join",
@@ -521,10 +463,8 @@ func TestMembershipJoinValidSender(t *testing.T) {
 	// Add joiner as a known member so membership check passes.
 	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: joiner.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+11)
-	ep := fmt.Sprintf("http://%s", addr)
-	tr := startTransport(t, addr, s)
+	tr := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(tr)
 
 	joinEvent := cfhttp.MembershipEvent{
 		Event:    "join",
@@ -559,10 +499,8 @@ func TestMembershipLeaveIdentityMismatchRejected(t *testing.T) {
 	// Add attacker as member so membership check passes.
 	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: attacker.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+12)
-	ep := fmt.Sprintf("http://%s", addr)
-	startTransport(t, addr, s)
+	tr := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(tr)
 
 	body, err := json.Marshal(cfhttp.MembershipEvent{
 		Event:  "leave",
@@ -606,10 +544,8 @@ func TestMembershipJoinSSRFEndpointRejected(t *testing.T) {
 	// should reject the request.
 	s.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: attacker.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+13)
-	ep := fmt.Sprintf("http://%s", addr)
-	startTransport(t, addr, s)
+	tr := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(tr)
 
 	// Attacker announces itself with a private metadata-service endpoint.
 	body, err := json.Marshal(cfhttp.MembershipEvent{

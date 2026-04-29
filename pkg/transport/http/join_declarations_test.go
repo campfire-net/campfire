@@ -70,12 +70,8 @@ func TestJoinResponseIncludesDeclarations(t *testing.T) {
 		t.Fatalf("adding declaration message: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+350)
-	ep := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(hostID.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -86,6 +82,8 @@ func TestJoinResponseIncludesDeclarations(t *testing.T) {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep := epOf(tr)
+	tr.SetSelfInfo(hostID.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build and send a join request.
@@ -175,12 +173,8 @@ func TestJoinResponseEmptyDeclarationsWhenNone(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+352)
-	ep := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(hostID.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -191,6 +185,8 @@ func TestJoinResponseEmptyDeclarationsWhenNone(t *testing.T) {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep := epOf(tr)
+	tr.SetSelfInfo(hostID.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	joiner, err := identity.Generate()

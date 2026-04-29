@@ -210,17 +210,14 @@ func TestRekeyProtocolThreshold1(t *testing.T) {
 		Endpoint:     "http://127.0.0.1:9999",
 	})
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+220)
-	epB := fmt.Sprintf("http://%s", addrB)
-
 	// Start B's transport.
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build campfire:rekey message signed by old key.
@@ -445,13 +442,8 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 		ParticipantID: 3,
 	})
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+221)
-	epB := fmt.Sprintf("http://%s", addrB)
-
 	// Start B's transport with threshold share provider.
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
 		share, err := sB.GetThresholdShare(cfID)
 		if err != nil || share == nil {
@@ -463,6 +455,8 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 		t.Fatalf("starting B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
 	time.Sleep(20 * time.Millisecond)
 
 	// For threshold>1, FROST signing requires a quorum — no single private key exists.
@@ -580,9 +574,21 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 	// rekey handler when it processed the phase-2 request above.
 	addMembershipWithDir(t, sA, newCampfireID, t.TempDir(), 2)
 
-	// Allocate A's transport address (B is already running at base+221).
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+222)
-	epA := fmt.Sprintf("http://%s", addrA)
+	// Start A's transport with a threshold share provider backed by sA.
+	trA := cfhttp.New("127.0.0.1:0", sA)
+	trA.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
+		share, err := sA.GetThresholdShare(cfID)
+		if err != nil || share == nil {
+			return 0, nil, fmt.Errorf("no share for %s", cfID)
+		}
+		return share.ParticipantID, share.SecretShare, nil
+	})
+	if err := trA.Start(); err != nil {
+		t.Fatalf("starting A: %v", err)
+	}
+	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
+	epA := epOf(trA)
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
 
 	// Register peer endpoints under the new campfire ID so auth checks pass.
 	sA.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
@@ -598,20 +604,6 @@ func TestRekeyProtocolThreshold2(t *testing.T) {
 		ParticipantID: 1,
 	})
 
-	// Start A's transport with a threshold share provider backed by sA.
-	trA := cfhttp.New(addrA, sA)
-	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
-	trA.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
-		share, err := sA.GetThresholdShare(cfID)
-		if err != nil || share == nil {
-			return 0, nil, fmt.Errorf("no share for %s", cfID)
-		}
-		return share.ParticipantID, share.SecretShare, nil
-	})
-	if err := trA.Start(); err != nil {
-		t.Fatalf("starting A: %v", err)
-	}
-	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
 	// Build a CBOR-encoded MessageSignInput (required by the sign handler's
@@ -694,16 +686,13 @@ func TestRekeyNonCreatorForbidden(t *testing.T) {
 		Endpoint:     "http://127.0.0.1:9997",
 	})
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+223)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idCreator.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
 	time.Sleep(20 * time.Millisecond)
 
 	// Non-creator member tries to send rekey.
@@ -743,16 +732,13 @@ func TestRekeyForgedSenderRejected(t *testing.T) {
 		Endpoint:     "http://127.0.0.1:9997",
 	})
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+224)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build a rekey message signed by A's personal key (NOT the campfire key).
@@ -851,16 +837,12 @@ func TestRekeyUnsignedMessageRejected(t *testing.T) {
 				Endpoint:     "http://127.0.0.1:9997",
 			})
 
-			base := portBase()
-			addrB := fmt.Sprintf("127.0.0.1:%d", base+226+int(tc.threshold))
-			epB := fmt.Sprintf("http://%s", addrB)
-
-			trB := cfhttp.New(addrB, sB)
-			trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+			trB := cfhttp.New("127.0.0.1:0", sB)
 			if err := trB.Start(); err != nil {
 				t.Fatalf("starting transport: %v", err)
 			}
 			t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+			epB := epOf(trB)
 			time.Sleep(20 * time.Millisecond)
 
 			// Build an unsigned rekey message (no Signature field).
@@ -931,16 +913,13 @@ func TestRekeyDBFailureLeavesStateFileIntact(t *testing.T) {
 		Endpoint:     "http://127.0.0.1:9996",
 	})
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+225)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build campfire:rekey message signed by old key.
@@ -1069,16 +1048,13 @@ func TestRekeyPhase2CorruptCiphertextReturns400(t *testing.T) {
 		Endpoint:     "http://127.0.0.1:9995",
 	})
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+229)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
 	time.Sleep(20 * time.Millisecond)
 
 	// Build a valid campfire:rekey message signed by the old campfire key.
@@ -1212,16 +1188,13 @@ func TestRekeyRejectedWhenCreatorPubkeyEmpty(t *testing.T) {
 		Endpoint:     "http://127.0.0.1:9997",
 	})
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+230)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idAny.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
 	time.Sleep(20 * time.Millisecond)
 
 	senderPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
