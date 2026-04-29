@@ -632,9 +632,18 @@ func TestDispatcher_Tier2_MarkFulfilledCAS_Error_MarkedFailed(t *testing.T) {
 
 // errOnFailedCASStore wraps MemoryDispatchStore and makes MarkFailedCAS return an error.
 // Used to cover the casErr != nil sub-paths in dispatchTier2.
+//
+// advanceCursorDone, if non-nil, is closed (once) after the first AdvanceCursor call
+// completes. Tests that check cursor state must wait on this channel instead of the
+// MeteringHook channel: invokeHandler fires metering before AdvanceCursor, so receiving
+// from meterDone only guarantees metering happened — not that cursor advancement is done.
+// Waiting on advanceCursorDone eliminates the race between the dispatcher goroutine's
+// AdvanceCursor call and the test's GetCursor call.
 type errOnFailedCASStore struct {
 	*convention.MemoryDispatchStore
-	casErr error
+	casErr              error
+	advanceCursorDone   chan struct{}
+	advanceCursorOnce   sync.Once
 }
 
 func (s *errOnFailedCASStore) MarkFailedCAS(ctx context.Context, campfireID, messageID string, gen int) (bool, bool, error) {
@@ -642,6 +651,14 @@ func (s *errOnFailedCASStore) MarkFailedCAS(ctx context.Context, campfireID, mes
 		return false, false, s.casErr
 	}
 	return s.MemoryDispatchStore.MarkFailedCAS(ctx, campfireID, messageID, gen)
+}
+
+func (s *errOnFailedCASStore) AdvanceCursor(ctx context.Context, serverID, campfireID string, newTimestamp int64) (bool, error) {
+	advanced, err := s.MemoryDispatchStore.AdvanceCursor(ctx, serverID, campfireID, newTimestamp)
+	if s.advanceCursorDone != nil {
+		s.advanceCursorOnce.Do(func() { close(s.advanceCursorDone) })
+	}
+	return advanced, err
 }
 
 // TestDispatcher_Tier2_BadURL_NotFound verifies the not_found sub-path in the bad-URL
@@ -713,13 +730,18 @@ func (s *notFoundOnMarkFailedCASStoreT2) MarkFailedCAS(_ context.Context, campfi
 // return "failed". invokeHandler then fires MeteringHook and advances the cursor.
 func TestDispatcher_Tier2_BadURL_MarkFailedCAS_Error(t *testing.T) {
 	inner := convention.NewMemoryDispatchStore()
+	// advanceCursorDone is closed after AdvanceCursor completes; we wait on it
+	// before reading cursor state to avoid the metering-before-cursor race.
+	advanceCursorDone := make(chan struct{})
 	ds := &errOnFailedCASStore{
 		MemoryDispatchStore: inner,
 		casErr:              fmt.Errorf("injected mark-failed-cas error"),
+		advanceCursorDone:   advanceCursorDone,
 	}
 	d := convention.NewConventionDispatcher(ds, nil)
 
-	// MeteringHook fires when invokeHandler completes with "failed" status.
+	// MeteringHook fires when invokeHandler reaches metering (before AdvanceCursor).
+	// Used only to assert the status — not for cursor-read synchronization.
 	meterDone := make(chan convention.ConventionMeterEvent, 1)
 	d.MeteringHook = func(_ context.Context, ev convention.ConventionMeterEvent) {
 		select {
@@ -746,7 +768,7 @@ func TestDispatcher_Tier2_BadURL_MarkFailedCAS_Error(t *testing.T) {
 		t.Fatal("expected Dispatch to return true")
 	}
 
-	// Wait for metering — signals invokeHandler completed with "failed".
+	// Wait for metering — asserts invokeHandler reached the "failed" status.
 	var ev convention.ConventionMeterEvent
 	select {
 	case ev = <-meterDone:
@@ -755,6 +777,13 @@ func TestDispatcher_Tier2_BadURL_MarkFailedCAS_Error(t *testing.T) {
 	}
 	if ev.Status != "failed" {
 		t.Errorf("expected metering status 'failed', got %q", ev.Status)
+	}
+
+	// Wait for AdvanceCursor to complete before reading cursor state.
+	select {
+	case <-advanceCursorDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for AdvanceCursor (cursor should advance after 'failed' dispatch)")
 	}
 
 	// Cursor must advance after "failed" result.
@@ -782,13 +811,22 @@ func TestDispatcher_Tier2_NetworkFailure_MarkFailedCAS_Error(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	inner := convention.NewMemoryDispatchStore()
+	// advanceCursorDone is closed by errOnFailedCASStore.AdvanceCursor once cursor
+	// advancement completes. We must wait on this — not meterDone — before reading
+	// the cursor: invokeHandler fires MeteringHook *before* AdvanceCursor, so
+	// receiving from meterDone only means metering happened, not that the cursor
+	// write is done. Waiting on advanceCursorDone is the correct synchronization
+	// point that eliminates the race between the dispatcher goroutine and GetCursor.
+	advanceCursorDone := make(chan struct{})
 	ds := &errOnFailedCASStore{
 		MemoryDispatchStore: inner,
 		casErr:              fmt.Errorf("injected mark-failed-cas error for network failure"),
+		advanceCursorDone:   advanceCursorDone,
 	}
 	d := convention.NewConventionDispatcher(ds, nil)
 
-	// MeteringHook fires when invokeHandler completes with "failed" status.
+	// MeteringHook fires when invokeHandler reaches metering (before AdvanceCursor).
+	// Used only to assert the status — not for cursor-read synchronization.
 	meterDone := make(chan convention.ConventionMeterEvent, 1)
 	d.MeteringHook = func(_ context.Context, ev convention.ConventionMeterEvent) {
 		select {
@@ -814,7 +852,7 @@ func TestDispatcher_Tier2_NetworkFailure_MarkFailedCAS_Error(t *testing.T) {
 		t.Fatal("expected Dispatch to return true")
 	}
 
-	// Wait for metering — signals invokeHandler completed with "failed".
+	// Wait for metering — asserts invokeHandler reached the "failed" status.
 	var ev convention.ConventionMeterEvent
 	select {
 	case ev = <-meterDone:
@@ -823,6 +861,15 @@ func TestDispatcher_Tier2_NetworkFailure_MarkFailedCAS_Error(t *testing.T) {
 	}
 	if ev.Status != "failed" {
 		t.Errorf("expected metering status 'failed', got %q", ev.Status)
+	}
+
+	// Wait for AdvanceCursor to complete before reading cursor state.
+	// This is the correct synchronization point: metering fires before cursor
+	// advancement, so meterDone is not sufficient to guarantee cursor is written.
+	select {
+	case <-advanceCursorDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for AdvanceCursor (cursor should advance after 'failed' dispatch)")
 	}
 
 	// Cursor must advance after "failed" result.
@@ -846,13 +893,18 @@ func TestDispatcher_Tier2_Non202_MarkFailedCAS_Error(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	inner := convention.NewMemoryDispatchStore()
+	// advanceCursorDone is closed after AdvanceCursor completes; we wait on it
+	// before reading cursor state to avoid the metering-before-cursor race.
+	advanceCursorDone := make(chan struct{})
 	ds := &errOnFailedCASStore{
 		MemoryDispatchStore: inner,
 		casErr:              fmt.Errorf("injected mark-failed-cas error for non-202"),
+		advanceCursorDone:   advanceCursorDone,
 	}
 	d := convention.NewConventionDispatcher(ds, nil)
 
-	// MeteringHook fires when invokeHandler completes with "failed" status.
+	// MeteringHook fires when invokeHandler reaches metering (before AdvanceCursor).
+	// Used only to assert the status — not for cursor-read synchronization.
 	meterDone := make(chan convention.ConventionMeterEvent, 1)
 	d.MeteringHook = func(_ context.Context, ev convention.ConventionMeterEvent) {
 		select {
@@ -878,7 +930,7 @@ func TestDispatcher_Tier2_Non202_MarkFailedCAS_Error(t *testing.T) {
 		t.Fatal("expected Dispatch to return true")
 	}
 
-	// Wait for metering — signals invokeHandler completed with "failed".
+	// Wait for metering — asserts invokeHandler reached the "failed" status.
 	var ev convention.ConventionMeterEvent
 	select {
 	case ev = <-meterDone:
@@ -887,6 +939,13 @@ func TestDispatcher_Tier2_Non202_MarkFailedCAS_Error(t *testing.T) {
 	}
 	if ev.Status != "failed" {
 		t.Errorf("expected metering status 'failed', got %q", ev.Status)
+	}
+
+	// Wait for AdvanceCursor to complete before reading cursor state.
+	select {
+	case <-advanceCursorDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for AdvanceCursor (cursor should advance after 'failed' dispatch)")
 	}
 
 	// Cursor must advance after "failed" result.
