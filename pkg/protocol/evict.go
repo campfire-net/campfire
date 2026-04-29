@@ -170,6 +170,34 @@ func (c *Client) evictP2PHTTP(req EvictRequest, m *store.Membership) (*EvictResu
 func (c *Client) rekeyAfterEvict(req EvictRequest, m *store.Membership) (*EvictResult, error) {
 	oldCampfireID := req.CampfireID
 
+	// FIX-2 (MB2, CRITICAL): Guard against missing epoch_secrets before rekey on
+	// encrypted campfires.
+	//
+	// UpdateCampfireID renames epoch_secrets rows along with all other campfire rows.
+	// For encrypted campfires (m.Encrypted == true), if no epoch_secrets row exists for
+	// oldCampfireID, the store is in a corrupted or partially-initialised state (e.g., an
+	// earlier rekey was interrupted before the epoch secret was written). Proceeding would
+	// silently diverge the campfire ID: the member's store would record newCampfireID but
+	// have no epoch material to decrypt or sign messages — a silent failure with no error.
+	//
+	// Non-encrypted campfires: epoch_secrets is not required; its absence is expected.
+	//
+	// Fail fast for encrypted campfires so the caller can surface the problem and take
+	// corrective action (re-populate epoch secrets or resync) rather than silently
+	// committing an unrecoverable diverged state.
+	if m.Encrypted {
+		epochSecret, epochErr := c.store.GetLatestEpochSecret(oldCampfireID)
+		if epochErr != nil {
+			return nil, fmt.Errorf("protocol.Client.Evict: checking epoch secrets before rekey: %w", epochErr)
+		}
+		if epochSecret == nil {
+			return nil, fmt.Errorf("protocol.Client.Evict: cannot rekey encrypted campfire %s — "+
+				"epoch_secrets absent; store is missing encryption epoch material "+
+				"(interrupted prior rekey?). Re-populate epoch secrets before evicting",
+				shortID(oldCampfireID))
+		}
+	}
+
 	// Get remaining peers (after deletion of evicted peer).
 	remainingPeers, err := c.store.ListPeerEndpoints(oldCampfireID)
 	if err != nil {
