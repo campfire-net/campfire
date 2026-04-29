@@ -20,7 +20,7 @@ import (
 // when the operationName is one of the ten L1-frozen reserved operations.
 // It is also used as the sentinel for Dispatch to short-circuit reserved ops
 // at the L2 enforcement point (campfireagent-935, protocol-spec.md §Reserved-Op Floor).
-var ErrReservedOp = fmt.Errorf("reserved-op-floor: operation is a reserved L1 operation and cannot be dispatched by a convention server")
+var ErrReservedOp = fmt.Errorf("reserved_op_floor: operation is a reserved L1 operation and cannot be dispatched by a convention server")
 
 // conventionKey is the composite key used to look up dispatch registrations.
 type conventionKey struct {
@@ -172,6 +172,12 @@ type conventionOpPayload struct {
 	Version    string         `json:"version,omitempty"`
 	Operation  string         `json:"operation"`
 	Args       map[string]any `json:"args,omitempty"`
+	// GrantChain carries the base64url-encoded CBOR grant chain presented by the caller.
+	// Non-empty means the caller claims authority via a delegation chain (cf-authority §1).
+	// The L2 enforcer checks the reserved-op floor BEFORE consulting the chain — a reserved op
+	// without an owner-level grant (depth 0) is denied at L2 regardless of GrantChain content.
+	// L3 (GateEvaluator) is the future consumer of this field (campfireagent-02a).
+	GrantChain []string `json:"grant_chain,omitempty"`
 }
 
 // tier2RequestBody is the HTTP request body sent to Tier 2 handlers.
