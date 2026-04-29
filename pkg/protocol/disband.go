@@ -81,6 +81,12 @@ func (c *Client) Disband(campfireID string) error {
 		return fmt.Errorf("only the creator can disband campfire %s", shortID(campfireID))
 	}
 
+	// Serialize membership mutations for this campfire (unified lock with Admit,
+	// Leave, and Evict -- FIX-1/MB1).
+	mu := c.membershipLock(campfireID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// Guard: reject disbanding identity campfires. An identity campfire is
 	// identified by its genesis message (message 0) being signed by the campfire
 	// key itself (sender == campfireID) and carrying an identity convention payload.

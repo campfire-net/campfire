@@ -147,6 +147,12 @@ func (c *Client) Leave(campfireID string) error {
 		return &ErrNotMember{CampfireID: campfireID}
 	}
 
+	// Serialize membership mutations for this campfire (unified lock with Admit,
+	// Evict, and Disband -- FIX-1/MB1).
+	mu := c.membershipLock(campfireID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// Remove member record from the filesystem transport directory.
 	// We do this before removing the store record so that a partial failure
 	// (transport removal succeeds, store removal fails) is detectable via a
