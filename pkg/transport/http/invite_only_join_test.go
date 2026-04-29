@@ -33,7 +33,7 @@ import (
 // The campfire state is written with DeliveryModes=["pull","push"] so that
 // admitted joiners providing an endpoint are accepted (delivery mode validation
 // added in campfire-agent-9er requires push support for endpoint joins).
-func setupInviteOnlyServer(t *testing.T, portOffset int) (campfireID, ep string, sHost store.Store) {
+func setupInviteOnlyServer(t *testing.T) (campfireID, ep string, sHost store.Store) {
 	t.Helper()
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -75,12 +75,7 @@ func setupInviteOnlyServer(t *testing.T, portOffset int) (campfireID, ep string,
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+portOffset)
-	ep = fmt.Sprintf("http://%s", addr)
-
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -91,6 +86,8 @@ func setupInviteOnlyServer(t *testing.T, portOffset int) (campfireID, ep string,
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep = epOf(tr)
+	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	return campfireID, ep, sHost
@@ -127,7 +124,7 @@ func buildJoinRequest(t *testing.T, ep, campfireID string, signerID *identity.Id
 // providing an endpoint is rejected (403) and leaves no record in peer_endpoints.
 // This is the baseline case: a fresh joiner never in the invite list.
 func TestInviteOnlyJoinRejectedNoStaleEndpoint(t *testing.T) {
-	campfireID, ep, sHost := setupInviteOnlyServer(t, 340)
+	campfireID, ep, sHost := setupInviteOnlyServer(t)
 
 	uninvited, err := identity.Generate()
 	if err != nil {
@@ -173,7 +170,7 @@ func TestInviteOnlyJoinRejectedNoStaleEndpoint(t *testing.T) {
 // record gets updated, not duplicated) and verifies the stale cleanup indirectly
 // by confirming that the cleanup path is exercised without panics or errors.
 func TestInviteOnlyJoinStaleEndpointClearedOnRejection(t *testing.T) {
-	campfireID, ep, sHost := setupInviteOnlyServer(t, 345)
+	campfireID, ep, sHost := setupInviteOnlyServer(t)
 
 	joiner, err := identity.Generate()
 	if err != nil {
@@ -226,7 +223,7 @@ func TestInviteOnlyJoinStaleEndpointClearedOnRejection(t *testing.T) {
 // TestInviteOnlyUninvitedJoinerRejectedWithEndpoint verifies that an uninvited
 // joiner providing a public endpoint gets a 403 and no endpoint is stored.
 func TestInviteOnlyUninvitedJoinerRejectedWithEndpoint(t *testing.T) {
-	campfireID, ep, sHost := setupInviteOnlyServer(t, 350)
+	campfireID, ep, sHost := setupInviteOnlyServer(t)
 
 	uninvited, err := identity.Generate()
 	if err != nil {
@@ -261,7 +258,7 @@ func TestInviteOnlyUninvitedJoinerRejectedWithEndpoint(t *testing.T) {
 // attempts from an uninvited joiner do not leave stale endpoint records.
 // All requests must be rejected and no peer_endpoints record must remain.
 func TestInviteOnlyConcurrentRejectionNoStaleRecord(t *testing.T) {
-	campfireID, ep, sHost := setupInviteOnlyServer(t, 355)
+	campfireID, ep, sHost := setupInviteOnlyServer(t)
 
 	joiner, err := identity.Generate()
 	if err != nil {

@@ -46,10 +46,8 @@ func TestDeliverNonMemberForbidden(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 	// idStranger is NOT added to peer endpoints.
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+140)
-	startTransportWithSelf(t, addr, s, idMember)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr1 := startTransportWithSelf(t, s, idMember)
+	ep := epOf(_tr1)
 
 	msg := newTestMessage(t, idStranger)
 	body, err := cfencoding.Marshal(msg)
@@ -79,10 +77,8 @@ func TestDeliverMemberAllowed(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+141)
-	startTransportWithSelf(t, addr, s, idMember)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr2 := startTransportWithSelf(t, s, idMember)
+	ep := epOf(_tr2)
 
 	msg := newTestMessage(t, idMember)
 	if err := cfhttp.Deliver(ep, campfireID, msg, idMember); err != nil {
@@ -105,10 +101,8 @@ func TestSyncNonMemberForbidden(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 	// idStranger is NOT added to peer endpoints.
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+142)
-	startTransportWithSelf(t, addr, s, idMember)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr3 := startTransportWithSelf(t, s, idMember)
+	ep := epOf(_tr3)
 
 	url := fmt.Sprintf("%s/campfire/%s/sync?since=0", ep, campfireID)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
@@ -132,10 +126,8 @@ func TestSyncMemberAllowed(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+143)
-	startTransportWithSelf(t, addr, s, idMember)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr4 := startTransportWithSelf(t, s, idMember)
+	ep := epOf(_tr4)
 
 	_, err := cfhttp.Sync(ep, campfireID, 0, idMember)
 	if err != nil {
@@ -175,12 +167,8 @@ func TestJoinInviteOnlyForbidden(t *testing.T) {
 	}
 	// idStranger is NOT in peer endpoints.
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+144)
-	epAdmin := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, s)
-	tr.SetSelfInfo(idAdmin.PublicKeyHex(), epAdmin)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -192,6 +180,8 @@ func TestJoinInviteOnlyForbidden(t *testing.T) {
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	epAdmin := epOf(tr)
+	tr.SetSelfInfo(idAdmin.PublicKeyHex(), epAdmin)
 
 	// idStranger tries to join — should be rejected.
 	_, err = cfhttp.Join(epAdmin, campfireID, idStranger, "")
@@ -231,12 +221,8 @@ func TestJoinInviteOnlyAdmittedAllowed(t *testing.T) {
 	// Pre-admit idAdmitted by adding to peer endpoints.
 	addPeerEndpoint(t, s, campfireID, idAdmitted.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+145)
-	epAdmin := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, s)
-	tr.SetSelfInfo(idAdmin.PublicKeyHex(), epAdmin)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -248,6 +234,8 @@ func TestJoinInviteOnlyAdmittedAllowed(t *testing.T) {
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	epAdmin := epOf(tr)
+	tr.SetSelfInfo(idAdmin.PublicKeyHex(), epAdmin)
 
 	// idAdmitted joins — should succeed.
 	result, err := cfhttp.Join(epAdmin, campfireID, idAdmitted, "")
@@ -284,12 +272,8 @@ func TestJoinOpenAllowed(t *testing.T) {
 		t.Fatalf("adding membership: %v", err)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+146)
-	epAdmin := fmt.Sprintf("http://%s", addr)
 
-	tr := cfhttp.New(addr, s)
-	tr.SetSelfInfo(idAdmin.PublicKeyHex(), epAdmin)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -301,6 +285,8 @@ func TestJoinOpenAllowed(t *testing.T) {
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	epAdmin := epOf(tr)
+	tr.SetSelfInfo(idAdmin.PublicKeyHex(), epAdmin)
 
 	// Any agent can join an open campfire.
 	result, err := cfhttp.Join(epAdmin, campfireID, idStranger, "")
@@ -327,10 +313,8 @@ func TestMembershipNonMemberForbidden(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 	// idStranger NOT in peer endpoints.
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+147)
-	startTransportWithSelf(t, addr, s, idMember)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr5 := startTransportWithSelf(t, s, idMember)
+	ep := epOf(_tr5)
 
 	// idStranger sends a join event.
 	joinEvent := cfhttp.MembershipEvent{
@@ -361,10 +345,8 @@ func TestMembershipMemberAllowed(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+148)
-	startTransportWithSelf(t, addr, s, idMember)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr6 := startTransportWithSelf(t, s, idMember)
+	ep := epOf(_tr6)
 
 	// idMember sends a join event for themselves (member == sender).
 	joinEvent := cfhttp.MembershipEvent{
@@ -408,10 +390,8 @@ func TestSignNonMemberForbidden(t *testing.T) {
 		SecretShare:   shareB,
 	})
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+149)
-	tr := cfhttp.New(addr, s)
-	tr.SetSelfInfo(idMember.PublicKeyHex(), fmt.Sprintf("http://%s", addr))
+	tr := cfhttp.New("127.0.0.1:0", s)
+	tr.SetSelfInfo(idMember.PublicKeyHex(), epOf(tr))
 	tr.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
 		share, err := s.GetThresholdShare(cfID)
 		if err != nil || share == nil {
@@ -424,7 +404,7 @@ func TestSignNonMemberForbidden(t *testing.T) {
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
-	ep := fmt.Sprintf("http://%s", addr)
+	ep := epOf(tr)
 
 	// idStranger tries to initiate a signing session.
 	ssA, err := threshold.NewSigningSession(dkgResults[1].SecretShare, dkgResults[1].Public, []byte("test"), []uint32{1, 2})
@@ -480,16 +460,14 @@ func TestRekeyNonMemberForbidden(t *testing.T) {
 	addPeerEndpoint(t, s, oldCampfireID, idMember.PublicKeyHex())
 	// idStranger NOT in peer endpoints.
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+150)
-	tr := cfhttp.New(addr, s)
-	tr.SetSelfInfo(idMember.PublicKeyHex(), fmt.Sprintf("http://%s", addr))
+	tr := cfhttp.New("127.0.0.1:0", s)
+	tr.SetSelfInfo(idMember.PublicKeyHex(), epOf(tr))
 	if err := tr.Start(); err != nil {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
-	ep := fmt.Sprintf("http://%s", addr)
+	ep := epOf(tr)
 
 	// Generate sender ephemeral X25519 key for phase 1.
 	senderPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
@@ -526,11 +504,9 @@ func TestPollKnownPeerAllowed(t *testing.T) {
 	// idPeer is a known peer (in peer_endpoints) but not the self key.
 	addPeerEndpoint(t, s, campfireID, idPeer.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+151)
 	// Self key is idSelf, not idPeer.
-	startTransportWithSelf(t, addr, s, idSelf)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr7 := startTransportWithSelf(t, s, idSelf)
+	ep := epOf(_tr7)
 
 	// Pre-store a message so poll returns immediately (no blocking).
 	storeMessageRecord(t, s, campfireID, idPeer)
@@ -599,17 +575,15 @@ func TestRekeyRejectsUnsignedRekeyMessage(t *testing.T) {
 	// Add A to B's peer list so rekey membership check passes.
 	addPeerEndpoint(t, sB, oldCampfireID, idA.PublicKeyHex())
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+152)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	epB := epOf(trB)
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
 
 	// Build an UNSIGNED rekey message (no signature — simulates attacker injection).
 	unsignedMsg := &message.Message{

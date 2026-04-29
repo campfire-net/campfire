@@ -210,14 +210,7 @@ func TestBeaconReAdvertisement(t *testing.T) {
 	addPeerEndpoint(t, s2, gatewayCfIDHex, hex.EncodeToString(gatewayCfPub))
 	addPeerEndpoint(t, s2, gatewayCfIDHex, id2.PublicKeyHex())
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+500)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+501)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-
-	tr1 := cfhttp.New(addr1, s1)
-	tr1.SetSelfInfo(id1.PublicKeyHex(), ep1)
+	tr1 := cfhttp.New("127.0.0.1:0", s1)
 	tr1.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == gatewayCfIDHex {
 			return gatewayCfPriv, gatewayCfPub, nil
@@ -228,13 +221,15 @@ func TestBeaconReAdvertisement(t *testing.T) {
 		t.Fatalf("tr1.Start: %v", err)
 	}
 	t.Cleanup(func() { tr1.Stop() }) //nolint:errcheck
+	ep1 := epOf(tr1)
+	tr1.SetSelfInfo(id1.PublicKeyHex(), ep1)
 
-	tr2 := cfhttp.New(addr2, s2)
-	tr2.SetSelfInfo(id2.PublicKeyHex(), ep2)
+	tr2 := cfhttp.New("127.0.0.1:0", s2)
 	if err := tr2.Start(); err != nil {
 		t.Fatalf("tr2.Start: %v", err)
 	}
 	t.Cleanup(func() { tr2.Stop() }) //nolint:errcheck
+	ep2 := epOf(tr2)
 	time.Sleep(20 * time.Millisecond)
 
 	// Register tr2 as a peer of tr1 for the gateway campfire.
@@ -324,14 +319,6 @@ func TestBeaconReAdvertisementPathGrows(t *testing.T) {
 	addPeerEndpoint(t, s3, gatewayCfIDHex, id3.PublicKeyHex())
 	addPeerEndpoint(t, s3, gatewayCfIDHex, cfPubHex)
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+502)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+503)
-	addr3 := fmt.Sprintf("127.0.0.1:%d", base+504)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-	ep3 := fmt.Sprintf("http://%s", addr3)
-
 	makeKeyProvider := func(priv ed25519.PrivateKey, pub ed25519.PublicKey) func(string) ([]byte, []byte, error) {
 		return func(id string) ([]byte, []byte, error) {
 			if id == gatewayCfIDHex {
@@ -341,29 +328,32 @@ func TestBeaconReAdvertisementPathGrows(t *testing.T) {
 		}
 	}
 
-	tr1 := cfhttp.New(addr1, s1)
-	tr1.SetSelfInfo(id1.PublicKeyHex(), ep1)
+	tr1 := cfhttp.New("127.0.0.1:0", s1)
 	tr1.SetKeyProvider(makeKeyProvider(gatewayCfPriv, gatewayCfPub))
 	if err := tr1.Start(); err != nil {
 		t.Fatalf("tr1.Start: %v", err)
 	}
 	t.Cleanup(func() { tr1.Stop() }) //nolint:errcheck
+	ep1 := epOf(tr1)
+	tr1.SetSelfInfo(id1.PublicKeyHex(), ep1)
 
-	tr2 := cfhttp.New(addr2, s2)
-	tr2.SetSelfInfo(id2.PublicKeyHex(), ep2)
+	tr2 := cfhttp.New("127.0.0.1:0", s2)
 	tr2.SetKeyProvider(makeKeyProvider(gatewayCfPriv, gatewayCfPub))
 	if err := tr2.Start(); err != nil {
 		t.Fatalf("tr2.Start: %v", err)
 	}
 	t.Cleanup(func() { tr2.Stop() }) //nolint:errcheck
+	ep2 := epOf(tr2)
+	tr2.SetSelfInfo(id2.PublicKeyHex(), ep2)
 
-	tr3 := cfhttp.New(addr3, s3)
-	tr3.SetSelfInfo(id3.PublicKeyHex(), ep3)
+	tr3 := cfhttp.New("127.0.0.1:0", s3)
 	tr3.SetKeyProvider(makeKeyProvider(gatewayCfPriv, gatewayCfPub))
 	if err := tr3.Start(); err != nil {
 		t.Fatalf("tr3.Start: %v", err)
 	}
 	t.Cleanup(func() { tr3.Stop() }) //nolint:errcheck
+	ep3 := epOf(tr3)
+	tr3.SetSelfInfo(id3.PublicKeyHex(), ep3)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -439,12 +429,6 @@ func TestWithdrawPropagation(t *testing.T) {
 	addPeerEndpoint(t, s2, gatewayCfIDHex, cfPubHex)
 	addPeerEndpoint(t, s2, gatewayCfIDHex, id2.PublicKeyHex())
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+505)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+506)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-
 	makeKeyProvider := func(priv ed25519.PrivateKey, pub ed25519.PublicKey) func(string) ([]byte, []byte, error) {
 		return func(id string) ([]byte, []byte, error) {
 			if id == gatewayCfIDHex {
@@ -454,21 +438,23 @@ func TestWithdrawPropagation(t *testing.T) {
 		}
 	}
 
-	tr1 := cfhttp.New(addr1, s1)
-	tr1.SetSelfInfo(id1.PublicKeyHex(), ep1)
+	tr1 := cfhttp.New("127.0.0.1:0", s1)
 	tr1.SetKeyProvider(makeKeyProvider(gatewayCfPriv, gatewayCfPub))
 	if err := tr1.Start(); err != nil {
 		t.Fatalf("tr1.Start: %v", err)
 	}
 	t.Cleanup(func() { tr1.Stop() }) //nolint:errcheck
+	ep1 := epOf(tr1)
+	tr1.SetSelfInfo(id1.PublicKeyHex(), ep1)
 
-	tr2 := cfhttp.New(addr2, s2)
-	tr2.SetSelfInfo(id2.PublicKeyHex(), ep2)
+	tr2 := cfhttp.New("127.0.0.1:0", s2)
 	tr2.SetKeyProvider(makeKeyProvider(gatewayCfPriv, gatewayCfPub))
 	if err := tr2.Start(); err != nil {
 		t.Fatalf("tr2.Start: %v", err)
 	}
 	t.Cleanup(func() { tr2.Stop() }) //nolint:errcheck
+	ep2 := epOf(tr2)
+	tr2.SetSelfInfo(id2.PublicKeyHex(), ep2)
 	time.Sleep(20 * time.Millisecond)
 
 	tr1.AddPeer(gatewayCfIDHex, id2.PublicKeyHex(), ep2)

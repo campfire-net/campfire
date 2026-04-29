@@ -82,10 +82,8 @@ func TestFED2_BeaconInvalidJSON(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+640)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr1 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr1)
 
 	// Build a routing:beacon message with non-JSON payload.
 	invalidPayload := []byte("this is not json {{{{")
@@ -120,10 +118,8 @@ func TestFED2_BeaconTamperedSignature(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+641)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr2 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr2)
 
 	// Generate a campfire keypair and sign a valid beacon.
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
@@ -180,10 +176,8 @@ func TestFED2_BeaconValidAccepted(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+642)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr3 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr3)
 
 	// Generate a campfire keypair and sign a valid beacon.
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)

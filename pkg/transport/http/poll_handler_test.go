@@ -95,16 +95,16 @@ func storeMessageRecord(t *testing.T, s store.Store, campfireID string, id *iden
 	return rec
 }
 
-// startTransportWithSelf starts a transport and sets the self identity.
-func startTransportWithSelf(t *testing.T, addr string, s store.Store, id *identity.Identity) *cfhttp.Transport {
+// startTransportWithSelf starts a transport on an OS-assigned port and sets the self identity.
+// The endpoint URL is derived from tr.Addr() after Start(), so self info is always accurate.
+func startTransportWithSelf(t *testing.T, s store.Store, id *identity.Identity) *cfhttp.Transport {
 	t.Helper()
-	tr := cfhttp.New(addr, s)
-	ep := fmt.Sprintf("http://%s", addr)
-	tr.SetSelfInfo(id.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	if err := tr.Start(); err != nil {
-		t.Fatalf("starting transport on %s: %v", addr, err)
+		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	tr.SetSelfInfo(id.PublicKeyHex(), epOf(tr))
 	time.Sleep(20 * time.Millisecond)
 	return tr
 }
@@ -118,10 +118,8 @@ func TestHandlePollImmediateMessages(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+100)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, id)
+	ep := epOf(tr)
 
 	// Store two messages before polling.
 	rec1 := storeMessageRecord(t, s, campfireID, id)
@@ -172,10 +170,8 @@ func TestHandlePollTimeout(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+101)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, id)
+	ep := epOf(tr)
 
 	since := time.Now().UnixNano()
 
@@ -213,10 +209,8 @@ func TestHandlePollWakeOnDeliver(t *testing.T) {
 	addPeerEndpoint(t, s, campfireID, idPoller.PublicKeyHex())
 	addPeerEndpoint(t, s, campfireID, idSender.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+102)
-	startTransportWithSelf(t, addr, s, idPoller)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, idPoller)
+	ep := epOf(tr)
 
 	since := time.Now().UnixNano()
 
@@ -277,10 +271,8 @@ func TestHandlePollUnauthorized(t *testing.T) {
 	s := tempStore(t)
 	addMembership(t, s, campfireID)
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+103)
-	startTransport(t, addr, s)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(tr)
 
 	url := fmt.Sprintf("%s/campfire/%s/poll?since=0&timeout=1", ep, campfireID)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
@@ -304,11 +296,9 @@ func TestHandlePollNonMember(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+104)
 	// Use startTransportWithSelf so self key is idMember (not idStranger).
-	startTransportWithSelf(t, addr, s, idMember)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, idMember)
+	ep := epOf(tr)
 
 	// idStranger is not in peer_endpoints and not the local transport self key.
 	resp, err := doPoll(ep, campfireID, 0, 1, idStranger)
@@ -330,10 +320,8 @@ func TestHandlePollInvalidParams(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+105)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, id)
+	ep := epOf(tr)
 
 	url := fmt.Sprintf("%s/campfire/%s/poll?since=abc&timeout=1", ep, campfireID)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
@@ -358,17 +346,15 @@ func TestHandlePollLimitExceeded(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+106)
-	tr := cfhttp.New(addr, s)
-	tr.SetSelfInfo(id.PublicKeyHex(), fmt.Sprintf("http://%s", addr))
+	tr := cfhttp.New("127.0.0.1:0", s)
 	tr.SetMaxPollersPerCampfire(2)
 	if err := tr.Start(); err != nil {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep := epOf(tr)
+	tr.SetSelfInfo(id.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
-	ep := fmt.Sprintf("http://%s", addr)
 
 	// Block 2 poll slots (timeout=10s runs in background).
 	var wg sync.WaitGroup
@@ -422,10 +408,8 @@ func TestHandlePollInvalidTimeoutCapped(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+107)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, id)
+	ep := epOf(tr)
 
 	// Store a message so the poll returns immediately (we don't want to wait 50s).
 	storeMessageRecord(t, s, campfireID, id)
@@ -453,10 +437,8 @@ func TestHandlePollFiltersByReceivedAt(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+108)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, id)
+	ep := epOf(tr)
 
 	now := time.Now().UnixNano()
 
@@ -525,12 +507,10 @@ func TestHandlePollMembershipStoreError(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, idCaller.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+112)
 	// Set self key to idSelf so idCaller is not the self key and must be
 	// looked up via ListPeerEndpoints.
-	startTransportWithSelf(t, addr, s, idSelf)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, idSelf)
+	ep := epOf(tr)
 
 	// Close the store so ListPeerEndpoints returns an error.
 	if err := s.Close(); err != nil {
@@ -560,10 +540,8 @@ func TestHandlePollZeroTimeoutFloor(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+110)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, id)
+	ep := epOf(tr)
 
 	since := time.Now().UnixNano()
 
@@ -595,10 +573,8 @@ func TestHandlePollNegativeTimeoutFloor(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+111)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, id)
+	ep := epOf(tr)
 
 	since := time.Now().UnixNano()
 
@@ -630,10 +606,8 @@ func TestHandlePollNoPeerEndpoints(t *testing.T) {
 	addMembership(t, s, campfireID)
 	// Intentionally do NOT call addPeerEndpoint — empty peer list.
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+109)
-	startTransportWithSelf(t, addr, s, idSelf)
-	ep := fmt.Sprintf("http://%s", addr)
+	tr := startTransportWithSelf(t, s, idSelf)
+	ep := epOf(tr)
 
 	resp, err := doPoll(ep, campfireID, 0, 1, idCaller)
 	if err != nil {

@@ -65,7 +65,7 @@ func rawRekeyPost(t *testing.T, endpoint, campfireID string, req cfhttp.RekeyReq
 // setupRekeyTestServer starts a transport for a receiver with the given campfire
 // membership and returns its endpoint URL.  It is the caller's responsibility to
 // stop the transport (via t.Cleanup — already registered inside).
-func setupRekeyTestServer(t *testing.T, port int, idSenderPubHex string) (ep, campfireID string) {
+func setupRekeyTestServer(t *testing.T, idSenderPubHex string) (ep, campfireID string) {
 	t.Helper()
 
 	oldCFPub, oldCFPriv, err := ed25519.GenerateKey(nil)
@@ -78,15 +78,13 @@ func setupRekeyTestServer(t *testing.T, port int, idSenderPubHex string) (ep, ca
 	stateDirB, _ := setupCampfireState(t, oldCFPriv, oldCFPub, 1)
 	addMembershipWithDirAndCreator(t, sB, campfireID, stateDirB, 1, idSenderPubHex)
 
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	ep = fmt.Sprintf("http://%s", addr)
-
-	trB := cfhttp.New(addr, sB)
-	trB.SetSelfInfo(idSenderPubHex, ep)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	ep = epOf(trB)
+	trB.SetSelfInfo(idSenderPubHex, ep)
 	time.Sleep(20 * time.Millisecond)
 
 	return ep, campfireID
@@ -100,8 +98,7 @@ func setupRekeyTestServer(t *testing.T, port int, idSenderPubHex string) (ep, ca
 func TestRekeyPhase1ReplayOverwritesSession(t *testing.T) {
 	idA := tempIdentity(t) // sender / creator
 
-	base := portBase()
-	ep, campfireID := setupRekeyTestServer(t, base+250, idA.PublicKeyHex())
+	ep, campfireID := setupRekeyTestServer(t, idA.PublicKeyHex())
 
 	// Generate a new campfire ID (any hex-encoded ed25519 pub, or just a 32-byte
 	// random hex for this version of the handler which doesn't validate format).
@@ -250,8 +247,7 @@ func TestRekeyPhase1ReplayOverwritesSession(t *testing.T) {
 func TestRekeyPhase2WithoutPhase1Returns400(t *testing.T) {
 	idA := tempIdentity(t)
 
-	base := portBase()
-	ep, campfireID := setupRekeyTestServer(t, base+251, idA.PublicKeyHex())
+	ep, campfireID := setupRekeyTestServer(t, idA.PublicKeyHex())
 
 	newCFPub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {

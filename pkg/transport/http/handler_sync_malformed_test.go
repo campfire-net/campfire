@@ -12,7 +12,6 @@ package http_test
 //     (regression guard: if "continue" is changed to "return error" this fails).
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
@@ -70,10 +69,8 @@ func TestHandleSyncMalformedSenderSilentlyDropped(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+400)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr1 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr1)
 
 	// Insert one valid record and one malformed record.
 	buildValidRecord(t, s, campfireID)
@@ -103,10 +100,8 @@ func TestHandleSyncValidRecordIncluded(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, id.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+401)
-	startTransportWithSelf(t, addr, s, id)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr2 := startTransportWithSelf(t, s, id)
+	ep := epOf(_tr2)
 
 	// Insert exactly one valid record.
 	rec := buildValidRecord(t, s, campfireID)

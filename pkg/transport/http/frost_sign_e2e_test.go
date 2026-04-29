@@ -75,17 +75,6 @@ func TestRunFROSTSignEndToEnd(t *testing.T) {
 		t.Fatalf("storing share B: %v", err)
 	}
 
-	// Register each participant as a known peer on the other's store
-	// so the auth middleware's membership check passes.
-	base := portBase()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+40)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+41)
-	epA := fmt.Sprintf("http://%s", addrA)
-	epB := fmt.Sprintf("http://%s", addrB)
-
-	sA.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idB.PublicKeyHex(), Endpoint: epB}) //nolint:errcheck
-	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idA.PublicKeyHex(), Endpoint: epA}) //nolint:errcheck
-
 	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(cfID)
@@ -97,8 +86,7 @@ func TestRunFROSTSignEndToEnd(t *testing.T) {
 	}
 
 	// Start transport A (initiator).
-	trA := cfhttp.New(addrA, sA)
-	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trA := cfhttp.New("127.0.0.1:0", sA)
 	trA.SetThresholdShareProvider(buildShareProvider(sA))
 	if err := trA.Start(); err != nil {
 		t.Fatalf("starting transport A: %v", err)
@@ -106,13 +94,25 @@ func TestRunFROSTSignEndToEnd(t *testing.T) {
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
 
 	// Start transport B (co-signer).
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(buildShareProvider(sB))
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+
+	// Derive endpoints from the bound addresses (after Start).
+	epA := epOf(trA)
+	epB := epOf(trB)
+
+	// SetSelfInfo after Start so the endpoint contains the real port.
+	trA.SetSelfInfo(idA.PublicKeyHex(), epA)
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
+
+	// Register each participant as a known peer on the other's store
+	// so the auth middleware's membership check passes.
+	sA.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idB.PublicKeyHex(), Endpoint: epB}) //nolint:errcheck
+	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idA.PublicKeyHex(), Endpoint: epA}) //nolint:errcheck
 
 	time.Sleep(20 * time.Millisecond)
 

@@ -7,7 +7,6 @@ package http_test
 //  3. Evict event (happy path) → 200 OK, peer removed from transport.
 
 import (
-	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -26,10 +25,8 @@ func TestMembershipUnknownEventType(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+360)
-	startTransport(t, addr, s)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr1 := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(_tr1)
 
 	unknownEvent := cfhttp.MembershipEvent{
 		Event:  "kick", // not a valid event type
@@ -52,15 +49,13 @@ func TestMembershipJoinEmptyEndpointIgnored(t *testing.T) {
 	addMembership(t, s, campfireID)
 	addPeerEndpoint(t, s, campfireID, idMember.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+361)
-	tr := cfhttp.New(addr, s)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	if err := tr.Start(); err != nil {
 		t.Fatalf("start transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
-	ep := fmt.Sprintf("http://%s", addr)
+	ep := epOf(tr)
 
 	joinEvent := cfhttp.MembershipEvent{
 		Event:    "join",
@@ -103,15 +98,13 @@ func TestMembershipEvictRemovesPeer(t *testing.T) {
 	}
 	addPeerEndpoint(t, s, campfireID, idSender.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+362)
-	tr := cfhttp.New(addr, s)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	if err := tr.Start(); err != nil {
 		t.Fatalf("start transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
-	ep := fmt.Sprintf("http://%s", addr)
+	ep := epOf(tr)
 
 	// Pre-add the victim so we can verify removal.
 	tr.AddPeer(campfireID, idVictim.PublicKeyHex(), "http://victim:9999")

@@ -68,10 +68,6 @@ func TestSignRound1ConcurrentRequests(t *testing.T) {
 	addMembership(t, sB, campfireID)
 	sB.UpsertThresholdShare(store.ThresholdShare{CampfireID: campfireID, ParticipantID: 2, SecretShare: shareB}) //nolint:errcheck
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+80)
-	epB := fmt.Sprintf("http://%s", addrB)
-
 	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(cfID)
@@ -82,13 +78,14 @@ func TestSignRound1ConcurrentRequests(t *testing.T) {
 		}
 	}
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(buildShareProvider(sB))
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
 	time.Sleep(20 * time.Millisecond)
 
 	signMsg := makeCBORSignMsg(t, "race-test-msg-1", []byte("concurrent round-1 race test message"))
@@ -153,10 +150,6 @@ func TestSignRound1SingleRequest(t *testing.T) {
 	addMembership(t, sB, campfireID)
 	sB.UpsertThresholdShare(store.ThresholdShare{CampfireID: campfireID, ParticipantID: 2, SecretShare: shareB}) //nolint:errcheck
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+81)
-	epB := fmt.Sprintf("http://%s", addrB)
-
 	buildShareProvider := func(s store.Store) cfhttp.ThresholdShareProvider {
 		return func(cfID string) (uint32, []byte, error) {
 			share, err := s.GetThresholdShare(cfID)
@@ -167,13 +160,14 @@ func TestSignRound1SingleRequest(t *testing.T) {
 		}
 	}
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(buildShareProvider(sB))
 	if err := trB.Start(); err != nil {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
 	time.Sleep(20 * time.Millisecond)
 
 	signMsg := makeCBORSignMsg(t, "single-test-msg-1", []byte("single round-1 correctness test"))
@@ -222,12 +216,8 @@ func TestSignRound2DoesNotBlockPeers(t *testing.T) {
 	sB.UpsertPeerEndpoint(store.PeerEndpoint{CampfireID: campfireID, MemberPubkey: idA.PublicKeyHex(), Endpoint: "http://127.0.0.1:1"}) //nolint:errcheck
 	sB.UpsertThresholdShare(store.ThresholdShare{CampfireID: campfireID, ParticipantID: 2, SecretShare: shareB})                        //nolint:errcheck
 
-	base := portBase()
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+82)
-	epB := fmt.Sprintf("http://%s", addrB)
 
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	trB.SetThresholdShareProvider(func(cfID string) (uint32, []byte, error) {
 		share, err := sB.GetThresholdShare(cfID)
 		if err != nil || share == nil {
@@ -239,6 +229,8 @@ func TestSignRound2DoesNotBlockPeers(t *testing.T) {
 		t.Fatalf("starting transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	epB := epOf(trB)
+	trB.SetSelfInfo(idA.PublicKeyHex(), epB)
 	time.Sleep(20 * time.Millisecond)
 
 	signMsg := makeCBORSignMsg(t, "round2-no-block-msg", []byte("round2-no-block test message"))

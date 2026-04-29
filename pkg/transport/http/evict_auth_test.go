@@ -8,7 +8,6 @@ package http_test
 //  4. Creator with a set CreatorPubkey → evict allowed (happy path).
 
 import (
-	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -44,10 +43,8 @@ func TestEvictRejectedWhenStoreErrors(t *testing.T) {
 	s := tempStore(t)
 	addMembershipWithCreator(t, s, campfireID, idCreator.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+160)
-	startTransport(t, addr, s)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr1 := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(_tr1)
 
 	// Close the DB after starting the transport so GetMembership will error on the next request.
 	s.Close()
@@ -89,10 +86,8 @@ func TestEvictRejectedWhenCreatorPubkeyEmpty(t *testing.T) {
 	// Sender must be a known peer for auth middleware to pass.
 	addPeerEndpoint(t, s, campfireID, idAny.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+161)
-	startTransport(t, addr, s)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr2 := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(_tr2)
 
 	evictEvent := cfhttp.MembershipEvent{
 		Event:  "evict",
@@ -118,10 +113,8 @@ func TestEvictRejectedForNonCreator(t *testing.T) {
 	// Add non-creator as peer so they pass auth middleware — test the creator check, not membership.
 	addPeerEndpoint(t, s, campfireID, idNonCreator.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+162)
-	startTransport(t, addr, s)
-	ep := fmt.Sprintf("http://%s", addr)
+	_tr3 := startTransport(t, "127.0.0.1:0", s)
+	ep := epOf(_tr3)
 
 	evictEvent := cfhttp.MembershipEvent{
 		Event:  "evict",
@@ -144,16 +137,14 @@ func TestEvictAllowedForCreator(t *testing.T) {
 	s := tempStore(t)
 	addMembershipWithCreator(t, s, campfireID, idCreator.PublicKeyHex())
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+163)
-	tr := cfhttp.New(addr, s)
-	tr.SetSelfInfo(idCreator.PublicKeyHex(), fmt.Sprintf("http://%s", addr))
+	tr := cfhttp.New("127.0.0.1:0", s)
+	tr.SetSelfInfo(idCreator.PublicKeyHex(), epOf(tr))
 	if err := tr.Start(); err != nil {
 		t.Fatalf("start transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
-	ep := fmt.Sprintf("http://%s", addr)
+	ep := epOf(tr)
 
 	// Pre-add victim as a peer so removal is meaningful.
 	tr.AddPeer(campfireID, idVictim.PublicKeyHex(), "http://victim:9999")

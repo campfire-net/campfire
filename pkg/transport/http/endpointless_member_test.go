@@ -7,7 +7,7 @@ package http_test
 // non-empty, so the joiner has no record in peer_endpoints and checkMembership
 // returns 403 for all subsequent requests.
 //
-// Port block: 640–659 (this file uses 640–643).
+// Ports: OS-assigned (127.0.0.1:0).
 
 import (
 	"crypto/ed25519"
@@ -27,7 +27,7 @@ import (
 
 // setupRelayServer starts a transport that simulates a relay node: an open
 // campfire with pull delivery mode only. Returns campfireID, endpoint, store.
-func setupRelayServer(t *testing.T, portOffset int) (campfireID, ep string, sHost store.Store) {
+func setupRelayServer(t *testing.T) (campfireID, ep string, sHost store.Store) {
 	t.Helper()
 
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
@@ -71,12 +71,7 @@ func setupRelayServer(t *testing.T, portOffset int) (campfireID, ep string, sHos
 		t.Fatalf("adding membership: %v", addErr)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+portOffset)
-	ep = fmt.Sprintf("http://%s", addr)
-
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -87,6 +82,8 @@ func setupRelayServer(t *testing.T, portOffset int) (campfireID, ep string, sHos
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep = epOf(tr)
+	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	return campfireID, ep, sHost
@@ -100,7 +97,7 @@ func setupRelayServer(t *testing.T, portOffset int) (campfireID, ep string, sHos
 // the joiner's pubkey was never written to peer_endpoints, so checkMembership
 // returned 403 on every subsequent request.
 func TestEndpointlessMemberAccepted(t *testing.T) {
-	campfireID, ep, sHost := setupRelayServer(t, 640)
+	campfireID, ep, sHost := setupRelayServer(t)
 
 	joiner, err := identity.Generate()
 	if err != nil {
@@ -169,7 +166,7 @@ func TestEndpointlessMemberAccepted(t *testing.T) {
 // The join handler requires a valid Ed25519 signature before calling UpsertPeerEndpoint.
 // A request with a mismatched signature is rejected before any peer record is written.
 func TestEndpointlessMemberNotAdmittedForFakeKey(t *testing.T) {
-	campfireID, ep, sHost := setupRelayServer(t, 641)
+	campfireID, ep, sHost := setupRelayServer(t)
 
 	legitimate, err := identity.Generate()
 	if err != nil {

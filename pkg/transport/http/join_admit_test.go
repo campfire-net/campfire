@@ -26,7 +26,7 @@ import (
 // setupEncryptedCampfireServer starts a transport whose campfire state has
 // Encrypted=encrypted and DeliveryModes=["pull","push"].
 // Returns the campfire ID, server endpoint, and the admitting store.
-func setupEncryptedCampfireServer(t *testing.T, portOffset int, encrypted bool) (campfireID, ep string, sHost store.Store) {
+func setupEncryptedCampfireServer(t *testing.T, encrypted bool) (campfireID, ep string, sHost store.Store) {
 	t.Helper()
 
 	cfPub, cfPriv, err := ed25519.GenerateKey(nil)
@@ -71,12 +71,7 @@ func setupEncryptedCampfireServer(t *testing.T, portOffset int, encrypted bool) 
 		t.Fatalf("adding membership: %v", addErr)
 	}
 
-	base := portBase()
-	addr := fmt.Sprintf("127.0.0.1:%d", base+portOffset)
-	ep = fmt.Sprintf("http://%s", addr)
-
-	tr := cfhttp.New(addr, sHost)
-	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", sHost)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -87,6 +82,8 @@ func setupEncryptedCampfireServer(t *testing.T, portOffset int, encrypted bool) 
 		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep = epOf(tr)
+	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
 	time.Sleep(20 * time.Millisecond)
 
 	return campfireID, ep, sHost
@@ -98,7 +95,7 @@ func setupEncryptedCampfireServer(t *testing.T, portOffset int, encrypted bool) 
 //   - Join() propagates the Encrypted flag into JoinResult.Encrypted
 func TestJoinResponseIncludesEncryptedFlag(t *testing.T) {
 	t.Run("encrypted campfire sets Encrypted=true in JoinResponse", func(t *testing.T) {
-		campfireID, ep, _ := setupEncryptedCampfireServer(t, 620, true)
+		campfireID, ep, _ := setupEncryptedCampfireServer(t, true)
 
 		joiner, err := identity.Generate()
 		if err != nil {
@@ -127,7 +124,7 @@ func TestJoinResponseIncludesEncryptedFlag(t *testing.T) {
 	})
 
 	t.Run("unencrypted campfire sets Encrypted=false in JoinResponse", func(t *testing.T) {
-		campfireID, ep, _ := setupEncryptedCampfireServer(t, 621, false)
+		campfireID, ep, _ := setupEncryptedCampfireServer(t, false)
 
 		joiner, err := identity.Generate()
 		if err != nil {
@@ -156,7 +153,7 @@ func TestJoinResponseIncludesEncryptedFlag(t *testing.T) {
 	})
 
 	t.Run("Join() client propagates Encrypted flag into JoinResult", func(t *testing.T) {
-		campfireID, ep, _ := setupEncryptedCampfireServer(t, 622, true)
+		campfireID, ep, _ := setupEncryptedCampfireServer(t, true)
 
 		joiner, err := identity.Generate()
 		if err != nil {

@@ -37,10 +37,9 @@ import (
 )
 
 // startTransportWithKey starts a transport with a key provider that returns the
-// given campfire keypair for the given campfire ID.
+// given campfire keypair for the given campfire ID. Port is OS-assigned.
 func startTransportWithKey(
 	t *testing.T,
-	addr string,
 	s store.Store,
 	selfID *identity.Identity,
 	campfireID string,
@@ -48,9 +47,7 @@ func startTransportWithKey(
 	cfPub ed25519.PublicKey,
 ) *cfhttp.Transport {
 	t.Helper()
-	tr := cfhttp.New(addr, s)
-	ep := fmt.Sprintf("http://%s", addr)
-	tr.SetSelfInfo(selfID.PublicKeyHex(), ep)
+	tr := cfhttp.New("127.0.0.1:0", s)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -58,9 +55,10 @@ func startTransportWithKey(
 		return nil, nil, fmt.Errorf("campfire not found: %s", id)
 	})
 	if err := tr.Start(); err != nil {
-		t.Fatalf("starting transport on %s: %v", addr, err)
+		t.Fatalf("starting transport: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	tr.SetSelfInfo(selfID.PublicKeyHex(), epOf(tr))
 	time.Sleep(20 * time.Millisecond)
 	return tr
 }
@@ -143,20 +141,16 @@ func TestForwardOnReceiveUnidirectional(t *testing.T) {
 	// Also allow the campfire key (which tr1 signs forwarded messages as) on s2.
 	addPeerEndpoint(t, s2, campfireID, hex.EncodeToString(cfPub))
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+460)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+461)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-
-	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
+	tr1 := startTransportWithKey(t, s1, id1, campfireID, cfPriv, cfPub)
+	tr2 := startTransportWithKey(t, s2, id2, campfireID, cfPriv, cfPub)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2)
 
 	// Register instance 2 as a peer of instance 1 for this campfire.
 	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
 
 	// id1 delivers a message to instance 1.
 	msg := newTestMessage(t, id1)
-	ep1 := fmt.Sprintf("http://%s", addr1)
 	if err := cfhttp.Deliver(ep1, campfireID, msg, id1); err != nil {
 		t.Fatalf("deliver to instance 1 failed: %v", err)
 	}
@@ -196,14 +190,10 @@ func TestForwardOnReceiveBidirectional(t *testing.T) {
 	addPeerEndpoint(t, s2, campfireID, id2.PublicKeyHex())
 	addPeerEndpoint(t, s2, campfireID, cfPubHex)
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+462)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+463)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-
-	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
-	tr2 := startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
+	tr1 := startTransportWithKey(t, s1, id1, campfireID, cfPriv, cfPub)
+	tr2 := startTransportWithKey(t, s2, id2, campfireID, cfPriv, cfPub)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2)
 
 	// Mutual peer registration.
 	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
@@ -255,14 +245,10 @@ func TestForwardNoLoopMutualMembership(t *testing.T) {
 	addPeerEndpoint(t, s2, campfireID, id2.PublicKeyHex())
 	addPeerEndpoint(t, s2, campfireID, cfPubHex)
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+464)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+465)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-
-	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
-	tr2 := startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
+	tr1 := startTransportWithKey(t, s1, id1, campfireID, cfPriv, cfPub)
+	tr2 := startTransportWithKey(t, s2, id2, campfireID, cfPriv, cfPub)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2)
 
 	// Mutual peering (A→B and B→A).
 	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
@@ -322,11 +308,8 @@ func TestDedupDropsDuplicate(t *testing.T) {
 	addMembershipWithRole(t, s1, campfireID, "creator")
 	addPeerEndpoint(t, s1, campfireID, id1.PublicKeyHex())
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+466)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-
-	_ = startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
+	tr1 := startTransportWithKey(t, s1, id1, campfireID, cfPriv, cfPub)
+	ep1 := epOf(tr1)
 
 	// Deliver the same message twice.
 	msg := newTestMessage(t, id1)
@@ -371,11 +354,8 @@ func TestMaxHopsEnforced(t *testing.T) {
 	addMembershipWithRole(t, s1, campfireID, "creator")
 	addPeerEndpoint(t, s1, campfireID, id1.PublicKeyHex())
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+467)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-
-	_ = startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
+	tr1 := startTransportWithKey(t, s1, id1, campfireID, cfPriv, cfPub)
+	ep1 := epOf(tr1)
 
 	// Build a message and add maxHops provenance hops.
 	msg, err := message.NewMessage(message.MustNewEd25519Signer(id1.PrivateKey, id1.PublicKey), []byte("at hop limit"), []string{"test"}, nil)
@@ -448,14 +428,10 @@ func TestProvenanceHopAddedOnForward(t *testing.T) {
 	addPeerEndpoint(t, s2, campfireID, id2.PublicKeyHex())
 	addPeerEndpoint(t, s2, campfireID, cfPubHex)
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+468)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+469)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-
-	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
+	tr1 := startTransportWithKey(t, s1, id1, campfireID, cfPriv, cfPub)
+	tr2 := startTransportWithKey(t, s2, id2, campfireID, cfPriv, cfPub)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2)
 	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
 
 	// Deliver a fresh message (0 provenance hops) to instance 1.
@@ -530,11 +506,8 @@ func TestRoutingBeaconUpdatesRoutingTable(t *testing.T) {
 	addMembershipWithRole(t, s1, gatewayCampfireID, "member")
 	addPeerEndpoint(t, s1, gatewayCampfireID, id1.PublicKeyHex())
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+470)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-
-	tr1 := startTransportWithKey(t, addr1, s1, id1, gatewayCampfireID, gatewayCfPriv, gatewayCfPub)
+	tr1 := startTransportWithKey(t, s1, id1, gatewayCampfireID, gatewayCfPriv, gatewayCfPub)
+	ep1 := epOf(tr1)
 
 	// Build and sign a routing:beacon payload for targetCampfire.
 	ts := time.Now().Unix()
@@ -601,16 +574,12 @@ func TestForwardSkippedWithoutKeyProvider(t *testing.T) {
 	addPeerEndpoint(t, s2, campfireID, id1.PublicKeyHex())
 	addPeerEndpoint(t, s2, campfireID, id2.PublicKeyHex())
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+471)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+472)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-
 	// No key provider set on tr1.
-	tr1 := startTransport(t, addr1, s1)
+	tr1 := startTransport(t, "127.0.0.1:0", s1)
+	tr2 := startTransport(t, "127.0.0.1:0", s2)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2)
 	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
-	_ = startTransport(t, addr2, s2)
 
 	// Deliver a message to tr1.
 	msg := newTestMessage(t, id1)
@@ -680,17 +649,12 @@ func TestForwardingUsesNextHop(t *testing.T) {
 		addPeerEndpoint(t, s, campfireID, cfPubHex)
 	}
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+473)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+474)
-	addr3 := fmt.Sprintf("127.0.0.1:%d", base+475)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-	ep3 := fmt.Sprintf("http://%s", addr3)
-
-	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addr3, s3, id3, campfireID, cfPriv, cfPub)
+	tr1 := startTransportWithKey(t, s1, id1, campfireID, cfPriv, cfPub)
+	tr2 := startTransportWithKey(t, s2, id2, campfireID, cfPriv, cfPub)
+	tr3 := startTransportWithKey(t, s3, id3, campfireID, cfPriv, cfPub)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2)
+	ep3 := epOf(tr3)
 
 	// Register both id2 and id3 as peers of tr1. Both are locally known.
 	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
@@ -777,17 +741,12 @@ func TestForwardingFallsBackToFlood(t *testing.T) {
 		addPeerEndpoint(t, s, campfireID, cfPubHex)
 	}
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+476)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+477)
-	addr3 := fmt.Sprintf("127.0.0.1:%d", base+478)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-	ep3 := fmt.Sprintf("http://%s", addr3)
-
-	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addr3, s3, id3, campfireID, cfPriv, cfPub)
+	tr1 := startTransportWithKey(t, s1, id1, campfireID, cfPriv, cfPub)
+	tr2 := startTransportWithKey(t, s2, id2, campfireID, cfPriv, cfPub)
+	tr3 := startTransportWithKey(t, s3, id3, campfireID, cfPriv, cfPub)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2)
+	ep3 := epOf(tr3)
 
 	// Register id2 and id3 as local peers of tr1. No path-vector routes exist —
 	// only local peers, no routing beacons delivered.
@@ -845,17 +804,12 @@ func TestForwardingExcludesSender(t *testing.T) {
 		addPeerEndpoint(t, s, campfireID, cfPubHex)
 	}
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+479)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+480)
-	addr3 := fmt.Sprintf("127.0.0.1:%d", base+481)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-	ep3 := fmt.Sprintf("http://%s", addr3)
-
-	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addr3, s3, id3, campfireID, cfPriv, cfPub)
+	tr1 := startTransportWithKey(t, s1, id1, campfireID, cfPriv, cfPub)
+	tr2 := startTransportWithKey(t, s2, id2, campfireID, cfPriv, cfPub)
+	tr3 := startTransportWithKey(t, s3, id3, campfireID, cfPriv, cfPub)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2)
+	ep3 := epOf(tr3)
 
 	// Both id2 and id3 are registered as local peers of tr1.
 	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
@@ -925,17 +879,12 @@ func TestForwardingCombinesPeerNeedsAndNextHops(t *testing.T) {
 		addPeerEndpoint(t, s, campfireID, cfPubHex)
 	}
 
-	base := portBase()
-	addr1 := fmt.Sprintf("127.0.0.1:%d", base+482)
-	addr2 := fmt.Sprintf("127.0.0.1:%d", base+483)
-	addr3 := fmt.Sprintf("127.0.0.1:%d", base+484)
-	ep1 := fmt.Sprintf("http://%s", addr1)
-	ep2 := fmt.Sprintf("http://%s", addr2)
-	ep3 := fmt.Sprintf("http://%s", addr3)
-
-	tr1 := startTransportWithKey(t, addr1, s1, id1, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addr2, s2, id2, campfireID, cfPriv, cfPub)
-	_ = startTransportWithKey(t, addr3, s3, id3, campfireID, cfPriv, cfPub)
+	tr1 := startTransportWithKey(t, s1, id1, campfireID, cfPriv, cfPub)
+	tr2 := startTransportWithKey(t, s2, id2, campfireID, cfPriv, cfPub)
+	tr3 := startTransportWithKey(t, s3, id3, campfireID, cfPriv, cfPub)
+	ep1 := epOf(tr1)
+	ep2 := epOf(tr2)
+	ep3 := epOf(tr3)
 
 	// Register both as local peers of tr1.
 	tr1.AddPeer(campfireID, id2.PublicKeyHex(), ep2)
