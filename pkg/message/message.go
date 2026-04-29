@@ -4,11 +4,40 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
 	"github.com/google/uuid"
 )
+
+// lastTimestamp is the last nanosecond timestamp returned by monotonicNano.
+// Protected by CAS so concurrent callers never receive the same value.
+var lastTimestamp int64
+
+// monotonicNano returns a nanosecond timestamp that is strictly greater than
+// every value it has previously returned in this process. It starts from
+// time.Now().UnixNano() and increments by 1 if the clock hasn't advanced.
+//
+// This prevents two messages created in rapid succession (within the same
+// nanosecond) from receiving identical Timestamps. Identical timestamps break
+// the subscribe.go cursor: if a non-matching message and a matching message
+// share the same timestamp T, and the subscription cursor has already advanced
+// to T after seeing only the non-matching message, the matching message is
+// missed because the store query uses "timestamp > cursor" (strict inequality).
+func monotonicNano() int64 {
+	for {
+		now := time.Now().UnixNano()
+		prev := atomic.LoadInt64(&lastTimestamp)
+		next := now
+		if next <= prev {
+			next = prev + 1
+		}
+		if atomic.CompareAndSwapInt64(&lastTimestamp, prev, next) {
+			return next
+		}
+	}
+}
 
 // Message is a campfire protocol message.
 type Message struct {
@@ -93,7 +122,7 @@ func NewMessage(signer Signer, payload []byte, tags []string, antecedents []stri
 		Payload:     payload,
 		Tags:        tags,
 		Antecedents: antecedents,
-		Timestamp:   time.Now().UnixNano(),
+		Timestamp:   monotonicNano(),
 		Provenance:  []ProvenanceHop{},
 	}
 
