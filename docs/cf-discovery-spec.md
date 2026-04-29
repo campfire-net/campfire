@@ -681,4 +681,93 @@ Implementers of cf-discovery Stage 0 (post-join verification) MUST:
 
 ---
 
+## 12. Config-vs-Beacon Endpoint Precedence
+
+> **Status (PLANNED — 0.30.x):** This rule is designed and frozen at the spec
+> level. Code enforcement in `pkg/naming/client_transport.go` is scheduled for a
+> 0.30.x patch. Until that patch lands, auto-join derives the transport endpoint
+> from beacon data exclusively.
+>
+> **Resolves:** OPEN-025
+
+### 12.1 The Rule
+
+If the local roll-up config (`.cf/config.toml` or its project-level override)
+declares an alias or an explicit endpoint for a campfire, that declaration
+**overrides** any beacon advertising a different transport or endpoint for the
+same campfire.
+
+The rule is stated as a priority ordering:
+
+```
+config-declared endpoint  >  beacon-advertised endpoint
+```
+
+A beacon is an **untrusted hint**: it tells the client where a campfire claims to
+be reachable, signed only by the campfire itself. The campfire operator could
+rotate the endpoint at any time, advertise a honeypot address, or let the beacon
+expire. Local config, by contrast, was explicitly written by the user or the
+repository operator and is trusted at the same level as the local identity.
+
+### 12.2 Conflict Scenario
+
+The following concrete scenario names the case where config and beacon **disagree**
+on the transport endpoint:
+
+**Scenario: operator changes transport, beacon is stale.**
+
+1. A repository's `.cf/config.toml` contains `behavior.auto_join` with a beacon
+   string for campfire `A` pointing to endpoint `old.host:8080`.
+2. The campfire operator migrates to a new host and publishes a fresh beacon
+   pointing to `new.host:9090`.
+3. The client scans beacons and finds the new beacon (`new.host:9090`).
+4. The client also reads `.cf/config.toml` and finds the explicit alias/endpoint
+   for campfire `A` pointing to `old.host:8080` (derived from the committed
+   beacon in config).
+
+**Under this rule:** the config-declared endpoint (`old.host:8080`) wins. The
+client uses it — even though the beacon advertises a newer address. The user must
+update `.cf/config.toml` explicitly to adopt the new endpoint. This is intentional:
+config-declared endpoints are a trust anchor; silent beacon-driven endpoint
+substitution is the attack vector that post-join verification (§11) is designed
+to catch.
+
+**Why config wins and not beacon:** A beacon is signed by the campfire itself,
+which means a compromised or hostile campfire can advertise any endpoint it
+chooses. A config-declared endpoint was explicitly approved by the local operator.
+The precedence rule prevents a beacon from silently redirecting the client to a
+new transport without local operator consent.
+
+### 12.3 Adversarial Case
+
+**Attack:** A hostile campfire operator publishes a beacon advertising a new
+transport endpoint (`exfil.attacker.example`) after the user has joined. The
+user's local beacon file (`~/.campfire/beacons/`) is updated by a background scan.
+On the next auto-join (e.g., name resolution walk), the client picks up the new
+beacon endpoint and connects to the attacker's relay.
+
+**Expected behavior under this rule:** If the campfire was originally joined via
+config-declared entry (`.cf/config.toml` `behavior.auto_join`), the config
+endpoint is used and the updated beacon is ignored. If the campfire was joined
+via beacon only (no config entry), the post-join verification mechanism (§11)
+provides the safety net — the probe message is required to confirm the campfire
+behaves consistently with its advertised protocol.
+
+### 12.4 Conformance Requirements (PLANNED)
+
+When implemented, resolvers MUST:
+
+1. Before using a beacon transport endpoint for auto-join, check whether the
+   local roll-up config declares an alias or endpoint for the same campfire ID.
+2. If a config entry exists, use its transport — discard the beacon transport.
+   Log the override at DEBUG level: `"config endpoint overrides beacon for
+   campfire <short-id>"`.
+3. If no config entry exists, proceed with the beacon transport and run
+   post-join verification (§11) before recording the campfire as trusted.
+4. Never silently substitute a beacon-advertised endpoint for a config-declared
+   endpoint without user action (manual `cf join` with an explicit beacon
+   argument is the only bypass).
+
+---
+
 *End of cf-discovery 1.0 snippet schema specification.*

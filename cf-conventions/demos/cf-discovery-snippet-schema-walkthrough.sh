@@ -8,9 +8,11 @@
 #   2. Validates a positive (well-formed) snippet sample.
 #   3. Validates adversarial (malformed) snippets — each must fail.
 #   4. Demonstrates multi-hop freshness window MIN-composition (§3.2, §7.4).
+#   4b. Asserts config-vs-beacon endpoint precedence rule (§12, OPEN-025).
 #   5. Runs the Go conformance tests for the snippet schema.
 #
 # Resolves: campfireagent-219 (OPEN-014 snippet schema standardization)
+#           campfireagent-c9f (OPEN-025 beacon-vs-config precedence rule)
 # Spec:     docs/cf-discovery-spec.md
 #
 # Requirements: Go 1.21+ on PATH, run from any directory.
@@ -304,6 +306,55 @@ if [ "$result" = "600" ]; then
   pass "§7.4 three-hop chain: min(1h, 30m, 10m) = 600s (10m)"
 else
   fail "§7.4 three-hop chain: expected 600s, got ${result}s"
+fi
+
+# ---------------------------------------------------------------------------
+# §4b — Config-vs-beacon endpoint precedence rule (OPEN-025 / §12)
+# ---------------------------------------------------------------------------
+section "4b. Config-vs-beacon endpoint precedence rule (§12, OPEN-025)"
+
+# Assert the precedence rule paragraph exists in the spec.
+PRECEDENCE_TERMS=(
+  "roll-up config"
+  "overrides"
+  "beacon"
+  "endpoint"
+  "PLANNED"
+  "config endpoint overrides beacon"
+  "Conflict Scenario"
+)
+
+for term in "${PRECEDENCE_TERMS[@]}"; do
+  if grep -qF "$term" "$SPEC_PATH" 2>/dev/null; then
+    pass "spec §12 contains: '$term'"
+  else
+    fail "spec §12 missing term: '$term'"
+  fi
+done
+
+# Assert the adversarial conflict scenario is named in the spec.
+# The spec must name the case where config and beacon disagree on transport.
+if grep -qF "Conflict Scenario" "$SPEC_PATH" && \
+   grep -qF "disagree" "$SPEC_PATH"; then
+  pass "spec §12 names the config-vs-beacon transport disagreement scenario"
+else
+  fail "spec §12 must name the scenario where config and beacon disagree on transport"
+fi
+
+# Assert the rule is correctly stated (config > beacon direction).
+# The spec must contain the priority ordering expression.
+if grep -qF "config-declared endpoint" "$SPEC_PATH" && \
+   grep -qF "beacon-advertised endpoint" "$SPEC_PATH"; then
+  pass "spec §12 states config > beacon priority ordering"
+else
+  fail "spec §12 must state config-declared endpoint wins over beacon-advertised endpoint"
+fi
+
+# Assert PLANNED status is declared (code not yet enforcing this in 0.30.0).
+if grep -qF "PLANNED" "$SPEC_PATH"; then
+  pass "spec §12 declares PLANNED status — implementation deferred to 0.30.x"
+else
+  fail "spec §12 must mark the rule as PLANNED (code not yet implemented)"
 fi
 
 # ---------------------------------------------------------------------------
