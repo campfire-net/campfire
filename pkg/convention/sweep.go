@@ -172,6 +172,10 @@ func (sw *Sweeper) redispatch(ctx context.Context, rec DispatchRecord) bool {
 	//
 	// invokeHandler is non-blocking when called via go — the next sweep pass
 	// will observe the updated status if the handler completes successfully.
-	go sw.dispatcher.invokeHandler(ctx, rec.CampfireID, msg, op, entry)
+	//
+	// Pass context.Background() as cleanupCtx so that post-handler bookkeeping
+	// (CAS status updates, cursor advancement) completes even if the sweep
+	// context is cancelled mid-flight.
+	go sw.dispatcher.invokeHandler(ctx, context.Background(), rec.CampfireID, msg, op, entry)
 	return true
 }
