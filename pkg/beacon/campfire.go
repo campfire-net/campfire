@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // BeaconDeclaration is the JSON payload format for routing:beacon messages.

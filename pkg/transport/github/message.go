@@ -7,8 +7,8 @@ import (
 	"errors"
 	"strings"
 
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
-	"github.com/campfire-net/campfire/pkg/message"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
+	"github.com/campfire-net/campfire/cf-protocol/message"
 )
 
 const commentPrefix = "campfire-msg-v1:"

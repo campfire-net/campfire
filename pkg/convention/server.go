@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // Request holds a parsed incoming convention operation request.

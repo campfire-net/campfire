@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // MaxGrantTTL is the hard ceiling on grant lifetime per identity-delegation-v0.1.md §4 rule 4.

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 )
 
 func TestParseURI_Valid(t *testing.T) {

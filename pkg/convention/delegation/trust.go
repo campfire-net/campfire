@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // MaxChainDepth is the maximum number of grant hops the resolver will walk

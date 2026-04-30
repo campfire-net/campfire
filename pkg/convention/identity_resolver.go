@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/campfire-net/campfire/pkg/convention/delegation"
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // IdentityInfo holds resolved identity information for a convention handler invocation.

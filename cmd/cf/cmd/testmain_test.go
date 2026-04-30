@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 func TestMain(m *testing.M) {

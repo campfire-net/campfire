@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // BalanceChecker abstracts the Forge balance query for testability.

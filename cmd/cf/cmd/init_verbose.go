@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // printInitResultVerbose writes InitResult diagnostic output to stderr when

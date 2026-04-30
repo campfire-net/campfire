@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/predicate"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/predicate"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // setupViewTestEnv creates a test environment with an agent, store, and campfire membership.

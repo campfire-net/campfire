@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/convention/delegation"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // ---- 5a: findValidGrant skips grants with malformed payloads ----

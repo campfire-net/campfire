@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/bridge/state"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // UrgencyLevel represents the computed urgency tier of a message.

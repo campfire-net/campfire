@@ -117,6 +117,80 @@ linters:
             - pkg: "github.com/campfire-net/campfire/pkg/convention/**"
               desc: "L1-narrow: cf-protocol/ must not import convention sub-packages (L2). See design v2 §4.6"
 
+        # L1-protocol-no-pkgprotocol — cf-protocol/protocol/ must not import pkg/protocol.
+        #
+        # After campfireagent-9f4 (substrate strip-and-ship), cf-protocol/protocol/
+        # is the SOURCE of truth for protocol types. pkg/protocol no longer exists as
+        # a real package (it was emptied; all code moved here). Any future accidental
+        # import of pkg/protocol from cf-protocol/protocol/ would create a circular
+        # dependency or import of a non-existent package.
+        #
+        # This rule also prevents re-importing the substrate packages that were moved
+        # out of pkg/ and into cf-protocol/ (campfireagent-9f4 §4.1 compliance).
+        #
+        # Applies to: all non-test Go files in cf-protocol/protocol/.
+        # Adversarial test: depguard_test.go TestDepguardL1NarrowCatchesForbiddenImport.
+        L1-protocol-no-pkgprotocol:
+          list-mode: lax
+          files:
+            - "**/cf-protocol/protocol/**/*.go"
+            - "**/cf-protocol/protocol/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/campfire-net/campfire/pkg/protocol"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/protocol (circular; pkg/protocol is now empty after campfireagent-9f4 substrate move). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/campfire"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/campfire (moved to cf-protocol/campfire/ by campfireagent-9f4). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/message"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/message (moved to cf-protocol/message/ by campfireagent-9f4). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/store"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/store (moved to cf-protocol/store/ by campfireagent-9f4). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/encoding"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/encoding (moved to cf-protocol/encoding/ by campfireagent-9f4). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/crypto"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/crypto (moved to cf-protocol/crypto/ by campfireagent-9f4). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/threshold"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/threshold (moved to cf-protocol/threshold/ by campfireagent-9f4). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/transport/fs"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/transport/fs (moved to cf-protocol/transport/fs/ by campfireagent-9f4). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/transport/http"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/transport/http (moved to cf-protocol/transport/http/ by campfireagent-9f4). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/predicate"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/predicate (moved to cf-protocol/predicate/ by campfireagent-9f4). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/projection"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/projection (moved to cf-protocol/projection/ by campfireagent-9f4). See design v2 §4.1"
+            - pkg: "github.com/campfire-net/campfire/pkg/admission"
+              desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/admission (moved to cf-protocol/admission/ by campfireagent-9f4). See design v2 §4.1"
+
+        # L1-internal-encapsulation — external code must not import cf-protocol/internal/.
+        #
+        # After campfireagent-401d (substrate move to internal/), the substrate packages
+        # live at cf-protocol/internal/*. Go's internal/ rule already enforces this at
+        # compile time, but this depguard rule makes violations visible in lint output
+        # with a clear explanatory message.
+        #
+        # External consumers (cmd/, bridge/, pkg/, tests/) must use:
+        #   - cf-protocol/protocol/ for SDK types and high-level operations
+        #   - cf-protocol/{campfire,message,store,...} for the public forwarding wrappers
+        #
+        # Applies to: all non-test Go files NOT under cf-protocol/.
+        # Exempt: *_test.go files (may use internal types via test helpers).
+        #
+        # Adversarial test: cf-protocol/protocol/depguard_test.go
+        # TestDepguardL1InternalEncapsulation (added in campfireagent-401d).
+        L1-internal-encapsulation:
+          list-mode: lax
+          files:
+            - "**/*.go"
+            - "!**/cf-protocol/**/*.go"
+            - "!**/cf-protocol/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/campfire-net/campfire/cf-protocol/internal"
+              desc: "L1-internal: external code must not import cf-protocol/internal/ directly. Use cf-protocol/protocol/ or the public forwarding wrappers (cf-protocol/{campfire,message,store,...}). See design v2 §4.1 (campfireagent-401d)"
+            - pkg: "github.com/campfire-net/campfire/cf-protocol/internal/**"
+              desc: "L1-internal: external code must not import cf-protocol/internal/ sub-packages. Use cf-protocol/protocol/ or the public forwarding wrappers. See design v2 §4.1 (campfireagent-401d)"
+
         # B3 — L3 must not import L2 internal sub-packages.
         #
         # L3 implementations (pkg/trust, pkg/naming) are permitted to import the public

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/convention/delegation"
-	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/cf-protocol/message"
 )
 
 // campfireHex is a fixed campfire ID used across tests.

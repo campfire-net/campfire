@@ -20,7 +20,7 @@ import (
 	"io"
 	"math/big"
 
-	cfcrypto "github.com/campfire-net/campfire/pkg/crypto"
+	cfcrypto "github.com/campfire-net/campfire/cf-protocol/crypto"
 )
 
 // p25519 is the field prime 2^255 - 19.

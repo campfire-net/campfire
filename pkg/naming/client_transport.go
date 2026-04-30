@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // clientTransport implements the naming.Transport interface using a

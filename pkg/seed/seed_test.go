@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/convention"
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
-	"github.com/campfire-net/campfire/pkg/message"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
+	"github.com/campfire-net/campfire/cf-protocol/message"
 	"github.com/campfire-net/campfire/pkg/seed"
 )
 

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // TestEncodeKey verifies that encodeKey produces safe, deterministic output.

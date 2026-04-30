@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 	"github.com/spf13/cobra"
 )
 

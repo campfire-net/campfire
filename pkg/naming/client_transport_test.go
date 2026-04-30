@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/naming"
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // setupNamingTestCampfire creates a campfire using protocol.Init and Client.Create.

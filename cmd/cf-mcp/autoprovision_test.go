@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/ratelimit"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // newTestServerWithStore creates a test server with a pre-opened SQLite store

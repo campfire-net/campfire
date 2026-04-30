@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/predicate"
+	"github.com/campfire-net/campfire/cf-protocol/predicate"
 )
 
 // MaxPredicateNodes is the total node count budget for convention-provided predicates.

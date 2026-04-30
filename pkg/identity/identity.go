@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	cfcrypto "github.com/campfire-net/campfire/pkg/crypto"
+	cfcrypto "github.com/campfire-net/campfire/cf-protocol/crypto"
 )
 
 // fileVersion constants distinguish identity file formats.

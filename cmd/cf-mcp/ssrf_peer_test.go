@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/identity"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // fakePeerPubKeyHex returns a hex-encoded ed25519 public key for use as a

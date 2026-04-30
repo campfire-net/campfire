@@ -32,10 +32,10 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
-	"github.com/campfire-net/campfire/pkg/campfire"
-	"github.com/campfire-net/campfire/pkg/crypto"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/crypto"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // chunkSize is the maximum raw byte size per chunk property (24 KB).

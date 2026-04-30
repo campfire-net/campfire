@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // TestSanitizePayload_ESCStripped verifies that the ESC byte (0x1B) is removed.

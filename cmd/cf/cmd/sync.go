@@ -6,12 +6,12 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/transport"
 	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 )
 
 // followIntervalForTransport returns the poll interval for --follow based on transport type.

@@ -9,7 +9,7 @@ import (
 	"os"
 
 	"github.com/campfire-net/campfire/pkg/convention/delegation"
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/spf13/cobra"
 )
 

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // MessageStore is the subset of store.MessageStore used by the detail handlers.

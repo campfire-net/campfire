@@ -25,8 +25,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // socialPostDeclaration is a social-post-format convention declaration for E2E test.

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/spf13/cobra"
 )

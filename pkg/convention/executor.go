@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // executorTransport is the internal interface used by the Executor for sending and

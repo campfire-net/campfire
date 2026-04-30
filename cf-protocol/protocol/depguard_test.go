@@ -116,6 +116,104 @@ func findGolangciLint(t *testing.T) string {
 	return ""
 }
 
+// TestDepguardL1ProtocolNoPkgProtocol proves the L1-protocol-no-pkgprotocol
+// depguard rule fires when cf-protocol/protocol/ imports pkg/protocol.
+//
+// This satisfies campfireagent-9f4 done-condition 3: a probe verifies that
+// pkg/* substrate imports are forbidden from cf-protocol/protocol/.
+func TestDepguardL1ProtocolNoPkgProtocol(t *testing.T) {
+	lintBin := findGolangciLint(t)
+	if lintBin == "" {
+		t.Skip("golangci-lint not found; skipping depguard adversarial verification")
+	}
+
+	repoRoot := findRepoRoot(t)
+
+	// Create a temporary file inside cf-protocol/protocol/ that imports
+	// pkg/protocol — a deliberate L1-protocol-no-pkgprotocol violation.
+	violationFile := filepath.Join(repoRoot, "cf-protocol", "protocol", "pkgprotocol_violation_probe_test_only.go")
+	const violationSrc = `// DO NOT COMMIT: deliberate L1-protocol violation for depguard test.
+// Created by cf-protocol/protocol/depguard_test.go; deleted on test exit.
+package protocol
+
+import (
+	// L1-protocol violation: cf-protocol/protocol/ importing old pkg/protocol substrate.
+	_ "github.com/campfire-net/campfire/pkg/protocol"
+)
+`
+	if err := os.WriteFile(violationFile, []byte(violationSrc), 0600); err != nil {
+		t.Fatalf("writing violation file: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(violationFile) })
+
+	// Run golangci-lint against just the cf-protocol/protocol/ package.
+	// We expect depguard to flag the import.
+	cmd := exec.Command(lintBin, "run", "--fast-only",
+		"./cf-protocol/protocol/...")
+	cmd.Dir = repoRoot
+	out, _ := cmd.CombinedOutput()
+	outStr := string(out)
+
+	if strings.Contains(outStr, "depguard") || strings.Contains(outStr, "L1-protocol") {
+		t.Logf("PASS: depguard correctly rejected the L1-protocol pkg/protocol import:")
+		t.Logf("  %s", strings.TrimSpace(outStr))
+	} else {
+		t.Errorf("FAIL: depguard did NOT catch the L1-protocol violation. lint output:\n%s", outStr)
+	}
+}
+
+// TestDepguardL1InternalEncapsulation proves that the L1-internal-encapsulation
+// depguard rule fires when code OUTSIDE cf-protocol/ tries to import
+// cf-protocol/internal/ sub-packages directly (campfireagent-401d).
+//
+// This satisfies done-condition 4: "Extended depguard L1-narrow rule passes
+// adversarial probe (external import of cf-protocol/internal/* fails)."
+func TestDepguardL1InternalEncapsulation(t *testing.T) {
+	lintBin := findGolangciLint(t)
+	if lintBin == "" {
+		t.Skip("golangci-lint not found; skipping depguard adversarial verification")
+	}
+
+	repoRoot := findRepoRoot(t)
+
+	// Create a temporary package OUTSIDE cf-protocol/ that imports
+	// cf-protocol/internal/store — a deliberate L1-internal-encapsulation violation.
+	violationDir := filepath.Join(repoRoot, "depguard-internal-violation-probe")
+	if err := os.MkdirAll(violationDir, 0750); err != nil {
+		t.Fatalf("creating violation dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(violationDir) })
+
+	violationFile := filepath.Join(violationDir, "violation.go")
+	const violationSrc = `// DO NOT COMMIT: deliberate L1-internal-encapsulation violation for depguard test.
+// Created by cf-protocol/protocol/depguard_test.go; deleted on test exit.
+package depguardinternalviolationprobe
+
+import (
+	// L1-internal-encapsulation violation: external package importing cf-protocol/internal/.
+	_ "github.com/campfire-net/campfire/cf-protocol/internal/store"
+)
+`
+	if err := os.WriteFile(violationFile, []byte(violationSrc), 0600); err != nil {
+		t.Fatalf("writing violation file: %v", err)
+	}
+
+	// Run golangci-lint against the violation package.
+	// We expect depguard to flag the import with L1-internal or L1-internal-encapsulation.
+	cmd := exec.Command(lintBin, "run", "--fast-only",
+		"./depguard-internal-violation-probe/...")
+	cmd.Dir = repoRoot
+	out, _ := cmd.CombinedOutput()
+	outStr := string(out)
+
+	if strings.Contains(outStr, "depguard") || strings.Contains(outStr, "L1-internal") {
+		t.Logf("PASS: depguard correctly rejected the L1-internal-encapsulation violation:")
+		t.Logf("  %s", strings.TrimSpace(outStr))
+	} else {
+		t.Errorf("FAIL: depguard did NOT catch the L1-internal-encapsulation violation. lint output:\n%s", outStr)
+	}
+}
+
 // findRepoRoot walks up from the test file to find the go.mod root.
 func findRepoRoot(t *testing.T) string {
 	t.Helper()
