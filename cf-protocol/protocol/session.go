@@ -285,6 +285,21 @@ func (s *Session) Send(payload string) (*message.Message, error) {
 	})
 }
 
+// sendTagged posts a message with explicit tags to the session campfire.
+// Used by L1 emission helpers (EmitSessionOpen, EmitSessionClose) to attach
+// session lifecycle tags without changing the public Send API.
+// Returns an error if the session has been closed.
+func (s *Session) sendTagged(payload []byte, tags []string) (*message.Message, error) {
+	if s.client == nil {
+		return nil, fmt.Errorf("session is closed")
+	}
+	return s.client.Send(SendRequest{
+		CampfireID: s.campfireID,
+		Payload:    payload,
+		Tags:       tags,
+	})
+}
+
 // Read returns messages from the session campfire.
 // Messages are returned in timestamp order.
 // Returns an error if the session has been closed or ended.

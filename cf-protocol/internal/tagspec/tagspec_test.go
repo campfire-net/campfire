@@ -42,3 +42,44 @@ func TestPrefixesEndWithColon(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionTagWireValues verifies the session:open and session:close tag wire values
+// are frozen at their canonical strings (design v2 §10.6).
+func TestSessionTagWireValues(t *testing.T) {
+	if tagspec.TagSessionOpen != "session:open" {
+		t.Errorf("TagSessionOpen = %q, want %q", tagspec.TagSessionOpen, "session:open")
+	}
+	if tagspec.TagSessionClose != "session:close" {
+		t.Errorf("TagSessionClose = %q, want %q", tagspec.TagSessionClose, "session:close")
+	}
+}
+
+// TestSessionTagsUseSessionPrefix verifies that both session lifecycle tags
+// start with the SessionPrefix (not campfire: or convention:).
+func TestSessionTagsUseSessionPrefix(t *testing.T) {
+	for _, tag := range []struct {
+		name string
+		val  string
+	}{
+		{"TagSessionOpen", tagspec.TagSessionOpen},
+		{"TagSessionClose", tagspec.TagSessionClose},
+	} {
+		if !strings.HasPrefix(tag.val, tagspec.SessionPrefix) {
+			t.Errorf("%s = %q does not start with SessionPrefix %q",
+				tag.name, tag.val, tagspec.SessionPrefix)
+		}
+		if strings.HasPrefix(tag.val, tagspec.CampfirePrefix) {
+			t.Errorf("%s = %q must NOT start with CampfirePrefix", tag.name, tag.val)
+		}
+		if strings.HasPrefix(tag.val, tagspec.ConventionPrefix) {
+			t.Errorf("%s = %q must NOT start with ConventionPrefix", tag.name, tag.val)
+		}
+	}
+}
+
+// TestSessionTagsDistinct verifies that session:open and session:close are different.
+func TestSessionTagsDistinct(t *testing.T) {
+	if tagspec.TagSessionOpen == tagspec.TagSessionClose {
+		t.Errorf("TagSessionOpen and TagSessionClose must differ; both = %q", tagspec.TagSessionOpen)
+	}
+}

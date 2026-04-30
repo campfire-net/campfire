@@ -23,3 +23,27 @@ const ConventionPrefix = "convention:"
 // SessionPrefix is the namespace prefix for session lifecycle events.
 // Session tags are campfire-key-signed system events (§1 system-event vocabulary).
 const SessionPrefix = "session:"
+
+// TagSessionOpen is the tag for session-open L1 system events.
+//
+// Posted by the session creator (orchestrator) into the session campfire when
+// the session is created. The message payload carries session metadata:
+// (session_id, parent_grant_chain_root, dispatcher_capability_template, until).
+//
+// Signed by the session creator's Ed25519 identity key — not a shared ephemeral
+// key. This makes the creator's identity verifiable post-hoc even after the
+// session campfire is compacted.
+//
+// Wire value: "session:open" — frozen at cf-protocol 1.0 (design v2 §10.6).
+const TagSessionOpen = "session:open"
+
+// TagSessionClose is the tag for session-close L1 system events.
+//
+// Posted by the session creator (orchestrator) when the session ends
+// (cf session end, or TTL elapsed). Consumers treat messages after this
+// tag as post-session cleanup; the session campfire may be compacted.
+//
+// Signed by the session creator's Ed25519 identity key.
+//
+// Wire value: "session:close" — frozen at cf-protocol 1.0 (design v2 §10.6).
+const TagSessionClose = "session:close"
