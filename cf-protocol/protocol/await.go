@@ -52,6 +52,22 @@ type AwaitRequest struct {
 //   - carries the "fulfills" tag, AND
 //   - lists TargetMsgID in its antecedents.
 //
+// When multiple messages fulfill the same future, the winner is selected
+// deterministically by the following two-level rule:
+//
+//  1. PRIMARY — earliest timestamp wins: the fulfillment with the smallest
+//     Timestamp value is returned. This means a clock-skewed sender whose
+//     wall clock is behind will win over a sender whose clock is ahead.
+//
+//  2. SECONDARY (tiebreaker) — when two or more fulfillments share the same
+//     Timestamp, the one with the lexicographically smallest message ID wins.
+//     This makes the choice deterministic even under identical timestamps.
+//
+// This ordering is implemented by fulfillmentLess and applied inside
+// findFulfillment. The rule itself must never be changed without a design
+// review — downstream conformance tests (Phase 8 Gate 1) verify cross-
+// implementer agreement on this ordering. (campfireagent-5bb)
+//
 // For filesystem-transport campfires, each poll begins with a sync from the
 // transport directory so that messages written by other agents are visible
 // without a separate sync step. This mirrors the behaviour of findFulfillment()
