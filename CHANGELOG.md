@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased — center-finding removed from cf-protocol substrate (campfireagent-db1)
+
+Stage 1 of the locality-to-L4 migration. Center-finding and recentering logic
+is cut from the protocol substrate. Locality resolves at the discovery layer
+(L4, cf-discovery) — not in Init().
+
+### Breaking changes
+
+- **`recenter.go` deleted**: `RecenterClaim`, `RecenterCanonicalPayload`,
+  `maybeRecenter`, and related helpers are gone. Remove any imports or references.
+- **`walk_up.go` deleted**: `walkUpForCenter` is gone. Walk-up for center
+  campfire discovery is no longer performed during Init().
+- **`WithWalkUp()` and `WithNoWalkUp()` removed** from `protocol.Init` options.
+  Any callers must remove these options — they will no longer compile.
+- **`WalkUpEnabled()` removed** from `*Client`. Remove call sites.
+- **`InitResult.WalkUpPath` removed** — no longer populated.
+- **`InitResult.Recentered` removed** — no longer populated.
+- **`InitResult.DelegationIssued` removed** — no longer populated.
+- **`Config.Behavior.WalkUp` removed** — `behavior.walk_up` no longer read
+  from `.cf/config.toml`. Existing config files with this key are silently ignored.
+- **`context_key.go` stub**: `maybeIssueContextKeyDelegation` is a no-op.
+  Context-key delegation is L4 work.
+
+### Migration
+
+Remove all `WithWalkUp()`, `WithNoWalkUp()`, and `WalkUpEnabled()` call sites.
+Remove `behavior.walk_up` from config files. Remove references to
+`InitResult.WalkUpPath`, `InitResult.Recentered`, `InitResult.DelegationIssued`.
+
 ## v0.19.3 — InvalidInput Outcome variant in trust resolution (2026-04-27)
 
 Resolves a long-standing type confusion in `delegation.Resolve`: malformed

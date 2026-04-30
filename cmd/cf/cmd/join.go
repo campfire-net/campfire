@@ -3,16 +3,11 @@ package cmd
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/admission"
@@ -25,7 +20,6 @@ import (
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/threshold"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
-	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
 	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 	"github.com/spf13/cobra"
 )
@@ -40,9 +34,6 @@ var joinCmd = &cobra.Command{
 		joinTLSCert, _ := cmd.Flags().GetString("tls-cert")
 		joinTLSKey, _ := cmd.Flags().GetString("tls-key")
 		joinInviteCode, _ := cmd.Flags().GetString("invite-code")
-		joinGitHubRepo, _ := cmd.Flags().GetString("github-repo")
-		joinGitHubTokenEnv, _ := cmd.Flags().GetString("github-token-env")
-		joinGitHubBaseURL, _ := cmd.Flags().GetString("github-base-url")
 		agentID, s, err := requireAgentAndStore()
 		if err != nil {
 			return err
@@ -63,7 +54,7 @@ var joinCmd = &cobra.Command{
 				if existingMembership != nil {
 					return fmt.Errorf("already a member of campfire %s", parsed.CampfireID[:shortIDLen])
 				}
-				return joinFromBeacon(parsed, agentID, s, joinListen, joinTLSCert, joinTLSKey, joinGitHubTokenEnv, joinGitHubBaseURL, joinGitHubRepo)
+				return joinFromBeacon(parsed, agentID, s, joinListen, joinTLSCert, joinTLSKey)
 			}
 		}
 
@@ -82,16 +73,13 @@ var joinCmd = &cobra.Command{
 		if joinVia != "" {
 			return joinP2PHTTP(campfireID, agentID, s, joinVia, joinListen, joinTLSCert, joinTLSKey, joinInviteCode)
 		}
-		if strings.HasPrefix(campfireID, "https://github.com/") {
-			return joinGitHub(campfireID, agentID, s, joinGitHubTokenEnv, joinGitHubBaseURL, joinGitHubRepo)
-		}
 		return joinFilesystem(campfireID, agentID, s)
 	},
 }
 
 // joinFromBeacon joins a campfire using the transport hint from a verified beacon URI.
 // SECURITY: the transport hint is only used here (join path), never for send/read.
-func joinFromBeacon(parsed *naming.URI, agentID *identity.Identity, s store.Store, listen, tlsCert, tlsKey, githubTokenEnv, githubBaseURL, githubRepo string) error {
+func joinFromBeacon(parsed *naming.URI, agentID *identity.Identity, s store.Store, listen, tlsCert, tlsKey string) error {
 	campfireID := parsed.CampfireID
 
 	// Decode the beacon to read the transport hint.
@@ -115,19 +103,6 @@ func joinFromBeacon(parsed *naming.URI, agentID *identity.Identity, s store.Stor
 			return fmt.Errorf("beacon p2p-http transport missing 'endpoint' config key")
 		}
 		return joinP2PHTTP(campfireID, agentID, s, via, listen, tlsCert, tlsKey, "")
-	case "github":
-		// Transport hint provides repo info; delegate to GitHub join.
-		if githubRepo == "" {
-			if repo, ok := b.Transport.Config["repo"]; ok {
-				githubRepo = repo
-			}
-		}
-		if githubBaseURL == "" {
-			if u, ok := b.Transport.Config["base_url"]; ok {
-				githubBaseURL = u
-			}
-		}
-		return joinGitHub(campfireID, agentID, s, githubTokenEnv, githubBaseURL, githubRepo)
 	default:
 		// Filesystem or unknown protocol: fall back to filesystem join.
 		return joinFilesystem(campfireID, agentID, s)
@@ -465,262 +440,6 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	return nil
 }
 
-// joinGitHub joins a campfire via the GitHub transport.
-//
-// The argument can be either:
-//   - A GitHub Issue URL: https://github.com/org/repo/issues/N
-//   - An Ed25519 public key hex (requires --github-repo to discover the beacon)
-//
-// For open campfires (threshold=1), the admitting member (typically the creator)
-// will observe the campfire:join-request comment in their poll loop and post a
-// campfire:key-delivery comment encrypting the campfire private key to the joiner's
-// public key. This function polls until the key delivery comment arrives.
-func joinGitHub(campfireArg string, agentID *identity.Identity, s store.Store, tokenEnv, baseURL, ghRepo string) error {
-	token, err := resolveGitHubToken(tokenEnv, CFHome())
-	if err != nil {
-		return fmt.Errorf("resolving GitHub token: %w", err)
-	}
-
-	// Parse the campfire argument: GitHub Issue URL or hex pubkey.
-	var repo string
-	var issueNumber int
-	var campfireID string
-
-	if strings.HasPrefix(campfireArg, "https://github.com/") {
-		// Parse GitHub Issue URL: https://github.com/org/repo/issues/N
-		parsed, err := url.Parse(campfireArg)
-		if err != nil {
-			return fmt.Errorf("parsing GitHub Issue URL: %w", err)
-		}
-		parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
-		if len(parts) < 4 || parts[2] != "issues" {
-			return fmt.Errorf("invalid GitHub Issue URL: expected https://github.com/owner/repo/issues/N, got %s", campfireArg)
-		}
-		repo = parts[0] + "/" + parts[1]
-		n, err := strconv.Atoi(parts[3])
-		if err != nil {
-			return fmt.Errorf("invalid issue number in URL: %w", err)
-		}
-		issueNumber = n
-
-		// Fetch the issue to get the campfire ID from the beacon body.
-		// We use DiscoverBeacons and find the one with the matching issue number.
-		client := ghtr.NewClient(baseURL, token)
-		beacons, err := ghtr.DiscoverBeacons(client, repo)
-		if err != nil {
-			return fmt.Errorf("discovering beacons from %s: %w", repo, err)
-		}
-		found := false
-		for _, b := range beacons {
-			if b.Transport.Config.IssueNumber == issueNumber && b.Transport.Config.Repo == repo {
-				campfireID = b.CampfireID
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("no beacon found in %s for issue #%d (beacon may not have been published)", repo, issueNumber)
-		}
-	} else {
-		// Ed25519 hex pubkey: use --github-repo to discover.
-		campfireID = campfireArg
-		if ghRepo == "" {
-			return fmt.Errorf("--github-repo required when joining by campfire ID (not URL)")
-		}
-		repo = ghRepo
-		client := ghtr.NewClient(baseURL, token)
-		beacons, err := ghtr.DiscoverBeacons(client, repo)
-		if err != nil {
-			return fmt.Errorf("discovering beacons: %w", err)
-		}
-		found := false
-		for _, b := range beacons {
-			if b.CampfireID == campfireID {
-				issueNumber = b.Transport.Config.IssueNumber
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("campfire %s not found in %s beacons", campfireID[:min(len(campfireID), 16)], repo)
-		}
-	}
-
-	// Check if already a member.
-	if existing, _ := s.GetMembership(campfireID); existing != nil {
-		return fmt.Errorf("already a member of campfire %s", campfireID[:min(len(campfireID), 16)])
-	}
-
-	cfg := ghtr.Config{
-		Repo:        repo,
-		IssueNumber: issueNumber,
-		Token:       token,
-		BaseURL:     baseURL,
-	}
-	tr, err := ghtr.New(cfg, s)
-	if err != nil {
-		return fmt.Errorf("creating GitHub transport: %w", err)
-	}
-	tr.RegisterCampfire(campfireID, issueNumber)
-
-	// Post a campfire:join-request signed message so the creator can observe it.
-	joinSigner := agentID.NewSigner()
-	joinReqMsg, err := message.NewMessage(
-		joinSigner,
-		[]byte(fmt.Sprintf(`{"joiner":"%s"}`, agentID.PublicKeyHex())),
-		[]string{campfire.TagJoinRequest},
-		nil,
-	)
-	if err != nil {
-		return fmt.Errorf("creating join-request message: %w", err)
-	}
-	if err := tr.Send(campfireID, joinReqMsg); err != nil {
-		return fmt.Errorf("posting join-request: %w", err)
-	}
-
-	// Poll for campfire:key-delivery comment addressed to us.
-	// For open campfires in production, the creator's poll loop handles this.
-	// In tests the test harness posts the key delivery directly.
-	// Cap at 1000 comments (design doc constraint, §11 open question #6).
-	campfirePrivKey, err := pollForKeyDelivery(tr, campfireID, agentID)
-	if err != nil {
-		return fmt.Errorf("waiting for key delivery: %w", err)
-	}
-
-	// Build the campfire public key from the private key (last 32 bytes of Ed25519 private key).
-	campfirePubKey := make([]byte, 32)
-	if len(campfirePrivKey) >= 64 {
-		copy(campfirePubKey, campfirePrivKey[32:])
-	}
-
-	// Encode transport metadata into TransportDir.
-	transportDir, err := encodeGitHubTransportDir(githubTransportMeta{
-		Repo:        repo,
-		IssueNumber: issueNumber,
-		BaseURL:     baseURL,
-	})
-	if err != nil {
-		return fmt.Errorf("encoding transport dir: %w", err)
-	}
-
-	// Look up description from beacon (best-effort).
-	ghDescription := lookupBeaconDescription(campfireID)
-
-	// Record membership in local store via shared admission package.
-	// Store the campfire private key so sendGitHub can add provenance hops.
-	campfirePrivKeyHex := fmt.Sprintf("%x", campfirePrivKey)
-	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
-		Store: s,
-	}, admission.AdmissionRequest{
-		CampfireID:      campfireID,
-		MemberPubKeyHex: agentID.PublicKeyHex(),
-		Role:            campfire.RoleFull,
-		JoinProtocol:    "open", // populated from beacon in production; simplified here
-		TransportDir:    transportDir,
-		TransportType:   "github",
-		Description:     ghDescription,
-		CampfirePrivKey: campfirePrivKeyHex,
-	}); err != nil {
-		return fmt.Errorf("recording membership: %w", err)
-	}
-
-	// Sync messages immediately so convention declarations are available
-	// without requiring a separate cf read. Errors are non-fatal here —
-	// a failed sync at join time is not a reason to abort the join.
-	ghMembership, _ := s.GetMembership(campfireID)
-	syncCampfire(campfireID, ghMembership, agentID, s) //nolint:errcheck
-
-	// Compare fingerprints against local policy (Trust v0.2 §5.3).
-	ghReport := compareJoinedCampfire(s, campfireID)
-
-	if jsonOutput {
-		out := map[string]interface{}{
-			"campfire_id":       campfireID,
-			"status":            "joined",
-			"transport":         "github",
-			"trust_status":      string(ghReport.OverallStatus),
-			"fingerprint_match": ghReport.FingerprintMatch,
-			"conventions":       ghReport.Conventions,
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
-	}
-
-	fmt.Printf("Joined campfire %s\n", campfireID[:min(len(campfireID), 16)])
-	printCompatibilityReport(ghReport)
-	return nil
-}
-
-// pollForKeyDelivery polls the GitHub Issue for a campfire:key-delivery comment
-// addressed to us. Returns the decrypted campfire private key bytes.
-// Cap at 1000 comments per the design doc.
-//
-// Security: only messages whose Sender public key matches the campfireID are
-// accepted. campfireID is the hex-encoded Ed25519 public key of the campfire
-// (and its creator). Any other sender is silently skipped to prevent an
-// attacker with issue write access from injecting a malicious private key.
-func pollForKeyDelivery(tr *ghtr.Transport, campfireID string, agentID *identity.Identity) ([]byte, error) {
-	// Decode the campfire public key from the hex campfireID so we can compare
-	// it against msg.Sender for each key-delivery candidate.
-	campfirePubKeyBytes, err := hex.DecodeString(campfireID)
-	if err != nil {
-		return nil, fmt.Errorf("invalid campfire ID (not hex): %w", err)
-	}
-
-	const maxAttempts = 20
-	for i := 0; i < maxAttempts; i++ {
-		msgs, err := tr.Poll(campfireID)
-		if err != nil {
-			return nil, fmt.Errorf("poll attempt %d: %w", i+1, err)
-		}
-		for _, msg := range msgs {
-			var tags []string
-			for _, t := range msg.Tags {
-				tags = append(tags, t)
-			}
-			isKeyDelivery := false
-			for _, t := range tags {
-				if t == campfire.TagKeyDelivery {
-					isKeyDelivery = true
-					break
-				}
-			}
-			if !isKeyDelivery {
-				continue
-			}
-
-			// Verify sender is the campfire creator. msg.Sender holds the raw
-			// Ed25519 public key bytes of the message author. Only the holder of
-			// the campfire private key (the creator) is authorised to deliver it.
-			if subtle.ConstantTimeCompare(msg.Sender, campfirePubKeyBytes) != 1 {
-				continue
-			}
-
-			// The payload is hex-encoded encrypted key material.
-			ciphertext, err := hex.DecodeString(string(msg.Payload))
-			if err != nil {
-				continue
-			}
-			plaintext, err := identity.DecryptWithEd25519Key(agentID.PrivateKey, ciphertext)
-			if err != nil {
-				continue
-			}
-			// Validate the decrypted key is exactly 64 bytes (Ed25519 private key).
-			// A valid Ed25519 private key is 64 bytes: 32-byte seed + 32-byte public key.
-			// Reject malformed plaintext to prevent silent acceptance of truncated or
-			// garbage keys that would produce an unusable campfire identity.
-			if len(plaintext) != 64 {
-				return nil, fmt.Errorf("delivered key has invalid length: got %d bytes, want 64", len(plaintext))
-			}
-			return plaintext, nil
-		}
-		// Key not yet delivered; wait a moment (tests do not reach this path).
-		time.Sleep(100 * time.Millisecond)
-	}
-	return nil, fmt.Errorf("key delivery not received after %d poll attempts", maxAttempts)
-}
-
 // lookupBeaconDescription scans global and project beacon directories for a
 // beacon matching campfireID and returns its description. Returns "" on miss.
 func lookupBeaconDescription(campfireID string) string {
@@ -755,10 +474,6 @@ func init() {
 	joinCmd.Flags().String("listen", "", "HTTP listen address for p2p-http transport (e.g. :9002)")
 	joinCmd.Flags().String("tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint advertisement")
 	joinCmd.Flags().String("tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
-	// GitHub transport flags.
-	joinCmd.Flags().String("github-repo", "", "coordination repository for GitHub beacon discovery (owner/repo)")
-	joinCmd.Flags().String("github-token-env", "", "name of env var containing GitHub token (default: GITHUB_TOKEN)")
-	joinCmd.Flags().String("github-base-url", "", "GitHub API base URL (for GitHub Enterprise; default: https://api.github.com)")
 	rootCmd.AddCommand(joinCmd)
 }
 

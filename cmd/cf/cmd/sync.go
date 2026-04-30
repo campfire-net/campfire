@@ -9,7 +9,6 @@ import (
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport"
-	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
 	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 )
@@ -17,9 +16,6 @@ import (
 // followIntervalForTransport returns the poll interval for --follow based on transport type.
 // GitHub campfires use 5s to avoid API rate limiting; all others use 2s.
 func followIntervalForTransport(m store.Membership) time.Duration {
-	if transport.ResolveType(m) == transport.TypeGitHub {
-		return 5 * time.Second
-	}
 	return 2 * time.Second
 }
 
@@ -46,8 +42,6 @@ func computeInitialCursor(s store.Store, campfireID string) (int64, error) {
 // that transient outages do not terminate subscriptions.
 func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, s store.Store) error {
 	switch transport.ResolveType(*m) {
-	case transport.TypeGitHub:
-		syncFromGitHub(cfID, m.TransportDir, s)
 	case transport.TypePeerHTTP:
 		syncFromHTTPPeers(cfID, agentID, s)
 	default:
@@ -56,36 +50,6 @@ func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, 
 		}
 	}
 	return nil
-}
-
-// syncFromGitHub polls the GitHub Issue for new comments and stores verified messages
-// in the local SQLite store. Non-fatal errors are silently ignored (caller continues).
-func syncFromGitHub(cfID, transportDir string, s store.Store) {
-	meta, ok := parseGitHubTransportDir(transportDir)
-	if !ok {
-		return
-	}
-
-	token, err := resolveGitHubToken("", CFHome())
-	if err != nil {
-		// No token available — skip silently (offline mode).
-		return
-	}
-
-	cfg := ghtr.Config{
-		Repo:        meta.Repo,
-		IssueNumber: meta.IssueNumber,
-		Token:       token,
-		BaseURL:     meta.BaseURL,
-	}
-	tr, err := ghtr.New(cfg, s)
-	if err != nil {
-		return
-	}
-	tr.RegisterCampfire(cfID, meta.IssueNumber)
-
-	// Poll returns verified messages and stores them in SQLite internally.
-	tr.Poll(cfID)
 }
 
 // syncFromFilesystem reads messages from the filesystem transport into the local store.

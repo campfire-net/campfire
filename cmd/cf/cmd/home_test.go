@@ -321,56 +321,7 @@ func TestHomeLinkCmd_NotMemberOfB(t *testing.T) {
 	}
 }
 
-// TestHomeBe_WritesConfigField verifies that configSetPresentAs writes identity.present_as to config.
-func TestHomeBe_WritesConfigField(t *testing.T) {
-	cfHomeDir := t.TempDir()
-	globalConfigPath := filepath.Join(cfHomeDir, "config.toml")
-	campfireID := "aabbccdd" + "0000000000000000000000000000000000000000000000000000000000000000"
-	campfireID = campfireID[:64]
-
-	if err := configSetPresentAs(globalConfigPath, campfireID); err != nil {
-		t.Fatalf("configSetPresentAs: %v", err)
-	}
-
-	data, err := os.ReadFile(globalConfigPath)
-	if err != nil {
-		t.Fatalf("reading config: %v", err)
-	}
-	if !bytes.Contains(data, []byte("present_as")) {
-		t.Errorf("config does not contain 'present_as': %s", data)
-	}
-	if !bytes.Contains(data, []byte(campfireID)) {
-		t.Errorf("config does not contain campfire ID %s: %s", campfireID, data)
-	}
-}
-
-// TestHomeBe_Self_ClearsConfig verifies that configSetPresentAs with empty value clears identity.present_as.
-func TestHomeBe_Self_ClearsConfig(t *testing.T) {
-	cfHomeDir := t.TempDir()
-	globalConfigPath := filepath.Join(cfHomeDir, "config.toml")
-	campfireID := "aabbccdd" + "0000000000000000000000000000000000000000000000000000000000000000"
-	campfireID = campfireID[:64]
-
-	// First set it.
-	if err := configSetPresentAs(globalConfigPath, campfireID); err != nil {
-		t.Fatalf("configSetPresentAs (set): %v", err)
-	}
-
-	// Then clear it.
-	if err := configSetPresentAs(globalConfigPath, ""); err != nil {
-		t.Fatalf("configSetPresentAs (clear): %v", err)
-	}
-
-	data, err := os.ReadFile(globalConfigPath)
-	if err != nil {
-		t.Fatalf("reading config: %v", err)
-	}
-	if bytes.Contains(data, []byte("present_as")) {
-		t.Errorf("config still contains 'present_as' after clearing: %s", data)
-	}
-}
-
-// TestHomeDisplay_ShowsCurrentIdentity verifies that homeDisplayCmd prints the current presentation state.
+// TestHomeDisplay_ShowsCurrentIdentity verifies that homeDisplayCmd prints the machine key.
 func TestHomeDisplay_ShowsCurrentIdentity(t *testing.T) {
 	cfHomeDir := t.TempDir()
 	t.Setenv("CF_HOME", cfHomeDir)
@@ -382,15 +333,6 @@ func TestHomeDisplay_ShowsCurrentIdentity(t *testing.T) {
 	}
 	if err := agentID.Save(filepath.Join(cfHomeDir, "identity.json")); err != nil {
 		t.Fatalf("saving identity: %v", err)
-	}
-
-	campfireID := "ccddee00" + "0000000000000000000000000000000000000000000000000000000000000000"
-	campfireID = campfireID[:64]
-
-	// Write identity.present_as to config.
-	globalConfigPath := filepath.Join(cfHomeDir, "config.toml")
-	if err := configSetPresentAs(globalConfigPath, campfireID); err != nil {
-		t.Fatalf("configSetPresentAs: %v", err)
 	}
 
 	var buf bytes.Buffer
@@ -407,11 +349,8 @@ func TestHomeDisplay_ShowsCurrentIdentity(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !bytes.Contains([]byte(out), []byte("Presenting as:")) {
-		t.Errorf("output missing 'Presenting as:': %s", out)
-	}
-	if !bytes.Contains([]byte(out), []byte(campfireID[:12])) {
-		t.Errorf("output missing campfire ID prefix %s: %s", campfireID[:12], out)
+	if !bytes.Contains([]byte(out), []byte("Machine key:")) {
+		t.Errorf("output missing 'Machine key:': %s", out)
 	}
 }
 
@@ -500,40 +439,6 @@ func TestHomeBe_RequiresLocalKey(t *testing.T) {
 	err = checkLocalCampfireKey(s, localCampfireID)
 	if err != nil {
 		t.Errorf("expected checkLocalCampfireKey to succeed for campfire with private key, got: %v", err)
-	}
-}
-
-// TestHomeBe_RunE_RequiresLocalKey verifies that homeBeCmd.RunE returns an error
-// when the target campfire has no local private key. This exercises the actual
-// RunE code path (not just the helper) to prevent silent enforcement gaps if
-// the inline call is ever refactored.
-func TestHomeBe_RunE_RequiresLocalKey(t *testing.T) {
-	agentID, s, cfHomeDir, _, _ := setupHomeLinkEnv(t)
-	_ = s
-	_ = agentID
-
-	// Create a campfire without a private key.
-	transportBaseDir := t.TempDir()
-	remoteCampfireID := createTestCampfireNoPrivKey(t, agentID, s, transportBaseDir)
-
-	// CF_FORCE_INTERACTIVE bypasses the TTY check so RunE proceeds to the key check.
-	t.Setenv("CF_FORCE_INTERACTIVE", "1")
-	t.Setenv("CF_HOME", cfHomeDir)
-
-	// Feed "y" as confirmation input so the ceremony proceeds past the prompt.
-	var buf bytes.Buffer
-	homeBeCmd.ResetFlags()
-	rootCmd.SetOut(&buf)
-	rootCmd.SetErr(&buf)
-	rootCmd.SetIn(bytes.NewBufferString("y\n"))
-	rootCmd.SetArgs([]string{"home", "be", remoteCampfireID})
-	err := rootCmd.Execute()
-	rootCmd.SetOut(nil)
-	rootCmd.SetErr(nil)
-	rootCmd.SetIn(nil)
-
-	if err == nil {
-		t.Error("expected homeBeCmd.RunE to return error for campfire without local private key, got nil")
 	}
 }
 

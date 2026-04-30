@@ -878,34 +878,6 @@ operation_classes = ["!replace", "write", "admin"]
 	}
 }
 
-// TestLoadConfig_WalkUpFalseOverridesTrue verifies that a project-level
-// walk_up = false correctly overrides a global walk_up = true.
-// This is a regression test for the bug where bool zero-value (false) was
-// indistinguishable from "omitted", causing project false to be silently dropped.
-func TestLoadConfig_WalkUpFalseOverridesTrue(t *testing.T) {
-	tmp := t.TempDir()
-	globalDir := filepath.Join(tmp, "global")
-	projectDir := filepath.Join(tmp, "project")
-
-	writeConfig(t, filepath.Join(globalDir, configFilename), `
-[behavior]
-walk_up = true
-`)
-	writeConfig(t, filepath.Join(projectDir, cfDir, configFilename), `
-[behavior]
-walk_up = false
-`)
-
-	cfg, _, _, err := LoadConfig(globalDir, projectDir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if cfg.Behavior.WalkUp != false {
-		t.Errorf("walk_up: got %v, want false (project false must override global true)", cfg.Behavior.WalkUp)
-	}
-}
-
 // TestLoadConfig_TransportRelay verifies that transport.relay is parsed from
 // a config file and resolves to the correct value.
 func TestLoadConfig_TransportRelay(t *testing.T) {
@@ -1385,19 +1357,46 @@ func TestMergeLayer_InvalidAnchor_ReturnsWarning(t *testing.T) {
 	}
 }
 
-// TestMergeLayer_InvalidPresentAs verifies that an invalid present_as value
-// (not 64 lowercase hex characters) is rejected with an error.
-func TestMergeLayer_InvalidPresentAs(t *testing.T) {
-	raw := &rawConfig{}
-	raw.Identity.PresentAs = "not-a-valid-hex-string"
+// TestPresentAs_IgnoredInConfig verifies that identity.present_as in a TOML
+// config file is silently ignored after the field is removed from rawIdentityConfig
+// (design v2 §1.2 — inert-but-latent removed; backward-compat: operators with
+// existing configs containing present_as must not see errors).
+//
+// This replaces TestMergeLayer_InvalidPresentAs which validated the field that
+// no longer exists. The backward-compat requirement is that a pre-0.30 operator
+// config containing present_as loads without error.
+func TestPresentAs_IgnoredInConfig(t *testing.T) {
+	// Simulate an operator whose config.toml was written by cf home be (pre-0.30).
+	globalDir := t.TempDir()
+	t.Chdir(globalDir) // isolate from ancestor .cf/config.toml
 
-	var dst Config
-	_, _, err := mergeLayer(&dst, raw, "/fake/config.toml", false)
-	if err == nil {
-		t.Fatal("mergeLayer should reject invalid present_as")
+	cfDir := filepath.Join(globalDir, ".cf")
+	if err := os.MkdirAll(cfDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
 	}
-	if !strings.Contains(err.Error(), "present_as") {
-		t.Errorf("error should mention present_as, got: %v", err)
+	presentAsID := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+	content := "[identity]\npresent_as = \"" + presentAsID + "\"\n"
+	configPath := filepath.Join(cfDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// LoadConfig must succeed — present_as in TOML is silently ignored.
+	cfg, layers, _, err := LoadConfig(globalDir, globalDir)
+	if err != nil {
+		t.Fatalf("LoadConfig with present_as in config should not return error: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("LoadConfig returned nil config")
+	}
+	if len(layers) == 0 {
+		t.Fatal("expected at least one config layer")
+	}
+
+	// No display_name or other identity fields set by the unknown present_as key.
+	if cfg.Identity.DisplayName != "" {
+		t.Errorf("expected identity.display_name to be empty (present_as should be ignored), got %q",
+			cfg.Identity.DisplayName)
 	}
 }
 
@@ -1417,9 +1416,10 @@ func TestMergeLayer_Error(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_AncestorWalkUp verifies that LoadConfig walks up the directory
-// tree (when behavior.walk_up is enabled) to find and merge ancestor .cf/config.toml files.
-func TestLoadConfig_AncestorWalkUp(t *testing.T) {
+// TestLoadConfig_AncestorConfig verifies that LoadConfig walks up the directory
+// tree to find and merge ancestor .cf/config.toml files, with the deepest config winning.
+// (behavior.walk_up was removed in cf-protocol 1.0 — locality resolves via L4 cf-discovery.)
+func TestLoadConfig_AncestorConfig(t *testing.T) {
 	tmp := t.TempDir()
 
 	// Create a global config directory (no config files).
@@ -1428,14 +1428,11 @@ func TestLoadConfig_AncestorWalkUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create an ancestor project directory with a config that enables walk_up.
+	// Create an ancestor project directory.
 	ancestorDir := filepath.Join(tmp, "projects", "ancestor")
 	writeConfig(t, filepath.Join(ancestorDir, ".cf", configFilename), `
 [identity]
 display_name = "Ancestor Agent"
-
-[behavior]
-walk_up = true
 `)
 
 	// Create a nested project directory deeper in the tree.
@@ -1457,11 +1454,6 @@ display_name = "Nested Agent"
 	// Verify that the nested (deepest) config's display_name won.
 	if cfg.Identity.DisplayName != "Nested Agent" {
 		t.Errorf("display_name: got %q, want %q", cfg.Identity.DisplayName, "Nested Agent")
-	}
-
-	// Verify that walk_up was inherited from the ancestor.
-	if cfg.Behavior.WalkUp != true {
-		t.Errorf("walk_up: got %v, want true", cfg.Behavior.WalkUp)
 	}
 
 	// Verify that at least 2 layers were applied (ancestor and nested).

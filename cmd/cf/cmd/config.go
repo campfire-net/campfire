@@ -225,14 +225,12 @@ func configFieldsWithOrigin(cfg *protocol.Config, layers []protocol.ConfigLayer)
 	entries := []entry{
 		{"identity.file", cfg.Identity.File},
 		{"identity.display_name", cfg.Identity.DisplayName},
-		{"identity.present_as", cfg.Identity.PresentAs},
 		{"store.file", cfg.Store.File},
 		{"transport.type", cfg.Transport.Type},
 		{"transport.endpoint", cfg.Transport.Endpoint},
 		{"transport.dir", cfg.Transport.Dir},
 		{"naming.root", cfg.Naming.Root},
 		{"naming.seeds", formatStringSlice(cfg.Naming.Seeds)},
-		{"behavior.walk_up", fmt.Sprintf("%v", cfg.Behavior.WalkUp)},
 		{"behavior.auto_join", formatStringSlice(cfg.Behavior.AutoJoin)},
 	}
 
@@ -256,8 +254,6 @@ func configGetValue(cfg *protocol.Config, key string) (string, error) {
 		return cfg.Identity.File, nil
 	case "identity.display_name":
 		return cfg.Identity.DisplayName, nil
-	case "identity.present_as":
-		return cfg.Identity.PresentAs, nil
 	case "store.file":
 		return cfg.Store.File, nil
 	case "transport.type":
@@ -270,12 +266,10 @@ func configGetValue(cfg *protocol.Config, key string) (string, error) {
 		return cfg.Naming.Root, nil
 	case "naming.seeds":
 		return formatStringSlice(cfg.Naming.Seeds), nil
-	case "behavior.walk_up":
-		return fmt.Sprintf("%v", cfg.Behavior.WalkUp), nil
 	case "behavior.auto_join":
 		return formatStringSlice(cfg.Behavior.AutoJoin), nil
 	default:
-		return "", fmt.Errorf("unknown config key %q; valid keys: identity.file, identity.display_name, identity.present_as, store.file, transport.type, transport.endpoint, transport.dir, naming.root, naming.seeds, behavior.walk_up, behavior.auto_join", key)
+		return "", fmt.Errorf("unknown config key %q; valid keys: identity.file, identity.display_name, store.file, transport.type, transport.endpoint, transport.dir, naming.root, naming.seeds, behavior.auto_join", key)
 	}
 }
 
@@ -284,11 +278,11 @@ func configGetValue(cfg *protocol.Config, key string) (string, error) {
 func configSetValue(targetPath, key, value string) error {
 	// Validate key before touching the file.
 	validKeys := map[string]bool{
-		"identity.file": true, "identity.display_name": true, "identity.present_as": true,
+		"identity.file": true, "identity.display_name": true,
 		"store.file":        true,
 		"transport.type":    true, "transport.endpoint": true, "transport.dir": true,
 		"naming.root":       true, "naming.seeds": true,
-		"behavior.walk_up":  true, "behavior.auto_join": true,
+		"behavior.auto_join": true,
 	}
 	if !validKeys[key] {
 		return fmt.Errorf("unknown config key %q; use cf config list to see valid keys", key)
@@ -336,15 +330,6 @@ func configSetValue(targetPath, key, value string) error {
 			return fmt.Errorf("key %q is a list field; value must be a JSON array (e.g. '[\"item1\",\"item2\"]'): %w", key, err)
 		}
 		sectionMap[field] = list
-	} else if key == "behavior.walk_up" {
-		switch strings.ToLower(value) {
-		case "true", "1", "yes":
-			sectionMap[field] = true
-		case "false", "0", "no":
-			sectionMap[field] = false
-		default:
-			return fmt.Errorf("key %q is a boolean; value must be true or false", key)
-		}
 	} else {
 		sectionMap[field] = value
 	}

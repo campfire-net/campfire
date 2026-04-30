@@ -251,7 +251,6 @@ cf config layers
 | `transport.dir` | Filesystem transport directory |
 | `naming.root` | Root campfire for `cf://` resolution (global-only; project configs cannot override) |
 | `naming.seeds` | Additional discovery registries (list — appends across layers) |
-| `behavior.walk_up` | Walk parent directories for center delegation (boolean, default: false) |
 | `behavior.auto_join` | Campfires to auto-join on init (list — appends across layers) |
 
 **Security constraints:** `naming.root` may only appear in the global config. Config cannot pre-seed trust levels or roles — trust is campfire-scoped and vouch-derived.
