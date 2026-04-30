@@ -18,7 +18,6 @@ package protocol_test
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -29,13 +28,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
-
-// portBaseEvictConc returns the per-process port base for evict_concurrency_test.go.
-// Range: 26000 + pid%500. Distinct from all other protocol test files
-// (evict_test.go uses 24000, evict_missing_epoch_test.go uses 25000).
-func portBaseEvictConc() int {
-	return 26000 + (os.Getpid() % 500)
-}
 
 // newConcClient creates a fresh protocol.Client with a new identity and SQLite store.
 func newConcClient(t *testing.T) *protocol.Client {
@@ -82,20 +74,15 @@ func TestEvictConcurrency(t *testing.T) {
 //   - DATA RACE: concurrent reads/writes to the store's peer endpoint table
 //   - DATA RACE: concurrent DKG runs mutating shared campfire state
 //   - Divergent shares: both DKGs run against different membership snapshots
+//
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testConcurrentEvictEvict(t *testing.T) {
 	t.Helper()
 
-	base := portBaseEvictConc()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+0)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+1)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+2)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-	endpointB := fmt.Sprintf("http://%s", addrB)
-	endpointC := fmt.Sprintf("http://%s", addrC)
-
 	clientA := newConcClient(t)
 	sA := clientA.ClientStore()
-	trA := startConcHTTPTransport(t, addrA, sA)
+	trA := startConcHTTPTransport(t, "127.0.0.1:0", sA)
+	endpointA := fmt.Sprintf("http://%s", trA.Addr())
 
 	transportDirA := t.TempDir()
 	beaconDir := t.TempDir()
@@ -112,7 +99,8 @@ func testConcurrentEvictEvict(t *testing.T) {
 	// B joins.
 	clientB := newConcClient(t)
 	sB := clientB.ClientStore()
-	trB := startConcHTTPTransport(t, addrB, sB)
+	trB := startConcHTTPTransport(t, "127.0.0.1:0", sB)
+	endpointB := fmt.Sprintf("http://%s", trB.Addr())
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
 		Transport: &protocol.P2PHTTPTransport{
@@ -130,7 +118,8 @@ func testConcurrentEvictEvict(t *testing.T) {
 	// C joins.
 	clientC := newConcClient(t)
 	sC := clientC.ClientStore()
-	trC := startConcHTTPTransport(t, addrC, sC)
+	trC := startConcHTTPTransport(t, "127.0.0.1:0", sC)
+	endpointC := fmt.Sprintf("http://%s", trC.Addr())
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
 		Transport: &protocol.P2PHTTPTransport{

@@ -34,12 +34,6 @@ import (
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
 
-// portBaseFROST returns a per-process port offset for this test file.
-// Uses a distinct range from the transport/http tests and other protocol tests.
-func portBaseFROST() int {
-	return 21000 + (os.Getpid() % 500)
-}
-
 // TestSendFROST calls Client.Send() on a P2P HTTP campfire with threshold=2,
 // requiring FROST signing. Verifies the resulting message has a valid threshold
 // provenance hop.
@@ -125,12 +119,36 @@ func TestSendFROST(t *testing.T) {
 	}
 	t.Cleanup(func() { sB.Close() })
 
-	// --- Network addresses ---
-	base := portBaseFROST()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+0)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+1)
-	epA := fmt.Sprintf("http://%s", addrA)
-	epB := fmt.Sprintf("http://%s", addrB)
+	// --- Start transport B first to get OS-assigned port (campfireagent-286) ---
+	// B's transport must be started before we can determine epB for peer registration.
+	// A does not serve HTTP in this test (it calls Send directly); epA is a placeholder
+	// stored in B's peer table for auth middleware identity mapping only.
+
+	// --- ThresholdShareProvider for B ---
+	bShareProvider := func(cfID string) (uint32, []byte, error) {
+		share, err := sB.GetThresholdShare(cfID)
+		if err != nil || share == nil {
+			return 0, nil, fmt.Errorf("no share for %s", cfID)
+		}
+		return share.ParticipantID, share.SecretShare, nil
+	}
+
+	// --- Start transport B (co-signer peer) with OS-assigned port ---
+	trB := cfhttp.New("127.0.0.1:0", sB)
+	trB.SetThresholdShareProvider(bShareProvider)
+	if err := trB.Start(); err != nil {
+		t.Fatalf("starting transport B: %v", err)
+	}
+	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond) // let listener bind
+
+	// Derive addresses from bound ports.
+	epB := fmt.Sprintf("http://%s", trB.Addr())
+	// epA is a placeholder: A never serves HTTP in this test; stored in B's peer table
+	// only for membership auth (auth checks pubkey, not TCP connectivity).
+	epA := "http://127.0.0.1:0"
+
+	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
 
 	// --- A's membership (p2p-http, threshold=2) ---
 	if err := sA.AddMembership(store.Membership{
@@ -189,27 +207,6 @@ func TestSendFROST(t *testing.T) {
 		Endpoint:      epA,
 		ParticipantID: 1,
 	})
-
-	// --- ThresholdShareProvider for B ---
-	bShareProvider := func(cfID string) (uint32, []byte, error) {
-		share, err := sB.GetThresholdShare(cfID)
-		if err != nil || share == nil {
-			return 0, nil, fmt.Errorf("no share for %s", cfID)
-		}
-		return share.ParticipantID, share.SecretShare, nil
-	}
-
-	// --- Start transport B (co-signer peer) ---
-	trB := cfhttp.New(addrB, sB)
-	trB.SetSelfInfo(idB.PublicKeyHex(), epB)
-	trB.SetThresholdShareProvider(bShareProvider)
-	if err := trB.Start(); err != nil {
-		t.Fatalf("starting transport B: %v", err)
-	}
-	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
-
-	// Give the server a moment to start accepting connections.
-	time.Sleep(20 * time.Millisecond)
 
 	// --- Call Client.Send() via A ---
 	client := protocol.New(sA, idA)

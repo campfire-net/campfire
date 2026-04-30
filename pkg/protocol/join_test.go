@@ -15,7 +15,6 @@ package protocol_test
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -26,12 +25,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
-
-// portBaseJoin returns a per-process port base for join_test.go.
-// Range: 23000 + pid%500. Distinct from other protocol test files.
-func portBaseJoin() int {
-	return 23000 + (os.Getpid() % 500)
-}
 
 // TestJoin runs all Join sub-tests.
 func TestJoin(t *testing.T) {
@@ -116,28 +109,24 @@ func testJoinFilesystemSendRead(t *testing.T) {
 
 // testJoinP2PHTTPSendRead: Same join-send-read but over real in-process HTTP servers.
 // Done condition 2.
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testJoinP2PHTTPSendRead(t *testing.T) {
 	t.Helper()
-
-	base := portBaseJoin()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+0)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+1)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-	endpointB := fmt.Sprintf("http://%s", addrB)
 
 	transportDirA := t.TempDir()
 	transportDirB := t.TempDir()
 	beaconDir := t.TempDir()
 
-	// Client A: creator with running HTTP transport.
+	// Client A: creator with running HTTP transport (OS-assigned port).
 	clientA := newJoinClient(t)
 	sA := clientA.ClientStore()
-	trA := cfhttp.New(addrA, sA)
+	trA := cfhttp.New("127.0.0.1:0", sA)
 	if err := trA.Start(); err != nil {
 		t.Fatalf("start transport A: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	endpointA := fmt.Sprintf("http://%s", trA.Addr())
 
 	createResult, err := clientA.Create(protocol.CreateRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trA, MyEndpoint: endpointA, Dir: transportDirA},
@@ -148,15 +137,16 @@ func testJoinP2PHTTPSendRead(t *testing.T) {
 	}
 	campfireID := createResult.CampfireID
 
-	// Client B: joiner with running HTTP transport.
+	// Client B: joiner with running HTTP transport (OS-assigned port).
 	clientB := newJoinClient(t)
 	sB := clientB.ClientStore()
-	trB := cfhttp.New(addrB, sB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("start transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	endpointB := fmt.Sprintf("http://%s", trB.Addr())
 
 	_, err = clientB.Join(protocol.JoinRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
@@ -351,28 +341,24 @@ func testJoinTrustComparison(t *testing.T) {
 // have Sender == A's public key — not empty. Empty Sender would be treated as campfire-operator
 // trust (trust escalation, campfire-agent-z2v).
 // Done condition 7.
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testJoinConventionSyncSenderPreserved(t *testing.T) {
 	t.Helper()
-
-	base := portBaseJoin()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+10)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+11)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-	endpointB := fmt.Sprintf("http://%s", addrB)
 
 	transportDirA := t.TempDir()
 	transportDirB := t.TempDir()
 	beaconDir := t.TempDir()
 
-	// Client A: creator with running HTTP transport.
+	// Client A: creator with running HTTP transport (OS-assigned port).
 	clientA := newJoinClient(t)
 	sA := clientA.ClientStore()
-	trA := cfhttp.New(addrA, sA)
+	trA := cfhttp.New("127.0.0.1:0", sA)
 	if err := trA.Start(); err != nil {
 		t.Fatalf("start transport A: %v", err)
 	}
 	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	endpointA := fmt.Sprintf("http://%s", trA.Addr())
 
 	createResult, err := clientA.Create(protocol.CreateRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trA, MyEndpoint: endpointA, Dir: transportDirA},
@@ -394,15 +380,16 @@ func testJoinConventionSyncSenderPreserved(t *testing.T) {
 		t.Fatalf("A.Send(convention): %v", err)
 	}
 
-	// Client B: joiner with running HTTP transport.
+	// Client B: joiner with running HTTP transport (OS-assigned port).
 	clientB := newJoinClient(t)
 	sB := clientB.ClientStore()
-	trB := cfhttp.New(addrB, sB)
+	trB := cfhttp.New("127.0.0.1:0", sB)
 	if err := trB.Start(); err != nil {
 		t.Fatalf("start transport B: %v", err)
 	}
 	t.Cleanup(func() { trB.Stop() }) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
+	endpointB := fmt.Sprintf("http://%s", trB.Addr())
 
 	_, err = clientB.Join(protocol.JoinRequest{
 		Transport: &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},

@@ -28,7 +28,6 @@ package protocol_test
 
 import (
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -36,13 +35,6 @@ import (
 	"github.com/campfire-net/campfire/pkg/store"
 	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
 )
-
-// portBaseMissingEpoch returns a per-process port base for evict_missing_epoch_test.go.
-// Range: 25500 + pid%499. Distinct from evict_test.go (24000) and
-// evict_concurrency_test.go (25000).
-func portBaseMissingEpoch() int {
-	return 25500 + (os.Getpid() % 499)
-}
 
 // TestEvictMissingEpochSecrets runs all MB2 regression sub-tests.
 func TestEvictMissingEpochSecrets(t *testing.T) {
@@ -60,20 +52,14 @@ func TestEvictMissingEpochSecrets(t *testing.T) {
 // A evicts B. Expected: Evict returns an error (not silent divergence).
 //
 // This test MUST FAIL on HEAD before the fix and PASS after.
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testMissingEpochSecretsReturnsError(t *testing.T) {
 	t.Helper()
 
-	base := portBaseMissingEpoch()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+0)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+1)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+2)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-	endpointB := fmt.Sprintf("http://%s", addrB)
-	endpointC := fmt.Sprintf("http://%s", addrC)
-
 	clientA := newEvictClient(t)
 	sA := clientA.ClientStore()
-	trA := startMissingEpochTransport(t, addrA, sA)
+	trA := startMissingEpochTransport(t, "127.0.0.1:0", sA)
+	endpointA := fmt.Sprintf("http://%s", trA.Addr())
 
 	transportDirA := t.TempDir()
 	beaconDir := t.TempDir()
@@ -89,7 +75,8 @@ func testMissingEpochSecretsReturnsError(t *testing.T) {
 
 	clientB := newEvictClient(t)
 	sB := clientB.ClientStore()
-	trB := startMissingEpochTransport(t, addrB, sB)
+	trB := startMissingEpochTransport(t, "127.0.0.1:0", sB)
+	endpointB := fmt.Sprintf("http://%s", trB.Addr())
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
 		Transport:  &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
@@ -101,7 +88,8 @@ func testMissingEpochSecretsReturnsError(t *testing.T) {
 
 	clientC := newEvictClient(t)
 	sC := clientC.ClientStore()
-	trC := startMissingEpochTransport(t, addrC, sC)
+	trC := startMissingEpochTransport(t, "127.0.0.1:0", sC)
+	endpointC := fmt.Sprintf("http://%s", trC.Addr())
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
 		Transport:  &protocol.P2PHTTPTransport{Transport: trC, MyEndpoint: endpointC, PeerEndpoint: endpointA, Dir: transportDirC},
@@ -149,20 +137,14 @@ func testMissingEpochSecretsReturnsError(t *testing.T) {
 // An encrypted campfire (m.Encrypted=true) WITH epoch_secrets present.
 // The guard must not interfere with the normal evict-rekey path.
 // A evicts B. Expected: Evict succeeds.
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testPresentEpochSecretsSucceeds(t *testing.T) {
 	t.Helper()
 
-	base := portBaseMissingEpoch()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+10)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+11)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+12)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-	endpointB := fmt.Sprintf("http://%s", addrB)
-	endpointC := fmt.Sprintf("http://%s", addrC)
-
 	clientA := newEvictClient(t)
 	sA := clientA.ClientStore()
-	trA := startMissingEpochTransport(t, addrA, sA)
+	trA := startMissingEpochTransport(t, "127.0.0.1:0", sA)
+	endpointA := fmt.Sprintf("http://%s", trA.Addr())
 
 	transportDirA := t.TempDir()
 	beaconDir := t.TempDir()
@@ -178,7 +160,8 @@ func testPresentEpochSecretsSucceeds(t *testing.T) {
 
 	clientB := newEvictClient(t)
 	sB := clientB.ClientStore()
-	trB := startMissingEpochTransport(t, addrB, sB)
+	trB := startMissingEpochTransport(t, "127.0.0.1:0", sB)
+	endpointB := fmt.Sprintf("http://%s", trB.Addr())
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
 		Transport:  &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
@@ -190,7 +173,8 @@ func testPresentEpochSecretsSucceeds(t *testing.T) {
 
 	clientC := newEvictClient(t)
 	sC := clientC.ClientStore()
-	trC := startMissingEpochTransport(t, addrC, sC)
+	trC := startMissingEpochTransport(t, "127.0.0.1:0", sC)
+	endpointC := fmt.Sprintf("http://%s", trC.Addr())
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
 		Transport:  &protocol.P2PHTTPTransport{Transport: trC, MyEndpoint: endpointC, PeerEndpoint: endpointA, Dir: transportDirC},
@@ -235,20 +219,14 @@ func testPresentEpochSecretsSucceeds(t *testing.T) {
 // for the current campfire ID, but a prior crash deleted them (simulated by
 // marking the campfire encrypted without inserting epoch_secrets).
 // Subsequent Evict must return an error.
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testPartialCrashMissingEpochSecrets(t *testing.T) {
 	t.Helper()
 
-	base := portBaseMissingEpoch()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+20)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+21)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+22)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-	endpointB := fmt.Sprintf("http://%s", addrB)
-	endpointC := fmt.Sprintf("http://%s", addrC)
-
 	clientA := newEvictClient(t)
 	sA := clientA.ClientStore()
-	trA := startMissingEpochTransport(t, addrA, sA)
+	trA := startMissingEpochTransport(t, "127.0.0.1:0", sA)
+	endpointA := fmt.Sprintf("http://%s", trA.Addr())
 
 	transportDirA := t.TempDir()
 	beaconDir := t.TempDir()
@@ -264,7 +242,8 @@ func testPartialCrashMissingEpochSecrets(t *testing.T) {
 
 	clientB := newEvictClient(t)
 	sB := clientB.ClientStore()
-	trB := startMissingEpochTransport(t, addrB, sB)
+	trB := startMissingEpochTransport(t, "127.0.0.1:0", sB)
+	endpointB := fmt.Sprintf("http://%s", trB.Addr())
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
 		Transport:  &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
@@ -276,7 +255,8 @@ func testPartialCrashMissingEpochSecrets(t *testing.T) {
 
 	clientC := newEvictClient(t)
 	sC := clientC.ClientStore()
-	trC := startMissingEpochTransport(t, addrC, sC)
+	trC := startMissingEpochTransport(t, "127.0.0.1:0", sC)
+	endpointC := fmt.Sprintf("http://%s", trC.Addr())
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
 		Transport:  &protocol.P2PHTTPTransport{Transport: trC, MyEndpoint: endpointC, PeerEndpoint: endpointA, Dir: transportDirC},
@@ -321,22 +301,15 @@ func testPartialCrashMissingEpochSecrets(t *testing.T) {
 // A2 has encrypted=true but NO epoch_secrets (simulates partial state in a second node).
 // A evicts B; A2 evicts C concurrently.
 // Expected: A succeeds; A2 returns an epoch_secrets-absent error.
+// Ports: OS-assigned via "127.0.0.1:0" + tr.Addr() (campfireagent-286).
 func testConcurrentEvictOneCallerMissingEpochSecrets(t *testing.T) {
 	t.Helper()
-
-	base := portBaseMissingEpoch()
-	addrA := fmt.Sprintf("127.0.0.1:%d", base+30)
-	addrB := fmt.Sprintf("127.0.0.1:%d", base+31)
-	addrC := fmt.Sprintf("127.0.0.1:%d", base+32)
-	addrA2 := fmt.Sprintf("127.0.0.1:%d", base+33)
-	endpointA := fmt.Sprintf("http://%s", addrA)
-	endpointB := fmt.Sprintf("http://%s", addrB)
-	endpointC := fmt.Sprintf("http://%s", addrC)
 
 	// Build A's campfire normally.
 	clientA := newEvictClient(t)
 	sA := clientA.ClientStore()
-	trA := startMissingEpochTransport(t, addrA, sA)
+	trA := startMissingEpochTransport(t, "127.0.0.1:0", sA)
+	endpointA := fmt.Sprintf("http://%s", trA.Addr())
 
 	transportDirA := t.TempDir()
 	beaconDir := t.TempDir()
@@ -352,7 +325,8 @@ func testConcurrentEvictOneCallerMissingEpochSecrets(t *testing.T) {
 
 	clientB := newEvictClient(t)
 	sB := clientB.ClientStore()
-	trB := startMissingEpochTransport(t, addrB, sB)
+	trB := startMissingEpochTransport(t, "127.0.0.1:0", sB)
+	endpointB := fmt.Sprintf("http://%s", trB.Addr())
 	transportDirB := t.TempDir()
 	_, err = clientB.Join(protocol.JoinRequest{
 		Transport:  &protocol.P2PHTTPTransport{Transport: trB, MyEndpoint: endpointB, PeerEndpoint: endpointA, Dir: transportDirB},
@@ -364,7 +338,8 @@ func testConcurrentEvictOneCallerMissingEpochSecrets(t *testing.T) {
 
 	clientC := newEvictClient(t)
 	sC := clientC.ClientStore()
-	trC := startMissingEpochTransport(t, addrC, sC)
+	trC := startMissingEpochTransport(t, "127.0.0.1:0", sC)
+	endpointC := fmt.Sprintf("http://%s", trC.Addr())
 	transportDirC := t.TempDir()
 	_, err = clientC.Join(protocol.JoinRequest{
 		Transport:  &protocol.P2PHTTPTransport{Transport: trC, MyEndpoint: endpointC, PeerEndpoint: endpointA, Dir: transportDirC},
@@ -429,8 +404,8 @@ func testConcurrentEvictOneCallerMissingEpochSecrets(t *testing.T) {
 		t.Fatalf("test setup error: A2 should have no epoch_secrets, found epoch=%d", esA2.Epoch)
 	}
 
-	// A2's transport and client.
-	trA2 := cfhttp.New(addrA2, sA2)
+	// A2's transport and client (OS-assigned port).
+	trA2 := cfhttp.New("127.0.0.1:0", sA2)
 	if err := trA2.Start(); err != nil {
 		t.Fatalf("start A2 transport: %v", err)
 	}
