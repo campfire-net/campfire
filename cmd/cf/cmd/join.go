@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/admission"
@@ -69,9 +70,13 @@ var joinCmd = &cobra.Command{
 			return fmt.Errorf("already a member of campfire %s", campfireID[:shortIDLen])
 		}
 
-		// Route based on --via flag (p2p-http), GitHub Issue URL, or filesystem (default).
+		// Route based on --via flag (p2p-http), or filesystem (default).
+		// Note: GitHub transport was removed in v0.30.0.
 		if joinVia != "" {
 			return joinP2PHTTP(campfireID, agentID, s, joinVia, joinListen, joinTLSCert, joinTLSKey, joinInviteCode)
+		}
+		if strings.HasPrefix(campfireID, "https://github.com/") {
+			return fmt.Errorf("GitHub transport was removed in v0.30.0; GitHub Issue URLs are no longer supported")
 		}
 		return joinFilesystem(campfireID, agentID, s)
 	},
@@ -103,6 +108,10 @@ func joinFromBeacon(parsed *naming.URI, agentID *identity.Identity, s store.Stor
 			return fmt.Errorf("beacon p2p-http transport missing 'endpoint' config key")
 		}
 		return joinP2PHTTP(campfireID, agentID, s, via, listen, tlsCert, tlsKey, "")
+	case "github":
+		// GitHub transport was removed in v0.30.0. Beacons with github protocol
+		// can no longer be used to join campfires.
+		return fmt.Errorf("GitHub transport was removed in v0.30.0; cannot join campfire via a github beacon")
 	default:
 		// Filesystem or unknown protocol: fall back to filesystem join.
 		return joinFilesystem(campfireID, agentID, s)
@@ -474,6 +483,8 @@ func init() {
 	joinCmd.Flags().String("listen", "", "HTTP listen address for p2p-http transport (e.g. :9002)")
 	joinCmd.Flags().String("tls-cert", "", "TLS certificate file (PEM); enables https:// endpoint advertisement")
 	joinCmd.Flags().String("tls-key", "", "TLS private key file (PEM); must be paired with --tls-cert")
+	// Note: --github-repo, --github-token-env, --github-base-url were removed in v0.30.0
+	// when the GitHub transport was cut.
 	rootCmd.AddCommand(joinCmd)
 }
 

@@ -19,10 +19,16 @@ type TransportType = internaltransport.Type
 const (
 	TransportTypeFilesystem = internaltransport.TypeFilesystem
 	TransportTypePeerHTTP   = internaltransport.TypePeerHTTP
-	TransportTypeGitHub     = internaltransport.TypeGitHub
+	// TransportTypeGitHub is a tombstone constant for legacy store records.
+	// The GitHub transport was removed in v0.30.0. Do not use for new campfires.
+	TransportTypeGitHub = internaltransport.TypeGitHub
 )
 
-// GitHubTransportPrefix is the prefix for GitHub transport dirs.
+// GitHubTransportPrefix is retained for legacy store record detection only.
+// The GitHub transport was removed in v0.30.0.
+//
+// Deprecated: do not use. This constant exists only for backward compatibility
+// with old campfire_memberships rows that have a "github:..." TransportDir.
 const GitHubTransportPrefix = internaltransport.GitHubTransportPrefix
 
 // ResolveTransportType resolves the transport type from a Membership record.

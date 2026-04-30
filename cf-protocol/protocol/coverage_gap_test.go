@@ -210,12 +210,14 @@ func TestTransportType_P2PHTTP(t *testing.T) {
 	}
 }
 
-// TestTransportType_GitHub verifies GitHubTransport.TransportType() returns "github".
-func TestTransportType_GitHub(t *testing.T) {
+// TestTransportType_GitHub_IsDeprecated verifies that GitHubTransport is a
+// deprecated tombstone type (removed in v0.30.0) whose TransportType() still
+// returns "github" for backward compatibility with old store rows.
+func TestTransportType_GitHub_IsDeprecated(t *testing.T) {
 	tr := protocol.GitHubTransport{Owner: "campfire-net", Repo: "campfire"}
 	got := tr.TransportType()
 	if got != "github" {
-		t.Errorf("GitHubTransport.TransportType() = %q, want %q", got, "github")
+		t.Errorf("GitHubTransport.TransportType() = %q, want %q (tombstone compat)", got, "github")
 	}
 }
 

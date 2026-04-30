@@ -37,9 +37,12 @@ type P2PHTTPTransport struct {
 // TransportType returns "p2p-http".
 func (P2PHTTPTransport) TransportType() string { return "p2p-http" }
 
-// GitHubTransport configures the GitHub-backed transport.
-// Owner, Repo, Branch, and Dir identify the target repository and path.
-// Token is an optional personal access token for private repos or authenticated writes.
+// GitHubTransport is a tombstone type retained for store-record compatibility.
+// The GitHub transport was removed in v0.30.0. Any campfire_memberships row
+// with TransportType="github" can no longer be used; attempts to send or read
+// via it will return an error.
+//
+// Deprecated: do not use. Use FilesystemTransport or P2PHTTPTransport instead.
 type GitHubTransport struct {
 	Owner  string
 	Repo   string

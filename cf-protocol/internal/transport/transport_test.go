@@ -36,9 +36,16 @@ func TestResolveType_ExplicitField(t *testing.T) {
 	}
 }
 
-// TestResolveType_GitHub verifies GitHub detection via explicit TransportType field
-// (the canonical path) and via legacy TransportDir prefix fallback.
-func TestResolveType_GitHub(t *testing.T) {
+// TestResolveType_GitHub_LegacyFallback verifies that old store rows with
+// TransportType="github" or a "github:..." TransportDir prefix still decode
+// to TypeGitHub without panicking. The GitHub transport implementation was
+// removed in v0.30.0 (campfireagent-964), but the sentinel must survive in
+// ResolveType so that campfires created before the removal return an error
+// on send/read rather than crashing.
+//
+// Transitional: this test may be removed when all known deployments have
+// migrated away from GitHub-transport campfires.
+func TestResolveType_GitHub_LegacyFallback(t *testing.T) {
 	cases := []struct {
 		name          string
 		transportType string

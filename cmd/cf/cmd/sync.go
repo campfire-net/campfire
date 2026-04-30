@@ -14,8 +14,9 @@ import (
 )
 
 // followIntervalForTransport returns the poll interval for --follow based on transport type.
-// GitHub campfires use 5s to avoid API rate limiting; all others use 2s.
+// GitHub transport was removed in v0.30.0; all remaining transports use 2s.
 func followIntervalForTransport(m store.Membership) time.Duration {
+	// GitHub transport was removed in v0.30.0; all remaining transports use 2s.
 	return 2 * time.Second
 }
 
@@ -42,6 +43,9 @@ func computeInitialCursor(s store.Store, campfireID string) (int64, error) {
 // that transient outages do not terminate subscriptions.
 func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, s store.Store) error {
 	switch transport.ResolveType(*m) {
+	case transport.TypeGitHub:
+		// GitHub transport was removed in v0.30.0; skip silently to avoid
+		// panicking on campfires created before the removal.
 	case transport.TypePeerHTTP:
 		syncFromHTTPPeers(cfID, agentID, s)
 	default:
@@ -51,6 +55,7 @@ func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, 
 	}
 	return nil
 }
+
 
 // syncFromFilesystem reads messages from the filesystem transport into the local store.
 // Only messages with valid Ed25519 signatures are stored; invalid messages are silently

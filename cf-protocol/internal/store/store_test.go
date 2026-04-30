@@ -2620,8 +2620,11 @@ func TestAddMembership_TransportTypeInferred(t *testing.T) {
 	}
 }
 
-// TestAddMembership_TransportTypeGitHub verifies GitHub transport detection.
-func TestAddMembership_TransportTypeGitHub(t *testing.T) {
+// TestAddMembership_TransportTypeGitHub_LegacyDetection verifies that old store
+// rows with a "github:..." TransportDir are still detected as TypeGitHub so that
+// legacy memberships don't panic. The GitHub transport implementation was removed
+// in v0.30.0 (campfireagent-964), but the sentinel must remain for old rows.
+func TestAddMembership_TransportTypeGitHub_LegacyDetection(t *testing.T) {
 	s := testStore(t)
 
 	if err := s.AddMembership(Membership{
@@ -2641,8 +2644,11 @@ func TestAddMembership_TransportTypeGitHub(t *testing.T) {
 	if m == nil {
 		t.Fatal("expected membership")
 	}
+	// Legacy detection: "github:" prefix in TransportDir should resolve to "github"
+	// transport type even after the implementation was removed. This ensures old rows
+	// don't cause panics on decode; send/read operations will return an error.
 	if m.TransportType != "github" {
-		t.Errorf("TransportType = %q, want %q", m.TransportType, "github")
+		t.Errorf("TransportType = %q, want %q (legacy sentinel)", m.TransportType, "github")
 	}
 }
 

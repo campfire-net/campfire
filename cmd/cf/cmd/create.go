@@ -93,6 +93,8 @@ var createCmd = &cobra.Command{
 		}
 
 		switch createTransport {
+		case "github":
+			return fmt.Errorf("GitHub transport was removed in v0.30.0; use --transport filesystem or --transport p2p-http")
 		case "p2p-http":
 			return createP2PHTTP(cf, agentID, s, createDescription, createListen, createTLSCert, createTLSKey, createParticipants)
 		default:
@@ -587,5 +589,7 @@ func init() {
 	createCmd.Flags().Uint("participants", 0, "total number of DKG participants for threshold>1 (default: equals threshold)")
 	createCmd.Flags().Bool("no-config", false, "skip writing beacon to .cf/config.toml in git root")
 	createCmd.Flags().String("relay", "", "register on relay: URL of HTTP relay (e.g. https://mcp.getcampfire.dev); overrides transport.relay config")
+	// Note: --github-repo, --github-token-env, --github-base-url were removed in v0.30.0
+	// when the GitHub transport was cut. Use --transport filesystem or --transport p2p-http.
 	rootCmd.AddCommand(createCmd)
 }

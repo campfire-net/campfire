@@ -5,13 +5,12 @@
 // Migration complete (campfire-agent-zkg, r02, f4a, cqt): all callers in
 // cmd/cf/cmd and cmd/cf-mcp now use Client.Send() and Client.Read() directly.
 // Transport dispatch is encapsulated here; no external caller should invoke
-// transport helpers (sendFilesystem, sendGitHub, sendP2PHTTP) directly.
+// transport helpers (sendFilesystem, sendP2PHTTP) directly.
 package protocol
 
 import (
 	"crypto/ed25519"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,7 +26,6 @@ import (
 	"github.com/campfire-net/campfire/cf-protocol/internal/threshold"
 	"github.com/campfire-net/campfire/cf-protocol/internal/transport"
 	"github.com/campfire-net/campfire/cf-protocol/internal/transport/fs"
-	ghtr "github.com/campfire-net/campfire/pkg/transport/github"
 	cfhttp "github.com/campfire-net/campfire/cf-protocol/internal/transport/http"
 	"github.com/google/uuid"
 )
@@ -51,11 +49,6 @@ type SendRequest struct {
 	// Consumers must treat it as an untrusted display hint only. Never use for access
 	// control, routing decisions, or trust assertions.
 	Instance string
-
-	// GitHubToken is required when the campfire uses the GitHub transport.
-	// If empty, the caller is responsible for injecting a token via the
-	// environment (GITHUB_TOKEN) before calling Send.
-	GitHubToken string
 
 	// RoleOverride, when non-empty, overrides the membership role recorded in the
 	// provenance hop. Used by Bridge() to force "blind-relay" hops regardless of
@@ -274,7 +267,11 @@ func (c *Client) Send(req SendRequest) (*message.Message, error) {
 
 	switch transport.ResolveType(*m) {
 	case transport.TypeGitHub:
-		return c.sendGitHub(req, m)
+		// GitHub transport was removed in v0.30.0. Campfires with this transport
+		// type can no longer send messages. The TypeGitHub constant is retained
+		// as a sentinel so old store records do not cause panics on decode.
+		return nil, fmt.Errorf("GitHub transport is no longer supported (removed in v0.30.0); " +
+			"migrate this campfire to a filesystem or p2p-http transport")
 	case transport.TypePeerHTTP:
 		return c.sendP2PHTTP(req, m)
 	default:
@@ -334,131 +331,6 @@ func (c *Client) sendFilesystem(req SendRequest, m *store.Membership) (*message.
 	return msg, nil
 }
 
-// githubTransportMeta holds the parsed metadata from a GitHub transport dir.
-type githubTransportMeta struct {
-	Repo        string `json:"repo"`
-	IssueNumber int    `json:"issue_number"`
-	BaseURL     string `json:"base_url,omitempty"`
-}
-
-// parseGitHubTransportDir parses the TransportDir value for a GitHub-transport campfire.
-func parseGitHubTransportDir(transportDir string) (githubTransportMeta, bool) {
-	const prefix = "github:"
-	if !strings.HasPrefix(transportDir, prefix) {
-		return githubTransportMeta{}, false
-	}
-	raw := strings.TrimPrefix(transportDir, prefix)
-	var meta githubTransportMeta
-	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
-		return githubTransportMeta{}, false
-	}
-	return meta, true
-}
-
-// sendGitHub delivers req via the GitHub Issues transport.
-func (c *Client) sendGitHub(req SendRequest, m *store.Membership) (*message.Message, error) {
-	meta, ok := parseGitHubTransportDir(m.TransportDir)
-	if !ok {
-		return nil, fmt.Errorf("invalid GitHub transport dir: %s", m.TransportDir)
-	}
-
-	// Resolve GitHub token. Priority order:
-	//   1. GitHubToken field in the request (explicit, always wins)
-	//   2. GITHUB_TOKEN environment variable
-	//   3. configDir/github-token credential file (only when Client was created via Init)
-	// Note: the "gh auth token" fallback is CLI-only; the SDK does not shell out.
-	token := req.GitHubToken
-	if token == "" {
-		token = os.Getenv("GITHUB_TOKEN")
-	}
-	if token == "" && c.configDir != "" {
-		credFile := filepath.Join(c.configDir, "github-token")
-		if data, err := os.ReadFile(credFile); err == nil {
-			token = strings.TrimSpace(string(data))
-		}
-	}
-	if token == "" {
-		credFileHint := ""
-		if c.configDir != "" {
-			credFileHint = fmt.Sprintf(", or write a token to %s/github-token", c.configDir)
-		}
-		return nil, fmt.Errorf("GitHub token required: set GitHubToken in SendRequest or GITHUB_TOKEN env var%s", credFileHint)
-	}
-
-	cfg := ghtr.Config{
-		Repo:        meta.Repo,
-		IssueNumber: meta.IssueNumber,
-		Token:       token,
-		BaseURL:     meta.BaseURL,
-	}
-	tr, err := ghtr.New(cfg, c.store)
-	if err != nil {
-		return nil, fmt.Errorf("creating GitHub transport: %w", err)
-	}
-	tr.RegisterCampfire(req.CampfireID, meta.IssueNumber)
-
-	signer := c.identity.NewSigner()
-	msg, err := message.NewMessage(signer, req.Payload, req.Tags, req.Antecedents)
-	if err != nil {
-		return nil, fmt.Errorf("creating message: %w", err)
-	}
-	msg.Instance = req.Instance
-
-	// Add provenance hop signed by the campfire key.
-	// The campfire private key is stored in the membership record at create/join time
-	// because the GitHub transport has no on-disk state directory (unlike filesystem
-	// and P2P HTTP transports which read campfire.cbor from the transport dir).
-	if m.CampfirePrivKey != "" {
-		cfPrivBytes, err := hex.DecodeString(m.CampfirePrivKey)
-		if err != nil {
-			return nil, fmt.Errorf("decoding campfire private key for provenance hop: %w", err)
-		}
-		cfPrivKey := ed25519.PrivateKey(cfPrivBytes)
-		cfPubKey := cfPrivKey.Public().(ed25519.PublicKey)
-		hopRole := campfire.EffectiveRole(m.Role)
-		if req.RoleOverride != "" {
-			hopRole = req.RoleOverride
-		}
-		// Member count and membership hash: GitHub transport has no on-disk member
-		// file, so we derive both from the peer endpoint list in the local store.
-		// If the list is empty (no peers discovered yet), fall back to a single
-		// member (the sender) with an empty-set hash.
-		memberCount := 1
-		var ghPeers []store.PeerEndpoint
-		if pp, peerErr := c.store.ListPeerEndpoints(req.CampfireID); peerErr == nil {
-			ghPeers = pp
-			if len(ghPeers) > 0 {
-				memberCount = len(ghPeers)
-			}
-		}
-		ghMemHash := membershipHashFromPeers(ghPeers)
-		// ReceptionRequirements are not stored in the membership record; use empty
-		// slice to match the GitHub transport's open-by-default join model.
-		reqs := []string{}
-		if err := msg.AddHop(
-			cfPrivKey, cfPubKey,
-			ghMemHash,
-			memberCount,
-			m.JoinProtocol,
-			reqs,
-			hopRole,
-		); err != nil {
-			return nil, fmt.Errorf("adding provenance hop: %w", err)
-		}
-	}
-
-	if err := tr.Send(req.CampfireID, msg); err != nil {
-		return nil, fmt.Errorf("sending via GitHub transport: %w", err)
-	}
-
-	// Mirror to local store so the sender can read back their own messages
-	// without a sync step. Consistent with sendFilesystem and sendP2PHTTP behavior.
-	if _, err := c.store.AddMessage(store.MessageRecordFromMessage(req.CampfireID, msg, store.NowNano())); err != nil {
-		return nil, fmt.Errorf("storing sent message locally: %w", err)
-	}
-
-	return msg, nil
-}
 
 // sanitizeTransportDir validates that dir is a safe absolute path with no path
 // traversal sequences. It returns the cleaned path or an error if dir is empty,

@@ -4,63 +4,16 @@ package protocol
 // Campfire item: campfire-agent-32b
 //
 // Functions covered:
-//   - githubTransportDirFromConfig — encodes GitHubTransport as a transport dir string
 //   - noopStore.UpsertPeerEndpoint — no-op store method used in Admit flow
+//
+// Note: Tests for githubTransportDirFromConfig were removed in v0.30.0 when
+// the GitHub transport was cut (campfireagent-964).
 
 import (
 	"testing"
 
 	"github.com/campfire-net/campfire/cf-protocol/store"
 )
-
-// TestGithubTransportDirFromConfig_WithOwnerAndRepo verifies that a GitHubTransport
-// with Owner and Repo returns "github:<owner>/<repo>".
-func TestGithubTransportDirFromConfig_WithOwnerAndRepo(t *testing.T) {
-	tr := &GitHubTransport{
-		Owner:  "campfire-net",
-		Repo:   "campfire",
-		Branch: "main",
-		Dir:    "messages",
-	}
-	got := githubTransportDirFromConfig(tr)
-	want := "github:campfire-net/campfire"
-	if got != want {
-		t.Errorf("githubTransportDirFromConfig() = %q, want %q", got, want)
-	}
-}
-
-// TestGithubTransportDirFromConfig_EmptyOwner verifies that an empty Owner returns "".
-func TestGithubTransportDirFromConfig_EmptyOwner(t *testing.T) {
-	tr := &GitHubTransport{
-		Owner: "",
-		Repo:  "campfire",
-	}
-	got := githubTransportDirFromConfig(tr)
-	if got != "" {
-		t.Errorf("githubTransportDirFromConfig with empty Owner = %q, want %q", got, "")
-	}
-}
-
-// TestGithubTransportDirFromConfig_EmptyRepo verifies that an empty Repo returns "".
-func TestGithubTransportDirFromConfig_EmptyRepo(t *testing.T) {
-	tr := &GitHubTransport{
-		Owner: "campfire-net",
-		Repo:  "",
-	}
-	got := githubTransportDirFromConfig(tr)
-	if got != "" {
-		t.Errorf("githubTransportDirFromConfig with empty Repo = %q, want %q", got, "")
-	}
-}
-
-// TestGithubTransportDirFromConfig_BothEmpty verifies that an empty Owner and Repo returns "".
-func TestGithubTransportDirFromConfig_BothEmpty(t *testing.T) {
-	tr := &GitHubTransport{}
-	got := githubTransportDirFromConfig(tr)
-	if got != "" {
-		t.Errorf("githubTransportDirFromConfig with empty Owner+Repo = %q, want %q", got, "")
-	}
-}
 
 // TestNoopStore_UpsertPeerEndpoint verifies that noopStore.UpsertPeerEndpoint returns nil.
 // noopStore is the no-op store used in the Admit() flow when only the filesystem

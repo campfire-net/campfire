@@ -29,6 +29,43 @@ Remove all `WithWalkUp()`, `WithNoWalkUp()`, and `WalkUpEnabled()` call sites.
 Remove `behavior.walk_up` from config files. Remove references to
 `InitResult.WalkUpPath`, `InitResult.Recentered`, `InitResult.DelegationIssued`.
 
+## v0.30.0 — Remove GitHub transport (2026-04-29)
+
+**BREAKING CHANGE**: The GitHub transport (`pkg/transport/github`) has been
+removed. Campfires backed by GitHub Issues are no longer supported.
+
+### Removed
+
+- **`pkg/transport/github`** package deleted entirely (campfireagent-964).
+- **`cf create --transport github`** — returns an error with migration guidance.
+- **`cf join <github-issue-url>`** — GitHub Issue URLs are no longer accepted.
+- **CLI flags** `--github-repo`, `--github-token-env`, `--github-base-url` removed
+  from `cf create` and `cf join`.
+- **`protocol.SendRequest.GitHubToken`** field removed.
+- All GitHub-specific sync, polling, and key-delivery functions removed from
+  `cmd/cf`.
+
+### Retained (backward compat)
+
+- **`TypeGitHub` sentinel** in `cf-protocol/internal/transport` — retained so
+  existing store rows with `TransportType="github"` or `TransportDir="github:..."` 
+  do not panic. Operations on these campfires return a clear migration error.
+- **`GitHubTransport` tombstone type** in `cf-protocol/protocol` — the struct
+  remains (marked deprecated) so code that references the type compiles. Pass
+  a `FilesystemTransport` or `P2PHTTPTransport` instead.
+
+### Migration
+
+Migrate GitHub-transport campfires to a filesystem or p2p-http campfire:
+
+```bash
+# Create a new filesystem campfire
+cf create --transport filesystem
+
+# Or create a p2p-http campfire (recommended for multi-machine)
+cf create --transport p2p-http
+```
+
 ## v0.19.3 — InvalidInput Outcome variant in trust resolution (2026-04-27)
 
 Resolves a long-standing type confusion in `delegation.Resolve`: malformed
