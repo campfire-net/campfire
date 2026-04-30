@@ -22,17 +22,6 @@ func printInitResultVerbose(result *protocol.InitResult) {
 	}
 	fmt.Fprintf(os.Stderr, "Init: %s identity at %s\n", action, result.IdentityPath)
 	fmt.Fprintf(os.Stderr, "Init: opened store at %s\n", result.StorePath)
-	if len(result.WalkUpPath) > 0 {
-		fmt.Fprintf(os.Stderr, "Init: walk-up examined %d directories\n", len(result.WalkUpPath))
-	} else {
-		fmt.Fprintf(os.Stderr, "Init: walk-up disabled (default)\n")
-	}
-	if result.DelegationIssued {
-		fmt.Fprintf(os.Stderr, "Init: delegation issued\n")
-	}
-	if result.Recentered {
-		fmt.Fprintf(os.Stderr, "Init: recentered\n")
-	}
 	for _, w := range result.Warnings {
 		fmt.Fprintf(os.Stderr, "Init: warning: %s\n", w)
 	}

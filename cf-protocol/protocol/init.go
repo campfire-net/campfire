@@ -118,16 +118,6 @@ func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
 		configOpts = append(configOpts, WithRemote(cfg.Transport.Endpoint))
 	}
 
-	// behavior.walk_up → WithWalkUp
-	if cfg.Behavior.WalkUp {
-		configOpts = append(configOpts, WithWalkUp())
-	}
-
-	// identity.present_as → WithPresentAs
-	if cfg.Identity.PresentAs != "" {
-		configOpts = append(configOpts, WithPresentAs(cfg.Identity.PresentAs))
-	}
-
 	// identity.backend → WithBackend (only when set in config)
 	if cfg.Identity.Backend != "" && cfg.Identity.Backend != defaultBackend {
 		configOpts = append(configOpts, WithBackend(cfg.Identity.Backend))
@@ -141,7 +131,7 @@ func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
 	// Build final option list: config-derived first, then caller overrides.
 	finalOpts := append(configOpts, optFuncs...)
 
-	// Resolve the merged options so we can read fields (e.g. presentAs) that
+	// Resolve the merged options so we can read fields (e.g. scope) that
 	// Init() consumes but does not surface in *InitResult.
 	mergedOpts := defaultOptions()
 	for _, fn := range finalOpts {
@@ -158,7 +148,6 @@ func InitWithConfig(optFuncs ...Option) (*Client, *InitResult, error) {
 	result.ConfigLayers = layers
 	result.IdentitySource = identitySource
 	result.Warnings = append(result.Warnings, cfgWarnings...)
-	result.PresentAs = mergedOpts.presentAs
 
 	// Apply scope config from the merged config cascade when no WithScope was
 	// provided. WithScope wins because it flows through Init() via opts.scope.
@@ -199,19 +188,6 @@ type InitResult struct {
 	// StorePath is the absolute path to the SQLite store file.
 	StorePath string
 
-	// DelegationIssued is true when a context key delegation was posted to the
-	// center campfire during this Init() call (walk-up found a center and the
-	// context key did not already exist).
-	DelegationIssued bool
-
-	// Recentered is true when a two-signature recenter claim was posted to the
-	// center campfire during this Init() call.
-	Recentered bool
-
-	// WalkUpPath contains the directories examined during the walk-up search
-	// for a center campfire sentinel. Empty when walk-up is disabled (default).
-	WalkUpPath []string
-
 	// Warnings contains non-fatal diagnostic messages produced during Init().
 	Warnings []string
 
@@ -231,13 +207,6 @@ type InitResult struct {
 	// because they appeared in behavior.auto_join in the config cascade.
 	// Populated only by InitWithConfig(); empty when Init() is called directly.
 	AutoJoined []string
-
-	// PresentAs is the campfire ID this agent presents as, sourced from
-	// identity.present_as in the config cascade (or WithPresentAs option).
-	// Empty when not configured. In 0.16 the value is preserved but the
-	// signing behavior it enables is deferred to 0.17+.
-	// Populated only by InitWithConfig(); empty when Init() is called directly.
-	PresentAs string
 }
 
 // Init opens or creates a fully-functional *Client backed by an Ed25519
@@ -254,8 +223,6 @@ type InitResult struct {
 // Optional configuration is supplied via functional options:
 //   - WithAuthorizeFunc(fn) — registers a hook called when authorization is required.
 //   - WithRemote(url)       — configures a remote HTTP transport endpoint.
-//   - WithWalkUp()          — enables parent-directory walk-up for center discovery (opt-in).
-//   - WithNoWalkUp()        — deprecated: walk-up is now off by default; this is a no-op.
 //
 // The returned *InitResult is always non-nil when err is nil.
 // InitResult.IdentityPath is always populated — never empty.
@@ -339,42 +306,6 @@ func Init(configDir string, optFuncs ...Option) (*Client, *InitResult, error) {
 	c.applyEnforcer(opts.scope)
 	c.profileCache = NewProfileCache(configDir)
 
-	// Collect WalkUpPath when walk-up is enabled.
-	if opts.walkUp {
-		result.WalkUpPath = collectWalkUpPath(configDir)
-	}
-
-	// Issue context key delegation if a center campfire is found in the walk-up path.
-	// Best-effort: errors are ignored so Init() never fails solely because delegation
-	// is unavailable (e.g. center campfire not yet in store).
-	// Detect whether delegation was newly issued by checking for the context key file
-	// before and after.
-	if opts.walkUp {
-		campfireDir := filepath.Join(configDir, campfireSubdir)
-		contextKeyPubPath := filepath.Join(campfireDir, contextKeyPubFile)
-		beforeDelegation := fileExists(contextKeyPubPath)
-		c.maybeIssueContextKeyDelegation(configDir) //nolint:errcheck
-		if !beforeDelegation && fileExists(contextKeyPubPath) {
-			result.DelegationIssued = true
-		}
-	} else {
-		c.maybeIssueContextKeyDelegation(configDir) //nolint:errcheck
-	}
-
-	// Recentering slide-in: detect existing center via walk-up, optionally
-	// prompt once, post two-signature claim. Non-fatal — Init always succeeds.
-	// Detect whether recenter happened by checking for the claimed state file.
-	if opts.walkUp {
-		claimedPath := filepath.Join(configDir, recenterClaimedFile)
-		beforeRecenter := fileExists(claimedPath)
-		_ = c.maybeRecenter(configDir)
-		if !beforeRecenter && fileExists(claimedPath) {
-			result.Recentered = true
-		}
-	} else {
-		_ = c.maybeRecenter(configDir)
-	}
-
 	return c, result, nil
 }
 
@@ -448,27 +379,6 @@ func extractFSDir(addr string) string {
 		return d
 	}
 	return ""
-}
-
-// collectWalkUpPath returns the sequence of directories examined during a
-// walk-up search starting from startDir, up to the filesystem root.
-func collectWalkUpPath(startDir string) []string {
-	resolved, err := filepath.EvalSymlinks(startDir)
-	if err != nil {
-		resolved = startDir
-	}
-
-	var dirs []string
-	dir := resolved
-	for {
-		dirs = append(dirs, dir)
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return dirs
 }
 
 // fileExists reports whether path exists on disk.

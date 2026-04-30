@@ -6,10 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
-	"github.com/BurntSushi/toml"
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
@@ -229,125 +226,6 @@ Example:
 	},
 }
 
-// homeBeCmd implements `cf home be <campfire-id>` (and `cf home be --self`).
-// It runs the echo ceremony, then writes identity.present_as to the global config.
-var homeBeCmd = &cobra.Command{
-	Use:   "be [<campfire-id>]",
-	Short: "Present as a linked campfire identity",
-	Long: `Present as a linked campfire identity.
-
-  cf home be <campfire-id>   run the echo ceremony and set identity.present_as
-  cf home be --self          clear identity.present_as (revert to machine identity)
-
-The echo ceremony verifies write access to both the local home campfire and the
-target campfire. Campfire B must be a locally-initialized campfire — you must
-hold its private key. If you do not hold campfire B's private key, use
-'cf home link' to perform the cross-campfire ceremony with an admin who does.
-
-This command requires an interactive TTY for confirmation. Non-interactive
-environments (CI, cron) will fail with an explicit error — use
-identity.present_as in config.toml for automated configuration.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		selfFlag, err := cmd.Flags().GetBool("self")
-		if err != nil {
-			return err
-		}
-
-		globalConfigPath := filepath.Join(CFHome(), "config.toml")
-
-		if selfFlag {
-			// Clear identity.present_as from global config.
-			if err := configSetPresentAs(globalConfigPath, ""); err != nil {
-				return fmt.Errorf("clearing identity.present_as: %w", err)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Reverted to machine identity. identity.present_as cleared.\n")
-			return nil
-		}
-
-		if len(args) == 0 {
-			return fmt.Errorf("campfire ID required; use --self to revert to machine identity")
-		}
-
-		// Require interactive TTY. Non-interactive CI must fail explicitly.
-		if !isInteractiveTTY() {
-			return fmt.Errorf("cf home be requires an interactive TTY for confirmation. Non-interactive environments cannot complete the ceremony. Use identity.present_as in config.toml for automated configuration.")
-		}
-
-		agentID, s, err := requireAgentAndStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-
-		targetID, err := resolveCampfireID(args[0], s)
-		if err != nil {
-			return fmt.Errorf("resolving target campfire ID: %w", err)
-		}
-
-		// Interactive confirmation.
-		fmt.Fprintf(cmd.OutOrStdout(), "Linking identity to campfire %s...\n", targetID[:12])
-		fmt.Fprintf(cmd.OutOrStdout(), "You are authorizing this agent to present as campfire %s.\n", targetID[:12])
-		fmt.Fprintf(cmd.OutOrStdout(), "Authorize? [y/N] ")
-
-		var response string
-		if _, err := fmt.Fscan(cmd.InOrStdin(), &response); err != nil {
-			return fmt.Errorf("reading confirmation: %w", err)
-		}
-		if !strings.EqualFold(strings.TrimSpace(response), "y") {
-			return fmt.Errorf("authorization declined")
-		}
-
-		// Run the echo ceremony: verify write access to both campfires.
-		// Resolve home campfire (campfire A).
-		homeID, err := resolveCampfireID("home", s)
-		if err != nil {
-			return fmt.Errorf("resolving home campfire: %w\n\nSet the 'home' alias with: cf alias set home <campfire-id>", err)
-		}
-
-		if homeID == targetID {
-			return fmt.Errorf("cannot link campfire to itself (%s)", homeID[:12])
-		}
-
-		// Require that campfire B is locally initialized — the caller must hold
-		// its private key. This proves key control before writing present_as.
-		// If campfire B is remote (no local private key), the caller cannot prove
-		// they control it; use 'cf home link' instead.
-		if err := checkLocalCampfireKey(s, targetID); err != nil {
-			return err
-		}
-
-		client := protocol.New(s, agentID)
-
-		// Echo ceremony: post a challenge to the target, read it back.
-		challengePayload := map[string]string{
-			"type":    "echo-challenge",
-			"home_id": homeID,
-		}
-		challengePayloadBytes, err := json.Marshal(challengePayload)
-		if err != nil {
-			return fmt.Errorf("encoding challenge payload: %w", err)
-		}
-		challengeMsg, err := client.Send(protocol.SendRequest{
-			CampfireID: targetID,
-			Payload:    challengePayloadBytes,
-			Tags:       []string{"identity:be-challenge"},
-		})
-		if err != nil {
-			return fmt.Errorf("posting echo challenge to target campfire: %v\n\nVerify write access and membership in campfire %s", err, targetID[:12])
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Echo challenge posted to %s → %s\n", targetID[:12], challengeMsg.ID[:8])
-
-		// Write identity.present_as to global config.
-		if err := configSetPresentAs(globalConfigPath, targetID); err != nil {
-			return fmt.Errorf("writing identity.present_as to config: %w", err)
-		}
-
-		fmt.Fprintf(cmd.OutOrStdout(), "\nIdentity linked. You are now presenting as %s.\n", targetID[:12])
-		fmt.Fprintf(cmd.OutOrStdout(), "Config updated: %s → identity.present_as = %s\n", globalConfigPath, targetID)
-		return nil
-	},
-}
-
 // homeRevokeCmd implements `cf home revoke <member-key>`.
 // Evicts the key from the home campfire and posts a signed identity:revoked message.
 var homeRevokeCmd = &cobra.Command{
@@ -435,21 +313,14 @@ from any campfire where the key was admitted on your behalf.`,
 }
 
 // homeDisplayCmd implements `cf home display`.
-// Shows the current presentation state: present_as (if set) and machine key.
+// Shows the current machine key.
 var homeDisplayCmd = &cobra.Command{
 	Use:   "display",
-	Short: "Show current identity presentation state",
-	Long: `Show current identity presentation state.
+	Short: "Show current identity state",
+	Long: `Show current identity state.
 
-  cf home display   show present_as (if set) and machine key`,
+  cf home display   show machine key`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Load current config to get identity.present_as.
-		cfg, _, _, err := protocol.LoadConfig(CFHome(), ".")
-		if err != nil {
-			// Non-fatal: proceed with empty config.
-			cfg = &protocol.Config{}
-		}
-
 		// Load machine identity for pubkey display.
 		agentID, err := loadIdentity()
 		if err != nil {
@@ -458,17 +329,10 @@ var homeDisplayCmd = &cobra.Command{
 
 		machineKeyHex := hex.EncodeToString(agentID.PublicKey)
 
-		if cfg.Identity.PresentAs != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "Presenting as: %s\n", cfg.Identity.PresentAs[:12])
-			fmt.Fprintf(cmd.OutOrStdout(), "Machine key:   %s...\n", machineKeyHex[:12])
-		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "No linked identity. Run 'cf home be <id>' to link.\n")
-			fmt.Fprintf(cmd.OutOrStdout(), "Machine key:   %s...\n", machineKeyHex[:12])
-		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Machine key:   %s...\n", machineKeyHex[:12])
 
 		if jsonOutput {
 			out := map[string]interface{}{
-				"present_as":  cfg.Identity.PresentAs,
 				"machine_key": machineKeyHex,
 			}
 			enc := json.NewEncoder(cmd.OutOrStdout())
@@ -477,53 +341,6 @@ var homeDisplayCmd = &cobra.Command{
 		}
 		return nil
 	},
-}
-
-// configSetPresentAs writes or clears identity.present_as in the TOML config at targetPath.
-// If value is empty, the field is deleted from the config.
-func configSetPresentAs(targetPath, value string) error {
-	// Read existing TOML or start with empty map.
-	raw := make(map[string]interface{})
-	if data, err := os.ReadFile(targetPath); err == nil {
-		if _, err := toml.Decode(string(data), &raw); err != nil {
-			return fmt.Errorf("parsing existing config %s: %w", targetPath, err)
-		}
-	}
-
-	identitySection, _ := raw["identity"].(map[string]interface{})
-	if identitySection == nil {
-		identitySection = make(map[string]interface{})
-	}
-
-	if value == "" {
-		delete(identitySection, "present_as")
-	} else {
-		identitySection["present_as"] = value
-	}
-
-	if len(identitySection) == 0 {
-		delete(raw, "identity")
-	} else {
-		raw["identity"] = identitySection
-	}
-
-	// Ensure parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
-		return fmt.Errorf("creating config directory: %w", err)
-	}
-
-	// Write back as TOML.
-	f, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("opening config file %s: %w", targetPath, err)
-	}
-	defer f.Close()
-
-	enc := toml.NewEncoder(f)
-	if err := enc.Encode(raw); err != nil {
-		return fmt.Errorf("writing config file %s: %w", targetPath, err)
-	}
-	return nil
 }
 
 // isInteractiveTTY returns true if stdin is an interactive terminal.
@@ -541,7 +358,7 @@ func isInteractiveTTY() bool {
 
 // checkLocalCampfireKey verifies that campfireID is locally initialized and
 // its private key is present in the store. This proves the caller controls
-// campfire B before allowing present_as to be set.
+// campfire B via local key access.
 // Returns nil if the campfire has a local private key, or a descriptive error.
 func checkLocalCampfireKey(s interface {
 	GetMembership(string) (*store.Membership, error)
@@ -553,17 +370,15 @@ func checkLocalCampfireKey(s interface {
 	tr := fs.ForDir(m.TransportDir)
 	state, err := tr.ReadState(campfireID)
 	if err != nil {
-		return fmt.Errorf("reading campfire %s state: %w — the be ceremony requires a locally-initialized campfire where you hold the private key. Use 'cf home link' for remote campfires", campfireID[:12], err)
+		return fmt.Errorf("reading campfire %s state: %w — requires a locally-initialized campfire where you hold the private key. Use 'cf home link' for remote campfires", campfireID[:12], err)
 	}
 	if len(state.PrivateKey) == 0 {
-		return fmt.Errorf("campfire %s has no local private key — cannot present as a remote campfire. Use 'cf home link' to perform the cross-campfire ceremony", campfireID[:12])
+		return fmt.Errorf("campfire %s has no local private key — use 'cf home link' to perform the cross-campfire ceremony", campfireID[:12])
 	}
 	return nil
 }
 
 func init() {
-	homeBeCmd.Flags().Bool("self", false, "revert to machine identity (clear identity.present_as)")
-	homeCmd.AddCommand(homeBeCmd)
 	homeCmd.AddCommand(homeRevokeCmd)
 	homeCmd.AddCommand(homeDisplayCmd)
 	homeCmd.AddCommand(homeLinkCmd)

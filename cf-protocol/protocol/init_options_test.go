@@ -2,12 +2,13 @@ package protocol_test
 
 // Tests for protocol.Init() variadic options — campfire-agent-m6n.
 //
-// All five call forms are verified:
+// Verified call forms:
 //   1. Init(cfHome)                         — zero options, backward-compatible
 //   2. Init(cfHome, WithAuthorizeFunc(fn))  — fn called on authorization demand
 //   3. Init(cfHome, WithRemote(url))        — remote URL stored
-//   4. Init(cfHome, WithWalkUp())           — walk-up enabled (opt-in)
-//   5. Init(cfHome, WithNoWalkUp())         — walk-up disabled (deprecated, no-op on default)
+//
+// Walk-up options (WithWalkUp, WithNoWalkUp) and WalkUpEnabled were removed in
+// campfireagent-db1. Locality resolution is L4 work (cf-discovery).
 
 import (
 	"testing"
@@ -20,8 +21,6 @@ func TestInitOptions(t *testing.T) {
 	t.Run("ZeroOptions", testInitZeroOptions)
 	t.Run("WithAuthorizeFunc", testInitWithAuthorizeFunc)
 	t.Run("WithRemote", testInitWithRemote)
-	t.Run("WithWalkUp", testInitWithWalkUp)
-	t.Run("WithNoWalkUp", testInitWithNoWalkUp)
 }
 
 // testInitZeroOptions verifies Init(cfHome) with no options returns a non-nil
@@ -52,10 +51,6 @@ func testInitZeroOptions(t *testing.T) {
 		t.Errorf("RemoteURL() = %q, want empty for zero-options Init", url)
 	}
 
-	// Walk-up must be disabled by default (opt-in since 0.15).
-	if client.WalkUpEnabled() {
-		t.Error("WalkUpEnabled() = true, want false for zero-options Init (walk-up is now opt-in)")
-	}
 }
 
 // testInitWithAuthorizeFunc verifies that the registered fn is called (with a
@@ -133,34 +128,3 @@ func testInitWithRemote(t *testing.T) {
 	}
 }
 
-// testInitWithWalkUp verifies that WithWalkUp() enables walk-up (opt-in).
-func testInitWithWalkUp(t *testing.T) {
-	t.Helper()
-	configDir := t.TempDir()
-
-	client, _, err := protocol.Init(configDir, protocol.WithWalkUp())
-	if err != nil {
-		t.Fatalf("Init(WithWalkUp()): %v", err)
-	}
-	t.Cleanup(func() { client.Close() })
-
-	if !client.WalkUpEnabled() {
-		t.Error("WalkUpEnabled() = false after WithWalkUp()")
-	}
-}
-
-// testInitWithNoWalkUp verifies that WithNoWalkUp() disables walk-up (deprecated).
-func testInitWithNoWalkUp(t *testing.T) {
-	t.Helper()
-	configDir := t.TempDir()
-
-	client, _, err := protocol.Init(configDir, protocol.WithNoWalkUp())
-	if err != nil {
-		t.Fatalf("Init(WithNoWalkUp()): %v", err)
-	}
-	t.Cleanup(func() { client.Close() })
-
-	if client.WalkUpEnabled() {
-		t.Error("WalkUpEnabled() = true after WithNoWalkUp()")
-	}
-}

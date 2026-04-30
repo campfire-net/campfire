@@ -211,10 +211,13 @@ Both signatures return `(*Client, *InitResult, error)`. `InitResult` is always n
 
 **Changes in 0.15/0.16:**
 - Default config directory is `~/.cf` (was `~/.campfire`; old path still works with a deprecation warning until v0.17)
-- Walk-up is now **opt-in** — pass `WithWalkUp()` to enable parent-directory center discovery (default is false)
-- `WithNoWalkUp()` is deprecated and a no-op; remove it from existing code
 - `Init` returns `(*Client, *InitResult, error)` — the `*InitResult` carries diagnostics
 - `InitWithConfig` additionally reads `~/.cf/config.toml` and project-level `.cf/config.toml` files; see [Config section](#config-0.16) below
+
+**Breaking changes in cf-protocol 1.0 substrate (campfireagent-db1):**
+- `WithWalkUp()` and `WithNoWalkUp()` removed — center-finding is L4 (cf-discovery)
+- `WalkUpEnabled()` removed from `*Client`
+- `InitResult.WalkUpPath`, `InitResult.Recentered`, `InitResult.DelegationIssued` removed
 
 ### InitResult fields
 
@@ -223,28 +226,18 @@ type InitResult struct {
     IdentityCreated  bool       // true when a new keypair was generated
     IdentityPath     string     // always populated — which keypair is in use
     StorePath        string     // absolute path to the SQLite store
-    DelegationIssued bool       // true when a context key delegation was posted
-    Recentered       bool       // true when a recenter claim was posted
-    WalkUpPath       []string   // dirs examined during walk-up (empty when disabled)
     Warnings         []string   // non-fatal diagnostics
 
     // Populated only by InitWithConfig():
     ConfigLayers     []ConfigLayer  // every config file examined in the cascade
     IdentitySource   string         // "config" | "env" | "default"
     AutoJoined       []string       // campfire IDs auto-joined from behavior.auto_join
-    PresentAs        string         // identity.present_as from config (0.17+ signing)
 }
 ```
 
 ### Options
 
 ```go
-// Opt-in walk-up (scans parent dirs for a center campfire)
-client, result, err := protocol.Init("~/.cf", protocol.WithWalkUp())
-if result.DelegationIssued {
-    log.Println("new context key delegation issued to center campfire")
-}
-
 // Override remote transport
 client, result, err := protocol.Init("~/.cf", protocol.WithRemote("https://mcp.getcampfire.dev"))
 
@@ -290,7 +283,6 @@ endpoint = "https://mcp.getcampfire.dev"
 seeds = []                  # additional seed registries (beacons, hex IDs, cf:// URIs)
 
 [behavior]
-walk_up = false             # opt-in since 0.15
 auto_join = []              # campfire IDs/beacons to join on Init()
 
 [scope]
@@ -325,8 +317,6 @@ For the full cascade specification and security model, see `naming-trust-federat
 `InitWithConfig` translates the merged config into functional options before calling `Init`:
 
 - `transport.endpoint` → `WithRemote`
-- `behavior.walk_up = true` → `WithWalkUp`
-- `identity.present_as` → `WithPresentAs`
 - `scope.*` → `WithScope`
 - `behavior.auto_join` → auto-joined after client construction
 
@@ -856,18 +846,10 @@ client, result, err := protocol.Init("~/.cf")
 _ = result
 ```
 
-**Walk-up is now opt-in** (0.15)
+**Walk-up removed in cf-protocol 1.0 (campfireagent-db1)**
 
-```go
-// Before (0.14): walk-up was on by default; WithNoWalkUp() disabled it
-client, err := protocol.Init("~/.campfire", protocol.WithNoWalkUp())
-
-// After (0.15+): walk-up is off by default; WithWalkUp() enables it
-client, result, err := protocol.Init("~/.cf")              // walk-up off (default)
-client, result, err := protocol.Init("~/.cf", protocol.WithWalkUp())  // walk-up on
-```
-
-**`WithNoWalkUp()` is deprecated** — it is a no-op now. Remove all call sites.
+`WithWalkUp()`, `WithNoWalkUp()`, and `WalkUpEnabled()` are removed. Remove all call sites.
+Center-finding is now L4 work (cf-discovery).
 
 **Default config path is `~/.cf`** (0.15)
 
@@ -890,16 +872,16 @@ client, result, err := protocol.InitWithConfig()
 
 ### Summary table
 
-| Feature | 0.14 | 0.15 | 0.16 |
-|---------|------|------|------|
-| Config path | `~/.campfire` | `~/.cf` (fallback to `~/.campfire`) | `~/.cf` |
-| `Init` signature | `(*Client, error)` | `(*Client, *InitResult, error)` | same |
-| `InitWithConfig` | — | — | `(*Client, *InitResult, error)` |
-| Walk-up default | on | off (opt-in via `WithWalkUp`) | off |
-| `NewExecutor` | `(client, selfKey)` | `(client)` | same |
-| `config.toml` | — | — | supported |
-| Session tokens | — | `client.NewSession` / `JoinSession` | same |
-| Display names | — | `cf init --display-name` | `identity.display_name` in config |
+| Feature | 0.14 | 0.15 | 0.16 | cf-protocol 1.0 |
+|---------|------|------|------|-----------------|
+| Config path | `~/.campfire` | `~/.cf` (fallback to `~/.campfire`) | `~/.cf` | same |
+| `Init` signature | `(*Client, error)` | `(*Client, *InitResult, error)` | same | same |
+| `InitWithConfig` | — | — | `(*Client, *InitResult, error)` | same |
+| Walk-up | on | off (opt-in via `WithWalkUp`) | off | **removed** (L4) |
+| `NewExecutor` | `(client, selfKey)` | `(client)` | same | same |
+| `config.toml` | — | — | supported | same |
+| Session tokens | — | `client.NewSession` / `JoinSession` | same | same |
+| Display names | — | `cf init --display-name` | `identity.display_name` in config | same |
 
 ---
 

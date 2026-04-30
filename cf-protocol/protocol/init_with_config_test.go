@@ -491,69 +491,6 @@ auto_join = ["`+beaconStr+`"]
 	}
 }
 
-// TestInitWithConfig_PresentAs verifies that identity.present_as in the config
-// cascade is wired through to InitResult.PresentAs and not silently dropped.
-func TestInitWithConfig_PresentAs(t *testing.T) {
-	// A valid 64-hex campfire ID used as the present_as value.
-	presentAsID := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
-
-	globalDir := t.TempDir()
-	t.Chdir(globalDir) // Isolate from ancestor .cf/config.toml auto_join beacons.
-	writeInitConfigFile(t,
-		filepath.Join(globalDir, "config.toml"),
-		`[identity]
-present_as = "`+presentAsID+`"
-`)
-
-	client, result, err := protocol.InitWithConfig(protocol.WithConfigDir(globalDir))
-	if err != nil {
-		t.Fatalf("InitWithConfig: %v", err)
-	}
-	t.Cleanup(func() { client.Close() })
-
-	if result == nil {
-		t.Fatal("InitWithConfig returned nil *InitResult")
-	}
-
-	if result.PresentAs != presentAsID {
-		t.Errorf("InitResult.PresentAs = %q, want %q (identity.present_as silently dropped)",
-			result.PresentAs, presentAsID)
-	}
-}
-
-// TestInitWithConfig_PresentAs_CallerOverrides verifies that a WithPresentAs option
-// passed by the caller takes precedence over the config-file value (caller wins).
-func TestInitWithConfig_PresentAs_CallerOverrides(t *testing.T) {
-	configID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	callerID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-	globalDir := t.TempDir()
-	t.Chdir(globalDir) // Isolate from ancestor .cf/config.toml auto_join beacons.
-	writeInitConfigFile(t,
-		filepath.Join(globalDir, "config.toml"),
-		`[identity]
-present_as = "`+configID+`"
-`)
-
-	client, result, err := protocol.InitWithConfig(
-		protocol.WithConfigDir(globalDir),
-		protocol.WithPresentAs(callerID),
-	)
-	if err != nil {
-		t.Fatalf("InitWithConfig: %v", err)
-	}
-	t.Cleanup(func() { client.Close() })
-
-	if result == nil {
-		t.Fatal("InitWithConfig returned nil *InitResult")
-	}
-
-	// Caller option must win over config.
-	if result.PresentAs != callerID {
-		t.Errorf("InitResult.PresentAs = %q, want caller value %q", result.PresentAs, callerID)
-	}
-}
-
 // TestInitWithConfig_AutoJoin_AlreadyMember_PreSeeded verifies that when the
 // store already has a membership record before InitWithConfig is called,
 // the auto-join entry is silently skipped without attempting a join.

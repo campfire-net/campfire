@@ -11,10 +11,6 @@ type options struct {
 	// remote transport at the given URL (e.g. "https://mcp.example.com").
 	remoteURL string
 
-	// walkUp controls whether Init walks up parent directories looking for
-	// an existing center campfire. Default is false (walk-up opt-in).
-	walkUp bool
-
 	// configDir, when non-empty, overrides the global config directory used by
 	// InitWithConfig(). Useful for testing or non-standard home layouts.
 	configDir string
@@ -22,11 +18,6 @@ type options struct {
 	// namingResolver, when non-nil, enables cf:// URI resolution in all SDK
 	// methods. Injected via WithNamingResolver.
 	namingResolver NamingResolver
-
-	// presentAs, when non-empty, is the campfire ID this agent presents as.
-	// Stored for 0.17+ "present as" signing behavior; 0.16 preserves it but
-	// does not act on it yet.
-	presentAs string
 
 	// scope, when set (non-zero Campfires or OperationClasses), restricts which
 	// campfires and operation classes this client may access.
@@ -44,9 +35,7 @@ type options struct {
 
 // defaultOptions returns the options struct with all defaults applied.
 func defaultOptions() options {
-	return options{
-		walkUp: false,
-	}
+	return options{}
 }
 
 // Option is a functional option for protocol.Init.
@@ -71,15 +60,6 @@ func WithRemote(url string) Option {
 	}
 }
 
-// WithWalkUp enables parent-directory walk-up for center campfire discovery.
-// Walk-up is disabled by default (opt-in). Use this option in developer
-// tooling and environments where ascending directory trees is desirable.
-func WithWalkUp() Option {
-	return func(o *options) {
-		o.walkUp = true
-	}
-}
-
 // WithConfigDir overrides the global config directory used by InitWithConfig().
 // By default InitWithConfig() uses ~/.cf (or the CF_HOME environment variable).
 // This option is an escape hatch for testing and non-standard home layouts.
@@ -87,27 +67,6 @@ func WithWalkUp() Option {
 func WithConfigDir(dir string) Option {
 	return func(o *options) {
 		o.configDir = dir
-	}
-}
-
-// WithNoWalkUp disables parent-directory walk-up for center campfire discovery.
-//
-// Deprecated: walk-up is now disabled by default (opt-in via WithWalkUp()).
-// WithNoWalkUp() is a no-op on a default-initialized client and will be
-// removed in a future release. Callers that relied on walk-up must now
-// explicitly pass WithWalkUp() to restore the behavior.
-func WithNoWalkUp() Option {
-	return func(o *options) {
-		o.walkUp = false
-	}
-}
-
-// WithPresentAs sets the campfire ID this agent presents as. The value is
-// stored in InitResult.PresentAs and forwarded to the client for 0.17+ signing
-// support. In 0.16 the field is preserved but not yet acted upon.
-func WithPresentAs(campfireID string) Option {
-	return func(o *options) {
-		o.presentAs = campfireID
 	}
 }
 

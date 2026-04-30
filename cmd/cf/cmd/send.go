@@ -115,11 +115,6 @@ var sendCmd = &cobra.Command{
 			}
 		}
 
-		// Resolve GitHub token fully before delegating to protocol.Client.
-		// protocol.Client only checks GITHUB_TOKEN env as fallback; the CLI
-		// resolves all sources (flag, env, credential file, gh CLI).
-		ghToken, _ := resolveGitHubToken("", CFHome())
-
 		// Delegate to protocol.Client — handles transport dispatch, role enforcement,
 		// message signing, and provenance hop.
 		client := protocol.New(s, agentID)
@@ -129,7 +124,6 @@ var sendCmd = &cobra.Command{
 			Tags:        tags,
 			Antecedents: antecedents,
 			Instance:    sendInstance,
-			GitHubToken: ghToken,
 		})
 		if err != nil {
 			return err

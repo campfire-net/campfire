@@ -155,8 +155,8 @@ func TestFollowIntervalForTransport(t *testing.T) {
 	}{
 		// Filesystem: 2s
 		{transportDir: "/tmp/some-dir", campfireID: "test", wantInterval: 2 * time.Second},
-		// GitHub: 5s (transportDir uses "github:" prefix + JSON)
-		{transportDir: `github:{"repo":"owner/repo","issue_number":42}`, campfireID: "test", wantInterval: 5 * time.Second},
+		// All transports use 2s (GitHub transport removed).
+		{transportDir: `github:{"repo":"owner/repo","issue_number":42}`, campfireID: "test", wantInterval: 2 * time.Second},
 	}
 	for _, tt := range tests {
 		m := store.Membership{TransportDir: tt.transportDir, CampfireID: tt.campfireID}

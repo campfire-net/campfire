@@ -61,7 +61,6 @@ type rawTrustConfig struct {
 type rawIdentityConfig struct {
 	File        string         `toml:"file"`
 	DisplayName string         `toml:"display_name"`
-	PresentAs   string         `toml:"present_as"`
 	Trust       rawTrustConfig `toml:"trust"`
 	Backend     string         `toml:"backend"`
 	Fingerprint string         `toml:"fingerprint"`
@@ -84,7 +83,6 @@ type rawNamingConfig struct {
 }
 
 type rawBehaviorConfig struct {
-	WalkUp   *bool    `toml:"walk_up"`
 	AutoJoin []string `toml:"auto_join"`
 }
 
@@ -118,9 +116,6 @@ type IdentityConfig struct {
 	File string
 	// DisplayName is the human-readable name sent as identity:profile on join.
 	DisplayName string
-	// PresentAs is the campfire ID to present as (set by cf home be, cleared by cf home be --self).
-	// When non-empty, the agent presents as this campfire identity rather than its machine key.
-	PresentAs string
 	// TrustAnchors is the decoded list of ed25519 public keys from [identity.trust] anchors.
 	// Project configs EXTEND (not override) the global anchor list.
 	// Invalid anchor strings are skipped with a warning during merge.
@@ -163,8 +158,6 @@ type NamingConfig struct {
 
 // BehaviorConfig holds behavioral configuration.
 type BehaviorConfig struct {
-	// WalkUp enables parent-directory walk-up for center campfire discovery.
-	WalkUp bool
 	// AutoJoin is the list of campfires to auto-join on Init().
 	AutoJoin []string
 }
@@ -498,16 +491,6 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 		contributed = append(contributed, "identity.fingerprint")
 	}
 
-	// identity.present_as — scalar (deepest wins; empty string clears).
-	// Set by cf home be, cleared by cf home be --self.
-	if raw.Identity.PresentAs != "" {
-		if !hexIDRe.MatchString(raw.Identity.PresentAs) {
-			return nil, nil, fmt.Errorf("config %s: identity.present_as %q is not a valid campfire ID (expected 64 lowercase hex characters)", path, raw.Identity.PresentAs)
-		}
-		dst.Identity.PresentAs = raw.Identity.PresentAs
-		contributed = append(contributed, "identity.present_as")
-	}
-
 	// identity.trust.anchors — list: project configs EXTEND (not override) the global list.
 	// Invalid anchor strings are returned as warnings and skipped (not fatal).
 	if len(raw.Identity.Trust.Anchors) > 0 {
@@ -566,15 +549,6 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 		merged := mergeList(dst.Naming.Seeds, raw.Naming.Seeds)
 		dst.Naming.Seeds = merged
 		contributed = append(contributed, "naming.seeds")
-	}
-
-	// behavior.walk_up — scalar pointer: apply only when the key was present in TOML.
-	// Using *bool allows distinguishing "walk_up = false" (pointer to false) from
-	// "key absent" (nil pointer), so a project-level false correctly overrides a
-	// global true.
-	if raw.Behavior.WalkUp != nil {
-		dst.Behavior.WalkUp = *raw.Behavior.WalkUp
-		contributed = append(contributed, "behavior.walk_up")
 	}
 
 	// behavior.auto_join — list with optional "!replace" sentinel.
