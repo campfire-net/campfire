@@ -649,9 +649,8 @@ The unjoin-declaration message has the following signing contract:
   unjoin-declaration.
 - **What is signed:** The canonical signing payload is the UTF-8 encoding
   of `discovery:unjoin-declaration\n<json-object>`, where `<json-object>`
-  is the JSON serialization of the five unjoin fields
-  (`campfire_id`, `reason`, `observed_inconsistency`, `probe_msg_id`,
-  `joiner_pubkey`) in canonical field order.
+  is the JSON serialization of the five unjoin fields in canonical field
+  order (see §11.5.1 below).
 - **Why the joiner signs:** The joiner's signature makes the inconsistency
   claim attributable and non-repudiable. A third party reading the
   unjoin-declaration can verify (a) the declaration came from the key that
@@ -663,6 +662,58 @@ The unjoin-declaration message has the following signing contract:
   hostile. The campfire operator may have a legitimate explanation (e.g.,
   a race condition during rekey). The unjoin-declaration is a forensic
   record, not a verdict.
+
+#### §11.5.1 Canonical Signing Payload
+
+**Prefix bytes.** The signing payload begins with the ASCII/UTF-8 string
+`discovery:unjoin-declaration` followed by a single LF byte (0x0A). No CR
+(0x0D) precedes the LF. The prefix is not JSON — it is a domain separator
+that prevents cross-protocol signature reuse.
+
+**Canonical field order.** The five fields are serialized in alphabetical
+order (RFC 8259 imposes no ordering requirement on JSON objects; this spec
+imposes alphabetical ordering to ensure byte-reproducible payloads across
+implementations):
+
+1. `campfire_id`
+2. `joiner_pubkey`
+3. `observed_inconsistency`
+4. `probe_msg_id`
+5. `reason`
+
+**JSON serialization rules.**
+
+- No whitespace between tokens (no spaces after `:` or `,`).
+- UTF-8 encoding, no BOM.
+- String escape rules per RFC 8259 §7: only characters that require
+  escaping are escaped (`"`, `\`, and control characters U+0000–U+001F).
+  No unnecessary Unicode escapes (e.g., `a` must not be written `a`).
+- No trailing newline after the closing `}`.
+
+**Full signing payload structure** (showing the LF separator between
+prefix and JSON object):
+
+```
+discovery:unjoin-declaration\n<canonical-json-object>
+```
+
+where `\n` is exactly one LF byte (0x0A) and `<canonical-json-object>`
+is the JSON object with fields in alphabetical order per the rules above.
+
+**Example canonical signing payload** (the bytes fed to Ed25519 Sign):
+
+```
+discovery:unjoin-declaration
+{"campfire_id":"a1b2c3d4e5f6","joiner_pubkey":"4a6f686e446f65456432353531394b657948657846656564426162654361666500","observed_inconsistency":"probe message not visible on read after join","probe_msg_id":"msg-7890abcdef12","reason":"probe-verification-failed"}
+```
+
+The first line ends with a single LF (0x0A). The second line is the
+canonical JSON object with no trailing newline. Together they form the
+byte sequence over which the Ed25519 signature is computed.
+
+Producers MUST serialize in canonical field order. Consumers MUST verify
+using the same canonical form, not the wire-received JSON (which may have
+re-ordered fields due to transport or tooling).
 
 ### 11.6 Honeypot Scenario: Concrete Detection
 
