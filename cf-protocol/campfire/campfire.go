@@ -55,4 +55,5 @@ const (
 	TagView              = campfire.TagView
 	TagAudit             = campfire.TagAudit
 	TagAuditRoot         = campfire.TagAuditRoot
+	TagVisibilityChanged = campfire.TagVisibilityChanged
 )
