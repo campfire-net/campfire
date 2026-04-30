@@ -79,6 +79,7 @@ const (
 	CampfireTagView              = campfire.TagView
 	CampfireTagAudit             = campfire.TagAudit
 	CampfireTagAuditRoot         = campfire.TagAuditRoot
+	CampfireTagVisibilityChanged = campfire.TagVisibilityChanged
 )
 
 // ─── message package re-exports ─────────────────────────────────────────────

@@ -46,6 +46,13 @@ const (
 	// TagAuditRoot is the tag for audit-root checkpoint messages. Audit roots are
 	// posted every 1000 entries or 1 hour and anchor the audit hash chain.
 	TagAuditRoot = "campfire:audit-root"
+
+	// TagVisibilityChanged is the tag for visibility-changed system messages.
+	// Fires when a campfire transitions from public to private (join protocol changes
+	// from "open" to "invite-only"). Signed by the campfire key, not the operator key.
+	// Receivers MUST reject any campfire:visibility-changed message whose signature
+	// does not verify against the campfire's public key (design v2 §4.1; protocol-spec §0.30).
+	TagVisibilityChanged = "campfire:visibility-changed"
 )
 
 // Note: TagEncryptedInit and TagMembershipCommit are defined in encryption.go

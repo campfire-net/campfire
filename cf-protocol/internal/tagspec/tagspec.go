@@ -47,3 +47,14 @@ const TagSessionOpen = "session:open"
 //
 // Wire value: "session:close" — frozen at cf-protocol 1.0 (design v2 §10.6).
 const TagSessionClose = "session:close"
+
+// TagCampfireVisibilityChanged is the reserved tag for campfire visibility-changed
+// system events (design v2 §4.1; protocol-spec §cf-protocol 1.0 Layer-1 Additions).
+//
+// Fires when a campfire transitions from public to private (open → invite-only).
+// Signed by the campfire key — not the operator or any member key. Receivers
+// MUST reject any campfire:visibility-changed message whose signature does not
+// verify against the campfire's public key.
+//
+// Wire value: "campfire:visibility-changed" — frozen at cf-protocol 1.0.
+const TagCampfireVisibilityChanged = "campfire:visibility-changed"
