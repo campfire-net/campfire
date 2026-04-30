@@ -814,9 +814,7 @@ Resolvers MUST:
 2. **IMPLEMENTED** — If a config entry exists, use its transport — discard the beacon transport.
    Log the override at DEBUG level: `"config endpoint overrides beacon for
    campfire <short-id>"`. (`log.Printf("[DEBUG] naming: config endpoint overrides beacon...")`)
-3. **IMPLEMENTED** — If no config entry exists, proceed with the beacon transport and run
-   post-join verification (§11) before recording the campfire as trusted.
-   (Beacon fallback path preserved; nil `ConfigTransportFunc` = beacon-only.)
+3. **PARTIALLY IMPLEMENTED** — If no config entry exists, proceed with the beacon transport (IMPLEMENTED: beacon fallback path preserved; nil `ConfigTransportFunc` = beacon-only). NOT YET IMPLEMENTED: post-join verification (§11) before recording the campfire as trusted — §11 probe-write-then-observe is not yet wired into `autoJoinViaClient`. Tracked separately; see cf-discovery-spec.md §11 PLANNED markers.
 4. **IMPLEMENTED** — Never silently substitute a beacon-advertised endpoint for a config-declared
    endpoint without user action (manual `cf join` with an explicit beacon
    argument is the only bypass). (Config path returns before beacon scan is reached.)
