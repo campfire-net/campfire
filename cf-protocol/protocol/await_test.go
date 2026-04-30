@@ -316,6 +316,236 @@ func TestClientAwait_MultipleFulfillmentsTiebreaker(t *testing.T) {
 	}
 }
 
+// TestClientAwait_EarliestTimestampWins verifies the PRIMARY ordering rule:
+// when multiple messages fulfill the same future and they have DIFFERENT timestamps,
+// Await returns the message with the earliest (smallest) timestamp, regardless of
+// the order in which fulfillments arrived or were inserted into the store.
+//
+// Rule hierarchy:
+//  1. PRIMARY  — earliest timestamp wins (this test)
+//  2. SECONDARY — lexicographically smaller message ID breaks timestamp ties
+//     (see TestClientAwait_MultipleFulfillmentsTiebreaker)
+//
+// (campfireagent-5bb: Stage 1 — earliest-timestamp-wins documented and tested.)
+func TestClientAwait_EarliestTimestampWins(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	// Write and sync the future message.
+	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "pending question", []string{"future"})
+	if _, err := client.Read(protocol.ReadRequest{CampfireID: campfireID, IncludeCompacted: true}); err != nil {
+		t.Fatalf("syncing future message: %v", err)
+	}
+
+	// Insert two fulfillments with DIFFERENT timestamps. The earlier one is
+	// inserted SECOND to verify that insertion order is irrelevant — only
+	// the timestamp determines the winner.
+	const (
+		lateID  = "late000000000000000000000000000000000000000000000000000000000001"
+		earlyID = "early00000000000000000000000000000000000000000000000000000000001"
+	)
+	const lateTS  = int64(2_000_000_000_000) // later  — must NOT win
+	const earlyTS = int64(1_000_000_000_000) // earlier — MUST win
+
+	lateRec := store.MessageRecord{
+		ID:          lateID,
+		CampfireID:  campfireID,
+		Sender:      "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
+		Payload:     []byte("late fulfillment"),
+		Tags:        []string{"fulfills"},
+		Antecedents: []string{futureMsg.ID},
+		Timestamp:   lateTS,
+		Signature:   []byte("sig"),
+		Provenance:  nil,
+		ReceivedAt:  lateTS,
+	}
+	// Insert the later fulfillment first.
+	if _, err := s.AddMessage(lateRec); err != nil {
+		t.Fatalf("AddMessage(late): %v", err)
+	}
+
+	earlyRec := store.MessageRecord{
+		ID:          earlyID,
+		CampfireID:  campfireID,
+		Sender:      "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
+		Payload:     []byte("early fulfillment"),
+		Tags:        []string{"fulfills"},
+		Antecedents: []string{futureMsg.ID},
+		Timestamp:   earlyTS,
+		Signature:   []byte("sig"),
+		Provenance:  nil,
+		ReceivedAt:  earlyTS,
+	}
+	// Insert the earlier fulfillment second — insertion order must not affect the result.
+	if _, err := s.AddMessage(earlyRec); err != nil {
+		t.Fatalf("AddMessage(early): %v", err)
+	}
+
+	// Await should return the EARLIER fulfillment regardless of insertion order.
+	got, err := client.Await(context.Background(), protocol.AwaitRequest{
+		CampfireID:  campfireID,
+		TargetMsgID: futureMsg.ID,
+		Timeout:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Await: unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Await: expected fulfilling message, got nil")
+	}
+	if got.ID != earlyID {
+		t.Errorf("Await earliest-timestamp-wins: expected earliest fulfillment %q (ts=%d), got %q",
+			earlyID, earlyTS, got.ID)
+	}
+}
+
+// TestClientAwait_EarliestTimestampWins_SkewedClock verifies that the
+// earliest-timestamp-wins rule is robust against skewed-clock fulfillments:
+// a fulfillment with a timestamp far in the past (simulating a clock-skewed
+// sender) still wins over a fulfillment with a more recent timestamp.
+//
+// This is an adversarial case: a node whose wall clock is behind sends a
+// fulfillment that arrives with a very small timestamp. The rule must still
+// select it because it has the smallest timestamp, not because it arrived first.
+//
+// (campfireagent-5bb adversarial: skewed-clock fulfillment.)
+func TestClientAwait_EarliestTimestampWins_SkewedClock(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "pending question", []string{"future"})
+	if _, err := client.Read(protocol.ReadRequest{CampfireID: campfireID, IncludeCompacted: true}); err != nil {
+		t.Fatalf("syncing future message: %v", err)
+	}
+
+	const (
+		normalID = "normal000000000000000000000000000000000000000000000000000000001"
+		skewedID = "skewed000000000000000000000000000000000000000000000000000000001"
+	)
+	// Normal sender with a plausible current timestamp (~2023-11 in nanoseconds).
+	const normalTS = int64(1_700_000_000_000_000_000)
+	// Skewed sender whose clock is ~10 years behind (~2013-09 in nanoseconds).
+	const skewedTS = int64(1_380_000_000_000_000_000)
+
+	for _, rec := range []store.MessageRecord{
+		{
+			ID:          normalID,
+			CampfireID:  campfireID,
+			Sender:      "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
+			Payload:     []byte("normal fulfillment"),
+			Tags:        []string{"fulfills"},
+			Antecedents: []string{futureMsg.ID},
+			Timestamp:   normalTS,
+			Signature:   []byte("sig"),
+			Provenance:  nil,
+			ReceivedAt:  normalTS,
+		},
+		{
+			ID:          skewedID,
+			CampfireID:  campfireID,
+			Sender:      "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
+			Payload:     []byte("skewed-clock fulfillment"),
+			Tags:        []string{"fulfills"},
+			Antecedents: []string{futureMsg.ID},
+			Timestamp:   skewedTS,
+			Signature:   []byte("sig"),
+			Provenance:  nil,
+			ReceivedAt:  skewedTS,
+		},
+	} {
+		if _, err := s.AddMessage(rec); err != nil {
+			t.Fatalf("AddMessage(%s): %v", rec.ID, err)
+		}
+	}
+
+	got, err := client.Await(context.Background(), protocol.AwaitRequest{
+		CampfireID:  campfireID,
+		TargetMsgID: futureMsg.ID,
+		Timeout:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Await: unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Await: expected fulfilling message, got nil")
+	}
+	if got.ID != skewedID {
+		t.Errorf("Await skewed-clock: expected skewed fulfillment %q (ts=%d), got %q",
+			skewedID, skewedTS, got.ID)
+	}
+}
+
+// TestClientAwait_EarliestTimestampWins_ThreeWayMonotonic verifies the
+// three-way race case with monotonically-increasing timestamps (simulating
+// three concurrent senders whose clocks are each slightly ahead of the last).
+// The winner must be the one with the smallest timestamp.
+//
+// Fulfillments are inserted in reverse order (latest first) to stress that
+// the ordering logic is independent of insertion order.
+//
+// (campfireagent-5bb adversarial: three-way race with monotonic clocks.)
+func TestClientAwait_EarliestTimestampWins_ThreeWayMonotonic(t *testing.T) {
+	campfireID, cfID, tr, s := setupTestCampfire(t)
+	defer s.Close()
+
+	client := protocol.New(s, nil)
+
+	futureMsg := writeTransportMessage(t, cfID, tr, campfireID, "pending question", []string{"future"})
+	if _, err := client.Read(protocol.ReadRequest{CampfireID: campfireID, IncludeCompacted: true}); err != nil {
+		t.Fatalf("syncing future message: %v", err)
+	}
+
+	// Three fulfillments with strictly increasing timestamps.
+	// Inserted in reverse order (latest first) to stress the ordering logic.
+	type fulfillment struct {
+		id string
+		ts int64
+	}
+	fulfillments := []fulfillment{
+		{"third00000000000000000000000000000000000000000000000000000000001", int64(3_000_000_000)},
+		{"second0000000000000000000000000000000000000000000000000000000001", int64(2_000_000_000)},
+		{"first00000000000000000000000000000000000000000000000000000000001", int64(1_000_000_000)},
+	}
+	for _, f := range fulfillments {
+		rec := store.MessageRecord{
+			ID:          f.id,
+			CampfireID:  campfireID,
+			Sender:      "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
+			Payload:     []byte("fulfillment " + f.id),
+			Tags:        []string{"fulfills"},
+			Antecedents: []string{futureMsg.ID},
+			Timestamp:   f.ts,
+			Signature:   []byte("sig"),
+			Provenance:  nil,
+			ReceivedAt:  f.ts,
+		}
+		if _, err := s.AddMessage(rec); err != nil {
+			t.Fatalf("AddMessage(%s): %v", f.id, err)
+		}
+	}
+
+	got, err := client.Await(context.Background(), protocol.AwaitRequest{
+		CampfireID:  campfireID,
+		TargetMsgID: futureMsg.ID,
+		Timeout:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Await: unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Await: expected fulfilling message, got nil")
+	}
+	wantID := "first00000000000000000000000000000000000000000000000000000000001"
+	if got.ID != wantID {
+		t.Errorf("Await three-way monotonic: expected first (ts=1_000_000_000) winner %q, got %q",
+			wantID, got.ID)
+	}
+}
+
 // TestClientAwait_ContextAlreadyCancelled verifies that Await returns immediately
 // when called with an already-cancelled context and no fulfillment is present.
 func TestClientAwait_ContextAlreadyCancelled(t *testing.T) {
