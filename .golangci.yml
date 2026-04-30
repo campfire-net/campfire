@@ -162,6 +162,25 @@ linters:
             - pkg: "github.com/campfire-net/campfire/pkg/admission"
               desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/admission (moved to cf-protocol/admission/ by campfireagent-9f4). See design v2 §4.1"
 
+        # no-github-transport — pkg/transport/github was removed in v0.30.0 (campfireagent-964).
+        #
+        # This rule prevents re-introduction of the deleted package. Any import of
+        # pkg/transport/github in any non-test Go file is a build-breaking mistake.
+        #
+        # TypeGitHub and GitHubTransport tombstones in cf-protocol/protocol/ are retained
+        # for backward compat with legacy store records, but the transport package itself
+        # is gone and must not be re-imported.
+        #
+        # Adversarial test: test/demo/32-github-transport-cut.sh (check 2).
+        no-github-transport:
+          list-mode: lax
+          files:
+            - "**/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/campfire-net/campfire/pkg/transport/github"
+              desc: "GitHub transport was removed in v0.30.0 (campfireagent-964). Use FilesystemTransport or P2PHTTPTransport instead. See CHANGELOG.md."
+
         # L1-internal-encapsulation — external code must not import cf-protocol/internal/.
         #
         # After campfireagent-401d (substrate move to internal/), the substrate packages

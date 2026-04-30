@@ -147,6 +147,9 @@ func TestFollowFilesystemPicksUpNewMessages(t *testing.T) {
 }
 
 // TestFollowIntervalForTransport verifies the transport-specific intervals.
+// Note: GitHub transport was removed in v0.30.0 (campfireagent-964). All
+// transports now use the same 2s interval; the old GitHub-specific 5s interval
+// is no longer needed.
 func TestFollowIntervalForTransport(t *testing.T) {
 	tests := []struct {
 		transportDir string
@@ -155,7 +158,7 @@ func TestFollowIntervalForTransport(t *testing.T) {
 	}{
 		// Filesystem: 2s
 		{transportDir: "/tmp/some-dir", campfireID: "test", wantInterval: 2 * time.Second},
-		// All transports use 2s (GitHub transport removed).
+		// Legacy GitHub TransportDir: also 2s after transport removal.
 		{transportDir: `github:{"repo":"owner/repo","issue_number":42}`, campfireID: "test", wantInterval: 2 * time.Second},
 	}
 	for _, tt := range tests {

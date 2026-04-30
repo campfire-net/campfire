@@ -9,8 +9,13 @@ type Type int
 
 const (
 	TypeFilesystem Type = iota
-	TypeGitHub
 	TypePeerHTTP
+	// TypeGitHub is retained as a sentinel for legacy store records that have
+	// TransportType="github" or a "github:..." TransportDir. These campfires
+	// cannot be used after pkg/transport/github was removed in v0.30.0, but
+	// the constant prevents panics when old rows are decoded from the store.
+	// New code must never create campfires with this transport type.
+	TypeGitHub
 )
 
 // String returns a human-readable name for the transport type.

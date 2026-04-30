@@ -311,9 +311,11 @@ type Membership struct {
 	Description   string `json:"description"`
 	CreatorPubkey string `json:"creator_pubkey"`
 	// TransportType is the explicit transport type for this membership.
-	// Valid values: "filesystem", "github", "p2p-http", "".
-	// Empty string means the type was inferred from TransportDir by
-	// inferTransportType() at insert time (backward-compatible for legacy rows).
+	// Valid values: "filesystem", "p2p-http", "".
+	// "github" is a legacy value retained for backward compat; the GitHub
+	// transport was removed in v0.30.0. Empty string means the type was
+	// inferred from TransportDir by inferTransportType() at insert time
+	// (backward-compatible for legacy rows).
 	// transport.ResolveType uses this field directly when non-empty.
 	TransportType string `json:"transport_type,omitempty"`
 	// Encrypted records whether this campfire uses E2E encryption (spec §2.1).
@@ -321,9 +323,9 @@ type Membership struct {
 	// on every received message regardless of relay-provided state (downgrade prevention).
 	Encrypted bool `json:"encrypted,omitempty"`
 	// CampfirePrivKey is the hex-encoded Ed25519 private key of the campfire.
-	// Set only for transports that require local signing (e.g. GitHub transport).
-	// For filesystem transport, the private key is stored in the transport dir's
-	// campfire.cbor and this field is empty.
+	// Previously used by the GitHub transport (removed in v0.30.0) for provenance
+	// hop signing without on-disk state. Retained in the schema for backward
+	// compat with existing store rows. New code should not populate this field.
 	CampfirePrivKey string `json:"campfire_priv_key,omitempty"`
 }
 

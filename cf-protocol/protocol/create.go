@@ -66,7 +66,8 @@ type CreateResult struct {
 // Create generates a new campfire keypair, initializes the transport, admits
 // the caller as the first member (role=full), and publishes a beacon.
 //
-// Supported transports: filesystem, P2P HTTP (threshold=1 and threshold>1), GitHub.
+// Supported transports: filesystem, P2P HTTP (threshold=1 and threshold>1).
+// Note: GitHub transport was removed in v0.30.0.
 //
 // The caller must already have an identity (Init returns one). If c.identity is
 // nil, Create returns an error.
@@ -111,12 +112,9 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 	case P2PHTTPTransport:
 		transportType = "p2p-http"
 		transportDir, err = c.createP2PHTTPCampfire(cf, &t)
-	case *GitHubTransport:
-		transportType = "github"
-		transportDir = githubTransportDirFromConfig(t)
-	case GitHubTransport:
-		transportType = "github"
-		transportDir = githubTransportDirFromConfig(&t)
+	case *GitHubTransport, GitHubTransport:
+		return nil, fmt.Errorf("GitHubTransport is no longer supported (removed in v0.30.0); " +
+			"use FilesystemTransport or P2PHTTPTransport instead")
 	case nil:
 		return nil, fmt.Errorf("Transport is required for Create (use FilesystemTransport, P2PHTTPTransport, or GitHubTransport)")
 	default:
@@ -137,11 +135,6 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 		TransportType: transportType,
 		CreatorPubkey: c.identity.PublicKeyHex(),
 		Description:   req.Description,
-	}
-	// For GitHub transport, store the campfire private key so sendGitHub can
-	// add a provenance hop without access to the filesystem transport state.
-	if transportType == "github" {
-		membership.CampfirePrivKey = fmt.Sprintf("%x", cf.PrivateKey)
 	}
 	if err := c.store.AddMembership(membership); err != nil {
 		return nil, fmt.Errorf("recording membership: %w", err)
@@ -298,15 +291,6 @@ func (c *Client) createP2PHTTPCampfire(cf *campfire.Campfire, t *P2PHTTPTranspor
 	return stateDir, nil
 }
 
-// githubTransportDirFromConfig encodes a GitHubTransport as a transport dir string.
-// The GitHub transport stores metadata as a JSON string in TransportDir.
-// This is a legacy format maintained for store compatibility.
-func githubTransportDirFromConfig(t *GitHubTransport) string {
-	if t.Owner != "" && t.Repo != "" {
-		return fmt.Sprintf("github:%s/%s", t.Owner, t.Repo)
-	}
-	return ""
-}
 
 // initThresholdDKG runs an in-process DKG for a new threshold campfire.
 // The creator is assigned participant ID 1 and its share is stored in the local
@@ -382,11 +366,6 @@ func buildBeaconTransportFromTyped(t Transport, transportType, transportDir stri
 		return beacon.TransportConfig{
 			Protocol: "p2p-http",
 			Config:   config,
-		}
-	case "github":
-		return beacon.TransportConfig{
-			Protocol: "github",
-			Config:   map[string]string{"transport_dir": transportDir},
 		}
 	default: // filesystem
 		return beacon.TransportConfig{
