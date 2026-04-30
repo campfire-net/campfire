@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/internal/store"
 )
 
 // fulfillmentLess reports whether a comes before b in the deterministic

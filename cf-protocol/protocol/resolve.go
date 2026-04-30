@@ -20,7 +20,7 @@ import (
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/internal/encoding"
 )
 
 // ErrBeaconVerificationFailed is returned when a beacon string is syntactically

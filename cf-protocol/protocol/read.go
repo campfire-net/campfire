@@ -8,10 +8,10 @@ import (
 	"log"
 	"os"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/campfire-net/campfire/cf-protocol/transport"
-	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
-	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/internal/store"
+	"github.com/campfire-net/campfire/cf-protocol/internal/transport"
+	"github.com/campfire-net/campfire/cf-protocol/internal/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/internal/transport/http"
 )
 
 // ReadRequest specifies the parameters for a Read operation.

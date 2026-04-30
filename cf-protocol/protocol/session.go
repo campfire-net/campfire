@@ -32,12 +32,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/internal/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/internal/message"
 	"github.com/campfire-net/campfire/pkg/session"
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	"github.com/campfire-net/campfire/cf-protocol/internal/store"
+	"github.com/campfire-net/campfire/cf-protocol/internal/transport/fs"
 )
 
 // MaxSessionTTL is the maximum allowed session TTL (24 hours).

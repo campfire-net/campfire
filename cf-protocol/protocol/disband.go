@@ -27,7 +27,7 @@ import (
 	"io/fs"
 	"os"
 
-	fstr "github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	fstr "github.com/campfire-net/campfire/cf-protocol/internal/transport/fs"
 )
 
 // identityConvention is the convention name for identity operations.

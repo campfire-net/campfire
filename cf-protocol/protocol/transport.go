@@ -1,6 +1,6 @@
 package protocol
 
-import cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
+import cfhttp "github.com/campfire-net/campfire/cf-protocol/internal/transport/http"
 
 // Transport is the sealed interface implemented by all transport config types.
 // Callers pass a concrete transport config to CreateRequest and JoinRequest.

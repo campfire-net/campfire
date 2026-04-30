@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/cf-protocol/projection"
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/internal/projection"
+	"github.com/campfire-net/campfire/cf-protocol/internal/store"
 )
 
 // userHomeDirFn is the function used to resolve the user's home directory.

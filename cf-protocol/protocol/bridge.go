@@ -12,7 +12,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/internal/campfire"
 )
 
 // BridgeOptions configures the bridge behavior.

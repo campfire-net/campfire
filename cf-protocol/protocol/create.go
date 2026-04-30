@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/campfire-net/campfire/cf-protocol/threshold"
-	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
-	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/internal/campfire"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/internal/encoding"
+	"github.com/campfire-net/campfire/cf-protocol/internal/store"
+	"github.com/campfire-net/campfire/cf-protocol/internal/threshold"
+	"github.com/campfire-net/campfire/cf-protocol/internal/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/internal/transport/http"
 	"github.com/google/uuid"
 )
 

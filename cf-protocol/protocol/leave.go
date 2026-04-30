@@ -19,7 +19,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	"github.com/campfire-net/campfire/cf-protocol/internal/transport/fs"
 )
 
 // MemberRecord describes a campfire member returned by Members().

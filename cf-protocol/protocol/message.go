@@ -1,9 +1,9 @@
 package protocol
 
 import (
-	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/cf-protocol/message"
-	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/internal/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/internal/message"
+	"github.com/campfire-net/campfire/cf-protocol/internal/store"
 )
 
 // Message is the SDK-facing campfire message type.

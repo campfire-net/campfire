@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	"github.com/campfire-net/campfire/cf-protocol/internal/transport/fs"
 )
 
 // recenterClaimedFile is the filename persisted in cfHome after a successful

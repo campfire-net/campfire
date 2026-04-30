@@ -11,8 +11,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	"github.com/campfire-net/campfire/cf-protocol/transport"
+	"github.com/campfire-net/campfire/cf-protocol/internal/store"
+	"github.com/campfire-net/campfire/cf-protocol/internal/transport"
 )
 
 // PeerInfo holds information about a peer endpoint.
