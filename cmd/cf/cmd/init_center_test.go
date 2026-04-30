@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // captureInitWithPassphrase runs cf init with the given CF_HOME and CF_PASSPHRASE env vars.

@@ -1,0 +1,475 @@
+package protocol
+
+// join.go — protocol.Client.Join() and Client.Admit().
+//
+// Covered bead: campfire-agent-ykv
+//
+// Join admits the calling agent to a campfire identified by campfireID and transport
+// information. Three transports are supported:
+//   - Filesystem: read state from disk, enforce invite-only, write member record
+//   - P2P HTTP: contact an admitting peer endpoint via cfhttp.Join
+//   - GitHub: not implemented here (handled by cmd/cf/cmd/join.go)
+//
+// Admit writes a member record for a third party to the filesystem transport
+// directory, enabling invite-only pre-admission.
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/campfire-net/campfire/cf-protocol/admission"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/transport"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
+)
+
+// JoinRequest holds parameters for Client.Join().
+type JoinRequest struct {
+	// CampfireID is the hex-encoded campfire public key. Required.
+	CampfireID string
+
+	// Transport selects and configures the transport. Use FilesystemTransport,
+	// P2PHTTPTransport, or GitHubTransport. Required.
+	Transport Transport
+}
+
+// JoinResult is returned from Client.Join() on success.
+type JoinResult struct {
+	// CampfireID is the hex-encoded campfire public key of the joined campfire.
+	CampfireID string
+
+	// JoinProtocol is the join protocol of the campfire ("open" or "invite-only").
+	JoinProtocol string
+
+	// TransportDir is the transport directory recorded in the membership.
+	TransportDir string
+}
+
+// Join joins the campfire described by req. The calling agent becomes a member,
+// syncs existing messages from the transport, and returns a JoinResult.
+//
+// For filesystem transport, the campfire state must already exist at TransportDir.
+// For P2P HTTP, the JoinRequest is forwarded to PeerEndpoint and the campfire
+// state is received and stored locally.
+//
+// Returns an error for:
+//   - invite-only campfires when the caller has not been pre-admitted
+//   - transport errors
+//   - invalid campfire state
+func (c *Client) Join(req JoinRequest) (*JoinResult, error) {
+	if c.identity == nil {
+		return nil, fmt.Errorf("protocol.Client.Join: identity required")
+	}
+	if req.CampfireID == "" {
+		return nil, fmt.Errorf("protocol.Client.Join: CampfireID is required")
+	}
+
+	// Resolve beacon strings and cf:// URIs to canonical hex IDs.
+	// For Join, the TransportHint may be used to fill in transport details
+	// when the caller has not provided an explicit transport config.
+	resolvedID, _, resolveErr := resolveInput(req.CampfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("protocol.Client.Join: resolving campfire address: %w", resolveErr)
+	}
+	req.CampfireID = resolvedID
+
+	// Scope enforcement: campfire allowlist + admin operation class.
+	if err := c.checkCampfire(req.CampfireID); err != nil {
+		return nil, err
+	}
+	if err := c.checkOperation("admin"); err != nil {
+		return nil, err
+	}
+
+	switch t := req.Transport.(type) {
+	case *P2PHTTPTransport:
+		return c.joinP2PHTTP(req.CampfireID, t)
+	case P2PHTTPTransport:
+		return c.joinP2PHTTP(req.CampfireID, &t)
+	case *FilesystemTransport:
+		return c.joinFilesystem(req.CampfireID, t)
+	case FilesystemTransport:
+		return c.joinFilesystem(req.CampfireID, &t)
+	case nil:
+		return nil, fmt.Errorf("protocol.Client.Join: Transport is required")
+	default:
+		return nil, fmt.Errorf("protocol.Client.Join: unsupported transport type: %T", req.Transport)
+	}
+}
+
+// joinFilesystem joins a campfire via the filesystem transport.
+func (c *Client) joinFilesystem(campfireID string, t *FilesystemTransport) (*JoinResult, error) {
+	if t.Dir == "" {
+		return nil, fmt.Errorf("protocol.Client.Join: FilesystemTransport.Dir is required for filesystem transport")
+	}
+
+	// Dir is the campfire-specific dir (path-rooted mode):
+	// CampfireDir() returns Dir directly (campfire.cbor lives at Dir/campfire.cbor).
+	tr := fs.ForDir(t.Dir)
+
+	// Read campfire state.
+	state, err := tr.ReadState(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("protocol.Client.Join: reading campfire state: %w", err)
+	}
+
+	// Check existing member list for invite-only enforcement.
+	existingMembers, err := tr.ListMembers(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("protocol.Client.Join: listing members: %w", err)
+	}
+
+	alreadyOnDisk := false
+	existingRole := campfire.RoleFull
+	for _, m := range existingMembers {
+		if fmt.Sprintf("%x", m.PublicKey) == c.identity.PublicKeyHex() {
+			alreadyOnDisk = true
+			if m.Role != "" {
+				existingRole = m.Role
+			}
+			break
+		}
+	}
+
+	// Enforce invite-only: reject callers that are not pre-admitted.
+	if !alreadyOnDisk {
+		switch state.JoinProtocol {
+		case "open":
+			// Immediately admit below.
+		case "invite-only":
+			return nil, fmt.Errorf("protocol.Client.Join: campfire %s is invite-only; ask a member to call Admit first",
+				shortID(campfireID))
+		default:
+			return nil, fmt.Errorf("protocol.Client.Join: unknown join protocol: %s", state.JoinProtocol)
+		}
+	}
+
+	effectiveRole := existingRole
+
+	// Admit via shared admission package.
+	var fstr admission.FSTransport
+	if !alreadyOnDisk {
+		fstr = tr
+	}
+	_, err = admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		FSTransport: fstr,
+		Store:       c.store,
+	}, admission.AdmissionRequest{
+		CampfireID:      campfireID,
+		MemberPubKeyHex: c.identity.PublicKeyHex(),
+		Role:            effectiveRole,
+		JoinProtocol:    state.JoinProtocol,
+		TransportDir:    tr.CampfireDir(campfireID),
+		TransportType:   "filesystem",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("protocol.Client.Join: admitting member: %w", err)
+	}
+
+	// Write campfire:member-joined system message (skip if already on disk).
+	if !alreadyOnDisk {
+		now := time.Now().UnixNano()
+		updatedMembers, _ := tr.ListMembers(campfireID)
+		cfObj := state.ToCampfire(updatedMembers)
+		cfSigner, sysMsgSignErr := message.NewEd25519Signer(state.PrivateKey, state.PublicKey)
+		var sysMsg *message.Message
+		var sysMsgErr error
+		if sysMsgSignErr == nil {
+			sysMsg, sysMsgErr = message.NewMessage(
+				cfSigner,
+				[]byte(fmt.Sprintf(`{"member":"%s","joined_at":%d}`, c.identity.PublicKeyHex(), now)),
+				[]string{campfire.TagMemberJoined},
+				nil,
+			)
+		} else {
+			sysMsgErr = sysMsgSignErr
+		}
+		if sysMsgErr == nil {
+			if hopErr := sysMsg.AddHop(
+				state.PrivateKey, state.PublicKey,
+				cfObj.MembershipHash(), len(updatedMembers),
+				state.JoinProtocol, state.ReceptionRequirements,
+				campfire.RoleFull,
+			); hopErr == nil {
+				tr.WriteMessage(campfireID, sysMsg) //nolint:errcheck
+			}
+		}
+	}
+
+	// Sync messages from transport into local store (trust comparison + convention sync).
+	m, err := c.store.GetMembership(campfireID)
+	if err == nil && m != nil {
+		if syncErr := c.syncIfFilesystem(campfireID); syncErr != nil {
+			// Non-fatal post-join sync: membership was written, but transport
+			// messages may be stale. Log so operators can detect transport problems.
+			log.Printf("campfire: syncIfFilesystem(%s) after join: %v â continuing with local store", campfireID, syncErr)
+		}
+	}
+
+	return &JoinResult{
+		CampfireID:   campfireID,
+		JoinProtocol: state.JoinProtocol,
+		TransportDir: tr.CampfireDir(campfireID),
+	}, nil
+}
+
+// joinP2PHTTP joins a campfire via the P2P HTTP transport by contacting PeerEndpoint.
+func (c *Client) joinP2PHTTP(campfireID string, t *P2PHTTPTransport) (*JoinResult, error) {
+	if t.PeerEndpoint == "" {
+		return nil, fmt.Errorf("protocol.Client.Join: P2PHTTPTransport.PeerEndpoint is required for p2p-http transport")
+	}
+
+	// Resolve state dir: use Dir if set, otherwise use a temp dir.
+	stateDir := t.Dir
+	if stateDir == "" {
+		var err error
+		stateDir, err = os.MkdirTemp("", "campfire-p2p-join-")
+		if err != nil {
+			return nil, fmt.Errorf("protocol.Client.Join: creating state directory: %w", err)
+		}
+	}
+
+	// Contact the admitting peer.
+	result, err := cfhttp.Join(t.PeerEndpoint, campfireID, c.identity, t.MyEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("protocol.Client.Join: joining via %s: %w", t.PeerEndpoint, err)
+	}
+
+	// Persist campfire state CBOR to stateDir/{campfireID}.cbor.
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		return nil, fmt.Errorf("protocol.Client.Join: creating state directory: %w", err)
+	}
+
+	cfState := campfire.CampfireState{
+		PublicKey:             result.CampfirePubKey,
+		PrivateKey:            result.CampfirePrivKey,
+		JoinProtocol:          result.JoinProtocol,
+		ReceptionRequirements: result.ReceptionRequirements,
+		Threshold:             result.Threshold,
+	}
+	stateData, err := cfencoding.Marshal(cfState)
+	if err != nil {
+		return nil, fmt.Errorf("protocol.Client.Join: encoding campfire state: %w", err)
+	}
+	statePath := filepath.Join(stateDir, campfireID+".cbor")
+	if err := os.WriteFile(statePath, stateData, 0600); err != nil {
+		return nil, fmt.Errorf("protocol.Client.Join: writing campfire state: %w", err)
+	}
+
+	// Register joiner's self-info on the HTTP transport (if provided).
+	if t.Transport != nil && t.MyEndpoint != "" {
+		t.Transport.SetSelfInfo(c.identity.PublicKeyHex(), t.MyEndpoint)
+	}
+
+	// Admit self via admission package (store-only, no filesystem member file for P2P).
+	_, err = admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		Store: c.store,
+	}, admission.AdmissionRequest{
+		CampfireID:      campfireID,
+		MemberPubKeyHex: c.identity.PublicKeyHex(),
+		Role:            campfire.RoleFull,
+		JoinProtocol:    result.JoinProtocol,
+		TransportDir:    stateDir,
+		TransportType:   "p2p-http",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("protocol.Client.Join: recording membership: %w", err)
+	}
+
+	// Store peer endpoints from the join response.
+	for _, peer := range result.Peers {
+		if peer.PubKeyHex != "" && peer.Endpoint != "" {
+			c.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+				CampfireID:    campfireID,
+				MemberPubkey:  peer.PubKeyHex,
+				Endpoint:      peer.Endpoint,
+				ParticipantID: peer.ParticipantID,
+			})
+		}
+	}
+
+	// Always store the relay (--via endpoint) as a peer so syncFromHTTPPeers
+	// can pull messages from it. Serverless relays don't return themselves in
+	// the peer list (no SelfInfo), so the joiner would have zero sync targets
+	// without this. Uses the campfire pubkey as the member identifier.
+	c.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+		CampfireID:   campfireID,
+		MemberPubkey: fmt.Sprintf("%x", result.CampfirePubKey),
+		Endpoint:     t.PeerEndpoint,
+	})
+
+	// Store threshold DKG share from the join response (threshold>1 only).
+	// The share is encrypted by the admitting node and decrypted during cfhttp.Join.
+	if len(result.ThresholdShareData) > 0 && result.MyParticipantID > 0 {
+		if err := c.store.UpsertThresholdShare(store.ThresholdShare{
+			CampfireID:    campfireID,
+			ParticipantID: result.MyParticipantID,
+			SecretShare:   result.ThresholdShareData,
+		}); err != nil {
+			return nil, fmt.Errorf("protocol.Client.Join: storing threshold share: %w", err)
+		}
+		// Register threshold share provider on the HTTP transport so this node
+		// can participate in FROST signing rounds as a co-signer.
+		if t.Transport != nil {
+			s := c.store
+			t.Transport.SetThresholdShareProvider(func(id string) (uint32, []byte, error) {
+				share, err := s.GetThresholdShare(id)
+				if err != nil {
+					return 0, nil, err
+				}
+				if share == nil {
+					return 0, nil, fmt.Errorf("no threshold share for campfire %s", shortID(id))
+				}
+				return share.ParticipantID, share.SecretShare, nil
+			})
+		}
+		// Store self in peer endpoints with the assigned participant ID.
+		if t.MyEndpoint != "" {
+			c.store.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
+				CampfireID:    campfireID,
+				MemberPubkey:  c.identity.PublicKeyHex(),
+				Endpoint:      t.MyEndpoint,
+				ParticipantID: result.MyParticipantID,
+			})
+		}
+	}
+
+	// Store convention declarations from the join response so B can read them immediately.
+	for _, decl := range result.Declarations {
+		ts := decl.Timestamp
+		if ts == 0 {
+			ts = store.NowNano()
+		}
+		rec := store.MessageRecord{
+			CampfireID: campfireID,
+			ID:         decl.ID,
+			Sender:     decl.Sender,
+			Payload:    decl.Payload,
+			Tags:       decl.Tags,
+			Timestamp:  ts,
+			Signature:  decl.Signature,
+		}
+		c.store.AddMessage(rec) //nolint:errcheck
+	}
+
+	return &JoinResult{
+		CampfireID:   campfireID,
+		JoinProtocol: result.JoinProtocol,
+		TransportDir: stateDir,
+	}, nil
+}
+
+// AdmitRequest holds parameters for Client.Admit().
+type AdmitRequest struct {
+	// CampfireID is the hex-encoded campfire public key. Required.
+	CampfireID string
+
+	// MemberPubKeyHex is the hex-encoded Ed25519 public key of the member to admit.
+	// Required.
+	MemberPubKeyHex string
+
+	// Role is the role to assign to the admitted member.
+	// Defaults to campfire.RoleFull when empty.
+	Role string
+}
+
+// Admit pre-admits a member to an invite-only campfire. The transport is
+// resolved from the stored membership — the caller doesn't specify it.
+// For filesystem: writes a member record to the transport directory.
+// For p2p-http: POSTs to the relay's /admit endpoint.
+func (c *Client) Admit(req AdmitRequest) error {
+	if req.CampfireID == "" {
+		return fmt.Errorf("protocol.Client.Admit: CampfireID is required")
+	}
+	if req.MemberPubKeyHex == "" {
+		return fmt.Errorf("protocol.Client.Admit: MemberPubKeyHex is required")
+	}
+
+	resolvedID, _, resolveErr := resolveInput(req.CampfireID, c.opts.namingResolver)
+	if resolveErr != nil {
+		return fmt.Errorf("protocol.Client.Admit: resolving campfire address: %w", resolveErr)
+	}
+	req.CampfireID = resolvedID
+
+	if err := c.checkCampfire(req.CampfireID); err != nil {
+		return err
+	}
+	if err := c.checkOperation("admin"); err != nil {
+		return err
+	}
+
+	m, err := c.store.GetMembership(req.CampfireID)
+	if err != nil {
+		return fmt.Errorf("protocol.Client.Admit: querying membership: %w", err)
+	}
+	if m == nil {
+		return fmt.Errorf("protocol.Client.Admit: not a member of campfire %s", shortID(req.CampfireID))
+	}
+
+	role := req.Role
+	if role == "" {
+		role = campfire.RoleFull
+	}
+
+	// Serialize membership mutations for this campfire (unified lock with Leave,
+	// Evict, and Disband -- FIX-1/MB1).
+	mu := c.membershipLock(req.CampfireID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	switch transport.ResolveType(*m) {
+	case transport.TypePeerHTTP:
+		return c.admitP2PHTTP(req.CampfireID, req.MemberPubKeyHex, role)
+	default:
+		return c.admitFilesystem(req.CampfireID, req.MemberPubKeyHex, role, m.TransportDir)
+	}
+}
+
+func (c *Client) admitFilesystem(campfireID, memberPubKeyHex, role, transportDir string) error {
+	tr := fs.ForDir(transportDir)
+	_, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+		FSTransport: tr,
+		Store:       &noopStore{},
+	}, admission.AdmissionRequest{
+		CampfireID:      campfireID,
+		MemberPubKeyHex: memberPubKeyHex,
+		Role:            role,
+		TransportDir:    transportDir,
+		TransportType:   "filesystem",
+	})
+	return err
+}
+
+func (c *Client) admitP2PHTTP(campfireID, memberPubKeyHex, role string) error {
+	peers, err := c.store.ListPeerEndpoints(campfireID)
+	if err != nil {
+		return fmt.Errorf("listing peers: %w", err)
+	}
+	var endpoint string
+	for _, p := range peers {
+		if p.Endpoint != "" && p.MemberPubkey != c.identity.PublicKeyHex() {
+			endpoint = p.Endpoint
+			break
+		}
+	}
+	if endpoint == "" {
+		return fmt.Errorf("no relay endpoint found for campfire %s", shortID(campfireID))
+	}
+	return cfhttp.AdmitOnRelay(endpoint, campfireID, memberPubKeyHex, role, c.identity)
+}
+
+// noopStore is a no-op implementation of admission.Store used by Admit()
+// when we only need to write the filesystem member record and not record
+// membership in the local store.
+type noopStore struct{}
+
+func (n *noopStore) AddMembership(store.Membership) error         { return nil }
+func (n *noopStore) UpsertPeerEndpoint(store.PeerEndpoint) error  { return nil }

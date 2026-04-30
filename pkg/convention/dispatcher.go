@@ -12,8 +12,8 @@ import (
 	"time"
 
 	cfprotocol "github.com/campfire-net/campfire/cf-protocol/protocol"
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // ErrReservedOp is returned by RegisterTier1Handler and RegisterTier2Handler

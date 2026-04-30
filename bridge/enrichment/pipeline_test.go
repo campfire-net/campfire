@@ -8,7 +8,7 @@ import (
 
 	"github.com/campfire-net/campfire/bridge/enrichment"
 	"github.com/campfire-net/campfire/bridge/state"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // openTempDB creates a temporary SQLite state DB for testing.

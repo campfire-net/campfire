@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // mockHTTPPeer is a test HTTP server that records delivered messages

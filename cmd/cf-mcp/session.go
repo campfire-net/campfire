@@ -12,13 +12,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // idleTimeout is the duration after which an inactive session closes its store.

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/provenance"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // TestResolveOperatorKey_FullKey verifies a 64-char hex key is returned as-is.

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // TestConventionTool_HTTPModeBackend verifies that invoking a convention tool

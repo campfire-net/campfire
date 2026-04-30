@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	"github.com/campfire-net/campfire/pkg/store"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // ---------------------------------------------------------------------------

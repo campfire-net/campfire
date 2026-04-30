@@ -32,9 +32,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // ---------------------------------------------------------------------------

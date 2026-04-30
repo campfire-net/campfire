@@ -26,8 +26,8 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/convention"
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
-	"github.com/campfire-net/campfire/pkg/message"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
+	"github.com/campfire-net/campfire/cf-protocol/message"
 )
 
 // WellKnownURL is the URL for the default seed beacon.

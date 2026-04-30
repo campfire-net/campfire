@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // TestInitDisplayName_StoresProfileJSON verifies that cf init --display-name

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/pkg/provenance"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )

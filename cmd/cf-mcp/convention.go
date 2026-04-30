@@ -16,16 +16,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/predicate"
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/predicate"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/pkg/provenance"
-	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 	"github.com/campfire-net/campfire/pkg/trust"
 )
 

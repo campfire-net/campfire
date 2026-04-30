@@ -15,7 +15,7 @@ package provenance
 // The distinction between Level 0 and Level 1 (self-claimed) requires attestation
 // store context and cannot be computed from the message alone.
 
-import "github.com/campfire-net/campfire/pkg/campfire"
+import "github.com/campfire-net/campfire/cf-protocol/campfire"
 
 // ProvenanceHop is the minimal interface over message.ProvenanceHop needed to
 // compute message-level provenance without importing pkg/message directly.

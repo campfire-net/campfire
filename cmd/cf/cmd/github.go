@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/campfire-net/campfire/pkg/transport"
+	"github.com/campfire-net/campfire/cf-protocol/transport"
 )
 
 // githubTransportMeta holds the metadata needed to interact with a GitHub-transport

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // Urgency thresholds (from design doc §Enrichment Pipeline §Stage 3).

@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	campfire "github.com/campfire-net/campfire/pkg/campfire"
+	campfire "github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/pkg/convention"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/store"
-	fstransport "github.com/campfire-net/campfire/pkg/transport/fs"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	fstransport "github.com/campfire-net/campfire/cf-protocol/transport/fs"
 	"github.com/spf13/pflag"
 )
 

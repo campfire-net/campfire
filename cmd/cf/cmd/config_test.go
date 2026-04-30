@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // setupConfigTest sets up a temp environment with a fake home directory.

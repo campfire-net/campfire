@@ -14,7 +14,7 @@ import (
 	"github.com/campfire-net/campfire/bridge/teams/cards"
 	"github.com/campfire-net/campfire/bridge/enrichment"
 	"github.com/campfire-net/campfire/bridge/state"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // teamsPayload is the JSON body for a Teams incoming webhook POST.

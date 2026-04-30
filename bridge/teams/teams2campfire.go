@@ -15,9 +15,9 @@ import (
 	"github.com/campfire-net/campfire/bridge/teams/botframework"
 	"github.com/campfire-net/campfire/bridge/state"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 )
 
 // ErrUnauthorized is returned when a Teams user is not in the ACL.

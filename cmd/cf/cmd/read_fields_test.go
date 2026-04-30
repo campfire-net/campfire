@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // helper to build a minimal protocol.Message for field projection tests.

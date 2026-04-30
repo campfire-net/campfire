@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // votePayload is §16.2 test vector.

@@ -20,8 +20,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/store"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // TestDM_CrossInstance_Send verifies:

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/naming"
-	"github.com/campfire-net/campfire/pkg/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // setupRegisterTestCampfire creates two campfires: one for the nameserver,

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 func TestFormatDAGLine(t *testing.T) {

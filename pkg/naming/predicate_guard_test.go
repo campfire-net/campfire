@@ -3,7 +3,7 @@ package naming
 import (
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/predicate"
+	"github.com/campfire-net/campfire/cf-protocol/predicate"
 )
 
 func TestValidatePredicate_Safe(t *testing.T) {

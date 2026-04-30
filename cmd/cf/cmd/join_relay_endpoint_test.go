@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/store"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // TestJoinP2PHTTP_RelayStoredAsPeerEndpoint verifies that after joining via a

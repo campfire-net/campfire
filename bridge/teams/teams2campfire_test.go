@@ -13,8 +13,8 @@ import (
 	"github.com/campfire-net/campfire/bridge/teams/botframework"
 	"github.com/campfire-net/campfire/bridge/state"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 )
 
 // --- StripHTML tests ---

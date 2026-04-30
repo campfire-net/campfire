@@ -23,7 +23,7 @@ import (
 	"github.com/campfire-net/campfire/bridge/poller"
 	"github.com/campfire-net/campfire/bridge/state"
 	"github.com/campfire-net/campfire/pkg/identity"
-	cfstore "github.com/campfire-net/campfire/pkg/store"
+	cfstore "github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 func main() {

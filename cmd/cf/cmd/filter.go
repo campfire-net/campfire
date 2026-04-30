@@ -3,7 +3,7 @@ package cmd
 import (
 	"strings"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // filterMessages applies post-query filters from a MessageFilter to a slice of messages.

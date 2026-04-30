@@ -11,7 +11,7 @@ import (
 	"unicode"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 )
 
 // MaxDepth is the maximum number of dot-separated segments in a campfire name.

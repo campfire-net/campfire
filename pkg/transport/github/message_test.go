@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/cf-protocol/message"
 )
 
 func makeTestMessage(t *testing.T) *message.Message {

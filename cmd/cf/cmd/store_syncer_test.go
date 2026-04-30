@@ -23,11 +23,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // TestStoreSyncer_ReturnsErrorOnBrokenTransport verifies that StoreSyncer.Sync

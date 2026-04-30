@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 const (

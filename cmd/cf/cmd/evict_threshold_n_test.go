@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // TestEvictThresholdN_CreatorNotStoredInPeerEndpoints verifies that when the

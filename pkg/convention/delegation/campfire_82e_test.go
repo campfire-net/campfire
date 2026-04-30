@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/convention/delegation"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // ---- 10a: protoMsgToRaw skips grants with invalid (non-hex) Sender ----

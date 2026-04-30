@@ -34,7 +34,7 @@ import (
 	"fmt"
 	"time"
 
-	cfencoding "github.com/campfire-net/campfire/pkg/encoding"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 )
 
 const (

@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/protocol"
-	"github.com/campfire-net/campfire/pkg/store"
-	"github.com/campfire-net/campfire/pkg/transport/fs"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 	"github.com/spf13/cobra"
 )
 

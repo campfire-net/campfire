@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/pkg/identity"
-	"github.com/campfire-net/campfire/pkg/message"
-	"github.com/campfire-net/campfire/pkg/store"
-	cfhttp "github.com/campfire-net/campfire/pkg/transport/http"
+	"github.com/campfire-net/campfire/cf-protocol/message"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
 // TestRelayE2E exercises the full relay round-trip:

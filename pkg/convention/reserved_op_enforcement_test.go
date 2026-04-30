@@ -28,7 +28,7 @@ import (
 
 	cfprotocol "github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/pkg/convention"
-	"github.com/campfire-net/campfire/pkg/store"
+	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
 // newReservedTestStore creates an in-memory dispatch store for enforcement tests.

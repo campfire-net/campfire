@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/pkg/forge"
-	"github.com/campfire-net/campfire/pkg/message"
+	"github.com/campfire-net/campfire/cf-protocol/message"
 )
 
 // ---------------------------------------------------------------------------

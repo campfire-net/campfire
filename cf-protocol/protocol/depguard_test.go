@@ -116,6 +116,52 @@ func findGolangciLint(t *testing.T) string {
 	return ""
 }
 
+// TestDepguardL1ProtocolNoPkgProtocol proves the L1-protocol-no-pkgprotocol
+// depguard rule fires when cf-protocol/protocol/ imports pkg/protocol.
+//
+// This satisfies campfireagent-9f4 done-condition 3: a probe verifies that
+// pkg/* substrate imports are forbidden from cf-protocol/protocol/.
+func TestDepguardL1ProtocolNoPkgProtocol(t *testing.T) {
+	lintBin := findGolangciLint(t)
+	if lintBin == "" {
+		t.Skip("golangci-lint not found; skipping depguard adversarial verification")
+	}
+
+	repoRoot := findRepoRoot(t)
+
+	// Create a temporary file inside cf-protocol/protocol/ that imports
+	// pkg/protocol — a deliberate L1-protocol-no-pkgprotocol violation.
+	violationFile := filepath.Join(repoRoot, "cf-protocol", "protocol", "pkgprotocol_violation_probe_test_only.go")
+	const violationSrc = `// DO NOT COMMIT: deliberate L1-protocol violation for depguard test.
+// Created by cf-protocol/protocol/depguard_test.go; deleted on test exit.
+package protocol
+
+import (
+	// L1-protocol violation: cf-protocol/protocol/ importing old pkg/protocol substrate.
+	_ "github.com/campfire-net/campfire/pkg/protocol"
+)
+`
+	if err := os.WriteFile(violationFile, []byte(violationSrc), 0600); err != nil {
+		t.Fatalf("writing violation file: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(violationFile) })
+
+	// Run golangci-lint against just the cf-protocol/protocol/ package.
+	// We expect depguard to flag the import.
+	cmd := exec.Command(lintBin, "run", "--fast-only",
+		"./cf-protocol/protocol/...")
+	cmd.Dir = repoRoot
+	out, _ := cmd.CombinedOutput()
+	outStr := string(out)
+
+	if strings.Contains(outStr, "depguard") || strings.Contains(outStr, "L1-protocol") {
+		t.Logf("PASS: depguard correctly rejected the L1-protocol pkg/protocol import:")
+		t.Logf("  %s", strings.TrimSpace(outStr))
+	} else {
+		t.Errorf("FAIL: depguard did NOT catch the L1-protocol violation. lint output:\n%s", outStr)
+	}
+}
+
 // findRepoRoot walks up from the test file to find the go.mod root.
 func findRepoRoot(t *testing.T) string {
 	t.Helper()
