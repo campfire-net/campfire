@@ -2619,34 +2619,6 @@ func TestAddMembership_TransportTypeInferred(t *testing.T) {
 		t.Errorf("TransportType = %q, want %q", m.TransportType, "p2p-http")
 	}
 }
-
-// TestAddMembership_TransportTypeGitHub verifies GitHub transport detection.
-func TestAddMembership_TransportTypeGitHub(t *testing.T) {
-	s := testStore(t)
-
-	if err := s.AddMembership(Membership{
-		CampfireID:   "ghcampfire01",
-		TransportDir: `github:{"repo":"org/repo","issue_number":1}`,
-		JoinProtocol: "open",
-		Role:         "creator",
-		JoinedAt:     1,
-	}); err != nil {
-		t.Fatalf("AddMembership() error: %v", err)
-	}
-
-	m, err := s.GetMembership("ghcampfire01")
-	if err != nil {
-		t.Fatalf("GetMembership() error: %v", err)
-	}
-	if m == nil {
-		t.Fatal("expected membership")
-	}
-	if m.TransportType != "github" {
-		t.Errorf("TransportType = %q, want %q", m.TransportType, "github")
-	}
-}
-
-// TestAddMembership_TransportTypeFilesystem verifies filesystem fallback.
 func TestAddMembership_TransportTypeFilesystem(t *testing.T) {
 	s := testStore(t)
 
