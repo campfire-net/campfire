@@ -10,6 +10,21 @@ import (
 	"github.com/campfire-net/campfire/pkg/convention"
 )
 
+// GetDispatchEntityETag calls GetEntity on the dispatched table for the given
+// campfireID/messageID and returns the raw ETag reported by Azure/Azurite.
+// Used by integration tests to compare the ETag from GetEntity against the
+// odata.etag field returned by the NewListEntitiesPager — verifying the two
+// formats are byte-for-byte equal (campfireagent-f92 veracity check).
+func (s *TableDispatchStore) GetDispatchEntityETag(ctx context.Context, campfireID, messageID string) (string, error) {
+	pk := encodeKey(campfireID)
+	rk := encodeKey(messageID)
+	resp, err := s.dispatched.GetEntity(ctx, pk, rk, nil)
+	if err != nil {
+		return "", err
+	}
+	return string(resp.ETag), nil
+}
+
 // DecrementStorageCounter exposes decrementStorageCounter for testing.
 func (ts *TableStore) DecrementStorageCounter(ctx context.Context, campfireID string, deltaBytes, deltaMessages int64) error {
 	return ts.decrementStorageCounter(ctx, campfireID, deltaBytes, deltaMessages)
