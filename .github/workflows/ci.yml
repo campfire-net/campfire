@@ -58,3 +58,9 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Wire-format freeze snapshot verifier (Phase 8 Gate 4)
+        # Asserts that every claim in docs/0.30-wire-format-freeze.md (the S0q snapshot)
+        # matches the actual code at HEAD. Catches spec/code drift before it reaches
+        # a release tag. See cf-protocol/internal/wireverify/ and campfireagent-3a8.
+        run: go test ./cf-protocol/internal/wireverify/ -v -count=1
