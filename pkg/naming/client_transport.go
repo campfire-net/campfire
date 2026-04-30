@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -25,6 +26,17 @@ type ResolverClientOptions struct {
 	// BeaconDir overrides the default beacon directory for auto-join discovery.
 	// If empty, beacon.DefaultBeaconDir() is used.
 	BeaconDir string
+
+	// ConfigTransportFunc implements §12 config-over-beacon endpoint precedence.
+	// When non-nil, autoJoinViaClient calls it before using the beacon-advertised
+	// transport. If the function returns a non-nil Transport for the given campfire
+	// ID, that transport is used instead of the beacon transport.
+	//
+	// The typical implementation resolves the campfire ID against behavior.auto_join
+	// entries in the roll-up config (behavior.auto_join beacon strings whose
+	// decoded campfire ID matches). Callers that do not need config precedence may
+	// leave this nil — beacon-only behaviour is preserved.
+	ConfigTransportFunc func(campfireID string) protocol.Transport
 }
 
 // NewResolverFromClient creates a Resolver backed by a protocol.Client.
@@ -40,12 +52,14 @@ func NewResolverFromClient(client *protocol.Client, rootID string, opts ...Resol
 	r := NewResolver(ct, rootID)
 
 	beaconDir := ""
+	var configTransportFunc func(string) protocol.Transport
 	if len(opts) > 0 {
 		beaconDir = opts[0].BeaconDir
+		configTransportFunc = opts[0].ConfigTransportFunc
 	}
 
 	r.AutoJoinFunc = func(campfireID string) error {
-		return autoJoinViaClient(client, campfireID, beaconDir)
+		return autoJoinViaClient(client, campfireID, beaconDir, configTransportFunc)
 	}
 	return r
 }
@@ -82,7 +96,12 @@ var ErrInviteOnly = fmt.Errorf("campfire is invite-only; cannot auto-join")
 // campfire. If already a member, this is a no-op. If not a member, it
 // discovers the campfire via beacon scan and joins if the join protocol is open.
 // Returns ErrInviteOnly for invite-only campfires.
-func autoJoinViaClient(client *protocol.Client, campfireID string, beaconDirOverride string) error {
+//
+// §12 config-over-beacon precedence: when configTransportFunc is non-nil, it is
+// consulted before using the beacon-advertised transport. If it returns a non-nil
+// Transport for campfireID, that transport is used and the beacon transport is
+// discarded. See cf-discovery-spec.md §12 for the rationale.
+func autoJoinViaClient(client *protocol.Client, campfireID string, beaconDirOverride string, configTransportFunc func(string) protocol.Transport) error {
 	m, err := client.GetMembership(campfireID)
 	if err != nil {
 		return fmt.Errorf("checking membership: %w", err)
@@ -91,7 +110,27 @@ func autoJoinViaClient(client *protocol.Client, campfireID string, beaconDirOver
 		return nil // already a member
 	}
 
-	// Scan beacons to discover transport info for the campfire.
+	// §12: Check config-declared transport BEFORE beacon scan.
+	// Config is trusted at the same level as local identity; beacon is an
+	// untrusted hint that the campfire operator controls.
+	if configTransportFunc != nil {
+		if configTransport := configTransportFunc(campfireID); configTransport != nil {
+			log.Printf("[DEBUG] naming: config endpoint overrides beacon for campfire %s", shortID(campfireID))
+			_, err = client.Join(protocol.JoinRequest{
+				CampfireID: campfireID,
+				Transport:  configTransport,
+			})
+			if err != nil {
+				if strings.Contains(err.Error(), "invite-only") {
+					return ErrInviteOnly
+				}
+				return fmt.Errorf("auto-join (config endpoint): %w", err)
+			}
+			return nil
+		}
+	}
+
+	// No config entry: fall back to beacon scan (existing behaviour).
 	beaconDir := beaconDirOverride
 	if beaconDir == "" {
 		beaconDir = beacon.DefaultBeaconDir()
