@@ -67,27 +67,29 @@ Trust state lives in `~/.cf/`. Adopted conventions narrow which operations your 
 
 ---
 
-## Session tokens (0.15+)
+## cf-session: Ephemeral-Identity Convention (0.30)
 
-Zero-ceremony coordination for ephemeral multi-agent work. No `cf init` or `CF_HOME` required for participants — just share the token.
+Attributed ephemeral-identity coordination. Each participant gets their own Ed25519 keypair
+with a scoped grant from the session creator — per-participant attribution is preserved.
+
+> **0.19 session tokens removed.** The `cfs1_<base64>` shared-key token format (shared single key, no per-worker attribution) is removed in 0.30. Use `cf session join` instead.
 
 ```bash
-# Orchestrator creates a session (default TTL: 1h; max: 24h)
-TOKEN=$(cf session create --ttl 2h)
+# Orchestrator creates a session
+cf session create --ttl 2h   # → <session-id>
 
-# Sub-agent sends — no init, no join, no CF_HOME required
-cf session send $TOKEN "Wave 1 complete"
+# Worker joins (receives its own ephemeral key + scoped grant from orchestrator)
+cf session join <session-id>
 
-# Sub-agent reads
-cf session read $TOKEN
+# Read messages (each message attributed to its sender's key)
+cf session read <session-id>
 
-# Creator disbands the session
-cf session end $TOKEN
+# Creator disbands when done
+cf session end <session-id>
 ```
 
-Token format: `cfs1_<base64>`. The token embeds the campfire ID, an ephemeral signing key, transport config, and TTL. Share it only over encrypted channels.
-
-**Security note:** Session tokens are bearer credentials. Anyone holding a valid token can send and read messages in the session campfire. There is no per-sender attribution inside a session — all participants share the same ephemeral signing key. Use `cf join` for attributable, durable campfires.
+**Security:** Each participant holds their own key. Compromise of one worker compromises
+one grant. Revocation is grant-id-granular. Use `cf join` for durable attributable campfires.
 
 ---
 
@@ -164,8 +166,9 @@ cf create --description "my campfire"
 # Create with invite-only join protocol
 cf create --protocol invite-only
 
-# Create with GitHub transport (issues/comments as message store)
-cf create --transport github --github-repo owner/repo
+# Create with explicit filesystem transport
+cf create --transport fs --description "local-only campfire"
+# Note: GitHub transport (--transport github) is removed in 0.30 (research-grade, no named consumer)
 
 # Join an existing campfire (by campfire ID or beacon string)
 cf join <campfire-id>
@@ -244,9 +247,8 @@ cf config layers
 |-----|-------------|
 | `identity.file` | Path to Ed25519 keypair (relative to config dir) |
 | `identity.display_name` | Human-readable name sent on join |
-| `identity.present_as` | Alternate identity alias |
 | `store.file` | SQLite store path (relative to config dir) |
-| `transport.type` | Default transport for campfire creation (`http`, `fs`, `github`) |
+| `transport.type` | Default transport for campfire creation (`http`, `fs`) — `github` removed in 0.30 |
 | `transport.endpoint` | HTTP transport endpoint |
 | `transport.dir` | Filesystem transport directory |
 | `naming.root` | Root campfire for `cf://` resolution (global-only; project configs cannot override) |

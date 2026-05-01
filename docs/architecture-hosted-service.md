@@ -39,41 +39,54 @@ Azure Table Storage (stcampfirebpjpsl)
   └── CampfirePendingShares
 ```
 
-## Package Map
+## Package Map (0.30 module layout)
 
-| Package | Purpose | Tests |
-|---------|---------|-------|
-| `cmd/cf-mcp/` | MCP server, convention-first tool surface, session management, auto-provisioning | 5 tests |
-| `cmd/cf-functions/` | Azure Functions custom handler, reverse proxy to cf-mcp | 10 tests |
-| `pkg/protocol/` | Unified Client API — Send/Read with transport dispatch, role enforcement | client_test + send/read tests |
-| `pkg/store/` | Store interface + SQLite implementation | Existing suite |
-| `pkg/store/aztable/` | Azure Table Storage implementation of store.Store | Contract tests + Azurite (build-tagged) |
-| `pkg/ratelimit/` | Rate limiting wrapper (100/min, 64KB, 1000/month) | 13 tests |
-| `pkg/meter/` | Usage collection + Marketplace Metering API client | 14 tests |
-| `pkg/x402/` | HTTP 402 payment challenges, stub verifier | 16 tests |
-| `pkg/crypto/` | AES-GCM, HKDF, key wrapping, E2E encryption (CEK derivation) | Existing + 10 new |
-| `pkg/identity/` | Ed25519 identity, v1/v2 format (wrapped keys) | Existing + 8 new |
-| `pkg/campfire/` | Campfire types, encryption types, blind relay role | Existing + 7 new |
+The 0.30 architecture uses two Go modules: `cf-protocol` (L1) and `cf-conventions` (L2+L3).
+The old `pkg/` monolith is superseded. L4 deployment binaries (`cmd/`) are unchanged.
 
-## protocol.Client Layer
+| Package | 0.30 path | Purpose | Tests |
+|---------|-----------|---------|-------|
+| `cmd/cf-mcp/` | unchanged | MCP server, convention-first tool surface, session management, auto-provisioning | 5 tests |
+| `cmd/cf-functions/` | unchanged | Azure Functions custom handler, reverse proxy to cf-mcp | 10 tests |
+| Protocol client | `cf-protocol/internal/` | Unified Client API — Send/Read with transport dispatch, role enforcement (was `pkg/protocol/`) | client_test + send/read tests |
+| Store | `cf-protocol/internal/store/` | Store interface + SQLite implementation (was `pkg/store/`) | Existing suite |
+| Azure Table Storage | `cf-protocol/internal/store/aztable/` | Azure Table Storage store implementation (was `pkg/store/aztable/`) | Contract tests + Azurite (build-tagged) |
+| Rate limiting | `cmd/cf-functions/ratelimit/` | Rate limiting (deployment policy, L4) (was `pkg/ratelimit/`) | 13 tests |
+| Metering | `cmd/cf-functions/metering/` | Usage collection + Marketplace Metering API client (was `pkg/meter/`) | 14 tests |
+| x402 | `cmd/cf-functions/x402/` | HTTP 402 payment challenges (was `pkg/x402/`) | 16 tests |
+| Convention machinery | `cf-conventions/cf-convention/` | Parser, executor, dispatcher, server, toolgen (was `pkg/convention/` machinery) | — |
+| cf-authority | `cf-conventions/cf-authority/` | Scoped grants, GateEvaluator, chain walker (was delegation/ + trust/ + provenance/ in old pkg/) | conformance harness |
+| cf-discovery | `cf-conventions/cf-discovery/` | Naming, beacons, snippets (was naming/ + beacon/ in old pkg/) | — |
+| cf-identity | `cf-conventions/cf-identity/` | Identity convention (was identity.go + identity_cache.go in old pkg/) | — |
+| cf-session | `cf-conventions/cf-session/` | Ephemeral-identity convention replacing the old shared-key session model | — |
 
-`pkg/protocol` provides the unified client API for all campfire message operations. It consolidates what was previously duplicated across `cmd/cf`, `cmd/cf-mcp`, and `pkg/convention`.
+**Removed in 0.30:** recenter.go, walk_up.go (center-finding is L4 via cf-discovery), github transport (no named consumer), `present_as` config field.
+
+**L4 binaries in 0.30:**
+- `cf` — convention-first CLI; no primitives exposed
+- `cf-primitives` — low-level protocol surface (init, send, read, members, scope); agent escape hatch when conventions don't cover the case
+- `cf-mcp` — long-running agent-side process; exposes MCP tools from convention declarations
+- `cf-functions` — Azure Functions adapter for mcp.getcampfire.dev
+
+## protocol.Client Layer (0.30)
+
+`cf-protocol` provides the unified client API. The public surface is `protocol.Client`; everything else is `internal/`. L4 binaries (`cmd/cf-mcp`, `cmd/cf`) import `cf-protocol` as a versioned module dependency.
 
 ```
 cmd/cf-mcp (MCP tool handlers)
   │
   │ protocol.New(store, identity)
   ▼
-protocol.Client
+protocol.Client  (cf-protocol module public surface)
   │
   ├── Client.Send(SendRequest) → *message.Message
-  │     ├── transport.ResolveType(membership) → TypeGitHub | TypePeerHTTP | default
+  │     ├── transport.ResolveType(membership) → TypePeerHTTP | default (fs)
   │     ├── Role enforcement (observer/writer/full) → *RoleError if denied
-  │     └── Dispatch: sendFilesystem | sendGitHub | sendP2PHTTP
+  │     └── Dispatch: sendFilesystem | sendP2PHTTP
   │           └── FROST threshold signing for TypePeerHTTP with threshold>1
   │
   └── Client.Read(ReadRequest) → []message.Message
-        └── sync-before-query for filesystem/GitHub; skip for push transports
+        └── sync-before-query for filesystem; skip for push transports
 ```
 
 ### API
@@ -105,8 +118,9 @@ msgs, err := client.Read(protocol.ReadRequest{
 | Transport | How detected | Behavior |
 |-----------|-------------|---------|
 | Filesystem | Default (local path) | Sync from dir, write message file |
-| GitHub Issues | `TransportDir` starts with `github:` | POST comment via GitHub API |
 | P2P HTTP | membership type = TypePeerHTTP | Deliver to peer endpoints; FROST if threshold>1 |
+
+GitHub Issues transport is removed in 0.30 (no named consumer).
 
 In all cases, the sent message is mirrored into the local store so the sender can read it back immediately without a separate sync step.
 
@@ -199,7 +213,7 @@ The protocol supports per-campfire encryption (spec-encryption.md v0.2): epoch-b
 
 The blind relay benefit applies to **mixed-mode campfires** where at least one member is self-hosted. When a self-hosted member manages epoch keys and the hosted service is assigned the blind relay role, the hosted service cannot read message content. For all-hosted campfires, encryption provides no confidentiality against the operator — the operator holds every member's private key and can derive any epoch secret.
 
-The crypto primitives are implemented (`pkg/crypto/encryption.go`, `pkg/campfire/encryption.go`, `pkg/store/` migrations 6+7) but not yet exposed via MCP tools. Wiring encrypted campfire creation/join is a follow-on item.
+The crypto primitives are implemented (`cf-protocol/internal/crypto/`, `cf-protocol/internal/campfire/`, store migrations 6+7; was `pkg/crypto/`, `pkg/campfire/`) but not yet exposed via MCP tools. Wiring encrypted campfire creation/join is a follow-on item.
 
 ### Non-Goals (Permanent Constraints)
 
@@ -228,3 +242,20 @@ git push origin main
     → zip with host.json + api/function.json
     → azure/functions-action → func-campfire-bpjpsl
 ```
+
+## 0.30 Authorization Layer (cf-authority)
+
+`cf-mcp` and `cf-functions` in 0.30 wire the `GateEvaluator` interface from
+`cf-conventions/cf-authority/trust/` into the convention executor. Gate evaluation runs
+on every dispatch:
+
+1. Convention declaration declares a gate predicate (e.g., `level: 2`, `grant_in: rd:claim`).
+2. L2 executor intercepts dispatch, consults reserved-op floor list (L1), calls `GateEvaluator.Evaluate`.
+3. `cf-authority` chain walker reads `ChainMessages` (already loaded from store), computes ALLOW/DENY/UNRESOLVABLE.
+4. UNRESOLVABLE → `delegation:request` future synthesized in the owner's identity campfire; dispatch returns DENY (fail closed).
+
+For the evaluator contract, `DenyReason` codes, and conformance harness, see
+[cf-authority-spec.md](cf-authority-spec.md).
+
+For discovery (snippet schema, Tier 1/2/3 browse-before-join), see
+[cf-discovery-spec.md](cf-discovery-spec.md).
