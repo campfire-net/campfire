@@ -10,7 +10,7 @@
 //
 // Routes served (Azure Functions path prefix /api):
 //
-//	GET  /api/health       → own health handler (checks child process liveness)
+//	GET  /api/health       → own health handler (forwards liveness probe to cf-mcp /health; FIX-4/T6)
 //	POST /api/mcp          → proxied to cf-mcp /mcp
 //	ANY  /api/mcp/*        → proxied to cf-mcp /mcp/*
 //	GET  /api/sse          → proxied to cf-mcp /sse
@@ -236,9 +236,10 @@ func run() error {
 	// HTTP mux: /api/health and /api/payment are own; everything else proxied.
 	// Timer trigger routes (no /api prefix) are handled directly.
 	// -------------------------------------------------------------------------
+	childHealthURL := "http://" + childAddr + "/health"
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		handleHealth(w, r, child)
+		handleHealth(w, r, child, childHealthURL)
 	})
 	mux.Handle("/api/payment", x402.NewPaymentHandler(x402.StubVerifier{}, limiter))
 	mux.Handle("/api/mcp", proxyWithChallenge)
@@ -284,21 +285,51 @@ func run() error {
 	return nil
 }
 
-// handleHealth serves GET /api/health. Returns 200 if the cf-mcp child is
-// still running, 503 otherwise.
-func handleHealth(w http.ResponseWriter, r *http.Request, child *exec.Cmd) {
+// healthProbeClient is the HTTP client used by handleHealth to forward liveness
+// probes to the cf-mcp child. A short timeout ensures a deadlocked child is
+// detected quickly without stalling the Azure Functions health check caller.
+var healthProbeClient = &http.Client{Timeout: 2 * time.Second}
+
+// handleHealth serves GET /api/health. Implements FIX-4 (T6): forwards the
+// liveness probe to the cf-mcp child's /health endpoint rather than only
+// checking process existence. A deadlocked or panic-looping child will not
+// respond within the 2s timeout, causing this handler to return 503. The
+// process-existence check acts as a fast-path for already-exited children.
+//
+// childHealthURL is the full URL to the child's /health endpoint
+// (e.g. "http://127.0.0.1:PORT/health"). It is set once at startup.
+func handleHealth(w http.ResponseWriter, r *http.Request, child *exec.Cmd, childHealthURL string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	alive := child.ProcessState == nil // nil means not yet exited
+
+	// Fast path: if the child process has already exited, report degraded immediately.
+	if child.ProcessState != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, `{"status":"degraded","reason":"child_exited","version":%q}`, Version)
+		return
+	}
+
+	// Forward the liveness probe to the child's /health endpoint (FIX-4/T6).
+	// A deadlocked child will fail to respond within healthProbeClient.Timeout (2s).
+	resp, err := healthProbeClient.Get(childHealthURL)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, `{"status":"degraded","reason":"child_unresponsive","version":%q}`, Version)
+		return
+	}
+	defer resp.Body.Close()
+
 	w.Header().Set("Content-Type", "application/json")
-	if alive {
+	if resp.StatusCode == http.StatusOK {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, `{"status":"ok","version":%q}`, Version)
 	} else {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprintf(w, `{"status":"degraded","version":%q}`, Version)
+		fmt.Fprintf(w, `{"status":"degraded","reason":"child_unhealthy","child_status":%d,"version":%q}`, resp.StatusCode, Version)
 	}
 }
 
