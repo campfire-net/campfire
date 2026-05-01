@@ -202,7 +202,7 @@ func listOperations(ctx context.Context, s StoreReader, campfireID, campfireKey,
 	}
 	var all []opEntry
 	for _, msg := range opMsgs {
-		decl, _, parseErr := Parse(msg.Tags, msg.Payload, msg.Sender, campfireKey)
+		decl, _, parseErr := Parse(msg.Tags, msg.Payload, msg.Sender, campfireKey, DefaultDeniedTagPrefixes)
 		if parseErr != nil {
 			continue // skip malformed
 		}

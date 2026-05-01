@@ -129,6 +129,7 @@ func runConventionAdopt(cmd *cobra.Command, args []string) error {
 			src.payload,
 			agentID.PublicKeyHex(),
 			agentID.PublicKeyHex(),
+			convention.DefaultDeniedTagPrefixes,
 		)
 		if decl != nil {
 			conflictKey := decl.Convention + ":" + decl.Operation + "@" + decl.Version
@@ -167,6 +168,7 @@ func adoptSingle(
 		src.payload,
 		agentID.PublicKeyHex(),
 		agentID.PublicKeyHex(),
+		convention.DefaultDeniedTagPrefixes,
 	)
 	if err != nil {
 		return false, "", "", fmt.Errorf("parse failed: %s", err)
@@ -208,7 +210,7 @@ func loadRawDeclarationPayloads(s store.Store, sourceID string) (map[string][]by
 	}
 	result := make(map[string][]byte, len(msgs))
 	for _, msg := range msgs {
-		decl, _, err := convention.Parse(msg.Tags, msg.Payload, msg.Sender, "")
+		decl, _, err := convention.Parse(msg.Tags, msg.Payload, msg.Sender, "", convention.DefaultDeniedTagPrefixes)
 		if err != nil {
 			continue
 		}

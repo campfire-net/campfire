@@ -47,7 +47,7 @@ var beaconRegisterPayload = []byte(`{
 
 func parseDeclForTest(t *testing.T, payload []byte) *Declaration {
 	t.Helper()
-	decl, _, err := Parse([]string{ConventionOperationTag}, payload, "sender", "campfire")
+	decl, _, err := Parse([]string{ConventionOperationTag}, payload, "sender", "campfire", DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}

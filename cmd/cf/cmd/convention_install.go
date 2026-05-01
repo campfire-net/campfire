@@ -185,6 +185,7 @@ func installSingle(
 		src.payload,
 		agentID.PublicKeyHex(),
 		agentID.PublicKeyHex(),
+		convention.DefaultDeniedTagPrefixes,
 	)
 	if err != nil {
 		result.Error = fmt.Sprintf("parse failed: %s", err)

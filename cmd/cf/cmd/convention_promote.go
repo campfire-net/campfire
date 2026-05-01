@@ -143,6 +143,7 @@ func promoteSingle(
 		src.payload,
 		agentID.PublicKeyHex(),
 		agentID.PublicKeyHex(),
+		convention.DefaultDeniedTagPrefixes,
 	)
 	if err != nil {
 		result.Error = fmt.Sprintf("parse failed: %s", err)
@@ -178,7 +179,7 @@ func loadExistingDeclarations(s store.Store, registryID string) (map[string]*con
 	}
 	result := make(map[string]*convention.Declaration)
 	for _, msg := range msgs {
-		decl, _, err := convention.Parse(msg.Tags, msg.Payload, msg.Sender, "")
+		decl, _, err := convention.Parse(msg.Tags, msg.Payload, msg.Sender, "", convention.DefaultDeniedTagPrefixes)
 		if err != nil {
 			continue
 		}

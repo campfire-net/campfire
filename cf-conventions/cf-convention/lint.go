@@ -41,7 +41,7 @@ func Lint(payload []byte) *LintResult {
 	// Run Parse with synthetic keys. senderKey == campfireKey so the
 	// campfire_key check (Check 7) passes; rate limit ceiling warnings surface
 	// as ConformanceResult.Warnings which we promote to lint warnings.
-	decl, conf, err := Parse([]string{ConventionOperationTag}, payload, "synthetic", "synthetic")
+	decl, conf, err := Parse([]string{ConventionOperationTag}, payload, "synthetic", "synthetic", DefaultDeniedTagPrefixes)
 	if err != nil {
 		result.Errors = append(result.Errors, LintFinding{
 			Severity: LintError,
@@ -69,7 +69,7 @@ func Lint(payload []byte) *LintResult {
 	// one claiming convention: "convention-extension" — must not produce denied
 	// tags through the Lint path.
 	for i, tr := range decl.ProducesTags {
-		if err := checkDeniedTag(tr.Tag); err != nil {
+		if err := checkDeniedTag(tr.Tag, DefaultDeniedTagPrefixes); err != nil {
 			result.Errors = append(result.Errors, LintFinding{
 				Severity: LintError,
 				Code:     "denied_tag",

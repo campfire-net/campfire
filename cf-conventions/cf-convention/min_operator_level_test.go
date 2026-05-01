@@ -75,7 +75,7 @@ func parseGatedDecl(t *testing.T, minLevel int) *convention.Declaration {
 	}
 
 	tags := []string{convention.ConventionOperationTag}
-	decl, _, err := convention.Parse(tags, payload, provSenderKey, provCampfireKey)
+	decl, _, err := convention.Parse(tags, payload, provSenderKey, provCampfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("parse gated decl: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestMinOperatorLevel_WorkflowRejected(t *testing.T) {
 	}
 
 	tags := []string{convention.ConventionOperationTag}
-	decl, _, parseErr := convention.Parse(tags, payload, provSenderKey, provCampfireKey)
+	decl, _, parseErr := convention.Parse(tags, payload, provSenderKey, provCampfireKey, convention.DefaultDeniedTagPrefixes)
 	if parseErr != nil {
 		t.Fatalf("parse workflow decl: %v", parseErr)
 	}

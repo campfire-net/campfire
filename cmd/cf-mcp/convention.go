@@ -211,7 +211,7 @@ func (s *server) publishDeclarations(st store.Store, campfireID string, entries 
 		// Parse the declaration directly. We just signed it with the campfire key,
 		// so we grant it SignerCampfireKey authority (operational) regardless of the
 		// signing field in the JSON (which describes execution, not declaration trust).
-		decl, result, parseErr := convention.Parse(tags, payload, campfireID, campfireID)
+		decl, result, parseErr := convention.Parse(tags, payload, campfireID, campfireID, convention.DefaultDeniedTagPrefixes)
 		if parseErr != nil {
 			log.Printf("convention: parsing declaration: %v", parseErr)
 			continue

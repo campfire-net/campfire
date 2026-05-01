@@ -48,7 +48,7 @@ func TestConventionToolRegistration(t *testing.T) {
 	senderKey := "aaaa" // member key
 	campfireKey := "bbbb"
 
-	decl, result, err := convention.Parse(tags, socialPostPayload, senderKey, campfireKey)
+	decl, result, err := convention.Parse(tags, socialPostPayload, senderKey, campfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestConventionToolTrustGate(t *testing.T) {
 	senderKey := "aaaa" // NOT the campfire key
 	campfireKey := "bbbb"
 
-	decl, result, err := convention.Parse(tags, campfireKeyPayload, senderKey, campfireKey)
+	decl, result, err := convention.Parse(tags, campfireKeyPayload, senderKey, campfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestConventionToolNameCollision(t *testing.T) {
 	senderKey := "aaaa"
 	campfireKey := "bbbb"
 
-	decl1, _, err := convention.Parse(tags, socialPostPayload, senderKey, campfireKey)
+	decl1, _, err := convention.Parse(tags, socialPostPayload, senderKey, campfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse decl1: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestConventionToolNameCollision(t *testing.T) {
 		"antecedents": "none",
 		"signing": "member_key"
 	}`)
-	decl2, _, err := convention.Parse(tags, otherPayload, senderKey, campfireKey)
+	decl2, _, err := convention.Parse(tags, otherPayload, senderKey, campfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse decl2: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestConventionToolNameCollision_SameBatch(t *testing.T) {
 	senderKey := "aaaa"
 	campfireKey := "bbbb"
 
-	decl1, _, err := convention.Parse(tags, socialPostPayload, senderKey, campfireKey)
+	decl1, _, err := convention.Parse(tags, socialPostPayload, senderKey, campfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse decl1: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestConventionToolNameCollision_SameBatch(t *testing.T) {
 		"antecedents": "none",
 		"signing": "member_key"
 	}`)
-	decl2, _, err := convention.Parse(tags, otherPayload, senderKey, campfireKey)
+	decl2, _, err := convention.Parse(tags, otherPayload, senderKey, campfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse decl2: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestConventionToolsInToolsList(t *testing.T) {
 	srv.conventionTools = newConventionToolMap()
 
 	tags := []string{convention.ConventionOperationTag}
-	decl, _, err := convention.Parse(tags, socialPostPayload, "aaaa", "bbbb")
+	decl, _, err := convention.Parse(tags, socialPostPayload, "aaaa", "bbbb", convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -723,7 +723,7 @@ func buildGatedConventionEntry(t *testing.T, minLevel int) *conventionToolEntry 
 		t.Fatalf("buildGatedConventionEntry: marshal: %v", err)
 	}
 	tags := []string{convention.ConventionOperationTag}
-	decl, _, parseErr := convention.Parse(tags, payload, strings.Repeat("a", 64), strings.Repeat("b", 64))
+	decl, _, parseErr := convention.Parse(tags, payload, strings.Repeat("a", 64), strings.Repeat("b", 64), convention.DefaultDeniedTagPrefixes)
 	if parseErr != nil {
 		t.Fatalf("buildGatedConventionEntry: parse: %v", parseErr)
 	}
@@ -865,7 +865,7 @@ func TestHandleConventionTool_MinOperatorLevel_ClaimedLevelAccepted(t *testing.T
 // *server each request and conventionTools lived only on *server, so tools vanished.
 func TestConventionToolsPersistAcrossServerInstances(t *testing.T) {
 	tags := []string{convention.ConventionOperationTag}
-	decl, _, err := convention.Parse(tags, socialPostPayload, "aaaa", "bbbb")
+	decl, _, err := convention.Parse(tags, socialPostPayload, "aaaa", "bbbb", convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -939,7 +939,7 @@ func TestJoinerDeclarationsGetCampfireKeyAuthority(t *testing.T) {
 
 	// Simulate what the joiner does: parse the declaration with campfireID
 	// as both sender and campfireKey, then force SignerCampfireKey.
-	decl, result, err := convention.Parse(tags, socialPostPayload, "campfire-id-hex", "campfire-id-hex")
+	decl, result, err := convention.Parse(tags, socialPostPayload, "campfire-id-hex", "campfire-id-hex", convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -978,7 +978,7 @@ func TestJoinerDeclarationsGetCampfireKeyAuthority(t *testing.T) {
 // SignerCampfireKey on declarations from the join response.
 func TestMemberKeyDeclarationIsUntrustedWithoutForce(t *testing.T) {
 	tags := []string{convention.ConventionOperationTag}
-	decl, result, err := convention.Parse(tags, socialPostPayload, "any-sender", "any-campfire")
+	decl, result, err := convention.Parse(tags, socialPostPayload, "any-sender", "any-campfire", convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

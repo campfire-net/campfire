@@ -103,7 +103,7 @@ func buildGatedDecl(t *testing.T, minLevel int) *convention.Declaration {
 		t.Fatalf("marshal gated decl: %v", err)
 	}
 	tags := []string{convention.ConventionOperationTag}
-	decl, _, parseErr := convention.Parse(tags, payload, e2eOperatorKey, e2eCampfireKey2)
+	decl, _, parseErr := convention.Parse(tags, payload, e2eOperatorKey, e2eCampfireKey2, convention.DefaultDeniedTagPrefixes)
 	if parseErr != nil {
 		t.Fatalf("parse gated decl: %v", parseErr)
 	}
@@ -352,7 +352,7 @@ func TestTrustProvenanceE2E_TrustDivergentOnJoin(t *testing.T) {
 		t.Fatalf("marshal local decl: %v", err)
 	}
 	tags := []string{convention.ConventionOperationTag}
-	localDecl, _, err := convention.Parse(tags, localPayload, e2eOperatorKey, e2eCampfireKey2)
+	localDecl, _, err := convention.Parse(tags, localPayload, e2eOperatorKey, e2eCampfireKey2, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("parse local decl: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestTrustProvenanceE2E_TrustDivergentOnJoin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal remote decl: %v", err)
 	}
-	remoteDecl, _, err := convention.Parse(tags, remotePayload, e2eVerifierKey, e2eCampfireKey2)
+	remoteDecl, _, err := convention.Parse(tags, remotePayload, e2eVerifierKey, e2eCampfireKey2, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("parse remote decl: %v", err)
 	}

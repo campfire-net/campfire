@@ -232,7 +232,7 @@ func TestSupersedeDeclaration_ParsesWithConventionExtensionException(t *testing.
 		"signing": "campfire_key"
 	}`)
 	campfireKey := "deadbeef" + seedRepeatStr('0', 56)
-	decl, result, err := Parse([]string{ConventionOperationTag}, payload, campfireKey, campfireKey)
+	decl, result, err := Parse([]string{ConventionOperationTag}, payload, campfireKey, campfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse supersede decl: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestRevokeDeclaration_ParsesWithConventionExtensionException(t *testing.T) 
 		"signing": "campfire_key"
 	}`)
 	campfireKey := "deadbeef" + seedRepeatStr('0', 56)
-	decl, result, err := Parse([]string{ConventionOperationTag}, payload, campfireKey, campfireKey)
+	decl, result, err := Parse([]string{ConventionOperationTag}, payload, campfireKey, campfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse revoke decl: %v", err)
 	}
