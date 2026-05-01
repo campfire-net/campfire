@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -38,7 +39,16 @@ func TestOPEN018Closure_SeedInL3(t *testing.T) {
 	// Negative: L2 does NOT import L3 seed.
 	repoRoot := findRepoRoot_open018(t)
 
-	cmd := exec.Command("/usr/local/go/bin/go", "list", "-f",
+	// Find the go binary: prefer PATH, fall back to GOROOT/bin/go.
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		goBin = filepath.Join(runtime.GOROOT(), "bin", "go")
+		if _, statErr := os.Stat(goBin); statErr != nil {
+			t.Skipf("go binary not found on PATH or in GOROOT (%s): %v", goBin, statErr)
+		}
+	}
+
+	cmd := exec.Command(goBin, "list", "-f",
 		`{{join .Deps "\n"}}`,
 		"github.com/campfire-net/campfire/cf-conventions/cf-convention",
 	)
