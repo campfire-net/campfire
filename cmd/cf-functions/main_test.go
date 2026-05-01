@@ -17,12 +17,17 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestHandleHealth_Alive(t *testing.T) {
-	// Build a fake exec.Cmd whose ProcessState is nil (simulates running process).
-	cmd := &exec.Cmd{}
-	// ProcessState is nil by default — process has not exited.
+	// Start a mock child /health endpoint that responds 200 (simulates healthy cf-mcp).
+	mockChild := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"status":"ok","sessions":0}`)
+	}))
+	defer mockChild.Close()
+
+	cmd := &exec.Cmd{} // ProcessState is nil by default — process has not exited.
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	w := httptest.NewRecorder()
-	handleHealth(w, req, cmd)
+	handleHealth(w, req, cmd, mockChild.URL+"/health")
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
@@ -36,9 +41,94 @@ func TestHandleHealth_MethodNotAllowed(t *testing.T) {
 	cmd := &exec.Cmd{}
 	req := httptest.NewRequest(http.MethodPost, "/api/health", nil)
 	w := httptest.NewRecorder()
-	handleHealth(w, req, cmd)
+	handleHealth(w, req, cmd, "http://127.0.0.1:9999/health")
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX-4 / T6 — Health probe forwarding tests
+// These tests verify that /api/health forwards the liveness probe to the
+// child's /health endpoint rather than only checking process existence.
+// A deadlocked child that is still running (ProcessState == nil) but not
+// responding must be reported as degraded.
+// ---------------------------------------------------------------------------
+
+func TestHandleHealth_ChildUnresponsive(t *testing.T) {
+	// Point at a port that isn't listening — simulates a deadlocked child.
+	port, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	childHealthURL := fmt.Sprintf("http://127.0.0.1:%d/health", port)
+
+	// Override the probe client to use a very short timeout so the test doesn't
+	// stall for the full 2s.
+	orig := healthProbeClient
+	healthProbeClient = &http.Client{Timeout: 200 * time.Millisecond}
+	defer func() { healthProbeClient = orig }()
+
+	cmd := &exec.Cmd{} // ProcessState nil — process appears running but is deadlocked.
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w := httptest.NewRecorder()
+	handleHealth(w, req, cmd, childHealthURL)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for unresponsive child, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "child_unresponsive") {
+		t.Errorf("expected child_unresponsive in body, got %s", body)
+	}
+}
+
+func TestHandleHealth_ChildUnhealthy(t *testing.T) {
+	// Mock child that returns 503 — simulates an unhealthy cf-mcp.
+	mockChild := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"status":"degraded"}`)
+	}))
+	defer mockChild.Close()
+
+	cmd := &exec.Cmd{}
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w := httptest.NewRecorder()
+	handleHealth(w, req, cmd, mockChild.URL+"/health")
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for unhealthy child, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "child_unhealthy") {
+		t.Errorf("expected child_unhealthy in body, got %s", body)
+	}
+}
+
+func TestHandleHealth_ChildExited(t *testing.T) {
+	// Simulate a child that has already exited (ProcessState is non-nil).
+	// We do this by running a real process that exits immediately.
+	cmd := exec.Command("true") // exits immediately with 0
+	if err := cmd.Run(); err != nil {
+		// "true" may not be available; skip rather than fail.
+		t.Skip("cannot run 'true' for exited-process test")
+	}
+	// After cmd.Run(), ProcessState is non-nil.
+	if cmd.ProcessState == nil {
+		t.Fatal("expected ProcessState to be non-nil after cmd.Run()")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w := httptest.NewRecorder()
+	// childHealthURL is irrelevant — fast-path exits before the probe.
+	handleHealth(w, req, cmd, "http://127.0.0.1:9999/health")
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for exited child, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "child_exited") {
+		t.Errorf("expected child_exited in body, got %s", body)
 	}
 }
 
