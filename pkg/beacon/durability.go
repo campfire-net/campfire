@@ -3,7 +3,7 @@ package beacon
 import (
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/durability"
+	durability "github.com/campfire-net/campfire/cf-conventions/cf-durability"
 )
 
 // BeaconDurability holds durability metadata extracted from beacon message tags.

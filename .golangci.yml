@@ -132,6 +132,8 @@ linters:
               desc: "L1-narrow: cf-protocol/ must not import L3 extension delegation. See design v2 §4.6"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-authority"
               desc: "L1-narrow: cf-protocol/ must not import cf-conventions/cf-authority (L3). See design v2 §4.6"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-durability"
+              desc: "L1-narrow: cf-protocol/ must not import cf-conventions/cf-durability (L3). See design v2 §4.6 (campfireagent-122)"
             - pkg: "github.com/campfire-net/campfire/pkg/convention"
               desc: "L1-narrow: cf-protocol/ must not import convention machinery (legacy L2 path; removed in campfireagent-4d7). See design v2 §4.6"
 
@@ -179,6 +181,19 @@ linters:
               desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/projection (moved to cf-protocol/projection/ by campfireagent-9f4). See design v2 §4.1"
             - pkg: "github.com/campfire-net/campfire/pkg/admission"
               desc: "L1-protocol: cf-protocol/protocol/ must not import pkg/admission (moved to cf-protocol/admission/ by campfireagent-9f4). See design v2 §4.1"
+
+        # no-pkg-durability — pkg/durability was moved to cf-conventions/cf-durability/ in v0.30.0 (campfireagent-122).
+        #
+        # This rule prevents re-introduction of the deleted package path.
+        # Use github.com/campfire-net/campfire/cf-conventions/cf-durability instead.
+        no-pkg-durability:
+          list-mode: lax
+          files:
+            - "**/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/campfire-net/campfire/pkg/durability"
+              desc: "pkg/durability was moved to cf-conventions/cf-durability/ (campfireagent-122). Use cf-conventions/cf-durability instead."
 
         # no-github-transport — pkg/transport/github was removed in v0.30.0 (campfireagent-964).
         #
