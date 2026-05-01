@@ -7,9 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/naming"
 )
 
 // SignerType indicates how a convention:operation message was signed.
@@ -194,7 +191,18 @@ var validPerValues = map[string]bool{
 	"sender": true, "campfire_id": true, "sender_and_campfire_id": true,
 }
 
-var deniedTagPrefixes = []string{naming.TagPrefix, campfire.TagPrefix}
+// DefaultDeniedTagPrefixes is the default tag-prefix denylist used by Parse.
+// Callers that need a different denylist (e.g., tests or custom environments)
+// may pass their own slice. Pass nil to suppress all prefix-based denials.
+//
+// Values are the wire-format protocol constants for the campfire and naming
+// reserved namespaces. They are inlined here so that L2 (cf-convention machinery)
+// does not need to import L3 packages (pkg/naming, cf-protocol/campfire/tags.go)
+// for these values — closing §9 leak #6 from the 0.30 design brief.
+var DefaultDeniedTagPrefixes = []string{
+	"naming:",   // naming protocol reserved namespace (pkg/naming.TagPrefix)
+	"campfire:", // campfire system reserved namespace (cf-protocol/campfire.TagPrefix)
+}
 var deniedTagExact = map[string]bool{
 	"future": true, "fulfills": true, ConventionOperationTag: true, "convention:schema": true,
 	"convention:revoke": true,
@@ -207,7 +215,12 @@ const maxPatternLen = 64
 const maxAlternations = 10
 
 // Parse validates a convention:operation message against the conformance checker.
-func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*Declaration, *ConformanceResult, error) {
+//
+// deniedPrefixes is the list of tag-namespace prefixes that convention declarations
+// are not permitted to produce. Pass DefaultDeniedTagPrefixes for standard campfire
+// behaviour (denies "campfire:" and "naming:" prefixes). Pass nil to suppress all
+// prefix-based denials (exact-match denials in the denylist still apply).
+func Parse(msgTags []string, payload []byte, senderKey, campfireKey string, deniedPrefixes []string) (*Declaration, *ConformanceResult, error) {
 	result := &ConformanceResult{Valid: true, CampfireKeyAuthorized: true}
 
 	// Check 1: Tag presence — exactly one convention:operation tag.
@@ -342,17 +355,16 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string) (*De
 	// Exception: the naming-uri convention may produce naming: tags (it IS the naming protocol).
 	// Exception: the convention-extension convention may produce convention:operation and
 	// convention:revoke tags (it IS the convention management protocol).
-	skipNamingDeny := decl.Convention == "naming-uri"
 	skipConventionDeny := decl.Convention == InfrastructureConvention
 	for i, tr := range decl.ProducesTags {
 		tag := tr.Tag
-		if skipNamingDeny && strings.HasPrefix(tag, naming.TagPrefix) {
+		if decl.Convention == "naming-uri" && strings.HasPrefix(tag, "naming:") {
 			continue
 		}
 		if skipConventionDeny && (tag == ConventionOperationTag || tag == conventionRevokeTag) {
 			continue
 		}
-		if err := checkDeniedTag(tag); err != nil {
+		if err := checkDeniedTag(tag, deniedPrefixes); err != nil {
 			return nil, nil, fmt.Errorf("produces_tags[%d]: %w", i, err)
 		}
 	}
@@ -567,14 +579,14 @@ func isAlnum(c byte) bool {
 }
 
 // checkDeniedTag verifies a tag is not in the denylist.
-func checkDeniedTag(tag string) error {
+// prefixes is the caller-supplied prefix denylist (from the deniedPrefixes Parse parameter).
+func checkDeniedTag(tag string, prefixes []string) error {
 	// Check exact matches.
 	if deniedTagExact[tag] {
 		return fmt.Errorf("tag %q is reserved", tag)
 	}
-	// Check prefix matches. The tag itself or any value it could match
-	// must not start with denied prefixes.
-	for _, prefix := range deniedTagPrefixes {
+	// Check prefix matches against the caller-supplied denylist.
+	for _, prefix := range prefixes {
 		if strings.HasPrefix(tag, prefix) {
 			return fmt.Errorf("tag %q overlaps with reserved prefix %q", tag, prefix)
 		}

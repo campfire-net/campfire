@@ -42,7 +42,7 @@ var socialPostPayload = []byte(`{
 }`)
 
 func TestParse_ValidSocialPost(t *testing.T) {
-	decl, result, err := Parse(tags(ConventionOperationTag), socialPostPayload, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), socialPostPayload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestParse_ValidVote(t *testing.T) {
 		},
 		"signing": "member_key",
 	})
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestParse_ValidMultiStepWorkflow(t *testing.T) {
 			},
 		},
 	})
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestParse_ValidCampfireKeyOp(t *testing.T) {
 	})
 	// senderKey == campfireKey -> authorized
 	key := "same-key-hex"
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, key, key)
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, key, key, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,21 +157,21 @@ func TestParse_ValidCampfireKeyOp(t *testing.T) {
 }
 
 func TestParse_MissingConventionOperationTag(t *testing.T) {
-	_, _, err := Parse(tags("other:tag"), socialPostPayload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags("other:tag"), socialPostPayload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for missing convention:operation tag")
 	}
 }
 
 func TestParse_DuplicateTag(t *testing.T) {
-	_, _, err := Parse(tags(ConventionOperationTag, ConventionOperationTag), socialPostPayload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag, ConventionOperationTag), socialPostPayload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for duplicate convention:operation tag")
 	}
 }
 
 func TestParse_InvalidJSON(t *testing.T) {
-	_, _, err := Parse(tags(ConventionOperationTag), []byte(`{not json`), testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), []byte(`{not json`), testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -189,7 +189,7 @@ func TestParse_MissingRequiredFields(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := Parse(tags(ConventionOperationTag), mustJSON(tt.payload), testSenderKey, testCampfireKey)
+			_, _, err := Parse(tags(ConventionOperationTag), mustJSON(tt.payload), testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -202,7 +202,7 @@ func TestParse_UnknownArgType(t *testing.T) {
 		"convention": "c", "version": "1", "operation": "op", "signing": "member_key",
 		"args": []any{map[string]any{"name": "x", "type": "banana"}},
 	})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for unknown arg type")
 	}
@@ -213,7 +213,7 @@ func TestParse_InvalidCardinality(t *testing.T) {
 		"convention": "c", "version": "1", "operation": "op", "signing": "member_key",
 		"produces_tags": []any{map[string]any{"tag": "x:y", "cardinality": "many_to_many"}},
 	})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for invalid cardinality")
 	}
@@ -224,7 +224,7 @@ func TestParse_InvalidAntecedentRule(t *testing.T) {
 		"convention": "c", "version": "1", "operation": "op", "signing": "member_key",
 		"antecedents": "exactly_two(target)",
 	})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for invalid antecedent rule")
 	}
@@ -245,7 +245,7 @@ func TestParse_ZeroOrOneSelfPrior(t *testing.T) {
 	})
 	// sender == campfire key (campfire_key signing requires this)
 	key := "campfire-key-abc"
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, key, key)
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, key, key, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestParse_UnsafePattern_TooLong(t *testing.T) {
 		"convention": "c", "version": "1", "operation": "op", "signing": "member_key",
 		"args": []any{map[string]any{"name": "x", "type": "string", "pattern": longPattern}},
 	})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for pattern too long")
 	}
@@ -274,7 +274,7 @@ func TestParse_UnsafePattern_NestedQuantifier(t *testing.T) {
 		"convention": "c", "version": "1", "operation": "op", "signing": "member_key",
 		"args": []any{map[string]any{"name": "x", "type": "string", "pattern": "(a+)+"}},
 	})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for nested quantifier")
 	}
@@ -287,7 +287,7 @@ func TestParse_UnsafePattern_TooManyAlternations(t *testing.T) {
 		"convention": "c", "version": "1", "operation": "op", "signing": "member_key",
 		"args": []any{map[string]any{"name": "x", "type": "string", "pattern": pattern}},
 	})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for too many alternation branches")
 	}
@@ -297,7 +297,7 @@ func TestParse_CampfireKeyNotSigned(t *testing.T) {
 	payload := mustJSON(map[string]any{
 		"convention": "c", "version": "1", "operation": "op", "signing": "campfire_key",
 	})
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, "wrong-key", "campfire-key")
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, "wrong-key", "campfire-key", DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestParse_CampfireKeyWorkflowProhibited(t *testing.T) {
 		},
 	})
 	key := "same-key"
-	_, _, err := Parse(tags(ConventionOperationTag), payload, key, key)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, key, key, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for campfire_key operation with steps")
 	}
@@ -349,7 +349,7 @@ func TestParse_StepsForwardReference(t *testing.T) {
 			},
 		},
 	})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for forward reference in steps")
 	}
@@ -367,7 +367,7 @@ func TestParse_StepsUnboundVariable(t *testing.T) {
 			},
 		},
 	})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for unbound variable reference")
 	}
@@ -380,7 +380,7 @@ func TestParse_DeniedTag(t *testing.T) {
 			map[string]any{"tag": "convention:operation", "cardinality": "exactly_one"},
 		},
 	})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for denied tag")
 	}
@@ -393,7 +393,7 @@ func TestParse_DeniedTagPrefix(t *testing.T) {
 			map[string]any{"tag": "naming:foo", "cardinality": "exactly_one"},
 		},
 	})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for naming: prefixed tag")
 	}
@@ -404,7 +404,7 @@ func TestParse_RateLimitCeiling(t *testing.T) {
 		"convention": "c", "version": "1", "operation": "op", "signing": "member_key",
 		"rate_limit": map[string]any{"max": 200, "per": "sender", "window": "30s"},
 	})
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestParse_RateLimitInvalidPer(t *testing.T) {
 		"convention": "c", "version": "1", "operation": "op", "signing": "member_key",
 		"rate_limit": map[string]any{"max": 10, "per": "global", "window": "5m"},
 	})
-	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -491,7 +491,7 @@ func basePayload(extra map[string]any) []byte {
 // TestParse_ResponseDefaultSync verifies that a declaration with no response field
 // defaults to Response="sync" and ResponseTimeout=30s (backward compatible).
 func TestParse_ResponseDefaultSync(t *testing.T) {
-	decl, result, err := Parse(tags(ConventionOperationTag), basePayload(nil), testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), basePayload(nil), testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestParse_ResponseAsync(t *testing.T) {
 		"response":         "async",
 		"response_timeout": "60s",
 	})
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -531,7 +531,7 @@ func TestParse_ResponseAsync(t *testing.T) {
 // TestParse_ResponseNone verifies that response="none" parses correctly.
 func TestParse_ResponseNone(t *testing.T) {
 	payload := basePayload(map[string]any{"response": "none"})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestParse_ResponseSync(t *testing.T) {
 		"response":         "sync",
 		"response_timeout": "5s",
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -561,7 +561,7 @@ func TestParse_ResponseSync(t *testing.T) {
 // TestParse_ResponseInvalid verifies that an unknown response value returns an error.
 func TestParse_ResponseInvalid(t *testing.T) {
 	payload := basePayload(map[string]any{"response": "invalid"})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for invalid response value")
 	}
@@ -580,7 +580,7 @@ func TestParse_ResponseTimeoutDurationStrings(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.input, func(t *testing.T) {
 			payload := basePayload(map[string]any{"response_timeout": tc.input})
-			decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+			decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 			if err != nil {
 				t.Fatalf("unexpected error for %q: %v", tc.input, err)
 			}
@@ -602,7 +602,7 @@ func TestParse_ResponseRoundTrip(t *testing.T) {
 		"response": "async",
 		"response_timeout": "60s"
 	}`)
-	decl, result, err := Parse(tags(ConventionOperationTag), raw, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), raw, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestParse_ResponseRoundTrip(t *testing.T) {
 // TestParse_ExistingSocialPostBackwardCompat verifies the existing social post
 // declaration still parses with sync defaults (no response field = backward compat).
 func TestParse_ExistingSocialPostBackwardCompat(t *testing.T) {
-	decl, result, err := Parse(tags(ConventionOperationTag), socialPostPayload, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), socialPostPayload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -640,7 +640,7 @@ func TestParse_ExistingSocialPostBackwardCompat(t *testing.T) {
 // is rejected with an error.
 func TestParse_ResponseTimeoutNegativeRejected(t *testing.T) {
 	payload := basePayload(map[string]any{"response_timeout": "-1s"})
-	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err == nil {
 		t.Fatal("expected error for negative response_timeout, got nil")
 	}
@@ -650,7 +650,7 @@ func TestParse_ResponseTimeoutNegativeRejected(t *testing.T) {
 // is clamped to 5min with a warning (not rejected).
 func TestParse_ResponseTimeoutAboveMaxClamped(t *testing.T) {
 	payload := basePayload(map[string]any{"response_timeout": "999999h"})
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error for large response_timeout: %v", err)
 	}
@@ -673,7 +673,7 @@ func TestParse_ResponseTimeoutAboveMaxClamped(t *testing.T) {
 // defaults to 30s.
 func TestParse_ResponseTimeoutZeroDefaultsTo30s(t *testing.T) {
 	payload := basePayload(nil)
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -686,7 +686,7 @@ func TestParse_ResponseTimeoutZeroDefaultsTo30s(t *testing.T) {
 // parses without error and is not clamped.
 func TestParse_ResponseTimeoutValidPasses(t *testing.T) {
 	payload := basePayload(map[string]any{"response_timeout": "2m"})
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -704,7 +704,7 @@ func TestParse_ResponseTimeoutValidPasses(t *testing.T) {
 // causes a 0.16 deprecation warning but still parses successfully (backward compat).
 func TestParse_DeprecationWarning_PayloadRequired(t *testing.T) {
 	payload := basePayload(map[string]any{"payload_required": true})
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -731,7 +731,7 @@ func TestParse_DeprecationWarning_PayloadRequired(t *testing.T) {
 // causes a 0.16 deprecation warning but still parses successfully (backward compat).
 func TestParse_DeprecationWarning_PayloadSchema(t *testing.T) {
 	payload := basePayload(map[string]any{"payload_schema": "https://example.com/schema.json"})
-	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -761,7 +761,7 @@ func TestParse_DeprecationWarning_BothDeprecatedFields(t *testing.T) {
 		"payload_required": true,
 		"payload_schema":   "https://example.com/schema.json",
 	})
-	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -791,7 +791,7 @@ func TestParse_DeprecationWarning_BothDeprecatedFields(t *testing.T) {
 // warnings are emitted when neither payload_required nor payload_schema are present.
 func TestParse_DeprecationWarning_NoneWhenFieldsAbsent(t *testing.T) {
 	payload := basePayload(nil)
-	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -811,7 +811,7 @@ func TestParse_DeprecationWarning_NoneWhenFieldsAbsent(t *testing.T) {
 // truthy usage.
 func TestParse_DeprecationWarning_PayloadRequiredFalseNoWarning(t *testing.T) {
 	payload := basePayload(map[string]any{"payload_required": false})
-	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	_, result, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

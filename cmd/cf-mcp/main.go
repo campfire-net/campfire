@@ -2269,7 +2269,7 @@ func (s *server) handleRemoteJoin(id interface{}, params map[string]interface{},
 			ReceivedAt: store.NowNano(),
 		})
 		// Parse directly and grant campfire-key authority.
-		decl, parseResult, parseErr := convention.Parse(dm.Tags, dm.Payload, campfireID, campfireID)
+		decl, parseResult, parseErr := convention.Parse(dm.Tags, dm.Payload, campfireID, campfireID, convention.DefaultDeniedTagPrefixes)
 		if parseErr != nil {
 			log.Printf("convention: parsing join declaration %s: %v", dm.ID, parseErr)
 			continue

@@ -228,6 +228,7 @@ func (t *digitalTwin) testDeclaration(src declSource) declTestResult {
 		src.payload,
 		t.conventionRegID,
 		t.conventionRegID,
+		convention.DefaultDeniedTagPrefixes,
 	)
 	step2 := declTestStep{Name: "parse"}
 	if err != nil {

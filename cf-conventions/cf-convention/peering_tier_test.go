@@ -21,7 +21,7 @@ func loadPeeringDecl(t *testing.T, filename string) *convention.Declaration {
 		t.Fatalf("read declaration file %s: %v", path, err)
 	}
 	tags := []string{convention.ConventionOperationTag}
-	decl, _, err := convention.Parse(tags, data, provSenderKey, provCampfireKey)
+	decl, _, err := convention.Parse(tags, data, provSenderKey, provCampfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("parse declaration %s: %v", filename, err)
 	}

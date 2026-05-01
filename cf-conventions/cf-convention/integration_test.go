@@ -139,7 +139,7 @@ func TestIntegration_SocialPostRoundtrip(t *testing.T) {
 	campfireKey := "deadbeef" + strings.Repeat("0", 56)
 
 	// 1. Parse.
-	decl, result, err := convention.Parse(tags, socialPostPayload, senderKey, campfireKey)
+	decl, result, err := convention.Parse(tags, socialPostPayload, senderKey, campfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestIntegration_TrustGate(t *testing.T) {
 	senderKey := "aabbcc" + strings.Repeat("0", 58)
 	campfireKey := "deadbeef" + strings.Repeat("0", 56) // different from sender
 
-	decl, result, err := convention.Parse(tags, beaconRegisterPayload, senderKey, campfireKey)
+	decl, result, err := convention.Parse(tags, beaconRegisterPayload, senderKey, campfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestIntegration_CampfireKeyAccepted(t *testing.T) {
 	campfireKey := "deadbeef" + strings.Repeat("0", 56)
 	senderKey := campfireKey
 
-	decl, result, err := convention.Parse(tags, beaconRegisterPayload, senderKey, campfireKey)
+	decl, result, err := convention.Parse(tags, beaconRegisterPayload, senderKey, campfireKey, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestIntegration_OperationalOverride(t *testing.T) {
 	tags := []string{convention.ConventionOperationTag}
 	key := strings.Repeat("a", 64)
 
-	registry, _, err := convention.Parse(tags, socialPostPayload, key, key)
+	registry, _, err := convention.Parse(tags, socialPostPayload, key, key, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse registry decl: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestIntegration_OperationalOverride(t *testing.T) {
 			{"name": "text", "type": "string", "required": true, "max_length": 32768}
 		]
 	}`)
-	local, _, err := convention.Parse(tags, tightPayload, key, key)
+	local, _, err := convention.Parse(tags, tightPayload, key, key, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse local (tight) decl: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestIntegration_OperationalOverride(t *testing.T) {
 			{"name": "text", "type": "string", "required": true, "max_length": 100000}
 		]
 	}`)
-	localLoose, _, err := convention.Parse(tags, loosePayload, key, key)
+	localLoose, _, err := convention.Parse(tags, loosePayload, key, key, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse local (loose) decl: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestIntegration_WorkflowExecution(t *testing.T) {
 	tags := []string{convention.ConventionOperationTag}
 	key := strings.Repeat("b", 64)
 
-	decl, _, err := convention.Parse(tags, profileUpdatePayload, key, key)
+	decl, _, err := convention.Parse(tags, profileUpdatePayload, key, key, convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}

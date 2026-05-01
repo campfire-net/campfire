@@ -53,7 +53,7 @@ func TestHandleConventionTool_IdentityLoadFailure(t *testing.T) {
 		"signing": "member_key"
 	}`)
 	tags := []string{convention.ConventionOperationTag}
-	decl, _, parseErr := convention.Parse(tags, payload, strings.Repeat("a", 64), strings.Repeat("b", 64))
+	decl, _, parseErr := convention.Parse(tags, payload, strings.Repeat("a", 64), strings.Repeat("b", 64), convention.DefaultDeniedTagPrefixes)
 	if parseErr != nil {
 		t.Fatalf("convention.Parse: %v", parseErr)
 	}

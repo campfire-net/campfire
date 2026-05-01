@@ -138,6 +138,7 @@ waitLoop:
 		declPayload,
 		sdk014SenderKey,
 		sdk014CampfireKey,
+		convention.DefaultDeniedTagPrefixes,
 	)
 	if err != nil {
 		t.Fatalf("Phase 6: parse decl: %v", err)

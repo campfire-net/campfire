@@ -15,6 +15,12 @@ package tagspec
 // declarations may not produce them (enforced by the convention parser).
 const CampfirePrefix = "campfire:"
 
+// NamingPrefix is the reserved namespace for naming protocol messages.
+// Tags beginning with this prefix are produced and consumed by the naming
+// protocol; convention declarations may not produce them (enforced by the
+// convention parser).
+const NamingPrefix = "naming:"
+
 // ConventionPrefix is the namespace prefix for convention-defined tags.
 // All convention tags MUST start with this prefix so they are never
 // confused with campfire system tags.

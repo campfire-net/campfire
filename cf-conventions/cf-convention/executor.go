@@ -294,7 +294,7 @@ func (e *Executor) executeSingle(ctx context.Context, decl *Declaration, campfir
 		if isConventionExtension && (tag == ConventionOperationTag || tag == conventionRevokeTag) {
 			continue
 		}
-		if err := checkDeniedTag(tag); err != nil {
+		if err := checkDeniedTag(tag, DefaultDeniedTagPrefixes); err != nil {
 			return nil, fmt.Errorf("composed tag rejected by denylist: %w", err)
 		}
 	}

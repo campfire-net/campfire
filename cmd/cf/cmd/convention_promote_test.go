@@ -229,7 +229,7 @@ func TestConventionPromote_SkipsConflict(t *testing.T) {
 	}
 
 	// Build existing map from what we know was promoted.
-	decl, _, err := convention.Parse([]string{convention.ConventionOperationTag}, payload, agentID.PublicKeyHex(), agentID.PublicKeyHex())
+	decl, _, err := convention.Parse([]string{convention.ConventionOperationTag}, payload, agentID.PublicKeyHex(), agentID.PublicKeyHex(), convention.DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("parsing declaration: %v", err)
 	}

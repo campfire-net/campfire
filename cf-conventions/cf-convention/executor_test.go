@@ -76,7 +76,7 @@ func (m *mockTransport) sendFutureAndAwait(ctx context.Context, campfireID strin
 
 // socialPostDecl returns the §16.1 Declaration.
 func socialPostDecl() *Declaration {
-	decl, _, err := Parse(tags(ConventionOperationTag), socialPostPayload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), socialPostPayload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		panic("socialPostDecl: " + err.Error())
 	}
@@ -104,7 +104,7 @@ func voteDecl() *Declaration {
 		},
 		"signing": "member_key",
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		panic("voteDecl: " + err.Error())
 	}
@@ -134,7 +134,7 @@ func profileUpdateDecl() *Declaration {
 			},
 		},
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		panic("profileUpdateDecl: " + err.Error())
 	}
@@ -154,7 +154,7 @@ func campfireKeyDecl() *Declaration {
 		},
 	})
 	key := "same-key-hex"
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, key, key)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, key, key, DefaultDeniedTagPrefixes)
 	if err != nil {
 		panic("campfireKeyDecl: " + err.Error())
 	}
@@ -174,7 +174,7 @@ func selfPriorDecl() *Declaration {
 		},
 		"signing": "member_key",
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		panic("selfPriorDecl: " + err.Error())
 	}
@@ -398,7 +398,7 @@ func TestExecute_RateLimitExceeded(t *testing.T) {
 			"window": "1m",
 		},
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
@@ -506,11 +506,11 @@ func TestExecute_RateLimitSenderAndCampfire(t *testing.T) {
 			"window": "1m",
 		},
 	})
-	declA, _, err := Parse(tags(ConventionOperationTag), payload, "senderA", "campfireX")
+	declA, _, err := Parse(tags(ConventionOperationTag), payload, "senderA", "campfireX", DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
-	declB, _, err := Parse(tags(ConventionOperationTag), payload, "senderB", "campfireX")
+	declB, _, err := Parse(tags(ConventionOperationTag), payload, "senderB", "campfireX", DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestExecute_RateLimitSharedAcrossExecutors(t *testing.T) {
 			"window": "1m",
 		},
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
@@ -640,7 +640,7 @@ func zeroOrOneSelfPriorDecl() *Declaration {
 		"signing": "campfire_key",
 	})
 	key := "campfire-key-xyz"
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, key, key)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, key, key, DefaultDeniedTagPrefixes)
 	if err != nil {
 		panic("zeroOrOneSelfPriorDecl: " + err.Error())
 	}
@@ -765,7 +765,7 @@ func TestIntegerRange_NegativeRejectedWhenMinDeclaredZero(t *testing.T) {
 			map[string]any{"name": "count", "type": "integer", "required": true, "min": 0},
 		},
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
@@ -925,7 +925,7 @@ func syncDecl() *Declaration {
 			map[string]any{"tag": "test-sync:ask", "cardinality": "exactly_one"},
 		},
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		panic("syncDecl: " + err.Error())
 	}
@@ -945,7 +945,7 @@ func asyncDecl() *Declaration {
 			map[string]any{"tag": "test-async:fire", "cardinality": "exactly_one"},
 		},
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		panic("asyncDecl: " + err.Error())
 	}
@@ -965,7 +965,7 @@ func noneDecl() *Declaration {
 			map[string]any{"tag": "test-none:emit", "cardinality": "exactly_one"},
 		},
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		panic("noneDecl: " + err.Error())
 	}
@@ -1038,7 +1038,7 @@ func TestExecuteResult_Sync_AntecedentsPassedThrough(t *testing.T) {
 		"antecedents": "exactly_one(self_prior)",
 		"signing":     "member_key",
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), syncSelfPriorPayload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), syncSelfPriorPayload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -1159,7 +1159,7 @@ func defaultSyncDecl() *Declaration {
 			map[string]any{"tag": "test-default-sync:notify", "cardinality": "exactly_one"},
 		},
 	})
-	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey)
+	decl, _, err := Parse(tags(ConventionOperationTag), payload, testSenderKey, testCampfireKey, DefaultDeniedTagPrefixes)
 	if err != nil {
 		panic("defaultSyncDecl: " + err.Error())
 	}
