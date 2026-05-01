@@ -93,9 +93,10 @@ func buildConventionMeteringHook(emitter *forge.ForgeEmitter) convention.Meterin
 	}
 }
 
-// wireConventionMetering creates a ConventionDispatcher with a MeteringHook
-// backed by the given ForgeEmitter and sets it on the server.
-// If emitter is nil, no dispatcher is wired and convention metering is disabled.
+// wireConventionMetering creates a ConventionDispatcher and sets it on the server.
+// The dispatcher is always wired with the real DefaultGateEvaluator (Stage 3)
+// so gate enforcement fires unconditionally. The MeteringHook is only wired
+// when emitter is non-nil (nil emitter = local/dev mode, gating active, no billing).
 //
 // When azConnStr is non-empty, uses aztable.TableDispatchStore for cross-instance
 // dedup and billing sweep. Falls back to MemoryDispatchStore for local dev.
@@ -105,9 +106,6 @@ func buildConventionMeteringHook(emitter *forge.ForgeEmitter) convention.Meterin
 //
 // Call at server startup after the ForgeEmitter is initialized.
 func (s *server) wireConventionMetering(emitter *forge.ForgeEmitter) {
-	if emitter == nil {
-		return
-	}
 	var ds convention.DispatchStore
 	if azConnStr := os.Getenv("AZURE_STORAGE_CONNECTION_STRING"); azConnStr != "" {
 		azDS, azErr := aztable.NewDispatchStore(azConnStr)
@@ -121,11 +119,16 @@ func (s *server) wireConventionMetering(emitter *forge.ForgeEmitter) {
 		ds = convention.NewMemoryDispatchStore()
 	}
 	d := convention.NewConventionDispatcher(ds, nil)
-	d.MeteringHook = buildConventionMeteringHook(emitter)
 	// Wire the real cf-authority/trust DefaultGateEvaluator (L3) via ConventionAdapter.
 	// This replaces the AllowAllGateEvaluator stub and activates enforcement of
 	// revocation staleness, scope-widening, and owner-ceiling checks (campfireagent-861).
+	// Gating is unconditional — active in local dev mode and hosted mode alike.
 	d.SetGateEvaluator(trust.NewConventionAdapter())
+	// Wire the metering hook only when a ForgeEmitter is available. In local/dev
+	// mode (emitter = nil or NewLocalEmitter), gating fires but events are discarded.
+	if emitter != nil {
+		d.MeteringHook = buildConventionMeteringHook(emitter)
+	}
 	s.conventionDispatcher = d
 	s.conventionDispatchStore = ds
 	s.fallbackSweep = convention.NewSweeper(d, ds, nil)
