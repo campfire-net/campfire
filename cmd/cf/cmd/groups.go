@@ -30,6 +30,7 @@ func assignCommandGroups() {
 		"root":        groupCampfire,
 		"join-policy": groupCampfire,
 		"trust":        groupCampfire,
+		"approve":      groupCampfire,
 		"ls":       groupCampfire,
 		"use":      groupCampfire,
 		"share":    groupCampfire,
