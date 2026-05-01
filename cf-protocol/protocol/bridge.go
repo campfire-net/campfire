@@ -27,6 +27,24 @@ type BridgeOptions struct {
 	// OnMessage is an optional callback invoked for each bridged message.
 	// direction is "source→dest" or "dest→source".
 	OnMessage func(msg *Message, direction string)
+
+	// Forward enables pass-through mode. When true, the bridge writes the
+	// original message envelope to the destination transport unchanged and
+	// appends exactly one provenance hop signed by the bridging campfire with
+	// Role = campfire.RoleBlindRelay. The message ID, Sender, Signature,
+	// Payload, Tags, Antecedents, and existing Provenance are preserved —
+	// original-author cryptographic attribution survives end-to-end.
+	//
+	// When false (the default), the bridge re-publishes: it calls dest.Send()
+	// with the source message's payload and tags, producing a fresh message ID
+	// and Sender attributed to the bridge agent. Original-author provenance
+	// is NOT preserved in re-publish mode.
+	//
+	// Use Forward: true whenever the upstream and downstream sides share a
+	// signature scheme — e.g. hosted-reader (Tier 3.5), multi-region
+	// mirroring, or any cf→cf relay where original-author trust must reach
+	// the receiver.
+	Forward bool
 }
 
 // dedupMap is a bounded set of seen message IDs. When it exceeds maxEntries,
@@ -91,20 +109,33 @@ func Bridge(ctx context.Context, source, dest *Client, campfireID string, opts B
 					continue // already seen — skip to prevent loops
 				}
 
-				// Forward the message with blind-relay role so IsBridged() returns true.
-				// This marks the forwarded message as having passed through a bridge
-				// transport, per Operator Provenance Convention v0.1 §4.2 (Level 2).
-				sent, err := to.Send(SendRequest{
-					CampfireID:   campfireID,
-					Payload:      msg.Payload,
-					Tags:         msg.Tags,
-					RoleOverride: campfire.RoleBlindRelay,
-				})
-				if err != nil {
-					return err
+				// Deliver the message to the destination.
+				// In pass-through mode (opts.Forward): write the original envelope
+				// unchanged, appending one blind-relay hop signed by the destination
+				// campfire. Message ID, Sender, and Signature are preserved.
+				// In re-publish mode (default): call Send() which produces a new
+				// message attributed to the bridge agent.
+				var sentID string
+				if opts.Forward {
+					forwarded, fwdErr := to.forwardMessage(campfireID, &msg)
+					if fwdErr != nil {
+						return fwdErr
+					}
+					sentID = forwarded.ID
+				} else {
+					sent, sendErr := to.Send(SendRequest{
+						CampfireID:   campfireID,
+						Payload:      msg.Payload,
+						Tags:         msg.Tags,
+						RoleOverride: campfire.RoleBlindRelay,
+					})
+					if sendErr != nil {
+						return sendErr
+					}
+					sentID = sent.ID
 				}
-				// Mark the sent message ID as seen too, so it won't loop back.
-				dedup.add(sent.ID)
+				// Mark the delivered message ID as seen so it won't loop back.
+				dedup.add(sentID)
 
 				if opts.OnMessage != nil {
 					opts.OnMessage(&msg, direction)

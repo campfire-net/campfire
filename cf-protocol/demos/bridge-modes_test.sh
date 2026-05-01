@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # cf-protocol/demos/bridge-modes_test.sh
 #
-# TDD test for campfireagent-7a4: asserts bridge.md exists and contains
-# all required sections. Updated post-veracity-finding to assert:
-#   - 0.30.0 documents re-publish mode only
-#   - pass-through is documented as planned (not implemented)
-#   - no fictional Forward field claims as implemented API
+# TDD test for campfireagent-7a4 (updated post campfireagent-b84):
+# Asserts bridge.md exists and contains all required sections.
+#
+# campfireagent-b84 implemented BridgeOptions.Forward pass-through.
+# Assertions updated to reflect both re-publish and pass-through being
+# present in the implementation.
 #
 # Run:
 #   cd ~/projects/campfire
@@ -17,7 +18,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRIDGE_DOC="$REPO_ROOT/cf-protocol/docs/bridge.md"
-BRIDGE_GO="$REPO_ROOT/pkg/protocol/bridge.go"
+BRIDGE_GO="$REPO_ROOT/cf-protocol/protocol/bridge.go"
 
 PASS=0
 FAIL=0
@@ -77,11 +78,11 @@ echo ""
 
 # ── Step 2: required sections ─────────────────────────────────────────────
 echo "Checking required sections:"
-assert_contains "Section: Mode (re-publish)"              "## Mode"
+assert_contains "Section: Modes"                          "## Modes"
 assert_contains "Section: When to Use"                    "## When to Use"
 assert_contains "Section: The Blind-Relay Role"           "## The Blind-Relay Role"
 assert_contains "Section: What Bridge Does NOT Do"        "## What Bridge Does NOT Do"
-assert_contains "Section: Planned for 0.30.x"             "## Planned for 0.30.x"
+assert_contains "Section: Pass-Through Threat Model"      "## Pass-Through Threat Model"
 assert_contains "Section: Hosted-Reader Case Study"       "## Hosted-Reader Case Study"
 echo ""
 
@@ -92,19 +93,22 @@ assert_contains "States bridge does not decrypt/re-sign"      "decrypt"
 assert_contains "States bridge does not cache"                "cache"
 echo ""
 
-# ── Step 4: 0.30.0 is re-publish only; pass-through is planned ────────────
-echo "Checking 0.30.0 implementation status:"
-assert_contains "0.30.0 mentioned as re-publish baseline"     "0.30.0"
-assert_contains "Pass-through documented as planned"          "Planned"
-assert_contains "rd item campfireagent-4a0 referenced"        "campfireagent-4a0"
+# ── Step 4: both modes documented ─────────────────────────────────────────
+echo "Checking both modes documented:"
+assert_contains "Re-publish mode documented"              "Re-publish"
+assert_contains "Pass-through mode documented"            "pass-through"
+assert_contains "Forward flag documented"                 "Forward"
 echo ""
 
-# ── Step 5: no fictional Forward field claims ──────────────────────────────
-echo "Checking no fictional Forward flag documentation:"
-assert_not_contains "No 'Forward: true' as implemented API"  "Forward: true"
-assert_not_contains "No 'Forward: false' as implemented API" "Forward: false"
-assert_go_not_contains "Forward field absent from BridgeOptions struct" \
-  "Forward[[:space:]]bool"
+# ── Step 5: Forward field IS present (campfireagent-b84 implemented it) ───
+echo "Checking Forward flag presence in Go source:"
+if grep -qE "Forward[[:space:]]+bool" "$BRIDGE_GO" 2>/dev/null; then
+  echo "  PASS: Forward bool present in BridgeOptions (campfireagent-b84)"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: Forward bool absent from BridgeOptions struct" >&2
+  FAIL=$((FAIL + 1))
+fi
 echo ""
 
 # ── Step 6: cross-links ────────────────────────────────────────────────────

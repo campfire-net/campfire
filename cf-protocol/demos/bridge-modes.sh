@@ -22,7 +22,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRIDGE_DOC="$REPO_ROOT/cf-protocol/docs/bridge.md"
-BRIDGE_GO="$REPO_ROOT/pkg/protocol/bridge.go"
+BRIDGE_GO="$REPO_ROOT/cf-protocol/protocol/bridge.go"
 
 PASS=0
 FAIL=0
@@ -81,7 +81,7 @@ assert_contains "§ Mode — Re-Publish"             "$BRIDGE_DOC" "^## Mode"
 assert_contains "§ When to Use"                   "$BRIDGE_DOC" "^## When to Use"
 assert_contains "§ The Blind-Relay Role"          "$BRIDGE_DOC" "^## The Blind-Relay Role"
 assert_contains "§ What Bridge Does NOT Do"       "$BRIDGE_DOC" "^## What Bridge Does NOT Do"
-assert_contains "§ Planned for 0.30.x"            "$BRIDGE_DOC" "^## Planned for 0.30.x"
+assert_contains "§ Pass-Through Threat Model"     "$BRIDGE_DOC" "^## Pass-Through Threat Model"
 assert_contains "§ Hosted-Reader Case Study"      "$BRIDGE_DOC" "^## Hosted-Reader Case Study"
 echo ""
 
@@ -100,24 +100,19 @@ assert_contains "Replay threat addressed"               "$BRIDGE_DOC" "Replay"
 assert_contains "DoS / selective forwarding addressed"  "$BRIDGE_DOC" "Denial of service"
 echo ""
 
-# ── 5. Implementation grounding — re-publish only, no Forward field ────────
-echo "── 5. Go source grounding (re-publish only in 0.30.0) ─────────────────"
-assert_file "pkg/protocol/bridge.go exists" "$BRIDGE_GO"
-assert_contains "BridgeOptions struct present"      "$BRIDGE_GO"    "BridgeOptions"
+# ── 5. Implementation grounding — both modes present (campfireagent-b84) ──
+echo "── 5. Go source grounding (both modes implemented) ─────────────────────"
+assert_file "cf-protocol/protocol/bridge.go exists" "$BRIDGE_GO"
+assert_contains "BridgeOptions struct present"     "$BRIDGE_GO"    "BridgeOptions"
+assert_contains "Forward bool field present"       "$BRIDGE_GO"    "Forward[[:space:]]bool"
 assert_contains "IsBridged referenced in protocol"  \
-  "$REPO_ROOT/pkg/protocol/message.go"              "IsBridged"
-# Forward field must NOT exist — it is not implemented in 0.30.0
-assert_not_contains "Forward field absent from BridgeOptions" "$BRIDGE_GO" "Forward[[:space:]]bool"
+  "$REPO_ROOT/cf-protocol/protocol/message.go"      "IsBridged"
 echo ""
 
-# ── 6. Pass-through documented as planned, not implemented ─────────────────
+# ── 6. Pass-through implemented ────────────────────────────────────────────
 echo "── 6. Pass-through status ─────────────────────────────────────────────"
-assert_contains "Pass-through is planned"                           "$BRIDGE_DOC" "Planned"
-assert_contains "Pass-through references rd item campfireagent-4a0" "$BRIDGE_DOC" "campfireagent-4a0"
-assert_contains "0.30.0 ships re-publish only"                      "$BRIDGE_DOC" "0.30.0"
-# No fictional Forward flag references in implementation context
-assert_not_contains "No 'Forward: true' as implemented API"  "$BRIDGE_DOC" "Forward: true"
-assert_not_contains "No 'Forward: false' as implemented API" "$BRIDGE_DOC" "Forward: false"
+assert_contains "Both modes documented in bridge.md"        "$BRIDGE_DOC" "Pass-through"
+assert_contains "Forward: true usage documented"            "$BRIDGE_DOC" "Forward: true"
 echo ""
 
 # ── 7. Cross-links ────────────────────────────────────────────────────────

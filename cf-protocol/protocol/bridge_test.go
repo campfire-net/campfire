@@ -7,11 +7,14 @@ package protocol_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
@@ -41,6 +44,82 @@ func addMemberFS(t *testing.T, id *identity.Identity, s store.Store, transportBa
 	}); err != nil {
 		t.Fatalf("adding membership: %v", err)
 	}
+}
+
+// setupForwardTestEnv creates a pair of clients for pass-through bridge tests.
+// Unlike the shared-transport setup used by existing bridge tests, forward
+// pass-through requires separate transport directories for source and dest:
+// the source transport is where the original message is written; the dest
+// transport is where the bridge writes the forwarded copy. Without separation,
+// the dest would sync the original (no blind-relay hop) before the bridge
+// appends the hop, and the store's INSERT-OR-IGNORE would prevent the updated
+// version from landing.
+//
+// Returns (source, dest, campfireID). Both clients are members of the same
+// campfire. The campfire state (key material for hop verification) is written
+// to both transport directories.
+func setupForwardTestEnv(t *testing.T) (source, dest *protocol.Client, campfireID string) {
+	t.Helper()
+
+	// Source identity + store + transport dir.
+	srcID, srcStore, srcTransportDir := setupTestEnv(t)
+	campfireID = setupFilesystemCampfire(t, srcID, srcStore, srcTransportDir, campfire.RoleFull)
+
+	// Dest identity + store + its own transport dir.
+	_, destStore, destTransportDir := setupTestEnv(t)
+	destID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating dest identity: %v", err)
+	}
+
+	// Read the campfire state from the source transport and copy it into the
+	// dest transport so dest can verify provenance hops (hop signature is over
+	// the campfire's public key, which lives in campfire.cbor).
+	srcCampfireDir := filepath.Join(srcTransportDir, campfireID)
+	destCampfireDir := filepath.Join(destTransportDir, campfireID)
+	for _, sub := range []string{"members", "messages"} {
+		if err := os.MkdirAll(filepath.Join(destCampfireDir, sub), 0755); err != nil {
+			t.Fatalf("creating dest %s directory: %v", sub, err)
+		}
+	}
+	stateData, err := os.ReadFile(filepath.Join(srcCampfireDir, "campfire.cbor"))
+	if err != nil {
+		t.Fatalf("reading campfire state from source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(destCampfireDir, "campfire.cbor"), stateData, 0644); err != nil {
+		t.Fatalf("writing campfire state to dest: %v", err)
+	}
+
+	// Read the state to get the original CampfireState for decoding.
+	var cfState campfire.CampfireState
+	if err := cfencoding.Unmarshal(stateData, &cfState); err != nil {
+		t.Fatalf("unmarshalling campfire state: %v", err)
+	}
+
+	// Add dest identity as a member in the dest transport and record membership.
+	destTr := fs.New(destTransportDir)
+	if err := destTr.WriteMember(campfireID, campfire.MemberRecord{
+		PublicKey: destID.PublicKey,
+		JoinedAt:  time.Now().UnixNano(),
+		Role:      campfire.RoleFull,
+	}); err != nil {
+		t.Fatalf("writing dest member record: %v", err)
+	}
+	if err := destStore.AddMembership(store.Membership{
+		CampfireID:    campfireID,
+		TransportDir:  destTr.CampfireDir(campfireID),
+		JoinProtocol:  cfState.JoinProtocol,
+		Role:          campfire.RoleFull,
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	}); err != nil {
+		t.Fatalf("adding dest membership: %v", err)
+	}
+
+	source = protocol.New(srcStore, srcID)
+	dest = protocol.New(destStore, destID)
+	return source, dest, campfireID
 }
 
 func TestBridgeUnidirectional(t *testing.T) {
@@ -316,6 +395,294 @@ func TestBridgeTagFilter(t *testing.T) {
 	}
 
 	cancel()
+}
+
+// TestBridgeForwardPreservesIdentity verifies that pass-through mode (Forward:
+// true) delivers the original message ID and Sender to the destination — i.e.
+// the original-author cryptographic attribution is preserved end-to-end.
+// The destination message must carry IsBridged() == true (blind-relay hop
+// appended by the bridge).
+func TestBridgeForwardPreservesIdentity(t *testing.T) {
+	source, dest, campfireID := setupForwardTestEnv(t)
+	srcSenderHex := source.PublicKeyHex()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bridgeErr := make(chan error, 1)
+	go func() {
+		bridgeErr <- protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
+			Forward: true,
+		})
+	}()
+
+	// Give bridge time to subscribe.
+	time.Sleep(300 * time.Millisecond)
+
+	// Send from source.
+	sent, err := source.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("forward preserves identity"),
+		Tags:       []string{"forward-test"},
+	})
+	if err != nil {
+		t.Fatalf("source.Send: %v", err)
+	}
+	origID := sent.ID
+
+	// Wait for the forwarded message to appear on dest.
+	var fwdMsg *protocol.Message
+	deadline := time.After(10 * time.Second)
+	for {
+		result, err := dest.Read(protocol.ReadRequest{
+			CampfireID: campfireID,
+			Tags:       []string{"forward-test"},
+		})
+		if err != nil {
+			t.Fatalf("dest.Read: %v", err)
+		}
+		for i := range result.Messages {
+			m := result.Messages[i]
+			if m.ID == origID {
+				fwdMsg = &m
+				break
+			}
+		}
+		if fwdMsg != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for forwarded message on dest")
+		default:
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	cancel()
+
+	// Core assertions: identity preserved, bridge hop appended.
+	if fwdMsg.ID != origID {
+		t.Errorf("forward: message ID changed: got %q, want %q", fwdMsg.ID, origID)
+	}
+	if fwdMsg.Sender != srcSenderHex {
+		t.Errorf("forward: Sender changed: got %q, want %q", fwdMsg.Sender, srcSenderHex)
+	}
+	if string(fwdMsg.Payload) != "forward preserves identity" {
+		t.Errorf("forward: payload changed: got %q", string(fwdMsg.Payload))
+	}
+	if !fwdMsg.IsBridged() {
+		t.Error("forward: IsBridged() = false, want true — pass-through must append a blind-relay hop")
+	}
+}
+
+// TestBridgeForwardVsRepublish verifies the behavioral difference between
+// Forward=true (pass-through) and Forward=false (re-publish default):
+// - Forward=false: delivered message has a new ID and Sender = bridge agent.
+// - Forward=true: delivered message keeps the original ID and Sender.
+//
+// The forward sub-test uses separate transport directories (setupForwardTestEnv)
+// so the dest store sees only the forwarded copy (with blind-relay hop) and not
+// the original written to the source transport.
+//
+// The republish sub-test uses the shared-transport setup because re-publish
+// produces a fresh message ID; the dest store uniquely identifies the bridged
+// copy and dedup does not interfere.
+func TestBridgeForwardVsRepublish(t *testing.T) {
+	t.Run("forward", func(t *testing.T) {
+		source, dest, campfireID := setupForwardTestEnv(t)
+		srcSenderHex := source.PublicKeyHex()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		go func() {
+			_ = protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
+				Forward: true,
+			})
+		}()
+
+		time.Sleep(300 * time.Millisecond)
+
+		tag := "fvr-forward"
+		sent, err := source.Send(protocol.SendRequest{
+			CampfireID: campfireID,
+			Payload:    []byte("mode test: forward"),
+			Tags:       []string{tag},
+		})
+		if err != nil {
+			t.Fatalf("source.Send: %v", err)
+		}
+
+		var delivered *protocol.Message
+		deadline := time.After(10 * time.Second)
+		for {
+			result, err := dest.Read(protocol.ReadRequest{
+				CampfireID: campfireID,
+				Tags:       []string{tag},
+			})
+			if err != nil {
+				t.Fatalf("dest.Read: %v", err)
+			}
+			for i := range result.Messages {
+				m := result.Messages[i]
+				if string(m.Payload) == "mode test: forward" {
+					delivered = &m
+					break
+				}
+			}
+			if delivered != nil {
+				break
+			}
+			select {
+			case <-deadline:
+				t.Fatal("timeout waiting for message on dest")
+			default:
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+		cancel()
+
+		if delivered.ID != sent.ID {
+			t.Errorf("forward mode: ID changed: got %q, want %q", delivered.ID, sent.ID)
+		}
+		if delivered.Sender != srcSenderHex {
+			t.Errorf("forward mode: Sender changed: got %q, want original sender %q", delivered.Sender, srcSenderHex)
+		}
+		if !delivered.IsBridged() {
+			t.Error("forward mode: IsBridged() = false, want true")
+		}
+	})
+
+	t.Run("republish", func(t *testing.T) {
+		// Re-publish uses shared transport: the bridged copy has a new ID so dedup
+		// does not prevent it from reaching dest.
+		srcID, srcStore, transportDir := setupTestEnv(t)
+		campfireID := setupFilesystemCampfire(t, srcID, srcStore, transportDir, campfire.RoleFull)
+		source := protocol.New(srcStore, srcID)
+
+		destID, destStore, _ := setupTestEnv(t)
+		addMemberFS(t, destID, destStore, transportDir, campfireID)
+		dest := protocol.New(destStore, destID)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		go func() {
+			_ = protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
+				Forward: false,
+			})
+		}()
+
+		time.Sleep(300 * time.Millisecond)
+
+		tag := "fvr-republish"
+		sent, err := source.Send(protocol.SendRequest{
+			CampfireID: campfireID,
+			Payload:    []byte("mode test: republish"),
+			Tags:       []string{tag},
+		})
+		if err != nil {
+			t.Fatalf("source.Send: %v", err)
+		}
+
+		// Wait for the bridge-agent's copy (different sender = destID).
+		var delivered *protocol.Message
+		deadline := time.After(10 * time.Second)
+		for {
+			result, err := dest.Read(protocol.ReadRequest{
+				CampfireID: campfireID,
+				Tags:       []string{tag},
+			})
+			if err != nil {
+				t.Fatalf("dest.Read: %v", err)
+			}
+			for i := range result.Messages {
+				m := result.Messages[i]
+				// In re-publish mode the bridge agent (destID) is the new sender.
+				if string(m.Payload) == "mode test: republish" && m.Sender == destID.PublicKeyHex() {
+					delivered = &m
+					break
+				}
+			}
+			if delivered != nil {
+				break
+			}
+			select {
+			case <-deadline:
+				t.Fatal("timeout waiting for re-published message on dest")
+			default:
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+		cancel()
+
+		if delivered.ID == sent.ID {
+			t.Error("republish mode: ID must differ from original (bridge creates a new message)")
+		}
+		if delivered.Sender == srcID.PublicKeyHex() {
+			t.Errorf("republish mode: Sender must be bridge agent, got original sender %q", delivered.Sender)
+		}
+		if !delivered.IsBridged() {
+			t.Error("republish mode: IsBridged() = false, want true")
+		}
+	})
+}
+
+// TestBridgeForwardUnreachableTarget verifies that when Forward is true and
+// the destination membership is missing (unreachable/unconfigured), the bridge
+// returns a graceful error and does not panic.
+func TestBridgeForwardUnreachableTarget(t *testing.T) {
+	srcID, srcStore, transportDir := setupTestEnv(t)
+	campfireID := setupFilesystemCampfire(t, srcID, srcStore, transportDir, campfire.RoleFull)
+	source := protocol.New(srcStore, srcID)
+
+	// dest has no membership for campfireID — simulates unreachable/unconfigured target.
+	_, destStore, _ := setupTestEnv(t)
+	destID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating dest identity: %v", err)
+	}
+	dest := protocol.New(destStore, destID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bridgeErr := make(chan error, 1)
+	go func() {
+		bridgeErr <- protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
+			Forward: true,
+		})
+	}()
+
+	// Give bridge time to subscribe.
+	time.Sleep(300 * time.Millisecond)
+
+	// Send a message — the bridge will attempt to forward to dest but dest has no
+	// membership, so forwardMessage must return an error.
+	_, sendErr := source.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("unreachable target test"),
+		Tags:       []string{"status"},
+	})
+	if sendErr != nil {
+		t.Fatalf("source.Send: %v", sendErr)
+	}
+
+	// The bridge must return a descriptive error, not hang or panic.
+	select {
+	case err := <-bridgeErr:
+		if err == nil {
+			t.Error("expected error from Bridge with unreachable forward target, got nil")
+		}
+		// Accept context.Canceled only if ctx was cancelled — here we haven't
+		// cancelled it, so a non-nil non-Canceled error is the expected outcome.
+		if err == context.Canceled {
+			t.Error("expected a delivery error, not context.Canceled — bridge should fail on forward error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Bridge did not return within 10 seconds after forward failure")
+	}
 }
 
 func TestBridgeContextCancel(t *testing.T) {
