@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 )
 
 // AuthorityLevel classifies the trust authority of a declaration.

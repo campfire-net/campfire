@@ -19,7 +19,7 @@ import (
 	"os"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/pkg/seed"

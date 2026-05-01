@@ -19,7 +19,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 )
 
 // Compile-time assertion that *TableDispatchStore implements convention.DispatchStore.

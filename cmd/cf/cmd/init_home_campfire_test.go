@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	"github.com/campfire-net/campfire/pkg/convention"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 )
@@ -64,9 +64,9 @@ func TestCreateSelfCampfire_BeaconFileExistsAndTagged(t *testing.T) {
 		t.Fatalf("no beacon matching campfire ID %s in beacon dir", selfCampfireID)
 	}
 
-	// Description must be identity:v1 (= convention.IdentityBeaconTag).
-	if found.Description != convention.IdentityBeaconTag {
-		t.Errorf("beacon description = %q, want %q", found.Description, convention.IdentityBeaconTag)
+	// Description must be identity:v1 (= cfidentity.IdentityBeaconTag).
+	if found.Description != cfidentity.IdentityBeaconTag {
+		t.Errorf("beacon description = %q, want %q", found.Description, cfidentity.IdentityBeaconTag)
 	}
 
 	// Beacon signature must be valid.
@@ -160,7 +160,7 @@ func TestCreateSelfCampfire_MessagesInStore(t *testing.T) {
 	}
 
 	// Expect at least: len(IdentityDeclarations()) genesis messages + 1 introduce-me.
-	minExpected := len(convention.IdentityDeclarations()) + 1
+	minExpected := len(cfidentity.IdentityDeclarations()) + 1
 	if len(msgs) < minExpected {
 		t.Errorf("store has %d messages for self-campfire, want at least %d (declarations + introduce-me)",
 			len(msgs), minExpected)

@@ -16,7 +16,8 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/convention"
+	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/cf-protocol/store"
@@ -76,8 +77,8 @@ func TestIdentityUpgrade_CreatesIdentityCampfire(t *testing.T) {
 	if err := json.Unmarshal(msg0.Payload, &decl); err != nil {
 		t.Fatalf("parsing message 0 payload: %v", err)
 	}
-	if conv, _ := decl["convention"].(string); conv != convention.IdentityConvention {
-		t.Errorf("message 0 convention = %q, want %q", conv, convention.IdentityConvention)
+	if conv, _ := decl["convention"].(string); conv != cfidentity.IdentityConvention {
+		t.Errorf("message 0 convention = %q, want %q", conv, cfidentity.IdentityConvention)
 	}
 }
 
@@ -246,9 +247,9 @@ func TestIdentityUpgrade_IsUpgradeIdentityGenesis(t *testing.T) {
 	campfireID := selfCF.PublicKeyHex()
 
 	// Post campfire-key-signed identity declaration.
-	decls := convention.IdentityDeclarations()
+	decls := cfidentity.IdentityDeclarations()
 	if len(decls) == 0 {
-		t.Fatal("convention.IdentityDeclarations() returned empty slice")
+		t.Fatal("cfidentity.IdentityDeclarations() returned empty slice")
 	}
 	declPayload, err := json.Marshal(decls[0])
 	if err != nil {

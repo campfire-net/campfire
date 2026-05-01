@@ -23,7 +23,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/billing"
 	"github.com/campfire-net/campfire/pkg/forge"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
 )
@@ -134,5 +135,5 @@ func (s *server) wireBillingSweep(emitter *forge.ForgeEmitter) {
 	if s.conventionDispatchStore == nil || emitter == nil {
 		return
 	}
-	s.billingSweep = convention.NewBillingSweep(s.conventionDispatchStore, emitter, nil)
+	s.billingSweep = billing.NewBillingSweep(s.conventionDispatchStore, emitter, nil)
 }

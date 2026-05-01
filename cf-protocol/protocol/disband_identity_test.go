@@ -14,7 +14,8 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/convention"
+	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/message"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
@@ -138,9 +139,9 @@ func createIdentityCampfireForTest(t *testing.T, cfHome string, agentID *identit
 
 	// Post identity convention genesis message signed by campfire key (message 0).
 	// This is the type assertion that makes this an identity campfire.
-	decls := convention.IdentityDeclarations()
+	decls := cfidentity.IdentityDeclarations()
 	if len(decls) == 0 {
-		t.Fatal("convention.IdentityDeclarations() returned empty slice")
+		t.Fatal("cfidentity.IdentityDeclarations() returned empty slice")
 	}
 	declPayload, err := json.Marshal(decls[0])
 	if err != nil {

@@ -3,7 +3,7 @@ package trust
 import (
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 )
 
 // helpers to build minimal declarations for tests.

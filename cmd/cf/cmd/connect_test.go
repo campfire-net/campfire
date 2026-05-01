@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/connect"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/message"
@@ -71,12 +71,12 @@ func seedFulfillment(t *testing.T, agentID *identity.Identity, s store.Store, ta
 	var tags []string
 	var payload map[string]interface{}
 	if accepted {
-		tags = []string{convention.SocialConnectAcceptedTag, "fulfills:" + futureID}
+		tags = []string{connect.SocialConnectAcceptedTag, "fulfills:" + futureID}
 		payload = map[string]interface{}{
 			"requester_campfire_id": "home-campfire-id",
 		}
 	} else {
-		tags = []string{convention.SocialConnectRejectedTag, "fulfills:" + futureID}
+		tags = []string{connect.SocialConnectRejectedTag, "fulfills:" + futureID}
 		payload = map[string]interface{}{
 			"reason": "not accepting connections right now",
 		}
@@ -110,7 +110,7 @@ func postConnectRequest(t *testing.T, agentID *identity.Identity, s store.Store,
 	msg, err := client.Send(protocol.SendRequest{
 		CampfireID: targetID,
 		Payload:    payloadBytes,
-		Tags:       []string{convention.SocialConnectRequestTag, "future"},
+		Tags:       []string{connect.SocialConnectRequestTag, "future"},
 	})
 	if err != nil {
 		t.Fatalf("posting connect-request: %v", err)
@@ -137,14 +137,14 @@ func TestConnectCmd_PostsFuture(t *testing.T) {
 	msg, err := client.Send(protocol.SendRequest{
 		CampfireID: targetID,
 		Payload:    payloadBytes,
-		Tags:       []string{convention.SocialConnectRequestTag, "future"},
+		Tags:       []string{connect.SocialConnectRequestTag, "future"},
 	})
 	if err != nil {
 		t.Fatalf("posting connect-request: %v", err)
 	}
 
 	// Verify the message is on the target campfire with the right tag.
-	msgs, err := s.ListMessages(targetID, 0, store.MessageFilter{Tags: []string{convention.SocialConnectRequestTag}})
+	msgs, err := s.ListMessages(targetID, 0, store.MessageFilter{Tags: []string{connect.SocialConnectRequestTag}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestConnectCmd_PostsFuture(t *testing.T) {
 				if tag == "future" {
 					hasFuture = true
 				}
-				if tag == convention.SocialConnectRequestTag {
+				if tag == connect.SocialConnectRequestTag {
 					hasRequest = true
 				}
 			}
@@ -166,7 +166,7 @@ func TestConnectCmd_PostsFuture(t *testing.T) {
 				t.Error("connect-request message missing 'future' tag")
 			}
 			if !hasRequest {
-				t.Errorf("connect-request message missing %q tag", convention.SocialConnectRequestTag)
+				t.Errorf("connect-request message missing %q tag", connect.SocialConnectRequestTag)
 			}
 		}
 	}
@@ -280,14 +280,14 @@ func TestConnectCeremony_RejectionTagCheck(t *testing.T) {
 	rejectMsg, err := client.Send(protocol.SendRequest{
 		CampfireID: targetID,
 		Payload:    rejectBytes,
-		Tags:       []string{convention.SocialConnectRejectedTag},
+		Tags:       []string{connect.SocialConnectRejectedTag},
 	})
 	if err != nil {
 		t.Fatalf("posting reject message: %v", err)
 	}
 
 	// Verify isConnectRejection detects it.
-	msgs, err := s.ListMessages(targetID, 0, store.MessageFilter{Tags: []string{convention.SocialConnectRejectedTag}})
+	msgs, err := s.ListMessages(targetID, 0, store.MessageFilter{Tags: []string{connect.SocialConnectRejectedTag}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}

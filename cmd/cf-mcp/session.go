@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/pkg/store/aztable"

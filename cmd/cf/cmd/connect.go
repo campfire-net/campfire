@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/connect"
 	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/spf13/cobra"
@@ -93,7 +93,7 @@ Example:
 		connectMsg, err := client.Send(protocol.SendRequest{
 			CampfireID: targetID,
 			Payload:    payloadBytes,
-			Tags:       []string{convention.SocialConnectRequestTag, "future"},
+			Tags:       []string{connect.SocialConnectRequestTag, "future"},
 		})
 		if err != nil {
 			return fmt.Errorf("posting connect-request on %s: %w", targetID[:12], err)
@@ -251,7 +251,7 @@ func isConnectRejection(msg *protocol.Message) bool {
 		return false
 	}
 	for _, tag := range msg.Tags {
-		if tag == convention.SocialConnectRejectedTag {
+		if tag == connect.SocialConnectRejectedTag {
 			return true
 		}
 	}

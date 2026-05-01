@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
@@ -92,6 +92,6 @@ func maybeSendProfileMessage(campfireID string, agentID *identity.Identity, s st
 	client.Send(protocol.SendRequest{ //nolint:errcheck
 		CampfireID: campfireID,
 		Payload:    payload,
-		Tags:       []string{convention.IdentityProfileTag},
+		Tags:       []string{cfidentity.IdentityProfileTag},
 	})
 }

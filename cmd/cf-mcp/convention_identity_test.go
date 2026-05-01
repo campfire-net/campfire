@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 )
 
 // TestHandleConventionTool_IdentityLoadFailure verifies that when no identity
