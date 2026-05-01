@@ -140,6 +140,8 @@ linters:
               desc: "L1-narrow: cf-protocol/ must not import cf-conventions/cf-identity (L3). See design v2 §4.6 (campfireagent-902)"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-discovery"
               desc: "L1-narrow: cf-protocol/ must not import cf-conventions/cf-discovery (L3). See design v2 §4.6 (campfireagent-550)"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-session"
+              desc: "L1-narrow: cf-protocol/ must not import cf-conventions/cf-session (L3). See design v2 §4.6 (campfireagent-c3a)"
             - pkg: "github.com/campfire-net/campfire/pkg/convention"
               desc: "L1-narrow: cf-protocol/ must not import convention machinery (legacy L2 path; removed in campfireagent-4d7). See design v2 §4.6"
 
@@ -331,6 +333,8 @@ linters:
               desc: "L2-no-extensions: L2 machinery (cf-convention/) must not import L3 cf-identity. See design v2 §4.6 (campfireagent-902)"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-discovery"
               desc: "L2-no-extensions: L2 machinery (cf-convention/) must not import L3 cf-discovery. See design v2 §4.6 (campfireagent-550)"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-session"
+              desc: "L2-no-extensions: L2 machinery (cf-convention/) must not import L3 cf-session. See design v2 §4.6 (campfireagent-c3a)"
 
         # L2-no-authority — cf-conventions/cf-convention/ (L2 machinery) must not import L3 authority.
         #

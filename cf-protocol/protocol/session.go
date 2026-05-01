@@ -1,81 +1,64 @@
-// session.go — TRANSITIONAL (Stage 3 placeholder, campfireagent-9f4).
+// session.go — Session type for campfire session campfires (cf 0.30+).
 //
-// This file belongs to the cf-session L3 convention package.
-// It lives here temporarily because Stage 3 (cf-conventions) has not landed yet.
-// Methods on Client (NewSession) and JoinSession must remain here until Stage 3
-// lands, because Go does not allow methods to be defined in a different package
-// from the type. When cf-session ships, this file moves to cf-conventions/cf-session/
-// and NewSession becomes a convention factory function, not a Client method.
+// MIGRATION NOTE (cf 0.30 / campfireagent-c3a):
+// The shared-key session token mechanism has been REMOVED per design v2 §1.2.
+// The old form (NewSession generating a shared ephemeral key, JoinSession
+// decoding a shared private key from the token) is gone.
 //
-// DO NOT add new Session functionality here. Stage 3 is the right place.
+// The new form uses cf-conventions/cf-session for full session orchestration:
+//   - Lazy-mint per-worker grant issuance (§2.9.1)
+//   - Jail-write or signing-proxy key receipt (§2.9.2)
+//   - Disposable session log, canonical grant log (§2.9.3)
+//
+// This file retains only the minimal Session type needed by:
+//   - EmitSessionOpen / EmitSessionClose (session_events.go)
+//   - The cf-session package (cf-conventions/cf-session/)
+//   - Existing callers that create session campfires for coordination
+//
+// Session campfires are now created via NewSession (below) which uses the
+// creator's own identity key (not a shared ephemeral key). The per-worker
+// grant machinery lives in cf-conventions/cf-session.
 package protocol
 
-// session.go — zero-ceremony multi-agent coordination via session tokens.
-//
-// A session is a short-lived campfire identified by a bearer token. The token
-// embeds all state needed to send and receive messages without requiring cf
-// init or CF_HOME — enabling ephemeral, zero-ceremony coordination.
-//
-// SECURITY: Session tokens are bearer credentials. Anyone holding a valid
-// token can post to and read from the session campfire. There is no per-sender
-// attribution inside a session — all participants share the same ephemeral
-// signing key. Use cf join for attributable, durable campfires.
-//
-// The token format is versioned (cfs1_ prefix) to allow future evolution.
-// TTL enforcement is client-side: tokens rejected even 1 nanosecond past expiry.
-
 import (
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/internal/campfire"
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/internal/message"
-	"github.com/campfire-net/campfire/pkg/session"
 	"github.com/campfire-net/campfire/cf-protocol/internal/store"
 	"github.com/campfire-net/campfire/cf-protocol/internal/transport/fs"
+	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/session"
 )
 
 // MaxSessionTTL is the maximum allowed session TTL (24 hours).
 // Re-exported from pkg/session for CLI and SDK callers.
 const MaxSessionTTL = session.MaxTTL
 
-// Session is a handle to a session campfire. It wraps a temporary client and
-// campfire state derived from a decoded session token.
+// Session is a handle to a session campfire. It wraps a protocol Client
+// backed by the session's campfire transport.
 //
 // Session is NOT safe for concurrent use from multiple goroutines.
-// Call Close when done to release resources.
+// Call Close (or End) when done to release resources.
 type Session struct {
-	campfireID   string
-	campfireDir  string // campfire transport directory
-	client       *Client
-	storeDir     string // temporary directory holding the local store; removed on Close
-	ownStore     bool   // this Session owns (and should close) the store
+	campfireID  string
+	campfireDir string // filesystem transport directory for this session campfire
+	client      *Client
+	storeDir    string // temp dir holding the local store; removed on Close
+	ownStore    bool   // whether this Session owns (and should close) the store
 }
 
-// sessionTransportConfig is the JSON structure embedded in the token's
-// TransportConfig field. It records the campfire transport directory so
-// participants can locate the filesystem transport without CF_HOME.
-type sessionTransportConfig struct {
-	Protocol    string `json:"protocol"`
-	CampfireDir string `json:"campfire_dir"`
-}
-
-// NewSession creates a new session campfire and returns a bearer token.
+// NewSession creates a new session campfire using the caller's own identity key.
 //
-// The caller's identity is used to sign the token. The session campfire is
-// created in a temporary directory — it lives as long as the process or until
-// the caller calls Session.End.
+// The creator's identity signs all messages in this session. Per-worker key
+// issuance and grant management are handled by cf-conventions/cf-session.
 //
-// ttl must be > 0 and <= 24h. Returns an error if ttl exceeds the maximum.
+// ttl must be > 0 and ≤ MaxSessionTTL (24h).
 //
-// SECURITY: The returned token is a bearer credential. Treat it like a
-// password — do not log it, do not embed it in URLs, transmit only over
-// encrypted channels.
+// Returns the session handle and the hex-encoded campfire ID on success.
+// Returns an error if the client has no identity or the ttl is out of range.
 func (c *Client) NewSession(ttl time.Duration) (*Session, string, error) {
 	if c.identity == nil {
 		return nil, "", fmt.Errorf("protocol.NewSession: identity required")
@@ -94,14 +77,6 @@ func (c *Client) NewSession(ttl time.Duration) (*Session, string, error) {
 	}
 	campfireID := cf.PublicKeyHex()
 
-	// Generate ephemeral signing keypair shared among all session participants.
-	// Using the creator's identity is intentionally avoided — the shared key
-	// means no per-sender attribution inside the session (documented trade-off).
-	ephPub, ephPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, "", fmt.Errorf("protocol.NewSession: generating ephemeral key: %w", err)
-	}
-
 	// Create temporary directory for the session campfire transport.
 	tmpDir, err := os.MkdirTemp("", "cf-session-")
 	if err != nil {
@@ -115,41 +90,15 @@ func (c *Client) NewSession(ttl time.Duration) (*Session, string, error) {
 		return nil, "", fmt.Errorf("protocol.NewSession: initializing transport: %w", err)
 	}
 
-	// Admit creator as first member using the shared ephemeral key.
+	// Admit creator as first member using their own identity key.
 	campfireDir := tr.CampfireDir(campfireID)
 	if err := tr.WriteMember(campfireID, campfire.MemberRecord{
-		PublicKey: ephPub,
+		PublicKey: c.identity.PublicKey,
 		JoinedAt:  time.Now().UnixNano(),
 		Role:      campfire.RoleFull,
 	}); err != nil {
 		os.RemoveAll(tmpDir)
 		return nil, "", fmt.Errorf("protocol.NewSession: writing member record: %w", err)
-	}
-
-	// Build transport config for embedding in the token.
-	transportConfig := sessionTransportConfig{
-		Protocol:    "filesystem",
-		CampfireDir: campfireDir,
-	}
-	transportConfigBytes, err := json.Marshal(transportConfig)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		return nil, "", fmt.Errorf("protocol.NewSession: encoding transport config: %w", err)
-	}
-
-	// Encode the session token (signed by creator's identity key).
-	tok, err := session.EncodeToken(session.TokenParams{
-		CampfireID:       cf.PublicKey,
-		EphemeralPubKey:  ephPub,
-		EphemeralPrivKey: ephPriv,
-		TransportConfig:  transportConfigBytes,
-		TTL:              ttl,
-		CreatorPub:    c.identity.PublicKey,
-		CreatorSigner: c.identity.NewSigner().Sign,
-	})
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		return nil, "", fmt.Errorf("protocol.NewSession: encoding token: %w", err)
 	}
 
 	// Open a local store for session membership.
@@ -159,7 +108,7 @@ func (c *Client) NewSession(ttl time.Duration) (*Session, string, error) {
 		return nil, "", fmt.Errorf("protocol.NewSession: creating store dir: %w", err)
 	}
 
-	sess, err := buildSessionClient(campfireID, campfireDir, storeDir, ephPub, ephPriv)
+	sess, err := buildSessionClient(campfireID, campfireDir, storeDir, c.identity)
 	if err != nil {
 		os.RemoveAll(tmpDir)
 		os.RemoveAll(storeDir)
@@ -167,82 +116,21 @@ func (c *Client) NewSession(ttl time.Duration) (*Session, string, error) {
 	}
 	sess.ownStore = true
 
-	return sess, tok, nil
-}
-
-// JoinSession decodes a session token and returns a Session handle for
-// sending and reading messages in the session campfire.
-//
-// creatorPub is the expected token creator's public key. Pass nil to skip
-// creator identity verification (less strict — token signature is still
-// verified using the key embedded in the token itself).
-//
-// Returns an error if the token is expired, malformed, or the signature fails.
-//
-// SECURITY: The token is a bearer credential. All participants share the same
-// ephemeral signing key — there is no per-sender attribution.
-func JoinSession(tok string, creatorPub ed25519.PublicKey) (*Session, error) {
-	decoded, err := session.DecodeToken(tok, creatorPub)
-	if err != nil {
-		return nil, fmt.Errorf("protocol.JoinSession: %w", err)
-	}
-
-	var transportConfig sessionTransportConfig
-	if err := json.Unmarshal(decoded.TransportConfig, &transportConfig); err != nil {
-		return nil, fmt.Errorf("protocol.JoinSession: decoding transport config: %w", err)
-	}
-
-	campfireID := fmt.Sprintf("%x", decoded.CampfireID)
-
-	// Open a temporary store for this joiner's membership.
-	storeDir, err := os.MkdirTemp("", "cf-session-store-")
-	if err != nil {
-		return nil, fmt.Errorf("protocol.JoinSession: creating store dir: %w", err)
-	}
-
-	sess, err := buildSessionClient(
-		campfireID, transportConfig.CampfireDir, storeDir,
-		decoded.EphemeralPubKey, decoded.EphemeralPrivKey,
-	)
-	if err != nil {
-		os.RemoveAll(storeDir)
-		return nil, fmt.Errorf("protocol.JoinSession: %w", err)
-	}
-	sess.ownStore = true
-
-	// Write the joiner's ephemeral member record to the filesystem transport.
-	// This is best-effort: if the campfire dir is remote or already has this
-	// member record, it may fail; that's acceptable.
-	tr := fs.ForDir(transportConfig.CampfireDir)
-	tr.WriteMember(campfireID, campfire.MemberRecord{ //nolint:errcheck
-		PublicKey: decoded.EphemeralPubKey,
-		JoinedAt:  time.Now().UnixNano(),
-		Role:      campfire.RoleFull,
-	})
-
-	return sess, nil
+	return sess, campfireID, nil
 }
 
 // buildSessionClient creates a Client backed by a new store in storeDir,
-// using the shared ephemeral keypair as the session identity.
+// using the given identity for signing.
 func buildSessionClient(
 	campfireID, campfireDir, storeDir string,
-	ephPub ed25519.PublicKey, ephPriv ed25519.PrivateKey,
+	id *identity.Identity,
 ) (*Session, error) {
 	rawStore, err := store.Open(store.StorePath(storeDir))
 	if err != nil {
 		return nil, fmt.Errorf("opening store: %w", err)
 	}
 
-	// Construct a temporary identity using the shared ephemeral keypair.
-	// identity.Identity is a plain struct — we can construct one directly.
-	ephID := &identity.Identity{
-		PublicKey:  ephPub,
-		PrivateKey: ephPriv,
-		CreatedAt:  time.Now().UnixNano(),
-	}
-
-	client := New(rawStore, ephID)
+	client := New(rawStore, id)
 
 	// Record membership so Send/Read can resolve the transport.
 	membership := store.Membership{
