@@ -39,6 +39,18 @@ func loadPinStore() (*trust.PinStore, error) {
 	return trust.NewPinStore(pinPath, agentID.PrivateKey)
 }
 
+// loadKeyPinStore opens the operator key pin store from the agent's identity home.
+// Key pins are per-campfire TOFU pubkey pins managed by the operator via
+// cf trust pin/unpin/list/prune.
+func loadKeyPinStore() (*trust.KeyPinStore, error) {
+	agentID, err := identity.Load(IdentityPath())
+	if err != nil {
+		return nil, fmt.Errorf("loading identity: %w", err)
+	}
+	pinPath := filepath.Join(CFHome(), "key-pins.json")
+	return trust.NewKeyPinStore(pinPath, agentID.PrivateKey)
+}
+
 // loadLocalPolicyEngine builds a PolicyEngine seeded with the agent's home
 // campfire declarations. Returns a new, initialized-but-empty engine on error
 // (best-effort: missing home campfire is not fatal for join).
