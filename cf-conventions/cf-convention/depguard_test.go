@@ -7,7 +7,7 @@
 //
 // This satisfies done-condition 3 (adversarial case):
 //
-//	"depguard probe: cf-conventions/cf-convention/ importing cf-conventions/cf-convention-extensions/*
+//	"depguard probe: cf-conventions/cf-convention/ importing cf-conventions/cf-convention-extension/*
 //	is caught and rejected."
 //
 // Usage:
@@ -47,7 +47,7 @@ func TestDepguardL2NoExtensionsClean(t *testing.T) {
 
 // TestDepguardL2NoExtensionsCatchesForbiddenImport proves the L2-no-extensions
 // depguard rule fires when cf-conventions/cf-convention/ imports
-// cf-conventions/cf-convention-extensions/* (L3).
+// cf-conventions/cf-convention-extension/* (L3).
 //
 // This is the adversarial condition from done-condition 3.
 func TestDepguardL2NoExtensionsCatchesForbiddenImport(t *testing.T) {
@@ -59,7 +59,7 @@ func TestDepguardL2NoExtensionsCatchesForbiddenImport(t *testing.T) {
 	repoRoot := findRepoRoot(t)
 
 	// Create a temporary sub-package inside cf-conventions/cf-convention/ that imports
-	// cf-conventions/cf-convention-extensions/identity — a deliberate L2 violation.
+	// cf-conventions/cf-convention-extension/identity — a deliberate L2 violation.
 	// Placed inside cf-conventions/cf-convention/ so the depguard rule files pattern matches.
 	violationDir := filepath.Join(repoRoot, "cf-conventions", "cf-convention", "depguard-l2-violation-probe")
 	if err := os.MkdirAll(violationDir, 0750); err != nil {
@@ -74,7 +74,7 @@ package depguardl2violationprobe
 
 import (
 	// L2-no-extensions violation: L2 machinery importing L3 extensions.
-	_ "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
+	_ "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/identity"
 )
 `
 	if err := os.WriteFile(violationFile, []byte(violationSrc), 0600); err != nil {

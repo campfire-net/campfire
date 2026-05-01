@@ -3,8 +3,8 @@
 # Layer-boundary enforcement (design v2 §4.6):
 #   L1 = cf-protocol/ (substrate: message envelope, signatures, store, transports)
 #   L2 = cf-conventions/cf-convention/ (convention machinery: parser, executor, dispatcher, server)
-#   L3 = cf-conventions/cf-convention-extensions/* (applied conventions: identity, connect, billing, delegation)
-#      + pkg/trust, pkg/naming (legacy L3; pending migration to cf-convention-extensions)
+#   L3 = cf-conventions/cf-convention-extension/* (applied conventions: identity, connect, billing, delegation)
+#      + pkg/trust, pkg/naming (legacy L3; pending migration to cf-convention-extension)
 #
 # Legacy L2 path (pkg/convention/) has been removed (campfireagent-4d7). Rules referencing
 # pkg/convention are retained as tombstones to catch accidental re-introduction of deleted imports.
@@ -122,14 +122,16 @@ linters:
               desc: "L1-narrow: cf-protocol/ must not import cf-conventions (L2). See design v2 §4.6"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention"
               desc: "L1-narrow: cf-protocol/ must not import cf-conventions/cf-convention (L2 machinery). See design v2 §4.6"
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/identity"
               desc: "L1-narrow: cf-protocol/ must not import L3 extension identity. See design v2 §4.6"
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/connect"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-connect"
               desc: "L1-narrow: cf-protocol/ must not import L3 extension connect. See design v2 §4.6"
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/billing"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/billing"
               desc: "L1-narrow: cf-protocol/ must not import L3 extension billing. See design v2 §4.6"
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/delegation"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/delegation"
               desc: "L1-narrow: cf-protocol/ must not import L3 extension delegation. See design v2 §4.6"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension"
+              desc: "L1-narrow: cf-protocol/ must not import L3 cf-convention-extension top-level package. See design v2 §4.6 (campfireagent-a40)"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-authority"
               desc: "L1-narrow: cf-protocol/ must not import cf-conventions/cf-authority (L3). See design v2 §4.6"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-durability"
@@ -248,10 +250,10 @@ linters:
         # L3 implementations (pkg/trust, pkg/naming) are permitted to import the public
         # cf-conventions/cf-convention API. They must NOT import internal sub-packages or
         # the delegation extension (which is itself L3 and cross-L3 imports are forbidden):
-        #   - cf-conventions/cf-convention-extensions/delegation (L3 extension, not L2 API)
+        #   - cf-conventions/cf-convention-extension/delegation (L3 extension, not L2 API)
         #
         # Note: pkg/convention/delegation and pkg/convention/declarations no longer exist
-        # (delegation moved to cf-convention-extensions/delegation/ in campfireagent-4d7;
+        # (delegation moved to cf-convention-extension/delegation/ in campfireagent-4d7;
         # declarations/ was absorbed into cf-convention/ machinery).
         #
         # Applies to: all non-test files in pkg/trust and pkg/naming.
@@ -269,18 +271,18 @@ linters:
               desc: "B3: legacy path (removed in campfireagent-4d7) — if this fires, a deleted import was re-added. See CONTRIBUTING.md §Cross-Layer Import Policy (design v2 §4.6)"
             - pkg: "github.com/campfire-net/campfire/pkg/convention/declarations"
               desc: "B3: legacy path (removed in campfireagent-4d7) — if this fires, a deleted import was re-added. See CONTRIBUTING.md §Cross-Layer Import Policy (design v2 §4.6)"
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/delegation"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/delegation"
               desc: "B3: L3 (pkg/trust, pkg/naming) must not import another L3 extension (delegation). See CONTRIBUTING.md §Cross-Layer Import Policy (design v2 §4.6)"
 
         # L2-no-extensions — cf-conventions/cf-convention/ (L2 machinery) must not import L3.
         #
         # cf-conventions/cf-convention/ is the Layer-2 convention machinery (parser, executor,
         # dispatcher, server, dispatch_store, sweep, toolgen, builder, lint). The applied-convention
-        # implementations live in cf-conventions/cf-convention-extensions/* (L3):
-        #   - cf-convention-extensions/identity/ — identity convention semantics
-        #   - cf-convention-extensions/connect/   — social/connect convention
-        #   - cf-convention-extensions/billing/   — billing sweep convention
-        #   - cf-convention-extensions/delegation/ — delegation convention
+        # implementations live in cf-conventions/cf-convention-extension/* (L3):
+        #   - cf-convention-extension/identity/ — identity convention semantics
+        #   - cf-connect/   — social/connect convention
+        #   - cf-convention-extension/billing/   — billing sweep convention
+        #   - cf-convention-extension/delegation/ — delegation convention
         #
         # The L2 machinery declares interfaces (GateEvaluator, ProvenanceChecker) whose
         # default implementations live in L3. The machinery must not import its own
@@ -290,16 +292,16 @@ linters:
         # Exempt: *_test.go files, which may cross layers for integration tests.
         #
         # Tracked allowances:
-        #   - cf-conventions/cf-convention/identity_resolver.go — imports cf-convention-extensions/delegation
+        #   - cf-conventions/cf-convention/identity_resolver.go — imports cf-convention-extension/delegation
         #     for delegation.GrantInfo and delegation.Resolve used by GrantChainResolver and CompositeResolver.
-        #     Pending: Stage 3 will move GrantChainResolver to cf-convention-extensions, leaving only
+        #     Pending: Stage 3 will move GrantChainResolver to cf-convention-extension, leaving only
         #     the IdentityResolver interface and NoopIdentityResolver in L2 machinery. Once moved,
         #     this exemption and file exclusion are removed. Citation: campfireagent-4d7 Stage 2 scaffold,
         #     OPEN-018.
         #
         # Note on pkg patterns: golangci-lint depguard matches pkg paths as prefix strings;
         # the /** suffix is not a real glob. Each L3 extension package is denied by exact path.
-        # Add a deny entry here whenever a new cf-convention-extensions/<name> package is added.
+        # Add a deny entry here whenever a new cf-convention-extension/<name> package is added.
         #
         # Adversarial test: cf-conventions/cf-convention/depguard_test.go
         # TestDepguardL2NoExtensionsCatchesForbiddenImport (added in campfireagent-4d7).
@@ -311,14 +313,16 @@ linters:
             - "!**/*_test.go"
             - "!**/cf-conventions/cf-convention/identity_resolver.go"
           deny:
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/identity"
               desc: "L2-no-extensions: L2 machinery (cf-convention/) must not import L3 extension identity. See design v2 §4.6 (campfireagent-4d7)"
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/connect"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-connect"
               desc: "L2-no-extensions: L2 machinery must not import L3 extension connect. See design v2 §4.6 (campfireagent-4d7)"
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/billing"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/billing"
               desc: "L2-no-extensions: L2 machinery must not import L3 extension billing. See design v2 §4.6 (campfireagent-4d7)"
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/delegation"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/delegation"
               desc: "L2-no-extensions: L2 machinery must not import L3 extension delegation (OPEN-018: identity_resolver.go exempt pending Stage 3 refactor). See design v2 §4.6 (campfireagent-4d7)"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension"
+              desc: "L2-no-extensions: L2 machinery must not import L3 cf-convention-extension top-level package (promote/supersede ops). See design v2 §4.6 (campfireagent-a40)"
 
         # L2-no-authority — cf-conventions/cf-convention/ (L2 machinery) must not import L3 authority.
         #

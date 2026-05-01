@@ -40,7 +40,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/billing"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/billing"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/forge"
 	"github.com/campfire-net/campfire/pkg/identity"

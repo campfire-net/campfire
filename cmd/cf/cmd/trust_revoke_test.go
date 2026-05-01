@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/delegation"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/delegation"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 )

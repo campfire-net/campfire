@@ -5,13 +5,13 @@ package convention_test
 import (
 	"testing"
 
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/delegation"
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/delegation"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/identity"
 )
 
 // TestRevokedTagMatchesConventionConstant guards against silent drift between
-// the identity.IdentityRevokedTag constant (cf-convention-extensions/identity/identity.go) and
-// delegation.RevokedTag (cf-convention-extensions/delegation/trust.go).
+// the identity.IdentityRevokedTag constant (cf-convention-extension/identity/identity.go) and
+// delegation.RevokedTag (cf-convention-extension/delegation/trust.go).
 //
 // The delegation package cannot import identity (would create a cross-extension dependency),
 // so the string "identity:revoked" is duplicated by necessity.

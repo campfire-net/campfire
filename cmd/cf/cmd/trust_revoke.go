@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/delegation"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/delegation"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/spf13/cobra"
 )
