@@ -76,7 +76,7 @@ package depguardviolationprobe
 
 import (
 	// L1-narrow violation: cf-protocol/ importing L2 convention machinery.
-	_ "github.com/campfire-net/campfire/pkg/convention"
+	_ "github.com/campfire-net/campfire/cf-conventions/cf-convention"
 )
 `
 	if err := os.WriteFile(violationFile, []byte(violationSrc), 0600); err != nil {

@@ -9,7 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/cf-protocol/store"
@@ -118,8 +119,8 @@ func TestCreateSelfCampfire_GenesisMessageSignedByCampfireKey(t *testing.T) {
 	if err := json.Unmarshal(msg0.Payload, &decl); err != nil {
 		t.Fatalf("parsing message 0 payload: %v", err)
 	}
-	if conv, _ := decl["convention"].(string); conv != convention.IdentityConvention {
-		t.Errorf("message 0 convention = %q, want %q", conv, convention.IdentityConvention)
+	if conv, _ := decl["convention"].(string); conv != cfidentity.IdentityConvention {
+		t.Errorf("message 0 convention = %q, want %q", conv, cfidentity.IdentityConvention)
 	}
 
 	// Message 0 sender must be the campfire key (not agent key).
@@ -175,7 +176,7 @@ func TestCreateSelfCampfire_IntroduceMeSignedByAgentKey(t *testing.T) {
 	}
 	for _, msg := range msgs {
 		for _, tag := range msg.Tags {
-			if tag == convention.IdentityIntroductionTag {
+			if tag == cfidentity.IdentityIntroductionTag {
 				// Capture this message's sender and tags for verification.
 				capMsg := msg // copy
 				_ = capMsg
@@ -200,7 +201,7 @@ func TestCreateSelfCampfire_IntroduceMeSignedByAgentKey(t *testing.T) {
 	foundIntro := false
 	for _, msg := range msgs {
 		for _, tag := range msg.Tags {
-			if tag == convention.IdentityIntroductionTag {
+			if tag == cfidentity.IdentityIntroductionTag {
 				foundIntro = true
 				// Must be signed by agent, not campfire.
 				if msg.SenderHex() != agentID.PublicKeyHex() {

@@ -14,7 +14,8 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/convention"
+	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/message"
@@ -315,7 +316,7 @@ func TestInitCreatesSeedCampfire(t *testing.T) {
 		if err := json.Unmarshal(msg.Payload, &decl); err != nil {
 			continue
 		}
-		if decl.Convention == convention.IdentityConvention {
+		if decl.Convention == cfidentity.IdentityConvention {
 			foundIdentityDecl = true
 			break
 		}

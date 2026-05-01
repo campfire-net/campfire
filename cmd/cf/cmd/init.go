@@ -9,7 +9,8 @@ import (
 
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/convention"
+	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/message"
 	"github.com/campfire-net/campfire/pkg/naming"
@@ -335,7 +336,7 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity, durable bool)
 	// This is the type assertion that makes this a self-campfire — the genesis message
 	// is signed by the campfire's own key, not the agent key.
 	// We post ALL four identity declarations so the convention is fully registered.
-	for i, decl := range convention.IdentityDeclarations() {
+	for i, decl := range cfidentity.IdentityDeclarations() {
 		declPayload, err := json.Marshal(decl)
 		if err != nil {
 			return "", "", fmt.Errorf("marshaling identity declaration %d: %w", i, err)
@@ -366,7 +367,7 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity, durable bool)
 		return "", "", fmt.Errorf("marshaling introduce-me payload: %w", err)
 	}
 	agentSigner := agentID.NewSigner()
-	introduceMsg, err := message.NewMessage(agentSigner, introduceMeBytes, []string{convention.IdentityIntroductionTag}, nil)
+	introduceMsg, err := message.NewMessage(agentSigner, introduceMeBytes, []string{cfidentity.IdentityIntroductionTag}, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("creating introduce-me message: %w", err)
 	}
@@ -429,7 +430,7 @@ func createSelfCampfire(cfHome string, agentID *identity.Identity, durable bool)
 			Protocol: "filesystem",
 			Config:   map[string]string{"dir": transportDir},
 		},
-		convention.IdentityBeaconTag,
+		cfidentity.IdentityBeaconTag,
 	)
 	if err != nil {
 		return "", "", fmt.Errorf("creating identity:v1 beacon: %w", err)

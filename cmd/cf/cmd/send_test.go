@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 )
 
 // sendTestValidDecl is a minimal valid convention declaration for send tests.

@@ -39,7 +39,8 @@ import (
 	"github.com/campfire-net/campfire/cf-protocol/admission"
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/convention"
+	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/billing"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/forge"
 	"github.com/campfire-net/campfire/pkg/identity"
@@ -144,7 +145,7 @@ type server struct {
 	forgeAccounts        *forgeAccountManager         // non-nil when FORGE_SERVICE_KEY is set; auto-provisions Forge sub-accounts
 	conventionDispatcher     *convention.ConventionDispatcher    // non-nil when convention metering is enabled (M8)
 	conventionDispatchStore  convention.DispatchStore            // same store as conventionDispatcher; shared by billingSweep
-	billingSweep             *convention.BillingSweep            // non-nil when convention billing sweep is enabled
+	billingSweep             *billing.BillingSweep            // non-nil when convention billing sweep is enabled
 	fallbackSweep            *convention.Sweeper                 // non-nil when convention dispatching is enabled; runs on-demand via /sweep
 	conventionServerStore    aztable.ConventionServerStore       // non-nil when Azure Table Storage is available (T4)
 	operatorSessionIdx  *operatorSessionIndex // bidirectional map of operator account IDs ↔ session tokens (forge-tk- auth)

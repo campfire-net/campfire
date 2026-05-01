@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	"github.com/campfire-net/campfire/pkg/convention"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
@@ -121,7 +121,7 @@ Example:
 		mA_msg, err := client.Send(protocol.SendRequest{
 			CampfireID: campfireAID,
 			Payload:    declareHomeBPayloadBytes,
-			Tags:       []string{convention.IdentityHomeDeclaredTag},
+			Tags:       []string{cfidentity.IdentityHomeDeclaredTag},
 		})
 		if err != nil {
 			return fmt.Errorf("posting declare-home(B) on campfire A: %w", err)
@@ -141,7 +141,7 @@ Example:
 		mB_msg, err := client.Send(protocol.SendRequest{
 			CampfireID: campfireBID,
 			Payload:    declareHomeAPayloadBytes,
-			Tags:       []string{convention.IdentityHomeDeclaredTag},
+			Tags:       []string{cfidentity.IdentityHomeDeclaredTag},
 		})
 		if err != nil {
 			return fmt.Errorf("posting declare-home(A) on campfire B: %w", err)
@@ -167,7 +167,7 @@ Example:
 		echoMsg, err := client.Send(protocol.SendRequest{
 			CampfireID: campfireAID,
 			Payload:    echoPayloadBytes,
-			Tags:       []string{convention.IdentityHomeEchoTag},
+			Tags:       []string{cfidentity.IdentityHomeEchoTag},
 			Antecedents: []string{mA_msg.ID},
 		})
 		if err != nil {
@@ -185,7 +185,7 @@ Example:
 				Protocol: "filesystem",
 				Config:   map[string]string{"dir": trA.CampfireDir(campfireAID)},
 			},
-			convention.IdentityBeaconTag,
+			cfidentity.IdentityBeaconTag,
 		)
 		if err != nil {
 			return fmt.Errorf("creating identity:v1 beacon: %w", err)
@@ -205,9 +205,9 @@ Example:
 		fmt.Fprintf(cmd.OutOrStdout(), "  M_B: %s (declare-home(A) on B)\n", mB_msg.ID)
 		fmt.Fprintf(cmd.OutOrStdout(), "  echo: %s (signed by campfire B key on A)\n", echoMsg.ID)
 		fmt.Fprintf(cmd.OutOrStdout(), "\nthird-party verification:\n")
-		fmt.Fprintf(cmd.OutOrStdout(), "  1. Read messages tagged %q on campfire A — see M_A\n", convention.IdentityHomeDeclaredTag)
-		fmt.Fprintf(cmd.OutOrStdout(), "  2. Read messages tagged %q on campfire B — see M_B\n", convention.IdentityHomeDeclaredTag)
-		fmt.Fprintf(cmd.OutOrStdout(), "  3. Read message tagged %q on campfire A — verify signed_by_b against campfire B pubkey\n", convention.IdentityHomeEchoTag)
+		fmt.Fprintf(cmd.OutOrStdout(), "  1. Read messages tagged %q on campfire A — see M_A\n", cfidentity.IdentityHomeDeclaredTag)
+		fmt.Fprintf(cmd.OutOrStdout(), "  2. Read messages tagged %q on campfire B — see M_B\n", cfidentity.IdentityHomeDeclaredTag)
+		fmt.Fprintf(cmd.OutOrStdout(), "  3. Read message tagged %q on campfire A — verify signed_by_b against campfire B pubkey\n", cfidentity.IdentityHomeEchoTag)
 
 		if jsonOutput {
 			out := map[string]interface{}{
@@ -291,7 +291,7 @@ from any campfire where the key was admitted on your behalf.`,
 		revokeMsg, err := client.Send(protocol.SendRequest{
 			CampfireID: homeID,
 			Payload:    revokePayloadBytes,
-			Tags:       []string{convention.IdentityRevokedTag},
+			Tags:       []string{cfidentity.IdentityRevokedTag},
 		})
 		if err != nil {
 			return fmt.Errorf("posting identity:revoked message: %w", err)

@@ -28,7 +28,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/convention"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 )
 
 // TestDispatchStore_ETagRoundTrip_ListToMarkBilled verifies that the ETag

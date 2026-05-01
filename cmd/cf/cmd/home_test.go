@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/convention"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/message"
@@ -194,10 +194,10 @@ func TestHomeLinkCmd_EchoCeremony(t *testing.T) {
 	for i := range msgsA {
 		m := &msgsA[i]
 		for _, tag := range m.Tags {
-			if tag == convention.IdentityHomeDeclaredTag {
+			if tag == cfidentity.IdentityHomeDeclaredTag {
 				mAMsg = m
 			}
-			if tag == convention.IdentityHomeEchoTag {
+			if tag == cfidentity.IdentityHomeEchoTag {
 				echoMsg = m
 			}
 		}
@@ -214,7 +214,7 @@ func TestHomeLinkCmd_EchoCeremony(t *testing.T) {
 	for i := range msgsB {
 		m := &msgsB[i]
 		for _, tag := range m.Tags {
-			if tag == convention.IdentityHomeDeclaredTag {
+			if tag == cfidentity.IdentityHomeDeclaredTag {
 				mBMsg = m
 			}
 		}
@@ -583,7 +583,7 @@ func TestHomeRevoke_PostsRevokeMessage(t *testing.T) {
 	var found bool
 	for _, m := range msgs {
 		for _, tag := range m.Tags {
-			if tag == convention.IdentityRevokedTag {
+			if tag == cfidentity.IdentityRevokedTag {
 				found = true
 				break
 			}
