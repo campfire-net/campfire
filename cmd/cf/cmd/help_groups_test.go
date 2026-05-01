@@ -6,10 +6,31 @@ import (
 	"testing"
 )
 
-// TestHelpGroupsPresent verifies that cf --help renders all four group headers
-// and that key commands appear under the correct groups.
+// TestHelpGroupsPresent verifies that cf --help renders the convention-surface
+// group headers and that key commands appear under the correct groups.
+// Protocol-primitive commands (send, read, compact, bridge, etc.) are hidden
+// in the cf binary (they live in cf-primitives) so the Messages group header
+// does not appear.
 func TestHelpGroupsPresent(t *testing.T) {
 	assignCommandGroups()
+	// Snapshot the hidden state before calling assignPrimitiveCommands so we
+	// can restore it precisely in Cleanup — avoiding contamination of tests that
+	// rely on the natively-hidden commands (dag, serve, provenance, …) remaining
+	// hidden after this test runs.
+	savedHidden := make(map[string]bool)
+	for _, sub := range rootCmd.Commands() {
+		savedHidden[sub.Name()] = sub.Hidden
+	}
+	// Hide primitive commands as Execute() does — this mirrors the real runtime.
+	assignPrimitiveCommands()
+	// Restore exact hidden state after test.
+	t.Cleanup(func() {
+		for _, sub := range rootCmd.Commands() {
+			if orig, ok := savedHidden[sub.Name()]; ok {
+				sub.Hidden = orig
+			}
+		}
+	})
 	rootCmd.SetHelpCommandGroupID(groupAdvanced)
 	rootCmd.SetCompletionCommandGroupID(groupAdvanced)
 
@@ -24,11 +45,12 @@ func TestHelpGroupsPresent(t *testing.T) {
 
 	output := buf.String()
 
-	// All four group headers must appear.
+	// Convention-surface group headers must appear.
+	// Note: Messages group header is absent because all message commands
+	// (send, read, compact, etc.) are protocol primitives, hidden in cf.
 	wantHeaders := []string{
 		"Convention Operations:",
 		"Campfire Management:",
-		"Messages:",
 		"Advanced:",
 	}
 	for _, h := range wantHeaders {
@@ -45,6 +67,8 @@ func TestHelpGroupsPresent(t *testing.T) {
 	}
 
 	// Key commands must appear under the right groups.
+	// Note: protocol-primitive commands (send, read, compact, bridge, await,
+	// inspect, dm) are hidden from cf's help — they live in cf-primitives.
 	checks := []struct {
 		group   string
 		command string
@@ -55,11 +79,7 @@ func TestHelpGroupsPresent(t *testing.T) {
 		{"Campfire Management:", "join"},
 		{"Campfire Management:", "init"},
 		{"Campfire Management:", "create"},
-		{"Messages:", "send"},
-		{"Messages:", "read"},
-		{"Messages:", "compact"},
-		{"Advanced:", "bridge"},
-		// "serve" is hidden — not checked in group listing
+		// "Advanced:" — bridge, serve are hidden (primitives or experimental)
 		{"Advanced:", "verify"},
 		{"Advanced:", "completion"},
 	}

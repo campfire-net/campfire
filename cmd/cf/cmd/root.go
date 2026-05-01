@@ -276,6 +276,10 @@ func Execute() error {
 	// Assign command groups before cobra runs — all init() functions have
 	// registered their commands by the time Execute() is called.
 	assignCommandGroups()
+	// Hide protocol-primitive commands from cf's convention-only help surface.
+	// Primitives (send, read, await, etc.) live in cf-primitives; cf exposes
+	// only convention ops. Use --help-primitives to see them.
+	assignPrimitiveCommands()
 	rootCmd.SetHelpCommandGroupID(groupAdvanced)
 	rootCmd.SetCompletionCommandGroupID(groupAdvanced)
 	return rootCmd.Execute()
