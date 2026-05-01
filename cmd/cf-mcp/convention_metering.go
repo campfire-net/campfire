@@ -24,7 +24,7 @@ import (
 	"time"
 
 	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/billing"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/billing"
 	"github.com/campfire-net/campfire/pkg/forge"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
 )

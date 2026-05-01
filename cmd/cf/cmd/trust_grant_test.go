@@ -13,7 +13,7 @@ import (
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/delegation"
+	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/delegation"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"

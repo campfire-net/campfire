@@ -173,7 +173,7 @@ type ConformanceResult struct {
 const ConventionOperationTag = "convention:operation"
 
 // ConventionRevokeTag is the tag used to identify convention revocation messages.
-// Exported so that L3 packages (e.g., cf-convention-extensions/seed) can reference
+// Exported so that L3 packages (e.g., cf-convention-extension/seed) can reference
 // it without importing an unexported symbol.
 const ConventionRevokeTag = "convention:revoke"
 

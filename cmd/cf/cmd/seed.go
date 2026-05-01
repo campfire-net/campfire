@@ -20,7 +20,7 @@ import (
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
-	conventionseed "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/seed"
+	conventionseed "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/seed"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/pkg/seed"

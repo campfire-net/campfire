@@ -4,7 +4,7 @@
 # Demo: OPEN-018 carveout closure (campfireagent-c72).
 #
 # Proves that seed.go has been moved from L2 (cf-convention/) to L3
-# (cf-convention-extensions/seed/) and that the L2 package no longer
+# (cf-convention-extension/seed/) and that the L2 package no longer
 # exports or depends on seed-declaration symbols.
 #
 # Usage:
@@ -34,15 +34,15 @@ echo "Repo: $REPO_ROOT"
 echo
 
 # ── Case 1: L2 package does NOT depend on the L3 seed package ────────────────
-echo "Case 1: cf-convention (L2) must NOT import cf-convention-extensions/seed (L3)..."
+echo "Case 1: cf-convention (L2) must NOT import cf-convention-extension/seed (L3)..."
 
 cd "$REPO_ROOT"
 L2_DEPS=$("$GO" list -f '{{join .Deps "\n"}}' \
   github.com/campfire-net/campfire/cf-conventions/cf-convention)
 
-SEED_PKG="github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/seed"
+SEED_PKG="github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/seed"
 if echo "$L2_DEPS" | grep -qF "$SEED_PKG"; then
-  echo "FAIL: cf-convention (L2) depends on cf-convention-extensions/seed (L3)."
+  echo "FAIL: cf-convention (L2) depends on cf-convention-extension/seed (L3)."
   echo "  This is an OPEN-018 regression — seed.go is back in L2."
   exit 1
 fi
@@ -51,9 +51,9 @@ echo "PASS: L2 does not import L3 seed package."
 echo
 
 # ── Case 2: L3 seed package sources exist ────────────────────────────────────
-echo "Case 2: cf-convention-extensions/seed/seed.go must exist in L3..."
+echo "Case 2: cf-convention-extension/seed/seed.go must exist in L3..."
 
-SEED_DIR="$REPO_ROOT/cf-conventions/cf-convention-extensions/seed"
+SEED_DIR="$REPO_ROOT/cf-conventions/cf-convention-extension/seed"
 if [[ ! -f "$SEED_DIR/seed.go" ]]; then
   echo "FAIL: $SEED_DIR/seed.go not found."
   exit 1
