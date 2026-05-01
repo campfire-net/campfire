@@ -52,6 +52,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-conventions/cf-authority/trust"
+	"github.com/campfire-net/campfire/cf-conventions/cf-authority/trust/uxmeas"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/spf13/cobra"
 )
@@ -84,8 +85,9 @@ type delegationGrantPayload struct {
 }
 
 var (
-	approvePersist string
-	approveAccept  bool
+	approvePersist    string
+	approveAccept     bool
+	approveTelemetry  string
 )
 
 var approveCmd = &cobra.Command{
@@ -122,6 +124,17 @@ Example:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		msgID := args[0]
+
+		// Capture approve-invoked timestamp (T1 for Budget B) immediately —
+		// before any blocking I/O so we measure operator decision latency, not
+		// network or disk latency. See uxmeas.BudgetBRecord for the full spec.
+		approveInvokedAt := time.Now()
+
+		// Budget B telemetry is enabled by either:
+		//   --telemetry uxmeas flag, OR
+		//   [telemetry] uxmeas = true in ~/.cf/config.toml
+		// The IsEnabled check in uxmeas.RecordApproval handles both paths.
+		_ = approveTelemetry // declared to expose the flag; actual gate is in uxmeas.IsEnabled
 
 		// Parse --persist TTL (default 7d = 168h).
 		persistTTL, err := parsePersistTTL(approvePersist)
@@ -176,6 +189,16 @@ Example:
 		if err := json.Unmarshal(reqMsg.Payload, &req); err != nil {
 			return fmt.Errorf("parsing delegation:request payload: %w", err)
 		}
+
+		// Budget B telemetry — record T0 (message surfaced) and T1 (approve invoked).
+		// RecordApproval is a no-op when telemetry is disabled (default).
+		// reqMsg.Timestamp is Unix nanoseconds — the protocol stores message
+		// creation time in nanoseconds (cf-protocol/protocol/message.go).
+		//
+		// Telemetry is enabled when either:
+		//   --telemetry uxmeas flag is passed on this invocation, OR
+		//   [telemetry] uxmeas = true is set in ~/.cf/config.toml (persistent opt-in).
+		uxmeas.RecordApproval(CFHome(), req.FutureID, reqMsg.Timestamp, approveInvokedAt, req.FailedPredicate, approveTelemetry == "uxmeas")
 
 		// Parse the failed predicate AST for scope suggestion.
 		var predAST trust.PredicateAST
@@ -327,6 +350,10 @@ Example:
 			return fmt.Errorf("posting delegation:grant: %w", err)
 		}
 
+		// Budget B telemetry — record LandedAt (when the delegation:grant Send returned).
+		// This is an optional bookkeeping field; the pass/fail gate only uses InvokedAt.
+		uxmeas.UpdateLandedAt(CFHome(), req.FutureID, time.Now(), approveTelemetry == "uxmeas")
+
 		if jsonOutput {
 			return emitApproveJSON(msgID, req.AgentPubkey, approvedScope, persistTTL, req.CampfireID, req.FutureID)
 		}
@@ -413,5 +440,6 @@ func emitApproveJSON(msgID, agentPubkey string, scope []ScopeEntry, ttl time.Dur
 func init() {
 	approveCmd.Flags().StringVar(&approvePersist, "persist", "7d", "grant TTL (max 30d; e.g. 7d, 24h)")
 	approveCmd.Flags().BoolVar(&approveAccept, "accept", false, "accept the scope suggestion without interactive prompt")
+	approveCmd.Flags().StringVar(&approveTelemetry, "telemetry", "", "enable telemetry instrumentation (\"uxmeas\" = Budget B Phase 8 Gate 2; also enabled via [telemetry] uxmeas = true in ~/.cf/config.toml)")
 	rootCmd.AddCommand(approveCmd)
 }
