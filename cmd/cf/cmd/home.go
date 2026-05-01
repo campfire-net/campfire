@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/campfire-net/campfire/pkg/beacon"
-	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/identity"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"

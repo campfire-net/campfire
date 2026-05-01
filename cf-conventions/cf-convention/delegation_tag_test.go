@@ -6,20 +6,20 @@ import (
 	"testing"
 
 	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/delegation"
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/identity"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-identity"
 )
 
 // TestRevokedTagMatchesConventionConstant guards against silent drift between
-// the identity.IdentityRevokedTag constant (cf-convention-extension/identity/identity.go) and
+// the cfidentity.IdentityRevokedTag constant (cf-conventions/cf-identity/identity.go) and
 // delegation.RevokedTag (cf-convention-extension/delegation/trust.go).
 //
-// The delegation package cannot import identity (would create a cross-extension dependency),
+// The delegation package cannot import cfidentity (would create a cross-extension dependency),
 // so the string "identity:revoked" is duplicated by necessity.
 // This test is the enforcement mechanism (campfire-3a8): if either constant
 // changes, this test will fail immediately.
 func TestRevokedTagMatchesConventionConstant(t *testing.T) {
-	if delegation.RevokedTag != identity.IdentityRevokedTag {
-		t.Errorf("delegation.RevokedTag %q != identity.IdentityRevokedTag %q — update both constants together",
-			delegation.RevokedTag, identity.IdentityRevokedTag)
+	if delegation.RevokedTag != cfidentity.IdentityRevokedTag {
+		t.Errorf("delegation.RevokedTag %q != cfidentity.IdentityRevokedTag %q — update both constants together",
+			delegation.RevokedTag, cfidentity.IdentityRevokedTag)
 	}
 }

@@ -136,6 +136,8 @@ linters:
               desc: "L1-narrow: cf-protocol/ must not import cf-conventions/cf-authority (L3). See design v2 §4.6"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-durability"
               desc: "L1-narrow: cf-protocol/ must not import cf-conventions/cf-durability (L3). See design v2 §4.6 (campfireagent-122)"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-identity"
+              desc: "L1-narrow: cf-protocol/ must not import cf-conventions/cf-identity (L3). See design v2 §4.6 (campfireagent-902)"
             - pkg: "github.com/campfire-net/campfire/pkg/convention"
               desc: "L1-narrow: cf-protocol/ must not import convention machinery (legacy L2 path; removed in campfireagent-4d7). See design v2 §4.6"
 
@@ -323,6 +325,8 @@ linters:
               desc: "L2-no-extensions: L2 machinery must not import L3 extension delegation (OPEN-018: identity_resolver.go exempt pending Stage 3 refactor). See design v2 §4.6 (campfireagent-4d7)"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension"
               desc: "L2-no-extensions: L2 machinery must not import L3 cf-convention-extension top-level package (promote/supersede ops). See design v2 §4.6 (campfireagent-a40)"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-identity"
+              desc: "L2-no-extensions: L2 machinery (cf-convention/) must not import L3 cf-identity. See design v2 §4.6 (campfireagent-902)"
 
         # L2-no-authority — cf-conventions/cf-convention/ (L2 machinery) must not import L3 authority.
         #
