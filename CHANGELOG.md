@@ -1,69 +1,307 @@
 # Changelog
 
-## Unreleased — center-finding removed from cf-protocol substrate (campfireagent-db1)
+## v0.30.0 — Protocol freeze, layered architecture, and authority system (2026-04-30)
 
-Stage 1 of the locality-to-L4 migration. Center-finding and recentering logic
-is cut from the protocol substrate. Locality resolves at the discovery layer
-(L4, cf-discovery) — not in Init().
+This is the largest release since v0.16. It restructures campfire into a
+layered module system, ships a complete trust authority (cf-authority), and
+freezes the wire format as a stable foundation for portfolio consumers.
+
+**See [UPGRADE.md](UPGRADE.md) for step-by-step migration guidance.**
+
+### New features
+
+#### Protocol layer (cf-protocol)
+
+- **Substrate moved to `internal/`** (`campfireagent-401d`): All substrate
+  packages (`campfire`, `message`, `store`, `transport/fs`, `transport/http`,
+  `threshold`, `projection`, `predicate`, `crypto`, `encoding`, `admission`)
+  moved from `pkg/` to the new `cf-protocol/` Go module. `pkg/protocol` is
+  now a forwarding surface — real type definitions live in
+  `cf-protocol/protocol/`. Callers importing `pkg/protocol` continue to
+  compile via type aliases.
+- **`cf-protocol/protocol` public surface**: Type aliases for all `Client`,
+  `Message`, `MemberRecord`, `Transport`, and all request/result types.
+  `Init`, `InitWithConfig`, and `New` constructors re-exported.
+- **Wire-format freeze snapshot** (`campfireagent-3a8`): Real-reflection
+  verifier (`wireverify_test.go`) asserts CBOR field IDs, mandatory fields,
+  and enum values for all L1 types. Any accidental wire-incompatible change
+  fails CI before merge.
+- **`campfire:visibility-changed` reserved tag** (`campfireagent-c66`):
+  Emitted by `Client.Admit` and `Client.Evict` when campfire visibility
+  transitions. Stable L1 system event for federation consumers.
+- **`session:open` / `session:close` L1 system event tags** (`campfireagent-647`):
+  Emitted at session lifecycle boundaries. Eligible for compaction after close.
+- **`tagspec` and `reserved-ops` constants** (`campfireagent-753`): Moved to
+  `cf-protocol/internal/tagspec/` and `cf-protocol/internal/reserved-ops/`.
+  `CampfirePrefix`, `ConventionPrefix`, `SessionPrefix` tag constants, and
+  10 reserved operation codes with `IsReserved()`.
+- **`cf-primitives` binary** (`campfireagent-cbd`): New binary exposing exactly
+  the frozen 12-command protocol surface (`admit`, `await`, `create`, `disband`,
+  `evict`, `init`, `join`, `leave`, `members`, `read`, `send`, `subscribe`).
+  `TestPrimitivesSurfaceCeiling` enforces the frozen command set — additions
+  require adversary review before merge.
+- **`Await` earliest-timestamp-wins** (`campfireagent-5bb`): Documented and
+  tested. When multiple fulfillments race, the earliest-timestamp message wins.
+  Deterministic tiebreaker for distributed scenarios.
+
+#### Convention layer (cf-conventions)
+
+- **`cf-conventions` Go module with L2/L3 layer separation** (`campfireagent-4d7`):
+  New `cf-conventions/` module with strict depguard-enforced layer boundaries.
+  L2 (`cf-convention/`) contains the core dispatcher and interfaces. L3
+  packages (`cf-authority`, `cf-identity`, `cf-session`, `cf-discovery`,
+  `cf-durability`, `cf-connect`) hold convention implementations.
+- **`GateEvaluator` interface declared at L2** (`campfireagent-2b9`): Stable
+  interface in `cf-convention/gate.go`. L3 implementations (DefaultGateEvaluator)
+  depend on L2, never the reverse.
+- **`ProvenanceCheckerV2` interface declared at L2** (`campfireagent-2ac`):
+  Stable interface for message provenance checking.
+- **L2 reserved-op D5 enforcement** (`campfireagent-c85`): Dispatcher
+  hard-denies messages carrying reserved operation codes at the L2 boundary.
+  No L3 convention can override this floor.
+- **Tag-prefix denylist parameterized** (`campfireagent-28f`): `Parse()` now
+  accepts `deniedPrefixes []string`. L2 no longer imports L1 tag constants.
+  `DefaultDeniedTagPrefixes` covers all reserved campfire/session/naming prefixes.
+- **`seed.go` moved to L3** (`campfireagent-c72`): OPEN-018 carveout closed.
+  Seed generation is a convention operation, not a protocol primitive.
+
+#### Trust authority (cf-authority)
+
+- **`DefaultGateEvaluator`** (`campfireagent-8d4`): Full L3 trust authority
+  satisfying the L2 `GateEvaluator` interface. Implements all 10 D-class
+  deal-breakers: chain walk, revocation, scope ceiling, reserved-op floor,
+  depth limit, owner ceiling, and TTL enforcement. Wired into
+  `ConventionDispatcher` so every convention operation is gate-evaluated.
+- **`cf-authority` wire-format freeze verifier** (`campfireagent-301`):
+  Separate freeze verifier for `Capability`, `GrantPayload`, `WhereMatcher`,
+  `PredicateAST`, and `DenyReason` CBOR types. 15 tests, mutation-confirmed.
+- **GateEvaluator conformance harness** (Phase 8 Gate 1): 12-case conformance
+  suite runs with `-count=3` in CI on every push touching `cf-authority/`.
+- **`GrantPayload.GranterPubKey` (CBOR field 5)** (`campfireagent-171`):
+  New `omitempty` field carries the granter's Ed25519 pubkey at the last chain
+  hop. `DefaultGateEvaluator` asserts `lastHop.GranterPubKey == RootPrincipal`,
+  closing a trust-anchor bypass where any rogue self-signed chain could receive
+  `Allow` (CRITICAL security fix).
+- **`cf approve` with scope auto-suggestion** (`campfireagent-88d`):
+  `cf approve <grant-request-msg-id>` reviews a pending delegation request
+  and posts a grant. Scope auto-suggestion walks the failed predicate AST and
+  computes the minimum covering scope, with a diff display. Default `--persist 7d`,
+  max 30d cap.
+- **`cf trust pin/unpin/list/prune`** (`campfireagent-6e2`): TOFU key pin
+  management — pin an Ed25519 key for a campfire, remove pins, list with
+  metadata, prune pins for left/disbanded campfires. HMAC-integrity protected.
+- **`cf init --policy <preset>`** (`campfireagent-e28`): Three identity-policy
+  presets write `grant-template.json` to the identity home: `personal-developer`
+  (solo, depth 1, 7d TTL), `team-member` (multi-owner, depth 2, 24h auto-grants),
+  `public-agent` (hosted MCP posture, depth 1, 24h TTL ceiling).
+
+#### Identity (cf-identity)
+
+- **`cf-identity` package** (`campfireagent-902`): Canonical L3 identity
+  convention package. Ships `introduce-me`, `declare-home`, `verify-me`,
+  `list-homes`, and `echo` ceremony declarations. `identity:revoked` tag
+  support. `ProfileFile`, `LoadProfile`, `SaveProfile` absorbed from
+  `cf-protocol/protocol/profile.go` (TRANSITIONAL marker removed). 12 tests,
+  5 declarations, full ceremony flow against real `DefaultGateEvaluator`.
+
+#### Session management (cf-session)
+
+- **`cf-session` package** (`campfireagent-c3a`): Full L3 session convention
+  package per design v2 §2.9. Lazy-mint per-worker grants: `session:open`
+  emitted with `CapabilityTemplate`; workers get one grant tied to a fresh key
+  (`IssueWorkerGrant`, depth=1, scoped as `parent_grant ⊓ template`).
+  Jail-write backend: `MaterializeWorkerIdentity` writes worker key to
+  `0700` dir / `0600` file. Signing-proxy adapter enforces campfire allowlist.
+  Disposable session log eligible for compaction after `CloseSession`.
+- **`cfs2_` token format** (`campfireagent-d77`): New session token format
+  (prefix `cfs2_`) with real transport config embedded. `cfs1_` tokens are
+  deprecated — decode returns a clear migration error. `cf session create`
+  emits `cfs2_` by default. `swarm-coordination` convention ported to
+  `cfs2_` with lazy-mint.
+
+#### Discovery (cf-discovery)
+
+- **`cf-discovery` package** (`campfireagent-550`): L3 discovery convention
+  package. Beacon type aliases (`NewWithExpiry`, `ScanFresh`,
+  `SignDeclarationWithExpiry`), Tier 1 snippet validation/signing/verification
+  per `cf-discovery-spec.md §1-§7`, 3-tier discovery interfaces, sentinel
+  errors (`ErrInviteOnly`, `ErrPostJoinVerificationFailed`), `ResolveChain`
+  for multi-level chain walks. Rate-limit declarations for level:0 ops
+  (OPEN-013). Post-join probe-write-then-observe verification (§11).
+  Config-over-beacon endpoint precedence (§12).
+- **`center-finding` removed from substrate** (`campfireagent-db1`): Locality
+  resolves at the discovery layer (L4, cf-discovery) — not in `Init()`.
+  `RecenterClaim`, `RecenterCanonicalPayload`, `walkUpForCenter`,
+  `WithWalkUp()`, `WithNoWalkUp()`, `WalkUpEnabled()`, `InitResult.WalkUpPath`,
+  `InitResult.Recentered`, and `InitResult.DelegationIssued` are all removed.
+
+#### Convention extensions
+
+- **`cf-convention-extension` path reconciliation** (`campfireagent-a40`):
+  Stage 3 path reconciliation and `promote`/`supersede` behavioral ops.
+- **`cf-durability` package** (`campfireagent-122`): `pkg/durability` moved
+  to `cf-conventions/cf-durability` per design v2 §4.3.
+- **`cf-connect` package** (`campfireagent-3a7`): Social connect convention
+  moved from `cf-convention-extensions/connect/` to `cf-conventions/cf-connect/`.
+- **Snippet schema symbols production-promoted** (`campfireagent-219`): Moved
+  from test-only to the `cf-discovery` production package.
+
+#### CLI / UX (cf / argv0 dispatch)
+
+- **Convention surface only**: Protocol-primitive commands (`send`, `read`,
+  `await`, `inspect`, `compact`, `dm`, `bridge`, `filter`, `sync`, `nat-poll`,
+  `serve`, `dag`, `provenance`) hidden from `cf --help`. Use `--help-primitives`
+  to show them. (`campfireagent-09a`)
+- **argv[0] dispatch**: `main.go` detects invocation under a non-`cf` name
+  (symlink e.g. `social` → `cf`) and calls `Multicall(safeName, args)`. Path
+  traversal and shell-injection attempts rejected before any campfire name
+  reaches dispatch.
+- **Per-app config overlay**: `loadConfigWithApp` inserts
+  `~/.cf/apps/<appname>/config.toml` as an "app" layer in the config cascade.
+  Each symlinked app gets its own identity, transport defaults, or naming
+  seeds without touching the global config.
+
+#### MCP / hosted service (cf-mcp, cf-functions)
+
+- **MCP tools generated from declarations** (`campfireagent-097`): `cf-mcp`
+  now generates MCP tools from convention declarations with active gate
+  evaluation. `DefaultGateEvaluator` fires in all modes — dev, test, and
+  hosted. `NewLocalEmitter()` non-production emitter activates the dispatcher
+  without Forge credentials.
+- **Azure Functions adapter 0.30 port** (`campfireagent-339`): `cf-functions`
+  audited and updated against the 0.30 surface. FIX-4: `handleHealth` now
+  probes the child `cf-mcp` `/health` endpoint — a deadlocked child that is
+  alive but unresponsive returns 503 (`child_unresponsive`) instead of a
+  false-positive 200.
+
+#### Quality / tooling
+
+- **MCP/CLI parity test suite** (F3-INV, Phase 8 Gate 3): 22 named-fixture
+  cases across `cf-identity` (6), `cf-authority` (10), `cf-discovery` (6)
+  plus 4 stress cases. 5 parity axes: name (A1), argument schema (A2), return
+  shape (A3), error category (A4), executor-boundary args (A5).
+- **UX measurement harness** (Phase 8 Gate 2): `//go:build uxmeas` harness for
+  the approval-flow Budget A (agent→inbox latency). N=100 delegation cycles,
+  p95 ≤ 5000 ms, p99 ≤ 8000 ms with bootstrap 95% CI.
+- **Compatibility floor**: `COMPATIBILITY.md` + `check-floor.sh` + minor-compat
+  CI step (`campfireagent-9be`).
+- **Depguard layer enforcement**: `.golangci.yml` with `L1-narrow`,
+  `L2-no-extensions`, `no-plural-extensions`, and per-package boundary rules.
+  CI hook runs on every PR (`campfireagent-231`).
+- **Monotonic nanosecond clock** for message timestamps (`campfireagent-1b7`):
+  Eliminates same-timestamp collisions that caused non-deterministic Await
+  behavior under high concurrency.
+- **OS-assigned ports in all tests**: Eliminated all hardcoded test ports
+  (`42800` etc.) to remove TOCTOU races in parallel test runs
+  (`campfireagent-fed`, `campfireagent-286`, `campfireagent-b82`).
+- **In-memory SQLite for delegation tests** (`campfireagent-90f`): Eliminates
+  test hang at high `-race -count` by removing filesystem contention.
 
 ### Breaking changes
 
-- **`recenter.go` deleted**: `RecenterClaim`, `RecenterCanonicalPayload`,
-  `maybeRecenter`, and related helpers are gone. Remove any imports or references.
-- **`walk_up.go` deleted**: `walkUpForCenter` is gone. Walk-up for center
-  campfire discovery is no longer performed during Init().
-- **`WithWalkUp()` and `WithNoWalkUp()` removed** from `protocol.Init` options.
-  Any callers must remove these options — they will no longer compile.
-- **`WalkUpEnabled()` removed** from `*Client`. Remove call sites.
-- **`InitResult.WalkUpPath` removed** — no longer populated.
-- **`InitResult.Recentered` removed** — no longer populated.
-- **`InitResult.DelegationIssued` removed** — no longer populated.
-- **`Config.Behavior.WalkUp` removed** — `behavior.walk_up` no longer read
-  from `.cf/config.toml`. Existing config files with this key are silently ignored.
-- **`context_key.go` stub**: `maybeIssueContextKeyDelegation` is a no-op.
-  Context-key delegation is L4 work.
+#### Wire format
+
+- **`GrantPayload` CBOR field 5 added** (`campfireagent-171`, security critical):
+  `GranterPubKey []byte` (Ed25519, `omitempty`). Wire-format freeze verifier
+  updated; any code building `GrantPayload` by position must add the fifth
+  field. Callers using `GrantPayload{Capability: ..., ChildPubKey: ...}` are
+  unaffected (named struct literal).
+
+#### Removed packages / binaries
+
+- **`pkg/transport/github` deleted** (`campfireagent-964`): The GitHub
+  transport is gone. `cf create --transport github`, `cf join <github-url>`,
+  and CLI flags `--github-repo`, `--github-token-env`, `--github-base-url` all
+  return errors with migration guidance. `TypeGitHub` sentinel retained in
+  `cf-protocol/internal/transport` so existing store rows do not panic.
+  `GitHubTransport` tombstone type retained in `cf-protocol/protocol`.
+- **`pkg/protocol` is now a forwarding surface**: Real type definitions live in
+  `cf-protocol/protocol/`. Direct imports of internal substrate packages under
+  the old `pkg/` paths will not compile — use `cf-protocol/` equivalents.
+
+#### Removed primitives / APIs
+
+- **Center-finding removed** (`campfireagent-db1`): `RecenterClaim`,
+  `RecenterCanonicalPayload`, `maybeRecenter`, `walkUpForCenter`,
+  `WithWalkUp()`, `WithNoWalkUp()`, `WalkUpEnabled()` deleted.
+  `InitResult.WalkUpPath`, `InitResult.Recentered`, `InitResult.DelegationIssued`
+  removed. `Config.Behavior.WalkUp` (`behavior.walk_up` in config) silently
+  ignored.
+- **`cf-protocol/protocol/session.go` shared-key form removed** (`campfireagent-c3a`):
+  `NewSession` now uses the creator's own identity key. `JoinSession` removed.
+  CLI updated. Callers must migrate to `cf-session` lazy-mint pattern.
+- **`cfs1_` session tokens deprecated** (`campfireagent-d77`): `DecodeTokenV1`
+  returns a migration error on `cfs1_` prefix. Existing `cfs1_` tokens must
+  be regenerated with `cf session create`.
+- **`present_as` field removed** from production code: `identity.present_as`
+  key in `.cf/config.toml` no longer applied. Super-identity rendering is
+  handled by `cf-identity` ceremony declarations. Remove `present_as` from
+  config files.
+- **`tagspec` and `reserved-ops` constants moved** (`campfireagent-753`): From
+  `pkg/` to `cf-protocol/internal/tagspec/` and `cf-protocol/internal/reserved-ops/`.
+  External callers using these constants must switch to the `cf-protocol/`
+  paths or to the `cf-conventions/cf-convention/` re-exports.
+
+#### Renamed / moved packages
+
+- `pkg/campfire` → `cf-protocol/campfire/`
+- `pkg/message` → `cf-protocol/message/`
+- `pkg/store` (SQLite) → `cf-protocol/store/`
+- `pkg/transport/fs` → `cf-protocol/transport/fs/`
+- `pkg/transport/http` → `cf-protocol/transport/http/`
+- `pkg/threshold` → `cf-protocol/threshold/`
+- `pkg/projection` → `cf-protocol/projection/`
+- `pkg/predicate` → `cf-protocol/predicate/`
+- `pkg/crypto` → `cf-protocol/crypto/`
+- `pkg/encoding` → `cf-protocol/encoding/`
+- `pkg/admission` → `cf-protocol/admission/`
+- `pkg/durability` → `cf-conventions/cf-durability/`
+- `cf-conventions/cf-convention-extensions/connect/` → `cf-conventions/cf-connect/`
+
+`pkg/store/aztable` remains at `pkg/store/aztable` (implements
+`convention.DispatchStore` from `pkg/convention` — L2 dep).
+
+### Security fixes
+
+- **CRITICAL: Trust-anchor bypass closed** (`campfireagent-171`, `#484`):
+  `walkChain` never verified the chain terminates at `RootPrincipal`.
+  Any rogue self-signed chain could receive `Allow`. Fixed via
+  `GrantPayload.GranterPubKey` (CBOR field 5) and evaluator assertion
+  `lastHop.GranterPubKey == req.RootPrincipal`.
+- **MEDIUM: CAS generation bug in gate-deny path** (`#484`): Dispatcher
+  used `gen=0` hardcoded in `MarkFailedCAS`, silently failing for
+  re-dispatched messages. Now reads `GetRedispatchCount` before CAS.
+- **`DefaultGateEvaluator` wired in production** (`campfireagent-861`):
+  Gate evaluation now active in all dispatch paths, not just tests.
+- **FIX-1/MB1: Evict rekey race** (`#436`): `rekeyAfterEvict` serialized
+  via per-campfire write lock.
+- **FIX-2/MB2: Evict pre-rekey guard** (`#437`): `Client.Evict` errors
+  if `epoch_secrets` are absent before attempting rekey on encrypted campfires.
 
 ### Migration
 
-Remove all `WithWalkUp()`, `WithNoWalkUp()`, and `WalkUpEnabled()` call sites.
-Remove `behavior.walk_up` from config files. Remove references to
-`InitResult.WalkUpPath`, `InitResult.Recentered`, `InitResult.DelegationIssued`.
+See [UPGRADE.md](UPGRADE.md) for the full upgrade guide (`campfireagent-901`).
 
-## v0.30.0 — Remove GitHub transport (2026-04-29)
-
-**BREAKING CHANGE**: The GitHub transport (`pkg/transport/github`) has been
-removed. Campfires backed by GitHub Issues are no longer supported.
-
-### Removed
-
-- **`pkg/transport/github`** package deleted entirely (campfireagent-964).
-- **`cf create --transport github`** — returns an error with migration guidance.
-- **`cf join <github-issue-url>`** — GitHub Issue URLs are no longer accepted.
-- **CLI flags** `--github-repo`, `--github-token-env`, `--github-base-url` removed
-  from `cf create` and `cf join`.
-- **`protocol.SendRequest.GitHubToken`** field removed.
-- All GitHub-specific sync, polling, and key-delivery functions removed from
-  `cmd/cf`.
-
-### Retained (backward compat)
-
-- **`TypeGitHub` sentinel** in `cf-protocol/internal/transport` — retained so
-  existing store rows with `TransportType="github"` or `TransportDir="github:..."` 
-  do not panic. Operations on these campfires return a clear migration error.
-- **`GitHubTransport` tombstone type** in `cf-protocol/protocol` — the struct
-  remains (marked deprecated) so code that references the type compiles. Pass
-  a `FilesystemTransport` or `P2PHTTPTransport` instead.
-
-### Migration
-
-Migrate GitHub-transport campfires to a filesystem or p2p-http campfire:
+**Quick reference:**
 
 ```bash
-# Create a new filesystem campfire
-cf create --transport filesystem
+# Replace pkg/ substrate imports with cf-protocol/ equivalents
+# e.g.: pkg/campfire → cf-protocol/campfire
 
-# Or create a p2p-http campfire (recommended for multi-machine)
-cf create --transport p2p-http
+# Remove center-finding call sites
+# Delete: WithWalkUp(), WithNoWalkUp(), WalkUpEnabled()
+# Delete: InitResult.WalkUpPath, .Recentered, .DelegationIssued
+# Delete: behavior.walk_up from .cf/config.toml
+
+# Migrate GitHub campfires
+cf create --transport filesystem   # or --transport p2p-http
+
+# Regenerate session tokens (cfs1_ → cfs2_)
+cf session create
+
+# Remove present_as from .cf/config.toml
+
+# Update GrantPayload construction if building by position (add field 5)
 ```
 
 ## v0.19.3 — InvalidInput Outcome variant in trust resolution (2026-04-27)
