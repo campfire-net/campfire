@@ -64,3 +64,11 @@ jobs:
         # matches the actual code at HEAD. Catches spec/code drift before it reaches
         # a release tag. See cf-protocol/internal/wireverify/ and campfireagent-3a8.
         run: go test ./cf-protocol/internal/wireverify/ -v -count=1
+
+      - name: cf-authority wire-format freeze verifier (Phase 8 Gate 4)
+        # Asserts that every S0b spec claim for cf-authority (Capability CBOR field IDs
+        # 1–6, GrantPayload field IDs 1–4, predicate AST leaf/composite kinds, not:
+        # rejection, DenyReason enum codes) matches actual code at HEAD.
+        # Isolated verifier for cf-authority — sibling of wireverify (-3a8 pattern).
+        # See cf-conventions/cf-authority/internal/freeze/ and campfireagent-301.
+        run: go test ./cf-conventions/cf-authority/internal/freeze/ -v -count=1
