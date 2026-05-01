@@ -12,10 +12,11 @@ import (
 
 // BeaconDeclaration is the JSON payload format for routing:beacon messages.
 // Fields match the declaration schema in declarations/routing-beacon.json.
-// TAINTED fields: endpoint, transport, description, join_protocol.
+// TAINTED fields: endpoint, transport, description, join_protocol, not_after.
 // VERIFIED fields: campfire_id, timestamp, convention_version, inner_signature, path (threshold=1).
 // ADVISORY fields: path (threshold>1) — path is not covered by inner_signature for threshold>1 campfires.
 // Missing path is treated as empty (backward compatibility per §3.3).
+// not_after was added in cf 0.30.0 (OPEN-024); it is TAINTED — not included in inner_signature.
 type BeaconDeclaration struct {
 	CampfireID        string   `json:"campfire_id"`
 	Endpoint          string   `json:"endpoint"`
@@ -26,6 +27,9 @@ type BeaconDeclaration struct {
 	ConventionVersion string   `json:"convention_version"`
 	InnerSignature    string   `json:"inner_signature"`
 	Path              []string `json:"path,omitempty"`
+	// NotAfter is a TAINTED advisory expiry Unix timestamp (OPEN-024).
+	// Zero means no expiry. Not included in inner_signature signing input.
+	NotAfter int64 `json:"not_after,omitempty"`
 }
 
 // BeaconInnerSignInput is the canonical byte representation signed by the
@@ -103,6 +107,7 @@ func SignDeclaration(
 		JoinProtocol:      joinProtocol,
 		Timestamp:         time.Now().Unix(),
 		ConventionVersion: "0.5.0",
+		NotAfter:          time.Now().Add(DefaultBeaconNotAfterDuration).Unix(),
 	}
 	if len(path) > 0 && len(path[0]) > 0 {
 		d.Path = path[0]
@@ -114,6 +119,15 @@ func SignDeclaration(
 	sig := ed25519.Sign(campfirePriv, signBytes)
 	d.InnerSignature = fmt.Sprintf("%x", sig)
 	return &d, nil
+}
+
+// IsDeclarationExpired reports whether a BeaconDeclaration's not_after has passed.
+// The field is TAINTED — this check is advisory only.
+func IsDeclarationExpired(d BeaconDeclaration, now time.Time) bool {
+	if d.NotAfter == 0 {
+		return false
+	}
+	return now.Unix() > d.NotAfter
 }
 
 // SignDeclarationThreshold produces a BeaconDeclaration for a threshold>1
@@ -137,6 +151,7 @@ func SignDeclarationThreshold(
 		Timestamp:         time.Now().Unix(),
 		ConventionVersion: "0.5.0",
 		Path:              path,
+		NotAfter:          time.Now().Add(DefaultBeaconNotAfterDuration).Unix(),
 	}
 	// Path excluded from signing input for threshold>1 (§3.2).
 	signBytes, err := MarshalInnerSignInputNoPath(d)
@@ -217,6 +232,7 @@ func DeclarationToBeacon(d BeaconDeclaration) (*Beacon, error) {
 		},
 		Description: d.Description,
 		Signature:   sigBytes,
+		NotAfter:    d.NotAfter,
 	}, nil
 }
 
