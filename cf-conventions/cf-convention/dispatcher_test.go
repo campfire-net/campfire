@@ -346,6 +346,155 @@ func TestDispatcher_Tier1_FulfillmentPosted(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GateEvaluator dispatch integration tests (campfireagent-861)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// mockGateEvaluator is a test-double GateEvaluator that records Evaluate calls.
+type mockGateEvaluator struct {
+	mu       sync.Mutex
+	calls    int
+	decision convention.Decision
+	reason   convention.DenyReason
+}
+
+func (m *mockGateEvaluator) Evaluate(_ context.Context, _ convention.EvaluateRequest) convention.EvaluateResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	return convention.EvaluateResult{Decision: m.decision, Reason: m.reason}
+}
+
+func (m *mockGateEvaluator) Calls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
+// TestDispatcher_GateEvaluatorInvokedOnDispatch asserts that when a GateEvaluator
+// is set on the dispatcher, Evaluate is called for every dispatched operation.
+// TDD: written before the wiring exists — fails until Dispatch calls gateEvaluator.
+func TestDispatcher_GateEvaluatorInvokedOnDispatch(t *testing.T) {
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	eval := &mockGateEvaluator{decision: convention.GateAllow}
+	d.SetGateEvaluator(eval)
+
+	var handlerCalled atomic.Bool
+	if err := d.RegisterTier1Handler("cf1", "myconv", "myop", nil, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		handlerCalled.Store(true)
+		return nil, nil // nil response avoids sendFulfillment with nil client
+	}, "server1", ""); err != nil {
+		t.Fatalf("RegisterTier1Handler: %v", err)
+	}
+
+	msg := &store.MessageRecord{
+		ID:         "gate-invoke-msg-001",
+		CampfireID: "cf1",
+		Sender:     "aabbcc",
+		Payload:    []byte(`{"convention":"myconv","operation":"myop","args":{}}`),
+		Tags:       []string{"myconv:myop"},
+		Timestamp:  time.Now().UnixNano(),
+	}
+
+	dispatched := d.Dispatch(context.Background(), "cf1", msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	waitForDispatch(t, ds, "cf1", msg.ID, 2*time.Second)
+
+	if eval.Calls() == 0 {
+		t.Error("GateEvaluator.Evaluate was never called — evaluator is not wired into dispatch path")
+	}
+	if !handlerCalled.Load() {
+		t.Error("handler was not called after Allow decision")
+	}
+}
+
+// TestDispatcher_DenyDecisionRejectsDispatch asserts that when GateEvaluator
+// returns GateDeny, the handler is NOT called.
+// TDD: written before the wiring exists — fails until Dispatch enforces the gate.
+func TestDispatcher_DenyDecisionRejectsDispatch(t *testing.T) {
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	eval := &mockGateEvaluator{decision: convention.GateDeny, reason: convention.DenyScopeMismatch}
+	d.SetGateEvaluator(eval)
+
+	var handlerCalled atomic.Bool
+	if err := d.RegisterTier1Handler("cf1", "myconv", "denyop", nil, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		handlerCalled.Store(true)
+		return nil, nil // nil response avoids sendFulfillment with nil client
+	}, "server1", ""); err != nil {
+		t.Fatalf("RegisterTier1Handler: %v", err)
+	}
+
+	msg := &store.MessageRecord{
+		ID:         "gate-deny-msg-001",
+		CampfireID: "cf1",
+		Sender:     "aabbcc",
+		Payload:    []byte(`{"convention":"myconv","operation":"denyop","args":{}}`),
+		Tags:       []string{"myconv:denyop"},
+		Timestamp:  time.Now().UnixNano(),
+	}
+
+	dispatched := d.Dispatch(context.Background(), "cf1", msg)
+	// Dispatch returns true (handler was found) but gate fires before handler invocation.
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true (handler found) even when gate denies")
+	}
+
+	// Allow time for the goroutine to run — it should NOT call the handler.
+	time.Sleep(150 * time.Millisecond)
+
+	if handlerCalled.Load() {
+		t.Error("handler was called despite GateDeny — gating is not enforced")
+	}
+	if eval.Calls() == 0 {
+		t.Error("GateEvaluator.Evaluate was never called — evaluator is not wired into dispatch path")
+	}
+}
+
+// TestDispatcher_AllowDecisionAllowsDispatch asserts that when GateEvaluator
+// returns GateAllow, the handler IS called.
+func TestDispatcher_AllowDecisionAllowsDispatch(t *testing.T) {
+	ds := convention.NewMemoryDispatchStore()
+	d := convention.NewConventionDispatcher(ds, nil)
+
+	eval := &mockGateEvaluator{decision: convention.GateAllow}
+	d.SetGateEvaluator(eval)
+
+	var handlerCalled atomic.Bool
+	if err := d.RegisterTier1Handler("cf1", "myconv", "allowop", nil, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		handlerCalled.Store(true)
+		return nil, nil // nil response avoids sendFulfillment with nil client
+	}, "server1", ""); err != nil {
+		t.Fatalf("RegisterTier1Handler: %v", err)
+	}
+
+	msg := &store.MessageRecord{
+		ID:         "gate-allow-msg-001",
+		CampfireID: "cf1",
+		Sender:     "aabbcc",
+		Payload:    []byte(`{"convention":"myconv","operation":"allowop","args":{}}`),
+		Tags:       []string{"myconv:allowop"},
+		Timestamp:  time.Now().UnixNano(),
+	}
+
+	dispatched := d.Dispatch(context.Background(), "cf1", msg)
+	if !dispatched {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	waitForDispatch(t, ds, "cf1", msg.ID, 2*time.Second)
+
+	if !handlerCalled.Load() {
+		t.Error("handler was not called after GateAllow decision")
+	}
+}
+
 // waitForFulfillmentMessage polls callerClient.Read until a message tagged
 // "fulfills" with the given antecedent ID appears, or the timeout elapses.
 // The dispatch store marks "fulfilled" before sendFulfillment completes, so

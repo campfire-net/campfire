@@ -25,6 +25,7 @@ import (
 
 	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
 	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/billing"
+	"github.com/campfire-net/campfire/cf-conventions/cf-authority/trust"
 	"github.com/campfire-net/campfire/pkg/forge"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
 )
@@ -121,6 +122,10 @@ func (s *server) wireConventionMetering(emitter *forge.ForgeEmitter) {
 	}
 	d := convention.NewConventionDispatcher(ds, nil)
 	d.MeteringHook = buildConventionMeteringHook(emitter)
+	// Wire the real cf-authority/trust DefaultGateEvaluator (L3) via ConventionAdapter.
+	// This replaces the AllowAllGateEvaluator stub and activates enforcement of
+	// revocation staleness, scope-widening, and owner-ceiling checks (campfireagent-861).
+	d.SetGateEvaluator(trust.NewConventionAdapter())
 	s.conventionDispatcher = d
 	s.conventionDispatchStore = ds
 	s.fallbackSweep = convention.NewSweeper(d, ds, nil)

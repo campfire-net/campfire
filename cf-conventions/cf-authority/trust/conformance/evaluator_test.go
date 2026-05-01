@@ -959,11 +959,31 @@ func TestAttack1_SelfGrantLaundromat(t *testing.T) {
 	// We accept this as Allow — the critical thing is the non-empty chain path
 	// doesn't bypass the chain verification checks.
 	result := eval.Evaluate(context.Background(), req)
-	// The self-grant chain IS valid (root gave itself a grant); this is allowed.
-	// The laundromat attack is: trying to elevate a delegated key by claiming
-	// the delegation goes through a fake root. Case 8 (scope-widening) covers that.
-	// This test verifies the chain verification fires even for self-grants.
-	t.Logf("attack 1 self-grant chain result: decision=%v reason=%q", result.Decision, result.Reason)
+
+	// The self-grant chain IS valid (root gave itself a grant, and sender == root).
+	// This is allowed: the chain verification fires (non-trivial path) and the
+	// evaluator correctly permits a root that delegated to itself.
+	//
+	// The laundromat attack is: a delegated key trying to elevate itself by claiming
+	// the delegation goes through a fake root. That's covered by scope-widening (case 8).
+	// This test verifies the non-empty-chain path does NOT silently bypass verification
+	// when sender == anchor.
+	//
+	// ASSERTION: the evaluator must return Allow for a valid self-grant chain.
+	// If the evaluator returns Deny or Unresolvable here, the chain-verification logic
+	// is incorrectly rejecting valid self-delegations (regression).
+	if result.Decision != trust.Allow {
+		t.Errorf("TestAttack1: expected Allow for valid self-grant chain (sender==root, chain[0].child==root), got decision=%v reason=%q",
+			result.Decision, result.Reason)
+	}
+	// On Allow, Reason must be empty.
+	if result.Reason != "" {
+		t.Errorf("TestAttack1: expected empty Reason on Allow decision, got %q", result.Reason)
+	}
+	// MissingMessageID must be empty on a non-Unresolvable result.
+	if result.MissingMessageID != "" {
+		t.Errorf("TestAttack1: expected empty MissingMessageID on Allow decision, got %q", result.MissingMessageID)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -80,16 +81,33 @@ type PinStore struct {
 }
 
 // NewPinStore creates a pin store at the given path. The HMAC key is derived
-// from the agent's private key using SHA-256("campfire-trust-pins" || privKey[:32]).
+// from the agent's private key using SHA-256(ed25519.Sign(privKey, "campfire-trust-pins-v1")).
+//
+// This derivation binds the HMAC key to the agent's signing identity:
+// the signature is deterministic (ed25519 is deterministic), non-guessable
+// from the public key alone, and changes if the private key changes.
+// The "-v1" suffix distinguishes it from the previous derivation
+// (SHA-256("campfire-trust-pins" || privKey[:32])) for version safety.
+//
+// privKey must be an ed25519 seed (32 bytes) or an ed25519 private key (64 bytes).
 func NewPinStore(path string, privKey []byte) (*PinStore, error) {
 	if len(privKey) < 32 {
 		return nil, fmt.Errorf("private key must be at least 32 bytes")
 	}
 
-	h := sha256.New()
-	h.Write([]byte("campfire-trust-pins"))
-	h.Write(privKey[:32])
-	hmacKey := h.Sum(nil)
+	// Build the full ed25519 private key from the seed if only 32 bytes provided.
+	var fullPrivKey ed25519.PrivateKey
+	if len(privKey) == ed25519.SeedSize {
+		fullPrivKey = ed25519.NewKeyFromSeed(privKey)
+	} else {
+		fullPrivKey = ed25519.PrivateKey(privKey[:ed25519.PrivateKeySize])
+	}
+
+	// Derive HMAC key: SHA-256(ed25519.Sign(privKey, "campfire-trust-pins-v1"))
+	// The signature is deterministic and binds the HMAC key to the signing identity.
+	sig := ed25519.Sign(fullPrivKey, []byte("campfire-trust-pins-v1"))
+	digest := sha256.Sum256(sig)
+	hmacKey := digest[:]
 
 	ps := &PinStore{
 		path:    path,
