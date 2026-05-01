@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/connect"
+	connect "github.com/campfire-net/campfire/cf-conventions/cf-connect"
 	"github.com/campfire-net/campfire/pkg/naming"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/spf13/cobra"
