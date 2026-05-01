@@ -331,6 +331,99 @@ func (c *Client) sendFilesystem(req SendRequest, m *store.Membership) (*message.
 	return msg, nil
 }
 
+// forwardMessage implements pass-through bridge delivery. It takes a
+// protocol.Message received from the source campfire and writes it to the
+// destination campfire transport with its original envelope (ID, Sender,
+// Signature, Payload, Tags, Antecedents, Provenance) unchanged, appending
+// exactly one provenance hop signed by the destination campfire with
+// Role = campfire.RoleBlindRelay.
+//
+// This preserves original-author cryptographic attribution end-to-end
+// while recording that the message transited this bridge (IsBridged() == true).
+// Only the filesystem transport is supported; HTTP-transport destinations
+// are not currently handled and return an error.
+func (c *Client) forwardMessage(campfireID string, src *Message) (*Message, error) {
+	if c.identity == nil {
+		return nil, fmt.Errorf("identity required to forward messages")
+	}
+
+	m, err := c.store.GetMembership(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("querying membership: %w", err)
+	}
+	if m == nil {
+		return nil, &ErrNotMember{CampfireID: campfireID}
+	}
+
+	// Pass-through is only implemented for the filesystem transport.
+	// HTTP pass-through requires cfhttp.DeliverToAll with a pre-built message —
+	// tracked as a follow-up (see bridge-forward-passthrough.md §Open follow-ups).
+	switch transport.ResolveType(*m) {
+	case transport.TypePeerHTTP:
+		return nil, fmt.Errorf("pass-through (Forward: true) is not yet supported for HTTP-transport destinations; use re-publish mode (Forward: false)")
+	}
+
+	// Decode the hex-encoded sender pubkey back to raw bytes.
+	senderBytes, err := hex.DecodeString(src.Sender)
+	if err != nil {
+		return nil, fmt.Errorf("decoding sender public key: %w", err)
+	}
+
+	// Reconstruct the internal message.Message from the protocol.Message.
+	// The original ID, Sender, Payload, Tags, Antecedents, Signature, Timestamp,
+	// and Provenance are preserved — this is the pass-through guarantee.
+	wire := &message.Message{
+		ID:          src.ID,
+		Sender:      senderBytes,
+		Payload:     src.Payload,
+		Tags:        src.Tags,
+		Antecedents: src.Antecedents,
+		Timestamp:   src.Timestamp,
+		Signature:   src.Signature,
+		Provenance:  src.Provenance,
+		Instance:    src.Instance,
+	}
+
+	tr := fs.ForDir(m.TransportDir)
+
+	members, err := tr.ListMembers(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("listing members: %w", err)
+	}
+
+	state, err := tr.ReadState(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("reading campfire state: %w", err)
+	}
+
+	cf := state.ToCampfire(members)
+
+	// Append one blind-relay hop signed by the destination campfire.
+	// This is the evidence-of-transit; it does not modify the original
+	// Sender, Signature, ID, or any other envelope fields.
+	if err := wire.AddHop(
+		state.PrivateKey, state.PublicKey,
+		cf.MembershipHash(), len(members),
+		state.JoinProtocol, state.ReceptionRequirements,
+		campfire.RoleBlindRelay,
+	); err != nil {
+		return nil, fmt.Errorf("adding pass-through hop: %w", err)
+	}
+
+	if err := tr.WriteMessage(campfireID, wire); err != nil {
+		return nil, fmt.Errorf("writing forwarded message: %w", err)
+	}
+
+	// Mirror to local store so subscribers can read the forwarded message.
+	if _, err := c.store.AddMessage(store.MessageRecordFromMessage(campfireID, wire, store.NowNano())); err != nil {
+		return nil, fmt.Errorf("storing forwarded message locally: %w", err)
+	}
+
+	// Return an updated protocol.Message reflecting the appended provenance hop.
+	result := *src
+	result.Provenance = wire.Provenance
+	return &result, nil
+}
 
 // sanitizeTransportDir validates that dir is a safe absolute path with no path
 // traversal sequences. It returns the cleaned path or an error if dir is empty,
