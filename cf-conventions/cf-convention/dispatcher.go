@@ -83,10 +83,17 @@ type ConventionDispatcher struct {
 
 	// httpClient is used for Tier 2 HTTP POST dispatches. Configurable for testing.
 	httpClient *http.Client
+
+	// gateEvaluator is the L3 GateEvaluator used for convention operation authorization.
+	// Defaults to AllowAllGateEvaluator (Stage 2 stub) if not set.
+	// Set to the cf-authority/trust DefaultGateEvaluator (via ConventionAdapter) in Stage 3.
+	gateEvaluator GateEvaluator
 }
 
 // NewConventionDispatcher creates a dispatcher with the given store and logger.
 // If logger is nil, a default logger is used.
+// The default GateEvaluator is AllowAllGateEvaluator (Stage 2 stub).
+// Call SetGateEvaluator to wire the real cf-authority/trust evaluator (Stage 3).
 func NewConventionDispatcher(s DispatchStore, logger *log.Logger) *ConventionDispatcher {
 	if logger == nil {
 		logger = log.Default()
@@ -98,7 +105,29 @@ func NewConventionDispatcher(s DispatchStore, logger *log.Logger) *ConventionDis
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		gateEvaluator: AllowAllGateEvaluator{},
 	}
+}
+
+// SetGateEvaluator wires a GateEvaluator to the dispatcher.
+// Call with trust.NewConventionAdapter() to enable real cf-authority L3 gating.
+// Thread-safe: may be called before or after handler registration.
+func (d *ConventionDispatcher) SetGateEvaluator(eval GateEvaluator) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if eval == nil {
+		eval = AllowAllGateEvaluator{}
+	}
+	d.gateEvaluator = eval
+}
+
+// GateEvaluatorSet returns true if a non-stub GateEvaluator has been set.
+// Used by tests and diagnostics to verify the real evaluator is wired.
+func (d *ConventionDispatcher) GateEvaluatorSet() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	_, isStub := d.gateEvaluator.(AllowAllGateEvaluator)
+	return !isStub
 }
 
 // RegisterTier1Handler registers a pure-Go convention handler for a specific
