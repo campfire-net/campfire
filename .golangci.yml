@@ -304,3 +304,26 @@ linters:
               desc: "L2-no-extensions: L2 machinery must not import L3 extension billing. See design v2 §4.6 (campfireagent-4d7)"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/delegation"
               desc: "L2-no-extensions: L2 machinery must not import L3 extension delegation (OPEN-018: identity_resolver.go exempt pending Stage 3 refactor). See design v2 §4.6 (campfireagent-4d7)"
+
+        # L2-no-authority — cf-conventions/cf-convention/ (L2 machinery) must not import L3 authority.
+        #
+        # cf-conventions/cf-authority/ is the Layer-3 authority package: GateEvaluator default
+        # implementation, conformance harness, chain walker, grant CBOR layout. The L2 machinery
+        # declares the GateEvaluator INTERFACE (cf-convention/gate_evaluator.go) whose default
+        # implementation lives in cf-authority/trust. The machinery must not import its own
+        # implementation — that would invert the dependency (L3 satisfies L2 interface, not reverse).
+        #
+        # Applies to: all non-test files in cf-conventions/cf-convention/.
+        # Exempt: *_test.go files (integration tests may probe cross-layer behaviour).
+        #
+        # Adversarial test: cf-conventions/cf-convention/gate_evaluator_test.go
+        # TestDepguardL2NoCfAuthorityCatchesForbiddenImport (added in campfireagent-2b9).
+        L2-no-authority:
+          list-mode: lax
+          files:
+            - "**/cf-conventions/cf-convention/**/*.go"
+            - "**/cf-conventions/cf-convention/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-authority"
+              desc: "L2-no-authority: L2 machinery (cf-convention/) must not import L3 authority (cf-authority/). See design v2 §4.6 (campfireagent-2b9)"
