@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/durability"
+	durability "github.com/campfire-net/campfire/cf-conventions/cf-durability"
 )
 
 // DefaultResolutionTimeout is the total timeout for resolving an entire name.

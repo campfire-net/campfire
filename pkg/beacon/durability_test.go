@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/durability"
+	durability "github.com/campfire-net/campfire/cf-conventions/cf-durability"
 )
 
 var testNow = time.Date(2026, 3, 28, 0, 0, 0, 0, time.UTC)
