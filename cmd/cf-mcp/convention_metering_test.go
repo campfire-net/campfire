@@ -223,3 +223,31 @@ func TestConventionMetering_NilEmitterNoOp(t *testing.T) {
 		t.Error("conventionDispatcher should be nil when wireConventionMetering is called with nil emitter")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestProductionWiring_GateEvaluatorSet (campfireagent-861)
+// ---------------------------------------------------------------------------
+
+// TestProductionWiring_GateEvaluatorSet verifies that wireConventionMetering
+// produces a ConventionDispatcher where GateEvaluatorSet() == true.
+//
+// This is the production wiring assertion: the real cf-authority DefaultGateEvaluator
+// (via ConventionAdapter) must be set on the dispatcher at startup, not the
+// AllowAllGateEvaluator stub. A false result here means the 3 HIGH security
+// findings from Stage 1 (revocation staleness, scope-widening, owner ceiling)
+// are still unmitigated in production.
+func TestProductionWiring_GateEvaluatorSet(t *testing.T) {
+	var count int64
+	_, client := newMeteringForgeServer(t, &count)
+	emitter := forge.NewForgeEmitter(client, 100, nil)
+
+	srv := newTestServer(t)
+	srv.wireConventionMetering(emitter)
+
+	if srv.conventionDispatcher == nil {
+		t.Fatal("conventionDispatcher should be non-nil after wireConventionMetering")
+	}
+	if !srv.conventionDispatcher.GateEvaluatorSet() {
+		t.Error("GateEvaluatorSet() == false: wireConventionMetering did not wire the real DefaultGateEvaluator — production dispatch is using the AllowAll stub (SECURITY GAP)")
+	}
+}

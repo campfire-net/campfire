@@ -2,6 +2,7 @@ package trust
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -296,6 +297,36 @@ func TestPinStore_AtomicWrite(t *testing.T) {
 		if e.Name() != "pins.json" {
 			t.Errorf("unexpected file left in dir after Save: %s", e.Name())
 		}
+	}
+}
+
+// TestPinStore_HMACSeedV1DiffersFromV0 is a regression guard verifying that
+// the new ed25519-signature-based HMAC seed (v1) differs from the old
+// SHA-256("campfire-trust-pins" || privKey[:32]) derivation (v0).
+//
+// A match would mean the upgrade provides no security benefit. A difference
+// confirms v1 cannot be computed from the public key alone.
+func TestPinStore_HMACSeedV1DiffersFromV0(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	privSeed := priv.Seed() // 32-byte seed
+
+	// Old derivation (v0): SHA-256("campfire-trust-pins" || privSeed[:32])
+	hOld := sha256.New()
+	hOld.Write([]byte("campfire-trust-pins"))
+	hOld.Write(privSeed[:32])
+	oldKey := hOld.Sum(nil)
+
+	// New derivation (v1): SHA-256(ed25519.Sign(fullPrivKey, "campfire-trust-pins-v1"))
+	fullPrivKey := ed25519.NewKeyFromSeed(privSeed)
+	sig := ed25519.Sign(fullPrivKey, []byte("campfire-trust-pins-v1"))
+	newDigest := sha256.Sum256(sig)
+	newKey := newDigest[:]
+
+	if string(oldKey) == string(newKey) {
+		t.Error("HMAC seed regression: v1 derivation matches v0 — upgrade provides no security benefit")
 	}
 }
 

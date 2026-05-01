@@ -3,6 +3,8 @@ package convention
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -357,6 +359,49 @@ func (d *ConventionDispatcher) dispatch(
 	}
 	if !inserted {
 		// Already dispatched — skip.
+		return
+	}
+
+	// L3 gate evaluation (campfireagent-861): call GateEvaluator.Evaluate before
+	// invoking the handler. Deny and Unresolvable both block dispatch (fail-closed
+	// per §4.2 of the GateEvaluator contract).
+	//
+	// The gate runs after deduplication so that deny decisions are recorded and
+	// repeated presentations of a denied message don't bypass dedup.
+	//
+	// Sender key is decoded best-effort; a zero key is passed on decode failure
+	// so the evaluator can still apply non-sender policy (owner ceiling, etc.).
+	d.mu.RLock()
+	eval := d.gateEvaluator
+	d.mu.RUnlock()
+
+	var senderKey ed25519.PublicKey
+	if senderHex := msg.Sender; len(senderHex) == 64 {
+		if raw, err := hex.DecodeString(senderHex); err == nil && len(raw) == ed25519.PublicKeySize {
+			senderKey = ed25519.PublicKey(raw)
+		}
+	}
+
+	gateReq := EvaluateRequest{
+		Request: GateOpRequest{
+			Convention: op.Convention,
+			Operation:  op.Operation,
+			CampfireID: campfireID,
+			Tags:       msg.Tags,
+			Sender:     senderKey,
+		},
+		CurrentTime: time.Now(),
+	}
+
+	result := eval.Evaluate(ctx, gateReq)
+	if result.Decision != GateAllow {
+		d.logger.Printf("convention dispatcher: gate denied dispatch %s/%s op=%s:%s reason=%q",
+			campfireID, msg.ID, op.Convention, op.Operation, result.Reason)
+		// Mark as failed so the dispatch record reflects the denial.
+		// Use cleanupCtx (not yet declared here — use context.Background()).
+		if _, _, markErr := d.store.MarkFailedCAS(context.Background(), campfireID, msg.ID, 0); markErr != nil {
+			d.logger.Printf("convention dispatcher: gate MarkFailedCAS(%s/%s): %v", campfireID, msg.ID, markErr)
+		}
 		return
 	}
 

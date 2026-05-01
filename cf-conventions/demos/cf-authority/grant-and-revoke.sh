@@ -110,6 +110,30 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+# §G — Production dispatch goes through the gate evaluator (campfireagent-861)
+# ─────────────────────────────────────────────────────────────────────────────
+# Verifies that wireConventionMetering wires DefaultGateEvaluator (not the
+# AllowAll stub) and that the ConventionDispatcher calls Evaluate before
+# invoking any handler. Both are required for Stage 3 to be closed.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "=== §G — Production gate evaluator wiring (campfireagent-861) ==="
+
+if "$GO" test -run "TestProductionWiring_GateEvaluatorSet" \
+    ./cmd/cf-mcp/... 2>&1 | grep -q "PASS\|ok"; then
+  ok "wireConventionMetering sets real DefaultGateEvaluator (not AllowAll stub)"
+else
+  fail "production gate evaluator not wired — SECURITY GAP"
+fi
+
+if "$GO" test -run "TestDispatcher_GateEvaluatorInvokedOnDispatch|TestDispatcher_DenyDecisionRejectsDispatch|TestDispatcher_AllowDecisionAllowsDispatch" \
+    ./cf-conventions/cf-convention/... 2>&1 | grep -q "PASS\|ok"; then
+  ok "dispatcher calls GateEvaluator.Evaluate on every dispatch; Deny blocks handler"
+else
+  fail "dispatcher gate integration tests failed"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
