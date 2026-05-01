@@ -398,8 +398,16 @@ func (d *ConventionDispatcher) dispatch(
 		d.logger.Printf("convention dispatcher: gate denied dispatch %s/%s op=%s:%s reason=%q",
 			campfireID, msg.ID, op.Convention, op.Operation, result.Reason)
 		// Mark as failed so the dispatch record reflects the denial.
-		// Use cleanupCtx (not yet declared here — use context.Background()).
-		if _, _, markErr := d.store.MarkFailedCAS(context.Background(), campfireID, msg.ID, 0); markErr != nil {
+		// Must read the current gen (RedispatchCount) before calling MarkFailedCAS.
+		// Hardcoding gen=0 causes silent CAS failures on re-dispatched messages
+		// (RedispatchCount >= 1), leaving the record stuck in "dispatched" state.
+		cleanupCtx := context.Background()
+		gateGen, genErr := d.store.GetRedispatchCount(cleanupCtx, campfireID, msg.ID)
+		if genErr != nil {
+			d.logger.Printf("convention dispatcher: gate GetRedispatchCount(%s/%s): %v", campfireID, msg.ID, genErr)
+			gateGen = 0 // fall back to gen=0 on read failure (best-effort)
+		}
+		if _, _, markErr := d.store.MarkFailedCAS(cleanupCtx, campfireID, msg.ID, gateGen); markErr != nil {
 			d.logger.Printf("convention dispatcher: gate MarkFailedCAS(%s/%s): %v", campfireID, msg.ID, markErr)
 		}
 		return

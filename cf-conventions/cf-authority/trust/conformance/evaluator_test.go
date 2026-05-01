@@ -95,8 +95,10 @@ func newTestKeys(t *testing.T) *testKeys {
 	}
 }
 
-// buildGrantPayload builds a GrantPayload for a grant from parent to child.
-func buildGrantPayload(t *testing.T, child ed25519.PublicKey, convention, opPattern string, until int64, depth uint, parentGrantID []byte) trust.GrantPayload {
+// buildGrantPayload builds a GrantPayload for a grant from granter to child.
+// The granter parameter is the Ed25519 public key of the entity signing the grant
+// (used for root anchor verification via GranterPubKey, CBOR field 5).
+func buildGrantPayload(t *testing.T, child ed25519.PublicKey, convention, opPattern string, until int64, depth uint, parentGrantID []byte, granter ed25519.PublicKey) trust.GrantPayload {
 	t.Helper()
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
@@ -113,6 +115,7 @@ func buildGrantPayload(t *testing.T, child ed25519.PublicKey, convention, opPatt
 	return trust.GrantPayload{
 		ParentGrantID: parentGrantID,
 		ChildPubkey:   child,
+		GranterPubKey: granter,
 		Capabilities:  []trust.Capability{cap},
 		Depth:         depth,
 	}
@@ -183,7 +186,7 @@ func TestCase02_Valid1Hop(t *testing.T) {
 	keys := newTestKeys(t)
 
 	gp := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload := encodeGrantPayload(t, gp)
 
 	req := trust.EvaluateRequest{
@@ -222,18 +225,18 @@ func TestCase02_Valid1Hop(t *testing.T) {
 func TestCase03_Valid2Hop(t *testing.T) {
 	keys := newTestKeys(t)
 
-	// Hop 1: root → intermediate (depth 1)
+	// Hop 1: root → intermediate (depth 1, granter=root)
 	gp1 := buildGrantPayload(t, keys.intermediate, "ready", "claim|done",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload1 := encodeGrantPayload(t, gp1)
 
-	// Hop 2: intermediate → sender (depth 2)
+	// Hop 2: intermediate → sender (depth 2, granter=intermediate)
 	gp1ID, err := trust.GrantPayloadID(gp1)
 	if err != nil {
 		t.Fatalf("GrantPayloadID: %v", err)
 	}
 	gp2 := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval+oneDay, 2, gp1ID)
+		canonicalT0Eval+oneDay, 2, gp1ID, keys.intermediate)
 	payload2 := encodeGrantPayload(t, gp2)
 
 	req := trust.EvaluateRequest{
@@ -274,15 +277,15 @@ func TestCase03_Valid2Hop(t *testing.T) {
 func TestCase04_ExpiredMidChain(t *testing.T) {
 	keys := newTestKeys(t)
 
-	// Hop 1: root → intermediate (not expired)
+	// Hop 1: root → intermediate (not expired, granter=root)
 	gp1 := buildGrantPayload(t, keys.intermediate, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload1 := encodeGrantPayload(t, gp1)
 
-	// Hop 2: intermediate → sender (expired 1ns before t0)
+	// Hop 2: intermediate → sender (expired 1ns before t0, granter=intermediate)
 	gp1ID, _ := trust.GrantPayloadID(gp1)
 	gp2 := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval-1, 2, gp1ID) // expired: until = t0 - 1ns
+		canonicalT0Eval-1, 2, gp1ID, keys.intermediate) // expired: until = t0 - 1ns
 	payload2 := encodeGrantPayload(t, gp2)
 
 	req := trust.EvaluateRequest{
@@ -318,15 +321,15 @@ func TestCase04_ExpiredMidChain(t *testing.T) {
 func TestCase05_RevokedMidChain(t *testing.T) {
 	keys := newTestKeys(t)
 
-	// Hop 1: root → intermediate (valid)
+	// Hop 1: root → intermediate (valid, granter=root)
 	gp1 := buildGrantPayload(t, keys.intermediate, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload1 := encodeGrantPayload(t, gp1)
 
-	// Hop 2: intermediate → sender (valid but revoked)
+	// Hop 2: intermediate → sender (valid but revoked, granter=intermediate)
 	gp1ID, _ := trust.GrantPayloadID(gp1)
 	gp2 := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval+oneDay, 2, gp1ID)
+		canonicalT0Eval+oneDay, 2, gp1ID, keys.intermediate)
 	payload2 := encodeGrantPayload(t, gp2)
 
 	// RevocationView: sender's key is revoked.
@@ -379,18 +382,18 @@ func TestCase06_DepthExceeded(t *testing.T) {
 
 	// 3-hop chain: root → intermediate → sender → sub (depth = 3)
 	gp1 := buildGrantPayload(t, keys.intermediate, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload1 := encodeGrantPayload(t, gp1)
 	gp1ID, _ := trust.GrantPayloadID(gp1)
 
 	gp2 := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval+oneDay, 2, gp1ID)
+		canonicalT0Eval+oneDay, 2, gp1ID, keys.intermediate)
 	payload2 := encodeGrantPayload(t, gp2)
 	gp2ID, _ := trust.GrantPayloadID(gp2)
 
 	// Third hop exceeds depth limit.
 	gp3 := buildGrantPayload(t, subKey, "ready", "claim",
-		canonicalT0Eval+oneDay, 3, gp2ID)
+		canonicalT0Eval+oneDay, 3, gp2ID, keys.sender)
 	payload3 := encodeGrantPayload(t, gp3)
 
 	req := trust.EvaluateRequest{
@@ -426,15 +429,15 @@ func TestCase06_DepthExceeded(t *testing.T) {
 func TestCase07_ScopeNarrowing(t *testing.T) {
 	keys := newTestKeys(t)
 
-	// Hop 1: root → intermediate (grants ready:*)
+	// Hop 1: root → intermediate (grants ready:*, granter=root)
 	gp1 := buildGrantPayload(t, keys.intermediate, "ready", "*",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload1 := encodeGrantPayload(t, gp1)
 
-	// Hop 2: intermediate → sender (narrows to ready:claim — valid)
+	// Hop 2: intermediate → sender (narrows to ready:claim — valid, granter=intermediate)
 	gp1ID, _ := trust.GrantPayloadID(gp1)
 	gp2 := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval+oneDay, 2, gp1ID)
+		canonicalT0Eval+oneDay, 2, gp1ID, keys.intermediate)
 	payload2 := encodeGrantPayload(t, gp2)
 
 	req := trust.EvaluateRequest{
@@ -476,15 +479,15 @@ func TestCase07_ScopeNarrowing(t *testing.T) {
 func TestCase08_ScopeWideningRejected(t *testing.T) {
 	keys := newTestKeys(t)
 
-	// Hop 1: root → intermediate (grants ready:claim only)
+	// Hop 1: root → intermediate (grants ready:claim only, granter=root)
 	gp1 := buildGrantPayload(t, keys.intermediate, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload1 := encodeGrantPayload(t, gp1)
 
-	// Hop 2: intermediate → sender (claims ready:* — WIDER than parent)
+	// Hop 2: intermediate → sender (claims ready:* — WIDER than parent, granter=intermediate)
 	gp1ID, _ := trust.GrantPayloadID(gp1)
 	gp2 := buildGrantPayload(t, keys.sender, "ready", "*",
-		canonicalT0Eval+oneDay, 2, gp1ID)
+		canonicalT0Eval+oneDay, 2, gp1ID, keys.intermediate)
 	payload2 := encodeGrantPayload(t, gp2)
 
 	req := trust.EvaluateRequest{
@@ -520,9 +523,9 @@ func TestCase08_ScopeWideningRejected(t *testing.T) {
 func TestCase09_StoreReadErrorFailClosed(t *testing.T) {
 	keys := newTestKeys(t)
 
-	// Hop 1: valid grant.
+	// Hop 1: valid grant (granter=root).
 	gp1 := buildGrantPayload(t, keys.intermediate, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload1 := encodeGrantPayload(t, gp1)
 
 	// Hop 2: corrupt/missing payload — simulates store read error.
@@ -569,9 +572,9 @@ func TestCase09_StoreReadErrorFailClosed(t *testing.T) {
 func TestCase10_StaleRevocationWindow(t *testing.T) {
 	keys := newTestKeys(t)
 
-	// Valid 1-hop chain.
+	// Valid 1-hop chain (granter=root).
 	gp1 := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload1 := encodeGrantPayload(t, gp1)
 
 	// RevocationView is stale: observed 2 minutes ago, max staleness is 1 minute.
@@ -621,12 +624,12 @@ func TestCase11_ReservedOpFloor(t *testing.T) {
 
 	// 2-hop chain granting the reserved op "delegation-grant".
 	gp1 := buildGrantPayload(t, keys.intermediate, "delegation", "delegation-grant",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload1 := encodeGrantPayload(t, gp1)
 	gp1ID, _ := trust.GrantPayloadID(gp1)
 
 	gp2 := buildGrantPayload(t, keys.sender, "delegation", "delegation-grant",
-		canonicalT0Eval+oneDay, 2, gp1ID)
+		canonicalT0Eval+oneDay, 2, gp1ID, keys.intermediate)
 	payload2 := encodeGrantPayload(t, gp2)
 
 	req := trust.EvaluateRequest{
@@ -669,9 +672,9 @@ func TestCase11_ReservedOpFloor(t *testing.T) {
 func TestCase12_AwaitFulfillmentOrdering(t *testing.T) {
 	keys := newTestKeys(t)
 
-	// Valid 1-hop grant from root to sender.
+	// Valid 1-hop grant from root to sender (granter=root).
 	gp := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload := encodeGrantPayload(t, gp)
 
 	// Predicate: chain_to with root principal key.
@@ -726,9 +729,9 @@ func TestCase12_AwaitFulfillmentOrdering(t *testing.T) {
 func TestD6_OwnerCeiling_BlanketDenyGlob(t *testing.T) {
 	keys := newTestKeys(t)
 
-	// Valid 1-hop grant permitting ready:claim.
+	// Valid 1-hop grant permitting ready:claim (granter=root).
 	gp := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload := encodeGrantPayload(t, gp)
 
 	req := trust.EvaluateRequest{
@@ -759,9 +762,9 @@ func TestD6_OwnerCeiling_BlanketDenyGlob(t *testing.T) {
 func TestD6_OwnerCeiling_BlanketDenyExact(t *testing.T) {
 	keys := newTestKeys(t)
 
-	// Valid 1-hop grant permitting ready:claim.
+	// Valid 1-hop grant permitting ready:claim (granter=root).
 	gp := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload := encodeGrantPayload(t, gp)
 
 	req := trust.EvaluateRequest{
@@ -799,7 +802,7 @@ func TestD1_Determinism_AllCases(t *testing.T) {
 	keys := newTestKeys(t)
 
 	gp := buildGrantPayload(t, keys.sender, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil)
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload := encodeGrantPayload(t, gp)
 
 	cases := []struct {
@@ -831,7 +834,7 @@ func TestD1_Determinism_AllCases(t *testing.T) {
 			name: "case-04-expired",
 			req: func() trust.EvaluateRequest {
 				expiredGP := buildGrantPayload(t, keys.sender, "ready", "claim",
-					canonicalT0Eval-1, 1, nil)
+					canonicalT0Eval-1, 1, nil, keys.root)
 				expiredPayload := encodeGrantPayload(t, expiredGP)
 				return trust.EvaluateRequest{
 					Request: trust.OpRequest{
@@ -879,16 +882,16 @@ func TestD1_Determinism_AllCases(t *testing.T) {
 				ChainMessages: []trust.ChainMessage{
 					makeMsg("g1", func() []byte {
 						gp2 := buildGrantPayload(t, keys.intermediate, "delegation", "delegation-grant",
-							canonicalT0Eval+oneDay, 1, nil)
+							canonicalT0Eval+oneDay, 1, nil, keys.root)
 						_ = encodeGrantPayload(t, gp2) // encoded but not directly used; used for ID derivation
 						gp3ID, _ := trust.GrantPayloadID(gp2)
 						gp3 := buildGrantPayload(t, keys.sender, "delegation", "delegation-grant",
-							canonicalT0Eval+oneDay, 2, gp3ID)
+							canonicalT0Eval+oneDay, 2, gp3ID, keys.intermediate)
 						return encodeGrantPayload(t, gp3)
 					}()),
 					makeMsg("g0", encodeGrantPayload(t, buildGrantPayload(t,
 						keys.intermediate, "delegation", "delegation-grant",
-						canonicalT0Eval+oneDay, 1, nil))),
+						canonicalT0Eval+oneDay, 1, nil, keys.root))),
 				},
 				RootPrincipal: keys.root, CurrentTime: t0(),
 			},
@@ -932,8 +935,10 @@ func TestAttack1_SelfGrantLaundromat(t *testing.T) {
 	// Attacker constructs a grant where ChildPubkey == RootPrincipal (self-grant attempt).
 	// A chain where the root grants itself should still require an empty chain in the
 	// anchor-self case; a non-empty chain where child == root is suspect.
+	// Root grants itself: ChildPubkey == RootPrincipal, GranterPubKey == root (self-grant).
+	// This is structurally valid (root IS the trust anchor so GranterPubKey == RootPrincipal).
 	gp := buildGrantPayload(t, keys.root, "ready", "claim",
-		canonicalT0Eval+oneDay, 1, nil) // child == root (self-grant)
+		canonicalT0Eval+oneDay, 1, nil, keys.root) // child == root, granter == root (self-grant)
 	payload := encodeGrantPayload(t, gp)
 
 	req := trust.EvaluateRequest{
@@ -987,6 +992,160 @@ func TestAttack1_SelfGrantLaundromat(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// RogueChain: Trust anchor bypass (CRITICAL — D3 invariant)
+//
+// A rogue chain is self-signed by an arbitrary key (not RootPrincipal) but is
+// otherwise structurally valid: correct depth, unexpired, unrevoked, valid scope.
+// Without root anchor verification, the evaluator returns Allow for a rogue chain.
+// With Fix 1 (walkChain verifies lastHop.GranterPubKey == RootPrincipal), the
+// evaluator returns Deny/unresolvable.
+//
+// TDD: this test is written BEFORE the fix. On HEAD (before Fix 1) it must FAIL
+// (evaluator returns Allow instead of Deny). After Fix 1 it MUST PASS.
+// Mutation-test: revert Fix 1 → this test MUST FAIL again.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestRogueChain_TrustAnchorBypass verifies that a chain signed by a rogue key
+// (not RootPrincipal) is denied, even when it is otherwise structurally valid.
+//
+// Attack vector: adversary generates their own keypair (rogue/roguePriv), creates
+// a GrantPayload with GranterPubKey == rogue (not root), valid scope/expiry/depth.
+// Without the root anchor check, this chain passes all other evaluator checks and
+// receives Allow — a CRITICAL trust anchor bypass (D3).
+//
+// Expected: Deny (any DenyReason). Specifically DenyUnresolvable maps to the closest
+// deny variant; we accept any non-Allow decision as proof of the bypass closed.
+func TestRogueChain_TrustAnchorBypass(t *testing.T) {
+	keys := newTestKeys(t)
+
+	// Rogue creates a 1-hop grant: rogue → sender.
+	// GranterPubKey == rogue (NOT root). Valid scope/expiry/depth.
+	rogueGP := trust.GrantPayload{
+		ParentGrantID: nil,                 // looks like a root grant
+		ChildPubkey:   keys.sender,         // valid child key
+		GranterPubKey: keys.rogue,          // ROGUE granter — NOT RootPrincipal
+		Capabilities: []trust.Capability{
+			{
+				Convention: "ready",
+				OpPattern:  "claim",
+				Where:      []trust.WhereMatcherCBOR{},
+				Bounds:     map[string]any{},
+				Until:      canonicalT0Eval + oneDay, // not expired
+				Nonce:      func() []byte { n := make([]byte, 16); n[0] = 0xFF; return n }(),
+			},
+		},
+		Depth: 1, // depth 1 = direct delegation
+	}
+	roguePayload := encodeGrantPayload(t, rogueGP)
+
+	req := trust.EvaluateRequest{
+		Request: trust.OpRequest{
+			Convention: "ready",
+			Operation:  "claim",
+			CampfireID: "deadbeef",
+			Sender:     keys.sender,
+			Predicate: trust.PredicateAST{
+				Kind: trust.KindGrant,
+				Leaf: &trust.LeafPredicate{
+					GrantConvention: "ready",
+					GrantOp:         "claim",
+				},
+			},
+		},
+		ChainMessages: []trust.ChainMessage{makeMsg("rogue-grant-1", roguePayload)},
+		RootPrincipal: keys.root, // the REAL root principal
+		CurrentTime:   t0(),
+	}
+
+	result := eval.Evaluate(context.Background(), req)
+
+	// CRITICAL: a rogue chain must NOT produce Allow.
+	// Without Fix 1: evaluator returns Allow (trust anchor bypass — FAIL).
+	// With Fix 1: evaluator returns Deny (trust anchor verified — PASS).
+	if result.Decision == trust.Allow {
+		t.Errorf("TestRogueChain_TrustAnchorBypass: TRUST ANCHOR BYPASS — rogue chain (GranterPubKey != RootPrincipal) returned Allow; expected Deny")
+		t.Errorf("  GranterPubKey: %x", keys.rogue)
+		t.Errorf("  RootPrincipal: %x", keys.root)
+	}
+}
+
+// TestRogueChain_ForgedRoot2Hop verifies that a 2-hop rogue chain — where the
+// last hop (closest to root) carries GranterPubKey == rogue — is also denied.
+//
+// Attack vector: adversary builds a 2-hop chain where both hops are signed by rogue.
+// The chain has valid structural depth (2 hops ≤ MaxChainDepth) and valid scope.
+// The root anchor bypass is only closed if walkChain checks lastHop.GranterPubKey.
+func TestRogueChain_ForgedRoot2Hop(t *testing.T) {
+	keys := newTestKeys(t)
+
+	// Hop 1 (root-side): rogue → intermediate. GranterPubKey == rogue.
+	rogueGP1 := trust.GrantPayload{
+		ParentGrantID: nil,
+		ChildPubkey:   keys.intermediate,
+		GranterPubKey: keys.rogue, // rogue signed this, not root
+		Capabilities: []trust.Capability{
+			{
+				Convention: "ready",
+				OpPattern:  "claim",
+				Where:      []trust.WhereMatcherCBOR{},
+				Bounds:     map[string]any{},
+				Until:      canonicalT0Eval + oneDay,
+				Nonce:      func() []byte { n := make([]byte, 16); n[0] = 0xFE; return n }(),
+			},
+		},
+		Depth: 1,
+	}
+	roguePayload1 := encodeGrantPayload(t, rogueGP1)
+	rogueGP1ID, err := trust.GrantPayloadID(rogueGP1)
+	if err != nil {
+		t.Fatalf("GrantPayloadID(rogueGP1): %v", err)
+	}
+
+	// Hop 2 (sender-side): rogue → sender (as if intermediate granted sender).
+	rogueGP2 := trust.GrantPayload{
+		ParentGrantID: rogueGP1ID,
+		ChildPubkey:   keys.sender,
+		GranterPubKey: keys.intermediate, // intermediate is the granter here (valid in 2-hop)
+		Capabilities: []trust.Capability{
+			{
+				Convention: "ready",
+				OpPattern:  "claim",
+				Where:      []trust.WhereMatcherCBOR{},
+				Bounds:     map[string]any{},
+				Until:      canonicalT0Eval + oneDay,
+				Nonce:      func() []byte { n := make([]byte, 16); n[0] = 0xFD; return n }(),
+			},
+		},
+		Depth: 2,
+	}
+	roguePayload2 := encodeGrantPayload(t, rogueGP2)
+
+	req := trust.EvaluateRequest{
+		Request: trust.OpRequest{
+			Convention: "ready",
+			Operation:  "claim",
+			CampfireID: "deadbeef",
+			Sender:     keys.sender,
+		},
+		// Chain ordered sender→anchor: hop2 (sender-side), hop1 (root-side).
+		ChainMessages: []trust.ChainMessage{
+			makeMsg("rogue-grant-2", roguePayload2),
+			makeMsg("rogue-grant-1", roguePayload1),
+		},
+		RootPrincipal: keys.root, // real root — rogue is NOT root
+		CurrentTime:   t0(),
+	}
+
+	result := eval.Evaluate(context.Background(), req)
+
+	if result.Decision == trust.Allow {
+		t.Errorf("TestRogueChain_ForgedRoot2Hop: TRUST ANCHOR BYPASS — 2-hop rogue chain returned Allow; expected Deny")
+		t.Errorf("  lastHop.GranterPubKey: %x", keys.rogue)
+		t.Errorf("  RootPrincipal:         %x", keys.root)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Differential reporter — JSON output for cross-implementer comparison
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1000,13 +1159,13 @@ type conformanceCase struct {
 func TestConformanceDifferentialReport(t *testing.T) {
 	keys := newTestKeys(t)
 
-	gp1 := buildGrantPayload(t, keys.sender, "ready", "claim", canonicalT0Eval+oneDay, 1, nil)
+	gp1 := buildGrantPayload(t, keys.sender, "ready", "claim", canonicalT0Eval+oneDay, 1, nil, keys.root)
 	p1 := encodeGrantPayload(t, gp1)
 
-	gp1x := buildGrantPayload(t, keys.intermediate, "ready", "claim", canonicalT0Eval+oneDay, 1, nil)
+	gp1x := buildGrantPayload(t, keys.intermediate, "ready", "claim", canonicalT0Eval+oneDay, 1, nil, keys.root)
 	p1x := encodeGrantPayload(t, gp1x)
 	gp1xID, _ := trust.GrantPayloadID(gp1x)
-	gp2x := buildGrantPayload(t, keys.sender, "ready", "claim", canonicalT0Eval+oneDay, 2, gp1xID)
+	gp2x := buildGrantPayload(t, keys.sender, "ready", "claim", canonicalT0Eval+oneDay, 2, gp1xID, keys.intermediate)
 	p2x := encodeGrantPayload(t, gp2x)
 
 	requests := []struct {
@@ -1030,7 +1189,7 @@ func TestConformanceDifferentialReport(t *testing.T) {
 		{"04-expired", trust.EvaluateRequest{
 			Request: trust.OpRequest{Convention: "ready", Operation: "claim", Sender: keys.sender},
 			ChainMessages: []trust.ChainMessage{makeMsg("eg1", encodeGrantPayload(t,
-				buildGrantPayload(t, keys.sender, "ready", "claim", canonicalT0Eval-1, 1, nil)))},
+				buildGrantPayload(t, keys.sender, "ready", "claim", canonicalT0Eval-1, 1, nil, keys.root)))},
 			RootPrincipal: keys.root, CurrentTime: t0(),
 		}},
 		{"05-revoked", trust.EvaluateRequest{

@@ -528,6 +528,13 @@ type GrantRequest struct {
 	// Nonce is a fresh random nonce for the Capability. If nil, 16 bytes are generated.
 	// Callers may provide a nonce for test reproducibility.
 	Nonce []byte
+
+	// GranterPubKey is the 32-byte Ed25519 public key of the orchestrator issuing
+	// this grant. When set, it is embedded as GrantPayload.GranterPubKey (CBOR field 5)
+	// so the evaluator can verify the trust anchor chain termination.
+	// If empty, the field is omitted (fail-closed: evaluator returns Unresolvable
+	// when RootPrincipal is set and GranterPubKey is absent).
+	GranterPubKey ed25519.PublicKey
 }
 
 // GrantResult is the output of IssueWorkerGrant.
@@ -598,6 +605,7 @@ func IssueWorkerGrant(req GrantRequest) (*GrantResult, error) {
 		ChildPubkey:   req.WorkerPubkey,
 		Capabilities:  []trust.Capability{cap},
 		Depth:         1,
+		GranterPubKey: req.GranterPubKey, // CBOR field 5 — required for trust anchor check (D3)
 	}
 
 	payload, err := trust.MarshalGrantPayloadCBOR(gp)

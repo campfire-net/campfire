@@ -413,7 +413,8 @@ func TestCapabilityCBORFieldIDs(t *testing.T) {
 // ── §3.4 GrantPayload CBOR Field IDs ─────────────────────────────────────────
 
 // TestGrantPayloadCBORFieldIDs verifies that the GrantPayload struct CBOR
-// integer keys match §3.4 of the snapshot (field IDs 1–4).
+// integer keys match §3.4 of the snapshot (field IDs 1–5).
+// Field 5 (GranterPubKey) was added as a security TCB fix for root-anchor verification.
 func TestGrantPayloadCBORFieldIDs(t *testing.T) {
 	type fieldSpec struct {
 		fieldName string
@@ -424,6 +425,7 @@ func TestGrantPayloadCBORFieldIDs(t *testing.T) {
 		{"ChildPubkey", "2,keyasint"},
 		{"Capabilities", "3,keyasint"},
 		{"Depth", "4,keyasint"},
+		{"GranterPubKey", "5,keyasint"},
 	}
 
 	mt := reflect.TypeOf(cftrust.GrantPayload{})
@@ -439,8 +441,17 @@ func TestGrantPayloadCBORFieldIDs(t *testing.T) {
 		}
 	}
 
-	if mt.NumField() != 4 {
-		t.Errorf("GrantPayload has %d fields, want exactly 4 (§3.4)", mt.NumField())
+	// Field 5 (GranterPubKey) must be omitempty — absent in legacy grants; evaluator fails closed.
+	f5, ok := mt.FieldByName("GranterPubKey")
+	if ok {
+		tag5 := f5.Tag.Get("cbor")
+		if !strings.Contains(tag5, "omitempty") {
+			t.Errorf("GrantPayload.GranterPubKey: cbor tag = %q — must contain 'omitempty' (field 5 is optional for legacy grants)", tag5)
+		}
+	}
+
+	if mt.NumField() != 5 {
+		t.Errorf("GrantPayload has %d fields, want exactly 5 (§3.4 + security TCB field 5)", mt.NumField())
 	}
 }
 

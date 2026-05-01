@@ -70,13 +70,18 @@ type WhereMatcherCBOR struct {
 //	2: child_pubkey     (bstr) — Ed25519 public key, 32 bytes raw
 //	3: capabilities     ([+Capability])
 //	4: depth            (uint) — hop depth (0 = owner-root)
+//	5: granter_pubkey   (bstr) — Ed25519 public key, 32 bytes raw — the key that signed this grant
+//
+// Field 5 (granter_pubkey) is mandatory for chain-walk root-anchor verification (D3).
+// The evaluator verifies that the last hop's GranterPubKey equals req.RootPrincipal.
 //
 // grant-id = SHA-256(deterministic-CBOR(GrantPayload)).
 type GrantPayload struct {
-	ParentGrantID []byte       `cbor:"1,keyasint"` // null → nil slice
-	ChildPubkey   []byte       `cbor:"2,keyasint"` // 32-byte Ed25519 pubkey
+	ParentGrantID []byte       `cbor:"1,keyasint"`           // null → nil slice
+	ChildPubkey   []byte       `cbor:"2,keyasint"`           // 32-byte Ed25519 pubkey
 	Capabilities  []Capability `cbor:"3,keyasint"`
 	Depth         uint         `cbor:"4,keyasint"`
+	GranterPubKey []byte       `cbor:"5,keyasint,omitempty"` // 32-byte Ed25519 pubkey of the granter; mandatory for root-anchor verification
 }
 
 // MarshalCapabilityCBOR encodes a Capability to deterministic CBOR per
@@ -130,6 +135,9 @@ func MarshalGrantPayloadCBOR(gp GrantPayload) ([]byte, error) {
 	if len(gp.Capabilities) == 0 {
 		return nil, fmt.Errorf("cf-authority: GrantPayload.Capabilities must be non-empty")
 	}
+	if len(gp.GranterPubKey) != 0 && len(gp.GranterPubKey) != 32 {
+		return nil, fmt.Errorf("cf-authority: GrantPayload.GranterPubKey must be 32 bytes when set; got %d", len(gp.GranterPubKey))
+	}
 	return cborEncMode.Marshal(gp)
 }
 
@@ -144,6 +152,9 @@ func UnmarshalGrantPayloadCBOR(data []byte) (GrantPayload, error) {
 	}
 	if len(gp.Capabilities) == 0 {
 		return GrantPayload{}, fmt.Errorf("cf-authority: decoded GrantPayload has no capabilities")
+	}
+	if len(gp.GranterPubKey) != 0 && len(gp.GranterPubKey) != 32 {
+		return GrantPayload{}, fmt.Errorf("cf-authority: decoded GrantPayload.GranterPubKey must be 32 bytes when set; got %d", len(gp.GranterPubKey))
 	}
 	return gp, nil
 }
