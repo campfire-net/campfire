@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/identity"
+	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-identity"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/message"
