@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func testKeypair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
@@ -174,5 +175,49 @@ func TestNilReceptionRequirements(t *testing.T) {
 
 	if b.ReceptionRequirements == nil {
 		t.Error("reception_requirements should not be nil")
+	}
+}
+
+// TestNotAfterDefault verifies that New() sets not_after to ~30 days (OPEN-024).
+func TestNotAfterDefault(t *testing.T) {
+	pub, priv := testKeypair(t)
+	b, err := New(pub, priv, "open", nil, TransportConfig{
+		Protocol: "filesystem",
+		Config:   map[string]string{"dir": "/tmp"},
+	}, "test")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if b.NotAfter == 0 {
+		t.Error("NotAfter should be set to ~30 days by default")
+	}
+	notAfterTime := b.NotAfterTime()
+	expectedMin := time.Now().Add(29 * 24 * time.Hour)
+	expectedMax := time.Now().Add(31 * 24 * time.Hour)
+	if notAfterTime.Before(expectedMin) || notAfterTime.After(expectedMax) {
+		t.Errorf("NotAfterTime %v not in [29d, 31d] range", notAfterTime)
+	}
+}
+
+// TestIsExpired verifies advisory expiry logic.
+func TestIsExpired(t *testing.T) {
+	pub, priv := testKeypair(t)
+	tc := TransportConfig{Protocol: "filesystem", Config: map[string]string{"dir": "/tmp"}}
+	b, _ := New(pub, priv, "open", nil, tc, "test")
+
+	if b.IsExpired(time.Now()) {
+		t.Error("fresh beacon should not be expired")
+	}
+	// Check with a far-future time
+	if !b.IsExpired(time.Now().Add(35 * 24 * time.Hour)) {
+		t.Error("beacon should be expired 35 days after creation")
+	}
+}
+
+// TestIsExpired_ZeroNotAfter verifies a zero not_after never expires.
+func TestIsExpired_ZeroNotAfter(t *testing.T) {
+	b := &Beacon{NotAfter: 0}
+	if b.IsExpired(time.Now().Add(100 * 365 * 24 * time.Hour)) {
+		t.Error("beacon with NotAfter=0 should never be expired")
 	}
 }

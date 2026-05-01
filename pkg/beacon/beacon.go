@@ -6,9 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/encoding"
 )
+
+// DefaultBeaconNotAfterDuration is the default not_after lifetime for a beacon (~30 days).
+// Producers that do not set not_after explicitly use this default.
+// The field is TAINTED — consumers honor it as an advisory expiry.
+// Citation: design v2 §6 P2, OPEN-024.
+const DefaultBeaconNotAfterDuration = 30 * 24 * time.Hour
 
 // TransportConfig describes how to connect to a campfire.
 type TransportConfig struct {
@@ -17,6 +24,9 @@ type TransportConfig struct {
 }
 
 // Beacon advertises a campfire for discovery.
+// The NotAfter field was added in cf 0.30.0 (OPEN-024). It is TAINTED — signed
+// by the campfire key but NOT included in the BeaconSignInput, so it is advisory only.
+// Default lifetime is DefaultBeaconNotAfterDuration (~30 days).
 type Beacon struct {
 	CampfireID            []byte          `cbor:"1,keyasint" json:"campfire_id"`
 	JoinProtocol          string          `cbor:"2,keyasint" json:"join_protocol"`
@@ -24,6 +34,10 @@ type Beacon struct {
 	Transport             TransportConfig `cbor:"4,keyasint" json:"transport"`
 	Description           string          `cbor:"5,keyasint" json:"description"`
 	Signature             []byte          `cbor:"6,keyasint" json:"signature"`
+	// NotAfter is a TAINTED advisory expiry Unix timestamp (OPEN-024).
+	// Zero means no expiry declared. Consumers MUST NOT treat this as a
+	// security guarantee — it is advisory only.
+	NotAfter int64 `cbor:"7,keyasint,omitempty" json:"not_after,omitempty"`
 }
 
 // BeaconSignInput is the canonical form for signing.
@@ -69,7 +83,27 @@ func New(
 		Transport:             transport,
 		Description:           description,
 		Signature:             sig,
+		NotAfter:              time.Now().Add(DefaultBeaconNotAfterDuration).Unix(),
 	}, nil
+}
+
+// IsExpired reports whether the beacon's not_after advisory expiry has passed.
+// A beacon with NotAfter == 0 never expires. The field is TAINTED — this check
+// is advisory; cryptographic validity is determined by Verify().
+func (b *Beacon) IsExpired(now time.Time) bool {
+	if b.NotAfter == 0 {
+		return false
+	}
+	return now.Unix() > b.NotAfter
+}
+
+// NotAfterTime returns the not_after field as a time.Time.
+// Returns the zero value if not_after is not set.
+func (b *Beacon) NotAfterTime() time.Time {
+	if b.NotAfter == 0 {
+		return time.Time{}
+	}
+	return time.Unix(b.NotAfter, 0)
 }
 
 // Verify checks the beacon's signature.
