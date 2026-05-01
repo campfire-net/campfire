@@ -256,7 +256,8 @@ func makeNonce(t *testing.T) []byte {
 
 // buildGrant builds a CBOR-encoded GrantPayload for identity:introduce-me.
 // Grants the sender the identity convention with the introduce-me op.
-func buildGrant(t *testing.T, childPubkey []byte, currentTime time.Time) trust.ChainMessage {
+// granterPubkey must be the 32-byte Ed25519 public key of the granter (typically root).
+func buildGrant(t *testing.T, childPubkey []byte, currentTime time.Time, granterPubkey []byte) trust.ChainMessage {
 	t.Helper()
 
 	cap := trust.Capability{
@@ -271,6 +272,7 @@ func buildGrant(t *testing.T, childPubkey []byte, currentTime time.Time) trust.C
 		ChildPubkey:   childPubkey,
 		Capabilities:  []trust.Capability{cap},
 		Depth:         1,
+		GranterPubKey: granterPubkey,
 	}
 	payload, err := trust.MarshalGrantPayloadCBOR(gp)
 	if err != nil {
@@ -293,7 +295,7 @@ func TestCeremonyFlow_IntroduceDeclareVerify(t *testing.T) {
 	ctx := context.Background()
 
 	// Step 1: introduce-me — root grants sender the introduce-me capability.
-	grant := buildGrant(t, senderPub, now)
+	grant := buildGrant(t, senderPub, now, rootPub)
 	req := trust.EvaluateRequest{
 		Request: trust.OpRequest{
 			Convention:  cfidentity.IdentityConvention,
@@ -324,6 +326,7 @@ func TestCeremonyFlow_IntroduceDeclareVerify(t *testing.T) {
 		ChildPubkey:   senderPub,
 		Capabilities:  []trust.Capability{capDeclare},
 		Depth:         1,
+		GranterPubKey: rootPub,
 	}
 	payloadDeclare, err := trust.MarshalGrantPayloadCBOR(gpDeclare)
 	if err != nil {

@@ -639,6 +639,7 @@ func TestGateEvaluator_WorkerGrantAllowed(t *testing.T) {
 		ChildPubkey:   workerPub,
 		Capabilities:  []trust.Capability{cap},
 		Depth:         1,
+		GranterPubKey: rootPub, // root issues this grant — required for trust anchor check
 	}
 	payload, err := trust.MarshalGrantPayloadCBOR(gp)
 	if err != nil {

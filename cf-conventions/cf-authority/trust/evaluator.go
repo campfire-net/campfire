@@ -273,28 +273,37 @@ func walkChain(req EvaluateRequest) EvaluateResult {
 		}
 	}
 
-	// Verify last hop anchors at RootPrincipal.
-	// The last hop's chain should connect back to the root: the "parent" side
-	// of the last hop (the signer) is the one before root. We check that the
-	// last hop's Depth matches and that the root principal is trust-anchored.
-	// In the cf-authority model, the evaluator assumes pre-verified signatures —
-	// the chain is "sender→anchor" so the root must match the expected root.
-	// We verify by checking that depth of last hop == 0 (owner-root) or that
-	// chain connectivity is maintained.
+	// Verify last hop anchors at RootPrincipal (D3 — trust anchor check).
+	//
+	// The last hop in the chain (hops[last], closest to root) carries GranterPubKey —
+	// the Ed25519 public key of the entity that signed this grant. For the chain to
+	// terminate at the trusted root, GranterPubKey MUST equal req.RootPrincipal.
+	//
+	// Without this check, a rogue chain self-signed by any arbitrary key passes all
+	// other checks (depth, expiry, revocation, scope intersection) and receives Allow —
+	// a CRITICAL trust anchor bypass (D3). This is the security TCB invariant.
+	//
+	// GranterPubKey is CBOR field 5 of GrantPayload. If it is absent (nil/empty), the
+	// evaluator cannot verify root anchor and MUST return Deny/unresolvable (fail closed).
 	lastHop := hops[len(hops)-1]
 	if req.RootPrincipal != nil && len(req.RootPrincipal) == 32 {
-		// The root principal is the issuer of the last grant (depth=0 means
-		// owner-root grant). For depth > 0, we check via GrantPayload.Depth.
-		// The owner-root grant has ParentGrantID == nil and Depth == 0.
-		// For a 1-hop chain from root: hop[0].Depth should be 1 (delegated).
-		// For a 2-hop chain: hop[0].Depth=2, hop[1].Depth=1... but the spec
-		// says Depth is the hop depth of the grant (0 = owner-root).
-		// The last hop in the chain (closest to root) should have Depth == 1
-		// (directly granted by owner) or Depth == 0 (owner-root).
-		// We verify the chain terminates at the root principal by checking
-		// that the last hop's parent grant is nil (owner-root) meaning the
-		// issuer IS the root principal.
-		_ = lastHop // used below in scope check
+		if len(lastHop.GranterPubKey) != 32 {
+			// GranterPubKey absent — cannot verify root anchor. Fail closed (D2).
+			return EvaluateResult{
+				Decision:         Unresolvable,
+				MissingMessageID: req.ChainMessages[len(req.ChainMessages)-1].ID,
+			}
+		}
+		if !bytes.Equal(lastHop.GranterPubKey, req.RootPrincipal) {
+			// GranterPubKey present but does not equal RootPrincipal — rogue chain.
+			// Closest DenyReason from the frozen enum: DenyPredicate (chain trust
+			// invariant violated — rogue key cannot satisfy the implicit chain_to
+			// constraint imposed by the trust anchor).
+			return EvaluateResult{
+				Decision: Deny,
+				Reason:   DenyPredicate,
+			}
+		}
 	}
 
 	// Evaluate the predicate against the effective capabilities.

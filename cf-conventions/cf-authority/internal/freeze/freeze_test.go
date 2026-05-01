@@ -117,22 +117,24 @@ func TestCapabilityNonceIsMandatory(t *testing.T) {
 // ── §1.2 GrantPayload CBOR Field IDs ─────────────────────────────────────────
 
 // TestGrantPayloadCBORFieldIDs verifies that the GrantPayload struct CBOR
-// integer keys match §1.2 of the S0b spec (field IDs 1–4).
+// integer keys match §1.2 of the S0b spec (field IDs 1–5).
 func TestGrantPayloadCBORFieldIDs(t *testing.T) {
 	type fieldSpec struct {
 		fieldName string
 		wantTag   string
 	}
-	// S0b §1.2 wire layout:
+	// S0b §1.2 wire layout (security TCB update: field 5 added for root-anchor verification):
 	//   1: parent_grant_id  (bstr | null)
 	//   2: child_pubkey     (bstr, 32 bytes)
 	//   3: capabilities     ([+Capability])
 	//   4: depth            (uint)
+	//   5: granter_pubkey   (bstr, 32 bytes; omitempty — absent in legacy grants; evaluator fails closed when absent)
 	want := []fieldSpec{
 		{"ParentGrantID", "1,keyasint"},
 		{"ChildPubkey", "2,keyasint"},
 		{"Capabilities", "3,keyasint"},
 		{"Depth", "4,keyasint"},
+		{"GranterPubKey", "5,keyasint"},
 	}
 
 	mt := reflect.TypeOf(cftrust.GrantPayload{})
@@ -148,9 +150,18 @@ func TestGrantPayloadCBORFieldIDs(t *testing.T) {
 		}
 	}
 
-	// Exactly 4 fields — no undocumented extras.
-	if mt.NumField() != 4 {
-		t.Errorf("GrantPayload has %d fields, want exactly 4 (§1.2)", mt.NumField())
+	// Field 5 (GranterPubKey) must be omitempty — absent in legacy grants; evaluator fails closed.
+	f5, ok := mt.FieldByName("GranterPubKey")
+	if ok {
+		tag5 := f5.Tag.Get("cbor")
+		if !strings.Contains(tag5, "omitempty") {
+			t.Errorf("GrantPayload.GranterPubKey: cbor tag = %q — must contain 'omitempty' (field 5 is optional for legacy grants; evaluator fails closed when absent)", tag5)
+		}
+	}
+
+	// Exactly 5 fields — no undocumented extras.
+	if mt.NumField() != 5 {
+		t.Errorf("GrantPayload has %d fields, want exactly 5 (§1.2 + security TCB field 5)", mt.NumField())
 	}
 }
 
@@ -393,14 +404,14 @@ func TestAuthorityFreezeVerifyMutationDetection(t *testing.T) {
 		t.Error("MUTATION-1 UNDETECTED: count 5 incorrectly matches Capability field count")
 	}
 
-	// Mutation 2: GrantPayload field count. Real = 4.
+	// Mutation 2: GrantPayload field count. Real = 5 (field 5 = GranterPubKey, security TCB addition).
 	gpt := reflect.TypeOf(cftrust.GrantPayload{})
-	if gpt.NumField() != 4 {
-		t.Errorf("MUTATION-2 CAUGHT: GrantPayload has %d fields, not 4 — §1.2 drift", gpt.NumField())
+	if gpt.NumField() != 5 {
+		t.Errorf("MUTATION-2 CAUGHT: GrantPayload has %d fields, not 5 — §1.2 drift", gpt.NumField())
 	}
-	mutatedGPCount := 3
+	mutatedGPCount := 4
 	if mutatedGPCount == gpt.NumField() {
-		t.Error("MUTATION-2 UNDETECTED: count 3 incorrectly matches GrantPayload field count")
+		t.Error("MUTATION-2 UNDETECTED: count 4 incorrectly matches GrantPayload field count")
 	}
 
 	// Mutation 3: DenyExpired wire value. Real = "expired".
@@ -456,10 +467,11 @@ func TestCrossCheckWireverifyAlignment(t *testing.T) {
 		t.Errorf("Capability field count = %d, want 6 (alignment with wireverify §3.3)", capFields)
 	}
 
-	// wireverify asserts GrantPayload has exactly 4 fields — so do we.
+	// wireverify asserts GrantPayload has exactly 5 fields — so do we.
+	// (Field 5 = GranterPubKey added as security TCB fix for root-anchor verification.)
 	gpFields := reflect.TypeOf(cftrust.GrantPayload{}).NumField()
-	if gpFields != 4 {
-		t.Errorf("GrantPayload field count = %d, want 4 (alignment with wireverify §3.4)", gpFields)
+	if gpFields != 5 {
+		t.Errorf("GrantPayload field count = %d, want 5 (alignment with wireverify §3.4 + security TCB field 5)", gpFields)
 	}
 
 	// wireverify asserts DenyPredicate == "predicate_unsatisfied" — so do we.
