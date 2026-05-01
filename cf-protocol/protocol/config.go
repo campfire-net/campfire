@@ -685,6 +685,47 @@ func containsAnchor(list []ed25519.PublicKey, key ed25519.PublicKey) bool {
 	return false
 }
 
+// DefaultConfig returns the compiled-in default Config.
+// Callers use this to identify which fields an overlay config has explicitly set
+// (i.e. fields that differ from the defaults).
+func DefaultConfig() Config {
+	return compiledDefaults()
+}
+
+// ApplyConfigField copies a single named field from src into dst.
+// Field names use dot-separated section.key notation matching the config schema.
+// Unknown field names are silently ignored. This is used by the per-app config
+// overlay mechanism to selectively apply app-level fields that have not already
+// been overridden by a more specific (ancestor or project) layer.
+func ApplyConfigField(dst, src *Config, field string) {
+	switch field {
+	case "identity.display_name":
+		dst.Identity.DisplayName = src.Identity.DisplayName
+	case "identity.file":
+		dst.Identity.File = src.Identity.File
+	case "identity.backend":
+		dst.Identity.Backend = src.Identity.Backend
+	case "identity.fingerprint":
+		dst.Identity.Fingerprint = src.Identity.Fingerprint
+	case "store.file":
+		dst.Store.File = src.Store.File
+	case "transport.type":
+		dst.Transport.Type = src.Transport.Type
+	case "transport.endpoint":
+		dst.Transport.Endpoint = src.Transport.Endpoint
+	case "transport.dir":
+		dst.Transport.Dir = src.Transport.Dir
+	case "transport.relay":
+		dst.Transport.Relay = src.Transport.Relay
+	case "naming.root":
+		dst.Naming.Root = src.Naming.Root
+	case "naming.seeds":
+		dst.Naming.Seeds = append([]string(nil), src.Naming.Seeds...)
+	case "behavior.auto_join":
+		dst.Behavior.AutoJoin = append([]string(nil), src.Behavior.AutoJoin...)
+	}
+}
+
 // ValidateIdentityPath validates an identity.file value from config.
 // Returns an error if the path is absolute or contains ".." components.
 //
