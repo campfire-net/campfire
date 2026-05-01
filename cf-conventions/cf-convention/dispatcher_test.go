@@ -1610,11 +1610,25 @@ func TestDispatcher_Tier1_TokensConsumed_WrittenToStore(t *testing.T) {
 		t.Fatalf("expected fulfilled, got %s", status)
 	}
 
-	// Allow time for SetTokensConsumed to complete (runs after MarkFulfilledCAS).
-	time.Sleep(50 * time.Millisecond)
+	// Poll for SetTokensConsumed to complete (runs async after MarkFulfilledCAS).
+	// Replace the previous time.Sleep(50ms) which was flaky under CI load — the
+	// goroutine writing SetTokensConsumed can outlast the sleep on a loaded runner.
+	var unbilled []convention.DispatchRecord
+	var err error
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		unbilled, err = ds.ListUnbilledDispatches(context.Background())
+		if err != nil {
+			t.Fatalf("ListUnbilledDispatches: %v", err)
+		}
+		if len(unbilled) >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	// The dispatch record should now have TokensConsumed set and appear in unbilled list.
-	unbilled, err := ds.ListUnbilledDispatches(context.Background())
+	unbilled, err = ds.ListUnbilledDispatches(context.Background())
 	if err != nil {
 		t.Fatalf("ListUnbilledDispatches: %v", err)
 	}
