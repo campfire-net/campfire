@@ -142,10 +142,11 @@ type ProvenanceChecker interface {
 
 // Executor runs convention operations: validates args, composes tags, and sends messages.
 type Executor struct {
-	transport   executorTransport
-	selfKey     string
-	rateLimiter *rateLimiter
-	provenance  ProvenanceChecker
+	transport    executorTransport
+	selfKey      string
+	rateLimiter  *rateLimiter
+	provenance   ProvenanceChecker    // v1 interface (backward compat)
+	provenanceV2 ProvenanceCheckerV2  // v2 interface (design v2 §4.2)
 }
 
 // globalRateLimiter is a process-level singleton so that rate limit state persists
@@ -197,6 +198,14 @@ func (e *Executor) WithProvenance(checker ProvenanceChecker) *Executor {
 	return e
 }
 
+// WithProvenanceV2 attaches a ProvenanceCheckerV2 to the Executor.
+// When set, v2 takes precedence over v1 (WithProvenance). The v2 interface is
+// context-aware and uses typed request/result structs (design v2 §4.2).
+func (e *Executor) WithProvenanceV2(checker ProvenanceCheckerV2) *Executor {
+	e.provenanceV2 = checker
+	return e
+}
+
 // newExecutorWithLimiter creates an Executor with an explicit rate limiter.
 // Use this in tests that need isolated rate limit state.
 func newExecutorWithLimiter(transport executorTransport, selfKey string, rl *rateLimiter) *Executor {
@@ -245,7 +254,10 @@ func (e *Executor) Execute(ctx context.Context, decl *Declaration, campfireID st
 	// See Operator Provenance Convention v0.1 §8.1.
 	if decl.MinOperatorLevel > 0 {
 		senderLevel := 0
-		if e.provenance != nil {
+		if e.provenanceV2 != nil {
+			r := e.provenanceV2.CheckProvenance(ctx, ProvenanceRequest{SenderKey: e.selfKey})
+			senderLevel = int(r.Level)
+		} else if e.provenance != nil {
 			senderLevel = e.provenance.Level(e.selfKey)
 		}
 		if senderLevel < decl.MinOperatorLevel {
