@@ -1,25 +1,28 @@
 
-[1m=== Create session token ===[0m
-Token: cfs1_pgFYIOYAHfnJOr-Lj9a2lMWJU...
-  [0;32mPASS[0m: Token starts with cfs1_
+[1m=== Create session token (cfs2_) ===[0m
+Token: cfs2_pAF4QDczM2M1MTlhYzhhNmRjNzUwYj...
+  [0;32mPASS[0m: Token starts with cfs2_
 
-[1m=== Send messages via session ===[0m
-sent: 73158332
+[1m=== Send messages via session (using cfs2_ token) ===[0m
+sent: 1e2176be
 Sent message 1
-sent: a0a17d17
+sent: 35dcb7d6
 Sent message 2
 
-[1m=== Read messages via session ===[0m
+[1m=== Read messages via session (using cfs2_ token) ===[0m
   [0;32mPASS[0m: Session read sees message 1
   [0;32mPASS[0m: Session read sees message 2
 
-[1m=== End session ===[0m
-session ended: e6001df9c93a
+[1m=== End session (using cfs2_ token) ===[0m
+session ended: 733c519ac8a6
 Session ended
 
 [1m=== Read after end (should fail or return empty) ===[0m
-Post-end read: 2026/04/10 00:47:31 campfire: sync(e6001df9c93abf8b8fd6b694c5895244135577e019211
+Post-end read: 2026/05/01 19:18:43 campfire: sync(733c519ac8a6dc750b4a1ea9487650de52e9a7fadcb71
+
+[1m=== Legacy cfs1_ token rejected with migration error ===[0m
+  [0;32mPASS[0m: cfs1_ token rejected with migration message
 
 ================================
-Results: [0;32m3 passed[0m, [0;31m0 failed[0m
+Results: [0;32m4 passed[0m, [0;31m0 failed[0m
 ================================

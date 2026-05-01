@@ -160,6 +160,13 @@ func (s *Session) CampfireID() string {
 	return s.campfireID
 }
 
+// CampfireDir returns the filesystem transport directory for this session campfire.
+// Used by session create to encode the transport location in the cfs2_ token so
+// that other processes (cf session send/read/end) can find the campfire.
+func (s *Session) CampfireDir() string {
+	return s.campfireDir
+}
+
 // Send posts a message to the session campfire.
 // Returns the created message on success.
 // Returns an error if the session has been closed or ended.
