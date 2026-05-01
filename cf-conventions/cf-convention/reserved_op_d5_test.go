@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -277,10 +278,11 @@ func TestD5_HappyPath_NonReservedOpAnyDepthAnyLevel(t *testing.T) {
 
 	d := newD5Dispatcher(t)
 
-	handlerCalled := false
+	// Use atomic to avoid data race between handler goroutine and test read.
+	var handlerCalled int32
 	err := d.RegisterTier1Handler("cf-d5-test", conventionName, nonReservedOp, nil,
 		func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
-			handlerCalled = true
+			atomic.StoreInt32(&handlerCalled, 1)
 			// Return nil response to avoid sendFulfillment with nil client.
 			return nil, nil
 		},
@@ -299,7 +301,7 @@ func TestD5_HappyPath_NonReservedOpAnyDepthAnyLevel(t *testing.T) {
 	}
 	// Give the goroutine time to run.
 	time.Sleep(100 * time.Millisecond)
-	if !handlerCalled {
+	if atomic.LoadInt32(&handlerCalled) == 0 {
 		t.Errorf("Dispatch(non-reserved op=%q): handler SHOULD be called for non-reserved ops", nonReservedOp)
 	}
 }
