@@ -23,14 +23,17 @@ import (
 )
 
 var initCmd = &cobra.Command{
-	Use:   "init [--name agent-name] [--session]",
+	Use:   "init [--name agent-name] [--session] [--policy <preset>]",
 	Short: "Generate a new agent identity (Ed25519 keypair)",
 	Long: `Create a campfire identity.
 
-  cf init                  persistent identity at ~/.campfire/
-  cf init --session        temporary identity in a unique temp dir
-  cf init --name worker-1  persistent named identity (survives across sessions)
-  cf init --durable        threshold=2 identity with cold key recovery phrase
+  cf init                                persistent identity at ~/.campfire/
+  cf init --session                      temporary identity in a unique temp dir
+  cf init --name worker-1                persistent named identity (survives across sessions)
+  cf init --durable                      threshold=2 identity with cold key recovery phrase
+  cf init --policy personal-developer    single-operator identity with full rd/dontguess/social/reach access
+  cf init --policy team-member           multi-operator identity with threshold signing and delegation
+  cf init --policy public-agent          public-facing hosted agent with minimal capabilities
 
 Named identities live at ~/.campfire/agents/<name>/. Session identities print
 the CF_HOME path on line 1 and the display name on line 2. The caller sets
@@ -38,7 +41,13 @@ CF_HOME to the printed path for subsequent commands.
 
 When --name is set, the new agent inherits join-policy.json, operator-root.json,
 and aliases.json from the parent CF_HOME (or --from path if specified).
-The --from flag requires --name — config inheritance only applies to named agents.`,
+The --from flag requires --name — config inheritance only applies to named agents.
+
+Policy presets write grant-template.json to the identity home, documenting the
+default capability set for automatic-grant issuance. Three presets are available:
+  personal-developer   solo use, no delegation, 7d owner-approved grants
+  team-member          multi-owner threshold signing, depth-2 delegation, 24h auto-grants
+  public-agent         hosted MCP service posture, minimal caps, 24h TTL ceiling`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		forceInit, _ := cmd.Flags().GetBool("force")
 		initName, _ := cmd.Flags().GetString("name")
@@ -46,6 +55,7 @@ The --from flag requires --name — config inheritance only applies to named age
 		initFrom, _ := cmd.Flags().GetString("from")
 		initDurable, _ := cmd.Flags().GetBool("durable")
 		initDisplayName, _ := cmd.Flags().GetString("display-name")
+		initPolicy, _ := cmd.Flags().GetString("policy")
 		// Session identity: temp dir, print path + display name, done.
 		if initSession {
 			tmpDir, err := os.MkdirTemp("", "cf-session-")
@@ -170,6 +180,17 @@ The --from flag requires --name — config inheritance only applies to named age
 		// Write CONTEXT.md alongside the identity
 		writeContext(cfHome)
 
+		// Apply policy preset if --policy was provided.
+		if initPolicy != "" {
+			summary, policyErr := applyPolicyPreset(cfHome, initPolicy)
+			if policyErr != nil {
+				return policyErr
+			}
+			if !jsonOutput {
+				fmt.Fprintln(os.Stderr, summary)
+			}
+		}
+
 		// Save display name to profile.json if --display-name was provided.
 		if initDisplayName != "" {
 			if saveErr := protocol.SaveProfile(cfHome, protocol.ProfileFile{DisplayName: initDisplayName}); saveErr != nil {
@@ -205,6 +226,9 @@ The --from flag requires --name — config inheritance only applies to named age
 			}
 			if coldKeyPhrase != "" {
 				out["cold_key_phrase"] = coldKeyPhrase
+			}
+			if initPolicy != "" {
+				out["policy_preset"] = initPolicy
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
@@ -526,6 +550,7 @@ func init() {
 	initCmd.Flags().String("from", "", "inherit config from this CF_HOME path (requires --name)")
 	initCmd.Flags().Bool("durable", false, "create a threshold=2 identity campfire with a cold key recovery phrase")
 	initCmd.Flags().String("display-name", "", "human-readable display name stored in ~/.cf/profile.json (unverified, max 64 chars)")
+	initCmd.Flags().String("policy", "", "trust policy preset: personal-developer, team-member, or public-agent (writes grant-template.json)")
 	rootCmd.AddCommand(initCmd)
 }
 
