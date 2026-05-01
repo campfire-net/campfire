@@ -317,6 +317,39 @@ func TestEmitter_ContextCancellationExitsRun(t *testing.T) {
 	}
 }
 
+// TestNewLocalEmitter_NonNilAndNonBlocking verifies that NewLocalEmitter returns a
+// non-nil *ForgeEmitter, that Emit is non-blocking (no Run goroutine needed), and
+// that DrainAndClose returns immediately without hanging.
+func TestNewLocalEmitter_NonNilAndNonBlocking(t *testing.T) {
+	emitter := forge.NewLocalEmitter()
+	if emitter == nil {
+		t.Fatal("NewLocalEmitter returned nil")
+	}
+
+	// Emit many events — must not block or panic.
+	start := time.Now()
+	for i := range 50 {
+		emitter.Emit(forge.UsageEvent{
+			AccountID:      "acct-local",
+			ServiceID:      "campfire",
+			IdempotencyKey: "local-" + string(rune('A'+i%26)),
+			UnitType:       "convention-op-tier2",
+			Quantity:       1,
+			Timestamp:      time.Now(),
+		})
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Errorf("LocalEmitter.Emit blocked for %v — should be non-blocking", elapsed)
+	}
+
+	// DrainAndClose must return immediately (no Run goroutine started).
+	start = time.Now()
+	emitter.DrainAndClose(2 * time.Second)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("DrainAndClose blocked for %v on LocalEmitter — should return immediately", elapsed)
+	}
+}
+
 // TestNewForgeEmitter_DefaultBufferSize verifies default buffer size is applied for <= 0.
 func TestNewForgeEmitter_DefaultBufferSize(t *testing.T) {
 	var count int32

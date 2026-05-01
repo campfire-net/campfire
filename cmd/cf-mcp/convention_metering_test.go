@@ -213,14 +213,25 @@ func TestConventionMetering_HookWiredOnDispatcher(t *testing.T) {
 // TestConventionMetering_NilEmitterNoOp
 // ---------------------------------------------------------------------------
 
-// TestConventionMetering_NilEmitterNoOp verifies that wireConventionMetering is
-// a no-op when the ForgeEmitter is nil (development / stdio mode).
-func TestConventionMetering_NilEmitterNoOp(t *testing.T) {
+// TestConventionMetering_NilEmitterDispatcherStillWired verifies that
+// wireConventionMetering always creates a ConventionDispatcher (for gating),
+// even when the ForgeEmitter is nil (local/dev mode). The MeteringHook should
+// be nil in this case since there is no emitter to send events to.
+func TestConventionMetering_NilEmitterDispatcherStillWired(t *testing.T) {
 	srv := newTestServer(t)
 	srv.wireConventionMetering(nil)
 
-	if srv.conventionDispatcher != nil {
-		t.Error("conventionDispatcher should be nil when wireConventionMetering is called with nil emitter")
+	// Dispatcher is always created so that DefaultGateEvaluator fires.
+	if srv.conventionDispatcher == nil {
+		t.Error("conventionDispatcher should be non-nil even when wireConventionMetering is called with nil emitter (gating requires the dispatcher)")
+	}
+	// MeteringHook must be nil when emitter is nil — no billing events in dev mode.
+	if srv.conventionDispatcher.MeteringHook != nil {
+		t.Error("MeteringHook should be nil when wireConventionMetering is called with nil emitter")
+	}
+	// GateEvaluator must be set unconditionally.
+	if !srv.conventionDispatcher.GateEvaluatorSet() {
+		t.Error("GateEvaluatorSet() == false: DefaultGateEvaluator must be wired even in dev/nil-emitter mode")
 	}
 }
 

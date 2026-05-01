@@ -4957,11 +4957,19 @@ func main() {
 		exposePrimitives: exposePrimitives,
 		mcpPath:          mcpPath,
 	}
-	// M8: Wire convention metering hook on the ConventionDispatcher.
-	// wireConventionMetering is a no-op when forgeEmitter is nil (development / stdio mode).
-	// In hosted mode (Azure Functions), forgeEmitter is set before this runs.
-	// Also saves the DispatchStore on srv.conventionDispatchStore for BillingSweep.
-	srv.wireConventionMetering(srv.forgeEmitter)
+	// M8 / Stage 4: Wire ConventionDispatcher with DefaultGateEvaluator.
+	// wireConventionMetering now always creates the dispatcher (for gating) and
+	// wires the metering hook only when a ForgeEmitter is available.
+	//
+	// In stdio/local mode, forgeEmitter is nil. Pass a LocalEmitter so the
+	// dispatcher is created and gating fires end-to-end, without contacting Forge.
+	// In hosted mode (Azure Functions), forgeEmitter is set to a real emitter
+	// before this runs — billing events are emitted as normal.
+	emitter := srv.forgeEmitter
+	if emitter == nil {
+		emitter = forge.NewLocalEmitter()
+	}
+	srv.wireConventionMetering(emitter)
 
 	// Wire the BillingSweep using the same DispatchStore as the ConventionDispatcher.
 	// wireBillingSweep is a no-op when forgeEmitter or conventionDispatchStore is nil.

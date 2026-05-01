@@ -28,6 +28,29 @@ type ForgeEmitter struct {
 	cancel context.CancelFunc // set by Run; called by DrainAndClose to stop the run loop
 }
 
+// NewLocalEmitter returns a ForgeEmitter that discards all events without
+// contacting the Forge service. Use this for local development, tests, and
+// demo paths where Forge credentials are unavailable. The returned emitter is
+// non-nil, so callers that gate on emitter != nil (e.g. wireConventionMetering)
+// will activate their wiring. Events emitted to a LocalEmitter are dropped
+// silently; no background goroutine is started, and Run/DrainAndClose are no-ops.
+//
+// The returned emitter's Emit method is always non-blocking and safe to call
+// from any goroutine.
+func NewLocalEmitter() *ForgeEmitter {
+	e := &ForgeEmitter{
+		client: nil, // never used; Emit discards events via the channel default branch
+		events: make(chan UsageEvent, 1), // minimal buffer; Emit is non-blocking via default
+		done:   make(chan struct{}),
+		ready:  make(chan struct{}),
+	}
+	// Close ready and done immediately: Run is never called, so any call to
+	// DrainAndClose will return immediately without blocking.
+	close(e.ready)
+	close(e.done)
+	return e
+}
+
 // NewForgeEmitter creates an emitter. client must be non-nil.
 // bufferSize controls the channel capacity (default 1000 if <= 0).
 // onError is called on Forge Ingest errors; may be nil.
