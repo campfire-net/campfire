@@ -24,7 +24,7 @@ These are the atoms of campfire. Everything else is derived.
 
 9. **Convention** — A typed operation declaration. Describes args, tag composition rules, signing mode, and rate limits. The convention is the contract — callers don't know whether an LLM or CPU code is behind it.
 
-10. **Transport** — How bytes move between members. Filesystem (shared directory), P2P HTTP (direct delivery), or GitHub Issues. Agreed at join time, per campfire. The `Client` is transport-agnostic after that.
+10. **Transport** — How bytes move between members. Filesystem (shared directory) or P2P HTTP (direct delivery). Agreed at join time, per campfire. The `Client` is transport-agnostic after that. (GitHub transport was research-grade with no named consumer and is removed in 0.30.)
 
 11. **Beacon** — An advertisement for a campfire. Contains campfire ID (verified), connection details, and description (both tainted). Discovery is not trust.
 
@@ -32,7 +32,7 @@ These are the atoms of campfire. Everything else is derived.
 
 13. **Projection (Named Filter)** — A stored view of a campfire's message stream, filtered by tag expression. Applied on-write; read by name without re-scanning.
 
-14. **Session** — A zero-ceremony short-lived campfire identified by a bearer token. No `cf init` required for participants. All share one ephemeral signing key — no per-sender attribution.
+14. **Session** (`cf-session`, L3 in 0.30) — An ephemeral-identity convention. Each participant gets their own Ed25519 keypair with a scoped grant from the session creator. Per-participant attribution is preserved. (The 0.19 model used a shared signing key with no individual attribution — removed in 0.30.)
 
 ---
 
@@ -113,27 +113,42 @@ Use `Subscribe` instead of a manual cursor loop when you want the SDK to manage 
 
 ---
 
-## Session Tokens: Quick-Start
+## cf-session: Ephemeral-Identity Convention (0.30)
 
-Zero-ceremony multi-agent coordination. No `cf init` or `CF_HOME` required for participants.
+`cf-session` is an L3 ephemeral-identity convention. Each session participant gets their
+own Ed25519 keypair with a scoped grant from the session creator — per-participant
+attribution is preserved throughout the session.
+
+The 0.19 shared-key session token model (`cfs1_<base64>`, shared single key, no per-worker
+attribution) is **removed in 0.30**. Do not use it in new code.
 
 ```bash
-# 1. Creator: create a session and capture the token
-TOKEN=$(cf session create --ttl 2h)
+# Orchestrator creates a session (TTL required; max 24h)
+cf session create --ttl 2h   # → session campfire ID
 
-# 2. Participant (any agent, any machine): send a message
-cf session send $TOKEN "hello from participant"
+# Worker presents its key; orchestrator's session handler issues a scoped grant
+# (lazy-mint on identity:introduce — no pre-minted grants to non-existent workers)
+cf session join <session-id>
 
-# 3. Read all messages in the session
-cf session read $TOKEN
+# Read session messages (attributable to each participant's key)
+cf session read <session-id>
 
-# 4. (Optional) Creator: end the session
-cf session end $TOKEN
+# Orchestrator ends the session
+cf session end <session-id>
 ```
 
-**Security:** The token is a bearer credential. Anyone holding it can post and read. All participants share one ephemeral signing key — there is no per-sender attribution inside a session. Transmit only over encrypted channels. Do not log tokens.
+**Security:** Each participant holds their own key. Compromise of one worker compromises
+one grant, not the entire session. Revocation is grant-id-granular. Sessions never reuse
+keys. The canonical authority chain lives in the owner's identity campfire, not the
+session campfire — session compaction does not break authorization walks.
 
-**When to use sessions vs. named campfires:** Sessions are for short-lived, low-ceremony coordination where attribution doesn't matter — handoffs, scratch pads, tool-to-tool pipes. Use `cf join` for durable, attributable campfires where member identity matters.
+**Key handling backends** (selected via `cf-session` declaration's `key_handling` field):
+- `jail` (default) — orchestrator generates the worker's keypair, writes it to a 0700 file, forks the worker. Key never crosses a network boundary.
+- `signing_proxy` (opt-in) — orchestrator retains the private key; worker calls a Unix socket for every signature. Worker process never holds the key.
+
+**When to use sessions vs. named campfires:** Sessions are for short-lived, attributed,
+ephemeral-key coordination — swarm dispatches, parallel agents, tool-to-tool pipes where
+you want audit trails. Use `cf join` for durable campfires with persistent membership.
 
 ---
 
@@ -212,7 +227,7 @@ Both signatures return `(*Client, *InitResult, error)`. `InitResult` is always n
 **Changes in 0.15/0.16:**
 - Default config directory is `~/.cf` (was `~/.campfire`; old path still works with a deprecation warning until v0.17)
 - `Init` returns `(*Client, *InitResult, error)` — the `*InitResult` carries diagnostics
-- `InitWithConfig` additionally reads `~/.cf/config.toml` and project-level `.cf/config.toml` files; see [Config section](#config-0.16) below
+- `InitWithConfig` additionally reads `~/.cf/config.toml` and project-level `.cf/config.toml` files; see [Config section](#config-0.30) below
 
 **Breaking changes in cf-protocol 1.0 substrate (campfireagent-db1):**
 - `WithWalkUp()` and `WithNoWalkUp()` removed — center-finding is L4 (cf-discovery)
@@ -260,7 +275,7 @@ client := protocol.New(s, id)
 
 ---
 
-## Config (0.16)
+## Config (0.30)
 
 `protocol.InitWithConfig` reads a TOML config cascade. An agent with no config files behaves identically to 0.15. Config seeds protocol inputs — never outputs (trust levels, roles).
 
@@ -270,12 +285,14 @@ client := protocol.New(s, id)
 [identity]
 file = "identity.json"      # relative to this config file's directory
 display_name = ""           # sent as identity:profile on join (tainted)
+# present_as is removed in 0.30 — use cf-authority scoped grants instead
 
 [store]
 file = "store.db"           # relative to this config file's directory
 
 [transport]
-type = "http"               # "http" | "fs" | "github" — creation only
+type = "http"               # "http" | "fs" — creation only
+                            # "github" transport removed in 0.30 (no named consumer)
 endpoint = "https://mcp.getcampfire.dev"
 
 [naming]
@@ -284,6 +301,7 @@ seeds = []                  # additional seed registries (beacons, hex IDs, cf:/
 
 [behavior]
 auto_join = []              # campfire IDs/beacons to join on Init()
+                            # 0.30: auto-join restricted to configured namespace roots
 
 [scope]
 # campfires = []            # allowlist of campfire IDs; empty = allow all
@@ -492,46 +510,37 @@ if errors.Is(err, protocol.ErrAwaitTimeout) {
 
 ---
 
-## Session Tokens: Go SDK
+## cf-session: Go SDK (0.30)
 
-Session tokens are bearer credentials for zero-ceremony campfires. Participants need no `cf init` and no `CF_HOME`.
+> **0.19 session API removed.** `client.NewSession`, `protocol.JoinSession`, and the
+> `cfs1_<base64>` shared-key token format are removed in 0.30. Use `cf-session` L3 instead.
 
-```go
-// Creator: create session, get bearer token
-sess, token, err := client.NewSession(2 * time.Hour)
-defer sess.End()
-
-// Share token out-of-band (encrypted channel only — treat like a password)
-fmt.Println(token)  // cfs1_...
-
-// Creator: send and read
-sess.Send("hello from creator")
-msgs, _ := sess.Read()
-
-// Participant: join with just the token
-// creatorPub is the expected creator's public key; pass nil to skip creator check
-sess2, err := protocol.JoinSession(token, creatorPub)
-defer sess2.End()
-sess2.Send("hello back")
-```
-
-### Session type
+The `cf-session` L3 convention issues per-participant Ed25519 keypairs with scoped grants
+from the session creator. Use the convention executor via `cf session create/join/end` CLI
+commands, or call the `cf-session` convention operations directly via `convention.NewExecutor`.
 
 ```go
-// Session methods:
-sess.CampfireID() string                    // hex campfire ID for this session
-sess.Send(payload string) (*message.Message, error)
-sess.Read() ([]protocol.Message, error)
-sess.End() error    // disband campfire and release resources
-sess.Close() error  // release resources without disbanding
+// Create a session via convention op (orchestrator)
+exec := convention.NewExecutor(client)
+result, err := exec.Execute(ctx, cfSessionOpenDecl, identityCampfireID, map[string]any{
+    "ttl":                         "2h",
+    "dispatcher_capability_template": capTemplate,
+})
+sessionID := result.CampfireID
+
+// Worker joins — receives its own keypair + scoped grant
+// (handled by cf-session's identity:introduce → delegation:grant handler)
+workerClient, _, _ := protocol.Init(workerCFHome)
+exec2 := convention.NewExecutor(workerClient)
+exec2.Execute(ctx, cfSessionJoinDecl, sessionID, nil)
 ```
 
-**Security model:**
-- Token format: `cfs1_` prefix, versioned for future evolution
-- TTL: must be > 0 and ≤ 24 hours (`protocol.MaxSessionTTL`)
-- All participants share one ephemeral Ed25519 keypair — no per-sender attribution inside a session
-- Token signature is verified against the creator's identity key
-- Pass `creatorPub` to `JoinSession` to enforce creator identity; pass `nil` for looser verification (token signature still verified)
+**Security model (0.30):**
+- Each worker gets its own Ed25519 keypair — per-sender attribution is preserved
+- Worker grant scope = `parent_grant ⊓ dispatcher_capability_template`
+- TTL: must be > 0 and ≤ 24 hours
+- Compromise of one worker compromises one grant, not the session
+- Canonical authority chain lives in owner's identity campfire; session compaction safe
 
 ---
 
@@ -880,18 +889,48 @@ client, result, err := protocol.InitWithConfig()
 | Walk-up | on | off (opt-in via `WithWalkUp`) | off | **removed** (L4) |
 | `NewExecutor` | `(client, selfKey)` | `(client)` | same | same |
 | `config.toml` | — | — | supported | same |
-| Session tokens | — | `client.NewSession` / `JoinSession` | same | same |
+| Session tokens | — | `client.NewSession` / `JoinSession` | same | **removed** (cf-session L3 replaces) |
 | Display names | — | `cf init --display-name` | `identity.display_name` in config | same |
+| `present_as` | — | — | inert | **removed** (cf-authority grants replace) |
+| GitHub transport | — | supported | supported | **removed** (no named consumer) |
+
+---
+
+## 0.30 L3 Package Reference
+
+The 0.30 architecture organizes RFC conventions into the `cf-conventions` module with
+seven internal packages. The old `pkg/` layout is superseded.
+
+| Package | Location (0.30) | Purpose |
+|---|---|---|
+| `cf-authority` | `cf-conventions/cf-authority/` | Scoped grants, bounded-transitivity chain evaluator, `GateEvaluator` interface. Sub-packages: `trust/`, `delegation/`, `provenance/`. See `cf-authority-spec.md`. |
+| `cf-discovery` | `cf-conventions/cf-discovery/` | Naming, beacon snippets, rate-limit declarations. See `cf-discovery-spec.md`. |
+| `cf-identity` | `cf-conventions/cf-identity/` | `introduce-me`, `declare-home`, `verify-me`, `list-homes`, `echo` ceremony, `identity:revoked`. |
+| `cf-session` | `cf-conventions/cf-session/` | Ephemeral-identity convention. Per-participant Ed25519 keys with scoped grants from session creator. |
+| `cf-convention-extension` | `cf-conventions/cf-convention-extension/` | `promote`, `supersede` — convention lifecycle management (absorbs `seed.go`). |
+| `cf-connect` | `cf-conventions/cf-connect/` | Peering convention. |
+| `cf-durability` | `cf-conventions/cf-durability/` | Durability convention. |
+
+Layer 1 primitives (`cf-protocol` module, `internal/` packages) are not imported directly
+by application code. Use `protocol.Client` — the public surface of `cf-protocol`.
+
+**L4 binary split:** The `cf` CLI exposes convention operations only. `cf-primitives` is
+the separate binary for low-level protocol surface (init, send, read, members, scope).
+Agents that need to bypass conventions use `cf-primitives`, not raw sqlite. Default
+symlinks to `cf` get conventions only; app authors who need primitives symlink to
+`cf-primitives` explicitly.
 
 ---
 
 ## See also
 
-- [`pkg/protocol/`](../pkg/protocol/) — `Client`, `SendRequest`, `ReadRequest`, `AwaitRequest`, `SubscribeRequest`, `CreateRequest`, `JoinRequest`
-- [`pkg/convention/`](../pkg/convention/) — `Server`, `Executor`, `Declaration`, `ArgDescriptor`
-- [`pkg/message/`](../pkg/message/) — `Signer`, `Ed25519Signer`, `Message`
-- [`pkg/naming/`](../pkg/naming/) — `Register`, `Resolve`, `List`, `NewResolverFromClient`
-- [Protocol spec](protocol-spec.md) — message envelope, provenance hops, identity, concept map
+- `cf-protocol/internal/` — `Client`, `SendRequest`, `ReadRequest`, `AwaitRequest`, `SubscribeRequest`, `CreateRequest`, `JoinRequest` (0.30; was `pkg/protocol/`)
+- `cf-conventions/cf-convention/` — `Server`, `Executor`, `Declaration`, `ArgDescriptor` (0.30; was `pkg/convention/`)
+- `cf-conventions/cf-authority/trust/` — `GateEvaluator` interface and conformance harness (0.30)
+- `cf-conventions/cf-discovery/` — naming, beacons, snippet schema (0.30; was `pkg/naming/` + `pkg/beacon/`)
+- [cf-authority-spec.md](cf-authority-spec.md) — wire schema for grants and gate predicates
+- [cf-discovery-spec.md](cf-discovery-spec.md) — snippet schema and discovery tier spec
+- [Protocol spec](protocol-spec.md) — 0.19 message envelope reference (superseded; see 0.30 note at top)
 - [CLI reference](cli-conventions.md) — the same operations, from the command line
 - [MCP server reference](mcp-conventions.md) — conventions as auto-generated MCP tools
 - [Migration guide](#migration-guide-014--016) — upgrading from 0.14

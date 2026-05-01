@@ -1,8 +1,18 @@
 # Campfire Protocol Specification
 
-**Version:** Draft v0.4
+**Version:** Draft v0.4 (0.19 protocol spec — superseded by 0.30 cf-protocol)
 **Date:** 2026-04-01
 **Author:** Third Division Labs
+
+> **Note:** This document describes the 0.19 protocol surface. The 0.30 redesign replaces
+> several concepts listed here. For the authoritative 0.30 architecture, see
+> `docs/` for `cf-authority-spec.md`, `cf-discovery-spec.md`, `convention-sdk.md`,
+> and the design corpus in `campfire-agent/docs/design/0.30-design.md`.
+> Key removals in 0.30: shared-key session tokens, `present_as` config field,
+> `recenter`/`walk_up` center-finding primitives, GitHub transport.
+> Key additions: `cf-authority` L3 evaluator, `cf-identity`, `cf-session`
+> (per-participant ephemeral keys with scoped grants), `cf-convention-extension`,
+> `cf-discovery` (beacon + naming + rate-limit declarations).
 
 **Changes from v0.3:**
 - ProvenanceHop gains `role` field (CBOR key 8, omitempty, signed). Records the membership role of the relaying node at time of relay.
@@ -39,7 +49,7 @@ Identity (Ed25519 keypair)
 
 **Derivation chain:**
 
-- A **session** is an ephemeral campfire with a shared signing key embedded in a bearer token.
+- A **session** (`cf-session`, L3) is an ephemeral-identity convention. Each participant gets their own Ed25519 keypair with a scoped grant from the session creator — per-participant attribution is preserved. The 0.19 model (shared ephemeral signing key embedded in a bearer token) is removed in 0.30.
 - A **future** is a message tagged `"future"` — a commitment waiting for a **fulfillment** (a message tagged `"fulfills"` with the future's ID in antecedents).
 - A **convention** is a typed operation declaration layered on top of send/read — not a protocol primitive.
 - A **beacon** is a signed advertisement. The campfire ID and signature are verified. Everything else (transport, description, join policy) is tainted.
