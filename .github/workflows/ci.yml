@@ -72,3 +72,16 @@ jobs:
         # Isolated verifier for cf-authority — sibling of wireverify (-3a8 pattern).
         # See cf-conventions/cf-authority/internal/freeze/ and campfireagent-301.
         run: go test ./cf-conventions/cf-authority/internal/freeze/ -v -count=1
+
+      - name: GateEvaluator conformance harness — 12 cases × 3 determinism runs (Phase 8 Gate 1)
+        # Runs the 12-case DefaultGateEvaluator conformance harness with -count=3 to
+        # verify all cases pass and produce deterministic results on every run.
+        # Triggered when any file under the relevant paths changes.
+        # See cf-conventions/cf-authority/trust/conformance/ and campfireagent-1f8.
+        if: |
+          contains(github.event_name, 'push') ||
+          contains(toJson(github.event.pull_request.files.*.filename), 'cf-conventions/cf-authority/') ||
+          contains(toJson(github.event.pull_request.files.*.filename), 'cf-conventions/cf-convention/delegation/') ||
+          contains(toJson(github.event.pull_request.files.*.filename), 'cf-protocol/protocol/await.go') ||
+          contains(toJson(github.event.pull_request.files.*.filename), 'conformance/testdata/')
+        run: go test -count=3 -v ./cf-conventions/cf-authority/trust/conformance/...
