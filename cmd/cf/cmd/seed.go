@@ -19,7 +19,8 @@ import (
 	"os"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	convention "github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	conventionseed "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/seed"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/pkg/seed"
@@ -46,7 +47,7 @@ func seedCampfireFilesystem(
 	s store.Store,
 ) {
 	// Step 1: Post embedded promote declaration (always, unconditionally).
-	promoteDecl := convention.PromoteDeclaration()
+	promoteDecl := conventionseed.PromoteDeclaration()
 	promotePayload, err := json.Marshal(promoteDecl)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to marshal promote declaration: %v\n", err)

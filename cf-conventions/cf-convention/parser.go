@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	cfprotocol "github.com/campfire-net/campfire/cf-protocol/protocol"
 )
 
 // SignerType indicates how a convention:operation message was signed.
@@ -170,7 +172,22 @@ type ConformanceResult struct {
 // ConventionOperationTag is the tag used to identify convention operation declaration messages.
 const ConventionOperationTag = "convention:operation"
 
-const conventionRevokeTag = "convention:revoke"
+// ConventionRevokeTag is the tag used to identify convention revocation messages.
+// Exported so that L3 packages (e.g., cf-convention-extensions/seed) can reference
+// it without importing an unexported symbol.
+const ConventionRevokeTag = "convention:revoke"
+
+// conventionRevokeTag is a package-internal alias kept for backward compatibility
+// within this package. All new L2 code should use ConventionRevokeTag directly.
+const conventionRevokeTag = ConventionRevokeTag
+
+// InfrastructureConvention is the convention name for convention-extension operations.
+// Defined here (L2, parser.go) because L2 uses it for denylist exceptions in Parse()
+// and executor dispatch. Also exported for L3 seed package and cmd/ consumers.
+const InfrastructureConvention = "convention-extension"
+
+// infrastructureVersion is the version for built-in convention-extension declarations.
+const infrastructureVersion = "0.1"
 
 var knownArgTypes = map[string]bool{
 	"string": true, "integer": true, "duration": true, "boolean": true,
@@ -253,6 +270,32 @@ func Parse(msgTags []string, payload []byte, senderKey, campfireKey string, deni
 	}
 	if decl.Signing == "" {
 		return nil, nil, fmt.Errorf("missing required field: signing")
+	}
+
+	// Check 2a: D5b reserved-op floor — a convention declaration MUST NOT declare
+	// a reserved operation with min_operator_level: 0. Reserved ops require owner-level
+	// authority; level 0 (anonymous/no restriction) is below the reserved-op floor.
+	//
+	// This is the parse-time enforcement of design v2 §2.4 D5 (campfireagent-c85).
+	// The dispatch-time enforcement (dispatcher.go §Reserved-Op Floor) complements this:
+	// the parser catches badly-authored declarations; the dispatcher catches runtime attempts.
+	//
+	// Note: min_operator_level field defaults to 0 in Go when not explicitly set.
+	// Since declaring a reserved op with level 0 is the violation (not merely omitting
+	// the field), we reject iff the operation is reserved AND min_operator_level == 0.
+	//
+	// Exception: InfrastructureConvention ("convention-extension") is the built-in
+	// convention lifecycle manager. It legitimately declares reserved operations such as
+	// "revoke" (the convention revocation primitive) and is exempt from this check.
+	// This exception mirrors the tag-denylist exception on Check 10 below.
+	if cfprotocol.IsReservedOp(decl.Operation) &&
+		decl.MinOperatorLevel == 0 &&
+		decl.Convention != InfrastructureConvention {
+		return nil, nil, fmt.Errorf(
+			"reserved_op_floor: convention %q declares reserved operation %q with min_operator_level: 0; "+
+				"reserved operations require owner-level authority and cannot be declared at level 0",
+			decl.Convention, decl.Operation,
+		)
 	}
 
 	// Check 2b: Response field validation and defaults.
