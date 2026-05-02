@@ -12,7 +12,9 @@
 // the identity campfire).
 //
 // Pass threshold: p95 ≤ 5000 ms, p99 ≤ 8000 ms.
-// Sample size: N = 100 runs (FS transport only; HTTP transport is Phase 7 empirical).
+// Sample size: N = 100 runs (FS transport). The HTTP transport path is
+// TestBudgetA_AgentToInboxLatency_HTTP in budget_a_http_test.go
+// (campfireagent-8f0c). Both paths pass the same thresholds.
 //
 // Four timestamps per run:
 //
@@ -100,8 +102,9 @@ type delegationRequestPayload struct {
 // against an ephemeral FS-transport campfire and asserts Budget A thresholds.
 //
 // This is the Phase 8 Gate 2 automated instrument for the FS transport path.
-// The HTTP transport path (TestAgentToInboxLatency_HTTP) is run separately
-// during the Phase 7 empirical run against mcp.getcampfire.dev.
+// The HTTP transport path is TestBudgetA_AgentToInboxLatency_HTTP in
+// budget_a_http_test.go (campfireagent-8f0c), which runs against a local
+// in-process cf-mcp HTTP server (no prod credentials required).
 func TestBudgetA_AgentToInboxLatency_FS(t *testing.T) {
 	transportDir := t.TempDir()
 
