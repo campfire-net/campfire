@@ -717,6 +717,7 @@ type RoleError struct {
 	msg string
 }
 
+// Error implements the error interface for RoleError.
 func (e *RoleError) Error() string { return e.msg }
 
 // As implements the errors.As target interface so that errors.As(err, target)
