@@ -85,3 +85,32 @@ jobs:
           contains(toJson(github.event.pull_request.files.*.filename), 'cf-protocol/protocol/await.go') ||
           contains(toJson(github.event.pull_request.files.*.filename), 'conformance/testdata/')
         run: go test -count=3 -v ./cf-conventions/cf-authority/trust/conformance/...
+
+  demo-sweep:
+    name: Demo Sweep (Stage 8)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build cf binary
+        run: go build -o cf ./cmd/cf
+
+      - name: Self-test
+        run: bash scripts/run-all-demos-self-test.sh
+
+      - name: Run full demo sweep
+        run: bash scripts/run-all-demos.sh --report scripts/demo-sweep-report.md --timeout 60 || true
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-sweep-report
+          path: scripts/demo-sweep-report.md
