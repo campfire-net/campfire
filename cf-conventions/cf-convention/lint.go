@@ -8,8 +8,11 @@ import (
 // LintSeverity classifies a lint finding.
 type LintSeverity string
 
+// Lint severity constants.
 const (
-	LintError   LintSeverity = "error"
+	// LintError indicates a conformance violation that makes the declaration invalid.
+	LintError LintSeverity = "error"
+	// LintWarning indicates a non-fatal conformance issue (deprecated fields, clamped values).
 	LintWarning LintSeverity = "warning"
 )
 

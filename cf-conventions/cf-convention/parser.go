@@ -14,10 +14,14 @@ import (
 // SignerType indicates how a convention:operation message was signed.
 type SignerType string
 
+// SignerType constants enumerate the valid signing authorities for convention declarations.
 const (
+	// SignerConventionRegistry indicates the declaration was signed by the convention registry.
 	SignerConventionRegistry SignerType = "convention_registry"
-	SignerCampfireKey        SignerType = "campfire_key"
-	SignerMemberKey          SignerType = "member_key"
+	// SignerCampfireKey indicates the declaration was signed by the campfire's group key.
+	SignerCampfireKey SignerType = "campfire_key"
+	// SignerMemberKey indicates the declaration was signed by an individual member's Ed25519 key.
+	SignerMemberKey SignerType = "member_key"
 )
 
 // maxRateLimitCeiling is the maximum allowed value for rate_limit.max in a

@@ -87,6 +87,7 @@ type ErrNotMember struct {
 	CampfireID string
 }
 
+// Error implements the error interface for ErrNotMember.
 func (e *ErrNotMember) Error() string {
 	return fmt.Sprintf("not a member of campfire %s", shortID(e.CampfireID))
 }
