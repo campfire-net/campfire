@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
   pull_request:
 
 jobs:
@@ -89,7 +91,6 @@ jobs:
   demo-sweep:
     name: Demo Sweep (Stage 8)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -106,7 +107,7 @@ jobs:
         run: bash scripts/run-all-demos-self-test.sh
 
       - name: Run full demo sweep
-        run: bash scripts/run-all-demos.sh --report scripts/demo-sweep-report.md --timeout 60 || true
+        run: bash scripts/run-all-demos.sh --report scripts/demo-sweep-report.md --timeout 120
 
       - name: Upload report
         if: always()

@@ -30,7 +30,18 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-GO_BIN="/usr/local/go/bin/go"
+
+# Resolve go binary: prefer $GO env (set by run-all-demos.sh), fall back to PATH, then /usr/local/go
+GO_BIN="${GO:-}"
+if [[ -z "$GO_BIN" ]] || ! command -v "$GO_BIN" &>/dev/null; then
+    if command -v go &>/dev/null; then
+        GO_BIN="go"
+    elif [[ -x /usr/local/go/bin/go ]]; then
+        GO_BIN=/usr/local/go/bin/go
+    else
+        echo "ERROR: go binary not found" >&2; exit 1
+    fi
+fi
 
 # ── Build cf binary ────────────────────────────────────────────────────────────
 CF_BIN="${CF_BINARY:-}"

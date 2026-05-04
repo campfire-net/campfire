@@ -12,4 +12,16 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-/usr/local/go/bin/go run ./cf-conventions/demos/prefix_param_demo/
+# Resolve go binary: prefer $GO env (set by run-all-demos.sh), fall back to PATH, then /usr/local/go
+GO_BIN="${GO:-}"
+if [[ -z "$GO_BIN" ]] || ! command -v "$GO_BIN" &>/dev/null; then
+    if command -v go &>/dev/null; then
+        GO_BIN="go"
+    elif [[ -x /usr/local/go/bin/go ]]; then
+        GO_BIN=/usr/local/go/bin/go
+    else
+        echo "ERROR: go binary not found" >&2; exit 1
+    fi
+fi
+
+"$GO_BIN" run ./cf-conventions/demos/prefix_param_demo/

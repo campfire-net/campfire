@@ -50,9 +50,10 @@ fi
 echo ""
 echo "=== §B — DefaultGateEvaluator test suite ==="
 
-if "$GO" test -v -run "TestCase02_Valid1Hop|TestCase05_RevokedMidChain" \
-    ./cf-conventions/cf-authority/trust/conformance/... 2>&1 | \
-    grep -E "PASS|FAIL|ok|SKIP" | head -20; then
+_out=$("$GO" test -v -count=1 -run "TestCase02_Valid1Hop|TestCase05_RevokedMidChain" \
+    ./cf-conventions/cf-authority/trust/conformance/... 2>&1) || true
+echo "$_out" | grep -E "PASS|FAIL|ok|SKIP" | head -20 || true
+if echo "$_out" | grep -qE "^ok |--- PASS:"; then
   ok "grant and revoke conformance cases pass"
 else
   fail "grant/revoke conformance cases failed"
@@ -64,8 +65,10 @@ fi
 echo ""
 echo "=== §C — Grant CBOR determinism ==="
 
-if "$GO" test -run "TestCapabilityCBORDeterminism|TestGrantPayloadIDDeterminism" \
-    ./cf-conventions/cf-authority/trust/... 2>&1 | grep -q "ok"; then
+# Capture output first to avoid SIGPIPE / pipefail interaction with grep -q
+_out=$("$GO" test -count=1 -run "TestCapabilityCBORDeterminism|TestGrantPayloadIDDeterminism" \
+    ./cf-conventions/cf-authority/trust/... 2>&1) || true
+if echo "$_out" | grep -q "ok"; then
   ok "CBOR encoding is deterministic across 3 runs"
 else
   fail "CBOR determinism check failed"
@@ -77,8 +80,9 @@ fi
 echo ""
 echo "=== §D — Revocation deny (D9) ==="
 
-if "$GO" test -run "TestCase05_RevokedMidChain" \
-    ./cf-conventions/cf-authority/trust/conformance/... 2>&1 | grep -q "PASS\|ok"; then
+_out=$("$GO" test -run "TestCase05_RevokedMidChain" \
+    ./cf-conventions/cf-authority/trust/conformance/... 2>&1) || true
+if echo "$_out" | grep -q "PASS\|ok"; then
   ok "mid-chain revocation returns Deny/revoked (D9)"
 else
   fail "revocation test failed"
@@ -90,8 +94,9 @@ fi
 echo ""
 echo "=== §E — Stale revocation window (Attack 2) ==="
 
-if "$GO" test -run "TestCase10_StaleRevocationWindow" \
-    ./cf-conventions/cf-authority/trust/conformance/... 2>&1 | grep -q "PASS\|ok"; then
+_out=$("$GO" test -run "TestCase10_StaleRevocationWindow" \
+    ./cf-conventions/cf-authority/trust/conformance/... 2>&1) || true
+if echo "$_out" | grep -q "PASS\|ok"; then
   ok "stale revocation window returns Deny/stale_revocation (Attack 2)"
 else
   fail "stale revocation test failed"
@@ -119,15 +124,17 @@ fi
 echo ""
 echo "=== §G — Production gate evaluator wiring (campfireagent-861) ==="
 
-if "$GO" test -run "TestProductionWiring_GateEvaluatorSet" \
-    ./cmd/cf-mcp/... 2>&1 | grep -q "PASS\|ok"; then
+_out=$("$GO" test -run "TestProductionWiring_GateEvaluatorSet" \
+    ./cmd/cf-mcp/... 2>&1) || true
+if echo "$_out" | grep -q "PASS\|ok"; then
   ok "wireConventionMetering sets real DefaultGateEvaluator (not AllowAll stub)"
 else
   fail "production gate evaluator not wired — SECURITY GAP"
 fi
 
-if "$GO" test -run "TestDispatcher_GateEvaluatorInvokedOnDispatch|TestDispatcher_DenyDecisionRejectsDispatch|TestDispatcher_AllowDecisionAllowsDispatch" \
-    ./cf-conventions/cf-convention/... 2>&1 | grep -q "PASS\|ok"; then
+_out=$("$GO" test -run "TestDispatcher_GateEvaluatorInvokedOnDispatch|TestDispatcher_DenyDecisionRejectsDispatch|TestDispatcher_AllowDecisionAllowsDispatch" \
+    ./cf-conventions/cf-convention/... 2>&1) || true
+if echo "$_out" | grep -q "PASS\|ok"; then
   ok "dispatcher calls GateEvaluator.Evaluate on every dispatch; Deny blocks handler"
 else
   fail "dispatcher gate integration tests failed"

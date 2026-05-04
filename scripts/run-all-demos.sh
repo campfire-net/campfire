@@ -13,6 +13,10 @@
 #   --only <pattern>...      Run only discovered demos whose path contains <pattern> (whitelist mode)
 #   --include-path <path>... Append an absolute demo path to the run list (bypasses discovery; for testing)
 #
+# Skip markers (first 20 lines of a demo are scanned):
+#   # REQUIRES_PROD: <reason>   — demo needs Azure, DNS, hosted relay, etc. Skipped in CI.
+#   # REQUIRES_FIX: <reason>    — demo is known-broken; follow-up filed. Skipped until fixed.
+#
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -86,24 +90,61 @@ trap 'rm -rf "$SWEEP_TMP"' EXIT
 declare -a PASS_LIST=()
 declare -a FAIL_LIST=()
 declare -a TIMEOUT_LIST=()
+declare -a SKIP_LIST=()
 declare -A WALL_TIMES=()
 declare -A EXIT_CODES=()
+declare -A SKIP_REASONS=()
 
 run_demo() {
     local demo_path="$1"
     local rel_path="${demo_path#$REPO_ROOT/}"
+
+    # --- Skip-marker scan (first 20 lines) ---
+    # Demos may declare REQUIRES_PROD or REQUIRES_FIX in their header comments.
+    local skip_marker skip_reason
+    skip_marker=$(head -20 "$demo_path" 2>/dev/null | grep -E '^#[[:space:]]*(REQUIRES_PROD|REQUIRES_FIX):' | head -1 || true)
+    if [[ -n "$skip_marker" ]]; then
+        skip_reason="${skip_marker#*: }"
+        SKIP_LIST+=("$rel_path")
+        SKIP_REASONS["$rel_path"]="$skip_reason"
+        echo "  SKIP: $rel_path  ($skip_reason)"
+        return
+    fi
+
     local demo_cf_home
     demo_cf_home="$(mktemp -d "$SWEEP_TMP/cf-XXXX")"
     local log_file
     log_file="$(mktemp "$SWEEP_TMP/log-XXXX.txt")"
 
+    # Pre-seed the per-demo CF_HOME with a fresh identity so demos that rely on
+    # the CF_HOME env var (rather than --cf-home flags) have a working identity.
+    "$REPO_ROOT/cf" init --cf-home "$demo_cf_home" >/dev/null 2>&1 || true
+
     # Wall-clock start
     local start_epoch
     start_epoch=$(date +%s)
 
-    # Run with timeout; capture exit code without set -e aborting us
+    # Run with timeout; capture exit code without set -e aborting us.
+    # Export CF_HOME so demos that rely on the env var (rather than --cf-home)
+    # get an isolated home directory.  Also ensure the repo root is on PATH so
+    # demos can invoke the cf, cf-mcp, and cf-functions binaries built in CI.
+    #
+    # Also export GOROOT pointing to the system Go installation so demos that
+    # resolve GO="${GOROOT:-/usr/local/go}/bin/go" find the right binary even
+    # when setup-go@v5 sets GOROOT to a non-standard path.
+    local go_root
+    if command -v go >/dev/null 2>&1; then
+        go_root="$(dirname "$(dirname "$(command -v go)")")"
+    else
+        go_root="${GOROOT:-/usr/local/go}"
+    fi
+
     local exit_code=0
-    timeout "$DEMO_TIMEOUT" bash "$demo_path" \
+    CF_HOME="$demo_cf_home" \
+    PATH="$REPO_ROOT:$go_root/bin:/usr/local/go/bin:$PATH" \
+    GOROOT="$go_root" \
+    GO="$go_root/bin/go" \
+        timeout "$DEMO_TIMEOUT" bash "$demo_path" \
         >"$log_file" 2>&1 \
         || exit_code=$?
 
@@ -145,14 +186,16 @@ done
 PASS_COUNT=${#PASS_LIST[@]}
 FAIL_COUNT=${#FAIL_LIST[@]}
 TIMEOUT_COUNT=${#TIMEOUT_LIST[@]}
+SKIP_COUNT=${#SKIP_LIST[@]}
 TOTAL_FAIL=$(( FAIL_COUNT + TIMEOUT_COUNT ))
 
 echo ""
 echo "=== Summary ==="
-echo "Total:    $TOTAL"
-echo "Passed:   $PASS_COUNT"
-echo "Failed:   $FAIL_COUNT"
+echo "Total:     $TOTAL"
+echo "Passed:    $PASS_COUNT"
+echo "Failed:    $FAIL_COUNT"
 echo "Timed out: $TIMEOUT_COUNT"
+echo "Skipped:   $SKIP_COUNT"
 
 # ---------------------------------------------------------------------------
 # Markdown report
@@ -175,6 +218,7 @@ mkdir -p "$REPORT_DIR"
     echo "| Passed | $PASS_COUNT |"
     echo "| Failed | $FAIL_COUNT |"
     echo "| Timed out | $TIMEOUT_COUNT |"
+    echo "| Skipped | $SKIP_COUNT |"
     echo ""
 
     if [[ $PASS_COUNT -gt 0 ]]; then
@@ -206,6 +250,17 @@ mkdir -p "$REPORT_DIR"
         echo "|------|---------|"
         for demo in "${TIMEOUT_LIST[@]}"; do
             echo "| \`$demo\` | ${DEMO_TIMEOUT}s |"
+        done
+        echo ""
+    fi
+
+    if [[ $SKIP_COUNT -gt 0 ]]; then
+        echo "## Skipped Demos"
+        echo ""
+        echo "| Demo | Reason |"
+        echo "|------|--------|"
+        for demo in "${SKIP_LIST[@]}"; do
+            echo "| \`$demo\` | ${SKIP_REASONS[$demo]} |"
         done
         echo ""
     fi

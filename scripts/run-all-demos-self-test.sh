@@ -98,6 +98,36 @@ assert "Fail report has Failing Demos section" "grep -q '## Failing Demos' '$FAI
 rm -f "$FAIL_DEMO" "$FAIL_REPORT"
 
 # ---------------------------------------------------------------------------
+# Phase 4: Skip mechanism — REQUIRES_PROD demo is skipped, not failed
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Phase 4: Skip mechanism — REQUIRES_PROD demo is skipped ---"
+echo ""
+
+SKIP_DEMO="$(mktemp /tmp/self-test-requires-prod-XXXX.sh)"
+cat > "$SKIP_DEMO" << 'SKIPDEMO'
+#!/usr/bin/env bash
+# REQUIRES_PROD: synthetic demo used by self-test to verify skip mechanism
+exit 1
+SKIPDEMO
+chmod +x "$SKIP_DEMO"
+
+SKIP_REPORT="$(mktemp /tmp/self-test-skip-report-XXXX.md)"
+bash "$SWEEP" \
+    --report "$SKIP_REPORT" \
+    --timeout 10 \
+    --only "test/demo/changelog-0.30-entry.sh" \
+    --include-path "$SKIP_DEMO" \
+    && SKIP_SWEEP_EXIT=0 || SKIP_SWEEP_EXIT=$?
+
+assert "Sweep exits 0 when only failures are REQUIRES_PROD skips" "[[ $SKIP_SWEEP_EXIT -eq 0 ]]"
+assert "Skip report has Skipped Demos section" "grep -q '## Skipped Demos' '$SKIP_REPORT'"
+assert "Skip report shows 1 skipped" "grep -q '| Skipped | 1 |' '$SKIP_REPORT'"
+assert "Skip report shows 0 failed" "grep -q '| Failed | 0 |' '$SKIP_REPORT'"
+
+rm -f "$SKIP_DEMO" "$SKIP_REPORT"
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 echo ""

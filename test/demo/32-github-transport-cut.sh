@@ -35,16 +35,28 @@ else
 fi
 
 section "3. cf CLI no longer accepts --github-repo, --github-token-env, --github-base-url"
-# Always build from source — the system-installed cf binary may be an older version
-# that still has the removed flags.
-echo "Building cf binary from source..."
-(cd "$REPO_ROOT" && /usr/local/go/bin/go build -o /tmp/cf-test-bin-964 ./cmd/cf) \
-    || { echo -e "  ${RED}FAIL${RESET}: cf binary build failed"; FAIL_COUNT=$((FAIL_COUNT + 1)); summary; }
-CF_BIN="/tmp/cf-test-bin-964"
+# Use the cf binary on PATH (built by CI from the same source tree).
+# If not on PATH, fall back to building from source.
+if command -v cf &>/dev/null; then
+    CF_BIN="$(command -v cf)"
+    echo "Using cf from PATH: $CF_BIN"
+elif [[ -x "$REPO_ROOT/cf" ]]; then
+    CF_BIN="$REPO_ROOT/cf"
+    echo "Using cf from repo root: $CF_BIN"
+else
+    echo "Building cf binary from source..."
+    (cd "$REPO_ROOT" && /usr/local/go/bin/go build -o /tmp/cf-test-bin-964 ./cmd/cf) \
+        || { echo -e "  ${RED}FAIL${RESET}: cf binary build failed"; FAIL_COUNT=$((FAIL_COUNT + 1)); summary; }
+    CF_BIN="/tmp/cf-test-bin-964"
+fi
+
+# Use a fresh initialized CF_HOME so flag parsing runs (not blocked by identity-missing error)
+FLAG_TEST_HOME=$(mktemp -d)
+"$CF_BIN" init --cf-home "$FLAG_TEST_HOME" >/dev/null 2>&1 || true
 
 for flag in --github-repo --github-token-env --github-base-url; do
     set +e
-    ERR_OUT=$("$CF_BIN" create "$flag" dummy 2>&1)
+    ERR_OUT=$("$CF_BIN" create "$flag" dummy --cf-home "$FLAG_TEST_HOME" 2>&1)
     EXIT_CODE=$?
     set -e
     # Expect non-zero exit and an error about unknown flag.
@@ -56,5 +68,6 @@ for flag in --github-repo --github-token-env --github-base-url; do
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 done
+rm -rf "$FLAG_TEST_HOME"
 
 summary

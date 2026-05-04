@@ -29,6 +29,18 @@ CLIENT_GO="$REPO_ROOT/cf-protocol/protocol/client.go"
 BRIDGE_TEST_GO="$REPO_ROOT/cf-protocol/protocol/bridge_test.go"
 BRIDGE_DOC="$REPO_ROOT/cf-protocol/docs/bridge.md"
 
+# Resolve go binary: prefer $GO env (set by run-all-demos.sh), fall back to PATH, then /usr/local/go
+GO_BIN="${GO:-}"
+if [[ -z "$GO_BIN" ]] || ! command -v "$GO_BIN" &>/dev/null; then
+    if command -v go &>/dev/null; then
+        GO_BIN="go"
+    elif [[ -x /usr/local/go/bin/go ]]; then
+        GO_BIN=/usr/local/go/bin/go
+    else
+        echo "ERROR: go binary not found" >&2; exit 1
+    fi
+fi
+
 PASS=0
 FAIL=0
 
@@ -61,7 +73,7 @@ assert_not_contains() {
 assert_test_passes() {
   local label="$1"
   local run_pattern="$2"
-  if /usr/local/go/bin/go test \
+  if "${GO_BIN:-go}" test \
        -run "$run_pattern" \
        -timeout 60s \
        ./cf-protocol/protocol/ \

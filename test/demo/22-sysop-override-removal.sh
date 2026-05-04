@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQUIRES_FIX: requires ~/projects/agentic-internet/docs/conventions/sysop-delegation.md which is not checked out in CI. campfireagent-3f3-22: either copy the spec into this repo or add a CI checkout step.
 # 22-sysop-override-removal.sh — OPEN-012: sysop_override removal spec conformance demo.
 #
 # This demo is a SPEC CONFORMANCE CHECK, not a network exercise.

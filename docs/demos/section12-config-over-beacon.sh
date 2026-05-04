@@ -12,7 +12,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-GO=/usr/local/go/bin/go
+GO="${GO:-${GOROOT:+$GOROOT/bin/}go}"
+if ! command -v "${GO:-go}" &>/dev/null 2>&1 && [[ -x /usr/local/go/bin/go ]]; then GO=/usr/local/go/bin/go; fi
+GO="${GO:-go}"
 
 echo "=== §12 Config-over-beacon endpoint precedence demo ==="
 echo ""

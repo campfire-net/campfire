@@ -26,25 +26,33 @@ if [ ! -f "$SPEC" ]; then
     exit 2
 fi
 
-SPEC_CONTENT="$(cat "$SPEC")"
+# Use grep -qF directly on the spec file to avoid large-variable echo issues
+# in assert_contains when run inside a tee process-substitution context.
+spec_contains() {
+    local label="$1" needle="$2"
+    if grep -qF "$needle" "$SPEC" 2>/dev/null; then
+        echo -e "  ${GREEN}PASS${RESET}: $label"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "  ${RED}FAIL${RESET}: $label (spec does not contain '$needle')"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
 
 # ---------------------------------------------------------------------------
 section "1. Section §11 exists: Post-Join Verification"
 # ---------------------------------------------------------------------------
-assert_contains "spec has section 11 post-join verification" \
-    "$SPEC_CONTENT" \
+spec_contains "spec has section 11 post-join verification" \
     "## 11. Post-Join Verification"
 
 # ---------------------------------------------------------------------------
 section "2. Chosen mechanism: probe-write-then-observe"
 # ---------------------------------------------------------------------------
-assert_contains "spec names probe-write-then-observe as chosen mechanism" \
-    "$SPEC_CONTENT" \
+spec_contains "spec names probe-write-then-observe as chosen mechanism" \
     "probe-write-then-observe"
 
 # The Merkle-compare alternative must be rejected/not chosen
-assert_contains "spec documents the rejected alternative (Merkle-compare)" \
-    "$SPEC_CONTENT" \
+spec_contains "spec documents the rejected alternative (Merkle-compare)" \
     "Merkle"
 
 # ---------------------------------------------------------------------------
@@ -52,38 +60,31 @@ section "3. Honeypot scenario: concrete detection case"
 # ---------------------------------------------------------------------------
 # The spec must describe a scenario where the mechanism fires.
 # We check for the honeypot keyword and that it's in the §11 section.
-assert_contains "spec describes honeypot detection scenario" \
-    "$SPEC_CONTENT" \
+spec_contains "spec describes honeypot detection scenario" \
     "honeypot"
 
-assert_contains "spec describes non-open enforcement detection" \
-    "$SPEC_CONTENT" \
+spec_contains "spec describes non-open enforcement detection" \
     "non-open"
 
 # ---------------------------------------------------------------------------
 section "4. Unjoin trigger documented"
 # ---------------------------------------------------------------------------
-assert_contains "spec documents unjoin trigger on verification failure" \
-    "$SPEC_CONTENT" \
+spec_contains "spec documents unjoin trigger on verification failure" \
     "unjoin"
 
-assert_contains "spec states unjoin fires when probe fails" \
-    "$SPEC_CONTENT" \
+spec_contains "spec states unjoin fires when probe fails" \
     "probe"
 
 # ---------------------------------------------------------------------------
 section "5. Unjoin signature contract documented"
 # ---------------------------------------------------------------------------
-assert_contains "spec documents what is signed on unjoin" \
-    "$SPEC_CONTENT" \
+spec_contains "spec documents what is signed on unjoin" \
     "unjoin-declaration"
 
-assert_contains "spec states joiner signs the unjoin message" \
-    "$SPEC_CONTENT" \
+spec_contains "spec states joiner signs the unjoin message" \
     "joiner"
 
-assert_contains "spec documents inconsistent-state claim in unjoin" \
-    "$SPEC_CONTENT" \
+spec_contains "spec documents inconsistent-state claim in unjoin" \
     "inconsistent"
 
 summary

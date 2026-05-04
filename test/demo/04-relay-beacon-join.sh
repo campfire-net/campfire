@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQUIRES_PROD: hosted relay (mcp.getcampfire.dev) required; cf read on relay does not deliver messages from other members in CI. Use 09-local-relay.sh for a CI-equivalent test.
 # 04-relay-beacon-join.sh — Server shares beacon. Daemon joins via
 # beacon URI (not raw --via). Same request-response cycle works.
 source "$(dirname "$0")/lib.sh"

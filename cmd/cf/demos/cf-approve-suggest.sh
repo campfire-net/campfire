@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQUIRES_FIX: cf approve command not yet implemented in HEAD; demo written ahead of OPEN-021 feature. See campfireagent-3f3-approve-suggest.
 # cf-approve-suggest.sh — demonstrates cf approve scope auto-suggestion (OPEN-021)
 #
 # Shows the complete flow:

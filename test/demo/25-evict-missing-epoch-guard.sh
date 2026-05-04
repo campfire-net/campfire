@@ -29,14 +29,14 @@ fi
 echo "=== Demo 25: Evict Missing Epoch Guard (FIX-2/MB2) ==="
 echo ""
 echo "Test: rekeyAfterEvict errors on encrypted campfire with absent epoch_secrets"
-echo "Scope: pkg/protocol/evict_missing_epoch_test.go"
+echo "Scope: cf-protocol/protocol/evict_missing_epoch_test.go"
 echo "Flags: -race -count=1"
 echo ""
 
 cd "$REPO_ROOT"
 
 echo "--- Running TestEvictMissingEpochSecrets under -race ---"
-if go test ./pkg/protocol/... \
+if go test ./cf-protocol/protocol/... \
     -run "TestEvictMissingEpochSecrets" \
     -race \
     -count=1 \
