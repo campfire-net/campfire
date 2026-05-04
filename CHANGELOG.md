@@ -6,7 +6,7 @@ This is the largest release since v0.16. It restructures campfire into a
 layered module system, ships a complete trust authority (cf-authority), and
 freezes the wire format as a stable foundation for portfolio consumers.
 
-**See [UPGRADE.md](UPGRADE.md) for step-by-step migration guidance.**
+**See [UPGRADE.md](docs/upgrade-0.19-to-0.30.md) for step-by-step migration guidance.**
 
 ### New features
 
@@ -280,7 +280,7 @@ freezes the wire format as a stable foundation for portfolio consumers.
 
 ### Migration
 
-See [UPGRADE.md](UPGRADE.md) for the full upgrade guide (`campfireagent-901`).
+See [UPGRADE.md](docs/upgrade-0.19-to-0.30.md) for the full upgrade guide (`campfireagent-901`).
 
 **Quick reference:**
 
