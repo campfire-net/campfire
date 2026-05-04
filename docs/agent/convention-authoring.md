@@ -121,6 +121,30 @@ cf convention promote v2.json --registry <campfire-id> --supersedes v1-op-name
 
 Once promoted, MCP clients re-run `tools/list` to discover the new operation.
 
+### Caveat: MCP declarations-at-create
+
+When an agent uses `campfire_join` for a campfire it is **already a member of**, cf-mcp returns an error ("already a member") and does **not** re-register convention tools for that session. The tool surface stays empty for that campfire.
+
+Two patterns that reliably surface convention tools in an MCP session:
+
+1. **Embed declarations in `campfire_create`**: Pass your declaration objects in the `declarations` array at creation time. They are published and auto-registered immediately. New joiners receive them on join.
+
+   ```json
+   {
+     "tool": "campfire_create",
+     "arguments": {
+       "description": "my-service",
+       "declarations": [
+         { "convention": "my-service", "version": "0.1", "operation": "submit-task", ... }
+       ]
+     }
+   }
+   ```
+
+2. **Fresh join in a new MCP session**: Convention tools register on the first successful `campfire_join` in a session. If you need to re-surface tools in an already-joined session, restart the MCP server.
+
+**What does NOT work:** calling `campfire_join` a second time on an existing membership. cf-mcp rejects it as a duplicate and skips tool registration.
+
 ## See also
 
 - `docs/convention-sdk.md` — Go SDK: `convention.NewServer`, `Declaration`, `ArgDescriptor`

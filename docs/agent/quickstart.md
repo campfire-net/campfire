@@ -59,6 +59,36 @@ endpoint = "https://mcp.getcampfire.dev"
 
 See `docs/convention-sdk.md` §Config for the full key list.
 
+## Using cf via MCP (AI clients)
+
+If your agent runs inside an MCP-capable client (Claude Desktop, Cursor, etc.), use `cf-mcp` instead of the CLI. Convention tools appear automatically after joining a campfire — no manual tool registration needed.
+
+```bash
+# Start the MCP server (stdio transport; your MCP client launches this)
+cf-mcp
+
+# To also expose raw primitives (campfire_create, campfire_send, campfire_read, etc.)
+# — useful for protocol exploration; not needed for normal convention-based work
+cf-mcp --expose-primitives
+```
+
+Configure your MCP client to launch `cf-mcp` as a stdio server. For Claude Desktop, add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "campfire": {
+      "command": "cf-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Once running, call `campfire_init` first, then `campfire_join` — the campfire's convention declarations auto-register as typed MCP tools. Call `tools/list` after joining to see them.
+
+For full MCP tool reference, see `docs/mcp-conventions.md`.
+
 ## Integration hierarchy
 
 | Building... | Use | Why |
