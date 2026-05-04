@@ -128,9 +128,22 @@ run_demo() {
     # Export CF_HOME so demos that rely on the env var (rather than --cf-home)
     # get an isolated home directory.  Also ensure the repo root is on PATH so
     # demos can invoke the cf, cf-mcp, and cf-functions binaries built in CI.
+    #
+    # Also export GOROOT pointing to the system Go installation so demos that
+    # resolve GO="${GOROOT:-/usr/local/go}/bin/go" find the right binary even
+    # when setup-go@v5 sets GOROOT to a non-standard path.
+    local go_root
+    if command -v go >/dev/null 2>&1; then
+        go_root="$(dirname "$(dirname "$(command -v go)")")"
+    else
+        go_root="${GOROOT:-/usr/local/go}"
+    fi
+
     local exit_code=0
     CF_HOME="$demo_cf_home" \
-    PATH="$REPO_ROOT:$PATH" \
+    PATH="$REPO_ROOT:$go_root/bin:/usr/local/go/bin:$PATH" \
+    GOROOT="$go_root" \
+    GO="$go_root/bin/go" \
         timeout "$DEMO_TIMEOUT" bash "$demo_path" \
         >"$log_file" 2>&1 \
         || exit_code=$?

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQUIRES_FIX: requires golangci-lint on PATH; not installed in demo-sweep CI step (only available in the lint job). campfireagent-3f3-depguard: install golangci-lint in demo-sweep step or add a grace exit when linter is absent.
 # cf-conventions/demos/depguard-check.sh
 #
 # Demo: depguard layer-boundary enforcement (campfireagent-231).

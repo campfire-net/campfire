@@ -56,7 +56,9 @@ echo ""
 
 # 3. Check that the package still compiles (builds clean).
 echo "Building cf-protocol/protocol..."
-if (cd "$REPO_ROOT" && /usr/local/go/bin/go build ./cf-protocol/protocol/) 2>/tmp/build-err.txt; then
+GO_BIN="${GOROOT:+$GOROOT/bin/}go"
+if ! command -v "${GO_BIN:-go}" &>/dev/null; then GO_BIN="go"; fi
+if (cd "$REPO_ROOT" && "$GO_BIN" build ./cf-protocol/protocol/) 2>/tmp/build-err.txt; then
   echo "  OK:   build clean"
 else
   echo "  FAIL: build errors:"
