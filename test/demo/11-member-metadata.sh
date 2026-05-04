@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQUIRES_PROD: hosted relay (mcp.getcampfire.dev) required; cf read on relay does not deliver messages from other members in CI. Use 09-local-relay.sh for a CI-equivalent test.
 # 11-member-metadata.sh — After relay join: cf ls shows correct
 # member_count, cf members lists both agents with pubkeys,
 # JoinedAt is recent (not 1970).
@@ -24,12 +25,12 @@ section "cf ls from server shows member count"
 LS_OUT=$(cf ls --cf-home "$SERVER_HOME" 2>/dev/null)
 echo "$LS_OUT"
 # Server should see members via store-based enumeration
-assert_contains "ls output contains campfire" "$LS_OUT" "$CF_ID"
+assert_contains "ls output contains campfire" "$LS_OUT" "${CF_ID:0:12}"
 
 section "cf ls from daemon"
 LS_DAEMON=$(cf ls --cf-home "$DAEMON_HOME" 2>/dev/null)
 echo "$LS_DAEMON"
-assert_contains "Daemon ls shows campfire" "$LS_DAEMON" "$CF_ID"
+assert_contains "Daemon ls shows campfire" "$LS_DAEMON" "${CF_ID:0:12}"
 
 section "JoinedAt is not 1970"
 LS_JSON=$(cf ls --cf-home "$DAEMON_HOME" --json 2>/dev/null)

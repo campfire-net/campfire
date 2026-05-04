@@ -54,53 +54,53 @@ echo "=========================================="
 # --- Suite A: Behavioral floor tests (campfireagent-cb3)
 run_test_suite \
   "L2 behavioral floor: no chain (baseline DENY)" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpFloor_NoChain_ReturnsBaseDeny"
 
 run_test_suite \
   "L2 behavioral floor: all 10 ops, no chain" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpFloor_NoChain_AllTenOps"
 
 run_test_suite \
   "L2 behavioral floor: empty chain still DENY" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpFloor_EmptyChain_StillDenied"
 
 run_test_suite \
   "L2 behavioral floor: chain for wrong op still DENY" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpFloor_ChainForDifferentOp_StillDenied"
 
 run_test_suite \
   "L2 behavioral floor: expired chain still DENY" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpFloor_ExpiredChain_StillDenied"
 
 run_test_suite \
   "L2 behavioral floor: DispatchWithCancel DENY + cancel called" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpFloor_DispatchWithCancel_Denied"
 
 run_test_suite \
   "L2 behavioral floor: DispatchWithCancel + chain still DENY" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpFloor_DispatchWithCancel_WithChain_Denied"
 
 run_test_suite \
   "DenyReason string stability: wire-frozen 'reserved_op_floor' prefix" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpFloorDenyReasonString"
 
 # --- Suite B: Regression — original enforcement tests (campfireagent-935) still green
 run_test_suite \
   "Regression: registration-time enforcement (Tier1/Tier2)" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpBlockedAtRegistration_Tier1|TestReservedOpBlockedAtRegistration_Tier2"
 
 run_test_suite \
   "Regression: dispatch-time enforcement (original)" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpBlockedAtDispatch|TestAllTenReservedOpsBlocked|TestNonReservedOpRegistrationSucceeds"
 
 echo ""

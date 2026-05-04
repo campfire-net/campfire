@@ -56,27 +56,27 @@ echo "§A: Reserved-op floor (L2 dispatch interceptor)"
 
 run_test_suite \
   "§A-1: all 10 reserved ops blocked at registration (Tier 1)" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpBlockedAtRegistration_Tier1"
 
 run_test_suite \
   "§A-2: all 10 reserved ops blocked at registration (Tier 2)" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpBlockedAtRegistration_Tier2"
 
 run_test_suite \
   "§A-3: all 10 reserved ops blocked at dispatch time (defence-in-depth)" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestReservedOpBlockedAtDispatch"
 
 run_test_suite \
   "§A-4: non-reserved ops are not affected by enforcement" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestNonReservedOpRegistrationSucceeds"
 
 run_test_suite \
   "§A-5: reserved op count is exactly 10 (F6 commitment)" \
-  "./pkg/convention/..." \
+  "./cf-conventions/cf-convention/..." \
   "TestAllTenReservedOpsBlocked"
 
 run_test_suite \
@@ -91,27 +91,27 @@ echo "§B: Client.Await lexicographic tiebreaker"
 
 run_test_suite \
   "§B-1: earlier timestamp wins regardless of ID (internal unit)" \
-  "./pkg/protocol/..." \
+  "./cf-protocol/protocol/..." \
   "TestFulfillmentLess_EarlierTimestampWins"
 
 run_test_suite \
   "§B-2: lex-smaller ID wins on timestamp tie (internal unit)" \
-  "./pkg/protocol/..." \
+  "./cf-protocol/protocol/..." \
   "TestFulfillmentLess_TiebreakerLexSmallestIDWins"
 
 run_test_suite \
   "§B-3: prefix-of-another ID tiebreaker (adversarial case)" \
-  "./pkg/protocol/..." \
+  "./cf-protocol/protocol/..." \
   "TestFulfillmentLess_PrefixIDTiebreaker"
 
 run_test_suite \
   "§B-4: three-way tie — smallest ID wins transitively" \
-  "./pkg/protocol/..." \
+  "./cf-protocol/protocol/..." \
   "TestFulfillmentLess_ThreeWayTieSmallestWins"
 
 run_test_suite \
   "§B-5: Client.Await integration — real fs transport, deterministic winner" \
-  "./pkg/protocol/..." \
+  "./cf-protocol/protocol/..." \
   "TestClientAwait_MultipleFulfillmentsTiebreaker"
 
 # ── Summary ──────────────────────────────────────────────────────────────────

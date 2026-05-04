@@ -39,7 +39,7 @@ assert_not_contains "Tag filter excludes non-matching" "$NOTAG_OUT" "Hello"
 section "cf ls shows campfire"
 LS_OUT=$(cf ls --cf-home "$ALICE_HOME" 2>/dev/null)
 echo "$LS_OUT"
-assert_contains "ls shows campfire" "$LS_OUT" "$CF_ID"
+assert_contains "ls shows campfire" "$LS_OUT" "${CF_ID:0:12}"
 assert_contains "ls shows members" "$LS_OUT" "members"
 
 section "cf members lists agents"

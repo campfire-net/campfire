@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQUIRES_FIX: Step 0 runs go test ./cf-protocol/... which takes 130s+ (http transport 52s + protocol 60s); exceeds CI timeout. go test is redundant — CI already runs the full suite. campfireagent-3f3-primitives: extract Step 0 from the demo or add -short support.
 # cf-protocol/demos/primitives-create-send-read.sh
 #
 # Demo: cf-protocol 1.0 public surface — Init → Create → Send → Read →

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQUIRES_PROD: hosted relay (mcp.getcampfire.dev) required; cf read on relay does not deliver messages from other members in CI. Use 09-local-relay.sh for a CI-equivalent test.
 # 07-relay-follow-mode.sh — cf read --follow --tag receives messages
 # as they arrive. Daemon is polling, server sends, daemon sees it.
 source "$(dirname "$0")/lib.sh"

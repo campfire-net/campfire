@@ -77,9 +77,9 @@ echo "PASS: identity initialised"
 # ---------------------------------------------------------------------------
 # Step 2: Create — campfire with filesystem transport.
 # ---------------------------------------------------------------------------
-CF_ID=$("$CF_BIN" create --transport fs --transport-dir "$TRANSPORT_DIR" --join-protocol open --json 2>/dev/null \
+CF_ID=$("$CF_BIN" create --transport filesystem --protocol open --json 2>/dev/null \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('campfire_id') or d.get('campfireId') or d.get('id') or list(d.values())[0])" 2>/dev/null \
-  || "$CF_BIN" create --transport fs --transport-dir "$TRANSPORT_DIR" --join-protocol open 2>/dev/null \
+  || "$CF_BIN" create --transport filesystem --protocol open 2>/dev/null \
   | grep -oE '[0-9a-f]{64}' | head -1)
 
 if [[ -z "$CF_ID" ]]; then

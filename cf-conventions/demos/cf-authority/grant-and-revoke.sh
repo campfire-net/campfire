@@ -64,7 +64,7 @@ fi
 echo ""
 echo "=== §C — Grant CBOR determinism ==="
 
-if "$GO" test -run "TestCapabilityCBORDeterminism|TestGrantPayloadIDDeterminism" \
+if "$GO" test -count=1 -run "TestCapabilityCBORDeterminism|TestGrantPayloadIDDeterminism" \
     ./cf-conventions/cf-authority/trust/... 2>&1 | grep -q "ok"; then
   ok "CBOR encoding is deterministic across 3 runs"
 else

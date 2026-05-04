@@ -24,14 +24,14 @@ fi
 echo "=== Demo 24: Evict Rekey Lock (FIX-1/MB1) ==="
 echo ""
 echo "Test: per-campfire write lock serializes concurrent membership mutations"
-echo "Scope: pkg/protocol/evict_concurrency_test.go"
+echo "Scope: cf-protocol/protocol/evict_concurrency_test.go"
 echo "Flags: -race -count=3"
 echo ""
 
 cd "$REPO_ROOT"
 
 echo "--- Running TestEvictConcurrency under -race -count=3 ---"
-if go test ./pkg/protocol/... \
+if go test ./cf-protocol/protocol/... \
     -run "TestEvictConcurrency" \
     -race \
     -count=3 \
