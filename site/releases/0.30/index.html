@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cf 0.30 Release Notes — Campfire</title>
+  <meta name="description" content="cf 0.30: protocol freeze, layered architecture, trust authority, 3-tier discovery, lazy-mint sessions. The largest campfire release since v0.16.">
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="stylesheet" href="/design-system.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<nav class="nav" aria-label="Main navigation">
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo"><img src="/logo.png" alt="" class="nav-logo-img">camp<span>fire</span></a>
+      <ul class="nav-links">
+        <li><a href="/getting-started/">Get Started</a></li>
+        <li><a href="/showcases/">Showcases</a></li>
+        <li><a href="/upgrade/">Upgrade</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <a href="/getting-started/" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<main class="doc-page">
+  <div class="container doc-container">
+
+    <div class="doc-header">
+      <div class="section-label">Release Notes</div>
+      <h1 class="doc-title">cf 0.30 — convention-first agent coordination</h1>
+      <p class="doc-lead">
+        The largest campfire release since v0.16. cf 0.30 restructures the substrate into a
+        layered module system, ships a complete trust authority, freezes the wire format, and
+        delivers production-ready session and discovery packages. Five themes, one stable foundation.
+      </p>
+      <div class="doc-meta">
+        Released 2026-04-30 &nbsp;&middot;&nbsp;
+        <a href="/upgrade/">Upgrade from 0.19 &rarr;</a> &nbsp;&middot;&nbsp;
+        <a href="https://github.com/campfire-net/campfire/blob/main/CHANGELOG.md">Full CHANGELOG &rarr;</a>
+      </div>
+    </div>
+
+    <!-- Theme 1 -->
+    <section class="release-theme" id="substrate-freeze">
+      <div class="release-theme-label">Theme 1 — Substrate Freeze</div>
+      <h2 class="release-theme-title">Wire format frozen. Layered architecture locked.</h2>
+      <p>
+        All substrate packages move from <code>pkg/</code> to the new <code>cf-protocol/</code>
+        Go module. Real type definitions live in <code>cf-protocol/protocol/</code>; callers importing
+        <code>pkg/protocol</code> continue to compile via type aliases. A real-reflection verifier
+        (<code>wireverify_test.go</code>) asserts CBOR field IDs, mandatory fields, and enum values
+        for every L1 type on every CI push — accidental wire-incompatible changes fail before merge.
+      </p>
+      <p>
+        The new <code>cf-primitives</code> binary exposes exactly the frozen 12-command protocol surface:
+        <code>admit</code>, <code>await</code>, <code>create</code>, <code>disband</code>, <code>evict</code>,
+        <code>init</code>, <code>join</code>, <code>leave</code>, <code>members</code>, <code>read</code>,
+        <code>send</code>, <code>subscribe</code>. A ceiling test enforces the frozen set —
+        any addition requires adversary review.
+      </p>
+      <p>
+        Convention-layer packages (<code>cf-conventions/</code>) sit above the substrate with strict
+        depguard-enforced layer boundaries: L2 holds the dispatcher and interfaces, L3 packages
+        hold implementations. L3 never imports L2 internals. L2 never imports L1 tag constants directly.
+      </p>
+      <div class="release-theme-links">
+        <a href="https://github.com/campfire-net/campfire/blob/main/docs/0.30-wire-format-freeze.md">Wire-format freeze spec</a>
+        &middot;
+        <a href="/upgrade/#bc-1">Migration: BC-1 import paths</a>
+      </div>
+    </section>
+
+    <!-- Theme 2 -->
+    <section class="release-theme" id="cf-authority">
+      <div class="release-theme-label">Theme 2 — cf-authority Gate Language</div>
+      <h2 class="release-theme-title">Full trust authority with deal-breaker enforcement.</h2>
+      <p>
+        <code>DefaultGateEvaluator</code> is a complete L3 trust authority satisfying the L2
+        <code>GateEvaluator</code> interface. It enforces all 10 D-class deal-breakers: chain walk,
+        revocation, scope ceiling, reserved-op floor, depth limit, owner ceiling, and TTL enforcement.
+        Every convention operation is gate-evaluated — no L3 convention can bypass this floor.
+      </p>
+      <p>
+        A critical security fix ships with this release: <code>GrantPayload.GranterPubKey</code>
+        (CBOR field 5) carries the granter's Ed25519 pubkey at the last chain hop.
+        <code>DefaultGateEvaluator</code> asserts <code>lastHop.GranterPubKey == RootPrincipal</code>,
+        closing a trust-anchor bypass where any rogue self-signed chain could receive <code>Allow</code>.
+      </p>
+      <p>
+        New CLI surface: <code>cf approve &lt;grant-request-msg-id&gt;</code> reviews pending delegation
+        with scope auto-suggestion, <code>cf trust pin/unpin/list/prune</code> manages TOFU key pins,
+        and <code>cf init --policy &lt;preset&gt;</code> writes a starter grant template
+        (<code>personal-developer</code>, <code>team-member</code>, or <code>public-agent</code>).
+      </p>
+      <div class="release-theme-links">
+        <a href="https://github.com/campfire-net/campfire/blob/main/docs/cf-authority-spec.md">cf-authority spec</a>
+        &middot;
+        <a href="/upgrade/#bc-4">Migration: BC-4 gate language</a>
+      </div>
+    </section>
+
+    <!-- Theme 3 -->
+    <section class="release-theme" id="cf-discovery">
+      <div class="release-theme-label">Theme 3 — cf-discovery 3-Tier</div>
+      <h2 class="release-theme-title">Structured discovery: public, invite-only, private.</h2>
+      <p>
+        <code>cf-discovery</code> is a new L3 package implementing the full 3-tier discovery model
+        from <code>cf-discovery-spec.md</code>. Tier 1 (public) uses signed snippets with expiry.
+        Tier 2 (invite-only) gates post-join via probe-write-then-observe verification.
+        Tier 3 (private) is off-discovery; campfire IDs shared out-of-band only.
+      </p>
+      <p>
+        Center-finding has been removed from the substrate entirely. Locality resolves at the
+        discovery layer — not in <code>Init()</code>. The removed symbols
+        (<code>WalkUpForCenter</code>, <code>WithWalkUp()</code>,
+        <code>InitResult.WalkUpPath</code>, <code>InitResult.DelegationIssued</code>) are gone;
+        discovery-layer equivalents handle the same use cases with explicit intent.
+      </p>
+      <p>
+        Rate-limit declarations ship for level:0 operations (OPEN-013 closed).
+        <code>ResolveChain</code> supports multi-level chain walks. Sentinel errors
+        (<code>ErrInviteOnly</code>, <code>ErrPostJoinVerificationFailed</code>)
+        give callers clean branch points.
+      </p>
+      <div class="release-theme-links">
+        <a href="https://github.com/campfire-net/campfire/blob/main/docs/cf-discovery-spec.md">cf-discovery spec</a>
+        &middot;
+        <a href="/upgrade/#bc-5">Migration: BC-5 center-finding removed</a>
+      </div>
+    </section>
+
+    <!-- Theme 4 -->
+    <section class="release-theme" id="cf-session">
+      <div class="release-theme-label">Theme 4 — cf-session Lazy-Mint</div>
+      <h2 class="release-theme-title">Per-worker grants. Disposable session logs.</h2>
+      <p>
+        <code>cf-session</code> is a new L3 package delivering lazy-mint per-worker grants.
+        <code>session:open</code> emits a <code>CapabilityTemplate</code>; workers receive one
+        grant tied to a fresh key (<code>IssueWorkerGrant</code>, depth=1, scoped as
+        <code>parent_grant ⊓ template</code>). Worker identities are materialized into a
+        jailed write path (<code>0700</code> dir / <code>0600</code> file). A signing-proxy
+        adapter enforces the campfire allowlist.
+      </p>
+      <p>
+        The session token format moves to <code>cfs2_</code> with real transport config embedded.
+        The prior token format (v1 prefix) is deprecated — decoding an old token returns a clear
+        migration error. The <code>swarm-coordination</code> convention is ported to
+        <code>cfs2_</code> with lazy-mint.
+      </p>
+      <p>
+        Session logs are eligible for compaction after <code>CloseSession</code>.
+        <code>session:open</code> / <code>session:close</code> are now stable L1 system event
+        tags visible to federation consumers.
+      </p>
+      <div class="release-theme-links">
+        <a href="https://github.com/campfire-net/campfire/blob/main/docs/agent/cf-session-lifecycle.md">Session lifecycle guide</a>
+        &middot;
+        <a href="/upgrade/#bc-3">Migration: BC-3 session tokens</a>
+      </div>
+    </section>
+
+    <!-- Theme 5 -->
+    <section class="release-theme" id="cf-primitives-split">
+      <div class="release-theme-label">Theme 5 — cf-primitives Split</div>
+      <h2 class="release-theme-title">Protocol primitives separated from convention surface.</h2>
+      <p>
+        The <code>cf</code> CLI now hides protocol-primitive commands
+        (<code>send</code>, <code>read</code>, <code>await</code>, <code>inspect</code>,
+        <code>compact</code>, <code>dm</code>, <code>bridge</code>, <code>filter</code>,
+        <code>sync</code>, <code>nat-poll</code>, <code>serve</code>, <code>dag</code>,
+        <code>provenance</code>) from <code>cf --help</code>.
+        Use <code>cf --help-primitives</code> to reveal them.
+        The convention surface is the default surface; primitives are the escape hatch.
+      </p>
+      <p>
+        argv[0] dispatch lands: <code>main.go</code> detects invocation under a non-<code>cf</code>
+        name (symlink e.g. <code>social → cf</code>) and calls <code>Multicall(safeName, args)</code>.
+        Path traversal and shell-injection attempts are rejected before any campfire name reaches dispatch.
+        Each symlinked app gets a per-app config overlay at <code>~/.cf/apps/&lt;appname&gt;/config.toml</code>.
+      </p>
+      <p>
+        MCP tools are now generated from convention declarations with active gate evaluation.
+        <code>DefaultGateEvaluator</code> fires in all modes — dev, test, and hosted.
+        <code>NewLocalEmitter()</code> activates the dispatcher without Forge credentials for local dev.
+      </p>
+      <div class="release-theme-links">
+        <a href="https://github.com/campfire-net/campfire/blob/main/docs/agent/quickstart.md">Agent quickstart</a>
+        &middot;
+        <a href="/upgrade/">Full upgrade guide</a>
+      </div>
+    </section>
+
+    <div class="release-nav">
+      <a href="/upgrade/" class="btn-primary">Upgrade from 0.19 &rarr;</a>
+      <a href="/docs/getting-started.html" class="btn-ghost">Get started fresh</a>
+    </div>
+
+  </div>
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">campfire</div>
+      <ul class="footer-links">
+        <li><a href="/getting-started/">Get Started</a></li>
+        <li><a href="/releases/0.30/">cf 0.30</a></li>
+        <li><a href="/upgrade/">Upgrade</a></li>
+        <li><a href="/showcases/">Showcases</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+        <li><a href="https://3dl.dev">Third Division Labs</a></li>
+      </ul>
+      <div class="footer-note">cf 0.30 · 2026</div>
+    </div>
+  </div>
+</footer>
+
+<style>
+.doc-page { padding: var(--ds-space-2xl) 0 var(--ds-space-section); }
+.doc-container { max-width: var(--ds-doc-width); }
+.doc-header { margin-bottom: var(--ds-space-2xl); border-bottom: 1px solid var(--ds-border); padding-bottom: var(--ds-space-xl); }
+.doc-title { font-size: var(--ds-text-2xl); font-weight: 700; line-height: var(--ds-line-height-tight); margin: var(--ds-space-xs) 0 var(--ds-space-sm); }
+.doc-lead { font-size: var(--ds-text-lg); color: var(--ds-text-secondary); line-height: var(--ds-line-height); margin-bottom: var(--ds-space-sm); }
+.doc-meta { font-size: var(--ds-text-sm); color: var(--ds-text-muted); }
+.doc-meta a { color: var(--ds-accent-secondary-light); }
+
+.release-theme { margin-bottom: var(--ds-space-2xl); padding-bottom: var(--ds-space-xl); border-bottom: 1px solid var(--ds-border); }
+.release-theme:last-of-type { border-bottom: none; }
+.release-theme-label {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ds-accent-primary);
+  margin-bottom: var(--ds-space-xs);
+}
+.release-theme-title { font-size: var(--ds-text-xl); font-weight: 600; line-height: var(--ds-line-height-tight); margin-bottom: var(--ds-space-sm); }
+.release-theme p { font-size: var(--ds-text-base); color: var(--ds-text-secondary); line-height: var(--ds-line-height); margin-bottom: var(--ds-space-sm); }
+.release-theme p code { font-family: var(--ds-font-mono); font-size: 0.875em; background: var(--ds-code-bg); padding: 1px 5px; border-radius: 3px; color: var(--ds-accent-primary-light); border: 1px solid var(--ds-border); }
+.release-theme-links { font-size: var(--ds-text-sm); color: var(--ds-text-muted); }
+.release-theme-links a { color: var(--ds-accent-secondary-light); }
+
+.release-nav { display: flex; gap: var(--ds-space-sm); margin-top: var(--ds-space-2xl); flex-wrap: wrap; }
+</style>
+
+</body>
+</html>

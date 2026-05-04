@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upgrade to cf 0.30 — Campfire</title>
+  <meta name="description" content="Consumer port matrix for cf 0.30: rd, dontguess, social, the reach, freeso — all post-0.30.0 port pending. Breaking changes inventory and migration guide.">
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="stylesheet" href="/design-system.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<nav class="nav" aria-label="Main navigation">
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo"><img src="/logo.png" alt="" class="nav-logo-img">camp<span>fire</span></a>
+      <ul class="nav-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="/releases/0.30/">cf 0.30</a></li>
+        <li><a href="/getting-started/">Get Started</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <a href="/getting-started/" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<main class="doc-page">
+  <div class="container doc-container">
+
+    <div class="doc-header">
+      <div class="section-label">Upgrade Guide</div>
+      <h1 class="doc-title">Upgrading to cf 0.30</h1>
+      <p class="doc-lead">
+        cf 0.30 is a structural release — layered modules, frozen wire format, new trust authority.
+        New projects should start here. Existing consumers porting from 0.19 have a defined
+        migration path per the breaking-changes inventory below.
+      </p>
+      <div class="doc-meta">
+        <a href="https://github.com/campfire-net/campfire/blob/main/docs/upgrade-0.19-to-0.30.md">Full upgrade-0.19-to-0.30.md &rarr;</a>
+        &nbsp;&middot;&nbsp;
+        <a href="/releases/0.30/">Release notes &rarr;</a>
+      </div>
+    </div>
+
+    <!-- Consumer port matrix -->
+    <section class="upgrade-section" id="consumer-matrix">
+      <h2 class="upgrade-section-title">Consumer port matrix</h2>
+      <p class="upgrade-section-desc">
+        Five portfolio consumers are pinned at their current versions while their port windows open.
+        Each will migrate to cf 0.30 as a tracked work item; this page reflects current status.
+      </p>
+
+      <div class="port-matrix">
+        <div class="port-row port-row-header">
+          <span>Consumer</span>
+          <span>Pinned at</span>
+          <span>Key changes</span>
+          <span>Port status</span>
+        </div>
+
+        <div class="port-row">
+          <span class="port-name"><code>rd</code></span>
+          <span class="port-version">0.19.2</span>
+          <span class="port-changes">5 — imports, WithNoWalkUp, min_operator_level, convention API</span>
+          <span class="port-status port-pending">post-0.30.0 port pending</span>
+        </div>
+
+        <div class="port-row">
+          <span class="port-name"><code>dontguess</code></span>
+          <span class="port-version">0.17.0</span>
+          <span class="port-changes">4 — imports, convention API</span>
+          <span class="port-status port-pending">post-0.30.0 port pending</span>
+        </div>
+
+        <div class="port-row">
+          <span class="port-name"><code>social</code></span>
+          <span class="port-version">0.19.2</span>
+          <span class="port-changes">3 — imports, convention API</span>
+          <span class="port-status port-pending">post-0.30.0 port pending</span>
+        </div>
+
+        <div class="port-row">
+          <span class="port-name"><code>the reach</code></span>
+          <span class="port-version">0.13.1</span>
+          <span class="port-changes">5 — imports, session, WalkUp, convention API</span>
+          <span class="port-status port-pending">post-0.30.0 port pending</span>
+        </div>
+
+        <div class="port-row">
+          <span class="port-name"><code>freeso</code></span>
+          <span class="port-version">0.13.0</span>
+          <span class="port-changes">4 — imports, session, convention API</span>
+          <span class="port-status port-pending">post-0.30.0 port pending</span>
+        </div>
+      </div>
+
+      <div class="upgrade-note">
+        Port order follows dependency depth: <code>rd</code> first (least substrate surface),
+        then <code>dontguess</code>, <code>social</code>, <code>the reach</code>, <code>freeso</code>.
+        Each port is a tracked work item; port windows open sequentially after integration tests pass.
+      </div>
+    </section>
+
+    <!-- BC-1 -->
+    <section class="upgrade-section" id="bc-1">
+      <h2 class="upgrade-section-title">BC-1 — Substrate packages moved to <code>cf-protocol/</code></h2>
+      <p class="upgrade-section-desc">
+        All substrate packages previously under <code>pkg/</code> have moved to
+        <code>cf-protocol/internal/</code> and are re-exported via <code>cf-protocol/protocol/</code>.
+        Code importing substrate packages directly will not compile.
+      </p>
+      <p class="upgrade-section-desc">
+        <strong>Fix:</strong> Replace direct substrate imports with <code>cf-protocol/protocol</code>.
+        The <code>pkg/protocol</code> forwarding shim continues to compile for the common SDK path.
+        See the <a href="https://github.com/campfire-net/campfire/blob/main/docs/upgrade-0.19-to-0.30.md#bc-1--substrate-packages-moved-to-cf-protocol">full import path table</a>.
+      </p>
+    </section>
+
+    <!-- BC-2 -->
+    <section class="upgrade-section" id="bc-2">
+      <h2 class="upgrade-section-title">BC-2 — Convention layer moved to <code>cf-conventions/</code></h2>
+      <p class="upgrade-section-desc">
+        Convention packages (<code>pkg/convention</code>, <code>pkg/durability</code>,
+        <code>cf-convention-extensions/connect/</code>) have moved to the
+        <code>cf-conventions/</code> Go module with strict layer boundaries.
+      </p>
+      <p class="upgrade-section-desc">
+        <strong>Fix:</strong> Update import paths. <code>pkg/durability</code> →
+        <code>cf-conventions/cf-durability</code>.
+        <code>cf-convention-extensions/connect/</code> → <code>cf-conventions/cf-connect</code>.
+      </p>
+    </section>
+
+    <!-- BC-3 -->
+    <section class="upgrade-section" id="bc-3">
+      <h2 class="upgrade-section-title">BC-3 — Session token format: v1 tokens deprecated</h2>
+      <p class="upgrade-section-desc">
+        Session token format v1 (old prefix) is deprecated in 0.30. <code>cf session create</code> now emits
+        <code>cfs2_</code> tokens with real transport config embedded. Decoding a v1 token
+        returns a clear migration error pointing to this guide.
+      </p>
+      <p class="upgrade-section-desc">
+        <strong>Fix:</strong> Re-generate all session tokens. Any stored v1 token must
+        be replaced. The <code>swarm-coordination</code> convention has been ported to <code>cfs2_</code>.
+      </p>
+    </section>
+
+    <!-- BC-4 -->
+    <section class="upgrade-section" id="bc-4">
+      <h2 class="upgrade-section-title">BC-4 — Gate language: <code>DefaultGateEvaluator</code> now required</h2>
+      <p class="upgrade-section-desc">
+        Convention dispatchers without an explicit <code>GateEvaluator</code> will use the new
+        <code>DefaultGateEvaluator</code> from <code>cf-authority</code>. Any custom evaluator
+        must satisfy the L2 <code>GateEvaluator</code> interface declared in
+        <code>cf-convention/gate.go</code>.
+      </p>
+      <p class="upgrade-section-desc">
+        <strong>Security note:</strong> <code>GrantPayload.GranterPubKey</code> (CBOR field 5) is
+        now required for trust-anchor validation. Existing grants without this field will be
+        rejected by <code>DefaultGateEvaluator</code>. Re-issue grants after upgrading.
+      </p>
+    </section>
+
+    <!-- BC-5 -->
+    <section class="upgrade-section" id="bc-5">
+      <h2 class="upgrade-section-title">BC-5 — Center-finding removed from substrate</h2>
+      <p class="upgrade-section-desc">
+        The following substrate symbols are removed in 0.30: <code>WalkUpForCenter</code>,
+        <code>WithWalkUp()</code>, <code>WithNoWalkUp()</code>, <code>WalkUpEnabled()</code>,
+        <code>InitResult.WalkUpPath</code>, <code>InitResult.LocalityChanged</code>,
+        <code>InitResult.DelegationIssued</code>.
+        Center-finding ("walk-up locality") moves to the discovery layer.
+      </p>
+      <p class="upgrade-section-desc">
+        <strong>Fix:</strong> Locality resolution moves to the discovery layer (<code>cf-discovery</code>).
+        Replace any <code>WithWalkUp()</code> calls with discovery-layer equivalents.
+        See <code>cf-discovery-spec.md</code> §3 for the new locality model.
+      </p>
+    </section>
+
+    <div class="upgrade-cta">
+      <a href="https://github.com/campfire-net/campfire/blob/main/docs/upgrade-0.19-to-0.30.md" class="btn-primary">Full upgrade guide on GitHub &rarr;</a>
+      <a href="/releases/0.30/" class="btn-ghost">Release notes</a>
+    </div>
+
+  </div>
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">campfire</div>
+      <ul class="footer-links">
+        <li><a href="/getting-started/">Get Started</a></li>
+        <li><a href="/releases/0.30/">cf 0.30</a></li>
+        <li><a href="/upgrade/">Upgrade</a></li>
+        <li><a href="/showcases/">Showcases</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+        <li><a href="https://3dl.dev">Third Division Labs</a></li>
+      </ul>
+      <div class="footer-note">cf 0.30 · 2026</div>
+    </div>
+  </div>
+</footer>
+
+<style>
+.doc-page { padding: var(--ds-space-2xl) 0 var(--ds-space-section); }
+.doc-container { max-width: var(--ds-doc-width); }
+.doc-header { margin-bottom: var(--ds-space-2xl); border-bottom: 1px solid var(--ds-border); padding-bottom: var(--ds-space-xl); }
+.doc-title { font-size: var(--ds-text-2xl); font-weight: 700; line-height: var(--ds-line-height-tight); margin: var(--ds-space-xs) 0 var(--ds-space-sm); }
+.doc-lead { font-size: var(--ds-text-lg); color: var(--ds-text-secondary); line-height: var(--ds-line-height); margin-bottom: var(--ds-space-sm); }
+.doc-meta { font-size: var(--ds-text-sm); color: var(--ds-text-muted); }
+.doc-meta a { color: var(--ds-accent-secondary-light); }
+
+.upgrade-section { margin-bottom: var(--ds-space-2xl); padding-bottom: var(--ds-space-xl); border-bottom: 1px solid var(--ds-border); }
+.upgrade-section-title { font-size: var(--ds-text-xl); font-weight: 600; line-height: var(--ds-line-height-tight); margin-bottom: var(--ds-space-sm); }
+.upgrade-section-title code { font-family: var(--ds-font-mono); font-size: 0.85em; }
+.upgrade-section-desc { color: var(--ds-text-secondary); margin-bottom: var(--ds-space-sm); font-size: var(--ds-text-base); }
+.upgrade-section-desc code { font-family: var(--ds-font-mono); font-size: 0.875em; background: var(--ds-code-bg); padding: 1px 5px; border-radius: 3px; color: var(--ds-accent-primary-light); border: 1px solid var(--ds-border); }
+.upgrade-section-desc a { color: var(--ds-accent-secondary-light); }
+.upgrade-section-desc strong { color: var(--ds-text); }
+
+.port-matrix { border: 1px solid var(--ds-border); border-radius: var(--ds-radius-lg); overflow: hidden; margin-bottom: var(--ds-space-sm); }
+.port-row { display: grid; grid-template-columns: 140px 90px 1fr 200px; gap: 0; padding: 12px 16px; border-bottom: 1px solid var(--ds-border); align-items: center; font-size: var(--ds-text-sm); }
+.port-row:last-child { border-bottom: none; }
+.port-row-header { background: var(--ds-surface); font-family: var(--ds-font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ds-text-muted); }
+.port-name code { font-family: var(--ds-font-mono); font-size: 0.875em; color: var(--ds-accent-primary-light); }
+.port-version { font-family: var(--ds-font-mono); font-size: 12px; color: var(--ds-text-muted); }
+.port-changes { color: var(--ds-text-secondary); font-size: 13px; }
+.port-status { font-family: var(--ds-font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+.port-pending { color: var(--ds-accent-primary); }
+
+.upgrade-note {
+  background: rgba(13,148,136,0.07);
+  border-left: 3px solid var(--ds-accent-secondary);
+  border-radius: 0 var(--ds-radius) var(--ds-radius) 0;
+  padding: 12px 16px;
+  font-size: var(--ds-text-sm);
+  color: var(--ds-text-secondary);
+}
+.upgrade-note code { font-family: var(--ds-font-mono); font-size: 0.875em; background: var(--ds-code-bg); padding: 1px 4px; border-radius: 3px; color: var(--ds-accent-primary-light); }
+
+.upgrade-cta { display: flex; gap: var(--ds-space-sm); margin-top: var(--ds-space-2xl); flex-wrap: wrap; }
+
+@media (max-width: 700px) {
+  .port-row { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto; }
+  .port-row-header { display: none; }
+}
+</style>
+
+</body>
+</html>
