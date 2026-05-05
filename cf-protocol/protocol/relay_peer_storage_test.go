@@ -6,6 +6,7 @@ package protocol_test
 // cf read returns empty.
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -13,23 +14,78 @@ import (
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 )
 
+// TestJoinP2PHTTP_StoresRelayAsPeer verifies that after joinP2PHTTP, the relay
+// URL (PeerEndpoint) is stored in peer_endpoints so syncFromHTTPPeers can pull
+// from it. This is the critical v0.17.2 fix: without it, endpointless joiners
+// have zero sync targets and cf read returns empty.
+//
+// The test uses a real in-process HTTP transport (no mocks), a real SQLite store,
+// and a real P2P join. It then queries the joiner's store and asserts the relay
+// URL is present in ListPeerEndpoints.
 func TestJoinP2PHTTP_StoresRelayAsPeer(t *testing.T) {
-	// This test verifies that after joining via relay, the relay URL
-	// appears in peer_endpoints — the critical fix for v0.17.2.
-	//
-	// We can't easily spin up a real HTTP relay in protocol_test, but
-	// we CAN verify the storage logic by checking what joinP2PHTTP
-	// stores after a successful join. The cross_transport_e2e_test.go
-	// in pkg/transport/http/ covers the full HTTP round-trip.
-	//
-	// For this test, we verify the contract: after Join with
-	// P2PHTTPTransport, the PeerEndpoint URL is in peer_endpoints.
+	transportDirA := t.TempDir()
+	transportDirB := t.TempDir()
+	beaconDir := t.TempDir()
 
-	// Skip if we can't do a real HTTP join (no relay running).
-	// The real E2E is in pkg/transport/http/cross_transport_e2e_test.go.
-	t.Skip("Relay peer storage verified in pkg/transport/http/cross_transport_e2e_test.go")
+	// Client A: creator with real in-process HTTP transport (OS-assigned port).
+	clientA := newJoinClient(t)
+	sA := clientA.ClientStore()
+	trA := cfhttp.New("127.0.0.1:0", sA)
+	if err := trA.Start(); err != nil {
+		t.Fatalf("start transport A: %v", err)
+	}
+	t.Cleanup(func() { trA.Stop() }) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+	endpointA := fmt.Sprintf("http://%s", trA.Addr())
+
+	createResult, err := clientA.Create(protocol.CreateRequest{
+		Transport: &protocol.P2PHTTPTransport{Transport: trA, MyEndpoint: endpointA, Dir: transportDirA},
+		BeaconDir: beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	campfireID := createResult.CampfireID
+
+	// Client B: joiner — no running HTTP transport (simulates an endpointless joiner
+	// that relies on the relay for sync). PeerEndpoint = endpointA (the relay).
+	clientB := newJoinClient(t)
+	sB := clientB.ClientStore()
+	_, err = clientB.Join(protocol.JoinRequest{
+		CampfireID: campfireID,
+		Transport: &protocol.P2PHTTPTransport{
+			PeerEndpoint: endpointA,
+			Dir:          transportDirB,
+		},
+	})
+	if err != nil {
+		t.Fatalf("B.Join: %v", err)
+	}
+
+	// The critical assertion: endpointA (the relay) must appear in B's peer_endpoints
+	// so that syncFromHTTPPeers can pull messages from it.
+	peers, err := sB.ListPeerEndpoints(campfireID)
+	if err != nil {
+		t.Fatalf("B.Store.ListPeerEndpoints: %v", err)
+	}
+
+	found := false
+	for _, p := range peers {
+		if p.Endpoint == endpointA {
+			found = true
+			break
+		}
+	}
+	if !found {
+		endpoints := make([]string, len(peers))
+		for i, p := range peers {
+			endpoints[i] = p.Endpoint
+		}
+		t.Errorf("relay URL %q not found in B's peer_endpoints after joinP2PHTTP — v0.17.2 regression; got: %v", endpointA, endpoints)
+	}
 }
 
 func TestJoinP2PHTTP_JoinedAtIsNanoseconds(t *testing.T) {
