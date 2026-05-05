@@ -324,11 +324,17 @@ func TestD8_WalkEveryDispatch_MidChainRevoke(t *testing.T) {
 		srv.Serve(ctx, env.campfireHex) //nolint:errcheck
 	}()
 
-	// No startup sleep needed: clients[0] has a no-op syncer (set in
-	// newD8TestEnv), so the subscription poll loop is pure in-memory SQLite.
-	// The 30-second context timeout is ample headroom. Dispatch 1 will be
-	// picked up on the server's first or next poll regardless of scheduling
-	// order: syncAll writes it to stores[0] and the cursor starts at 0.
+	// Wait for the server's subscription goroutine to start before sending
+	// dispatch 1. This is a proper goroutine-startup gate (no sleep): srv.Ready()
+	// is closed by Serve immediately after Subscribe returns, ensuring the poll
+	// loop goroutine has been launched. Without this gate, the test goroutine
+	// may race with the server goroutine's startup, causing non-deterministic
+	// cursor initialization (campfireagent-401 re-fix).
+	select {
+	case <-srv.Ready():
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for server ready")
+	}
 
 	// Step 2: Dispatch 1 — sender sends ping before any revocation.
 	if _, err := env.clients[2].Send(protocol.SendRequest{
@@ -446,11 +452,14 @@ func TestD8_WalkEveryDispatch_DeepestKeyRevoke(t *testing.T) {
 		srv.Serve(ctx, env.campfireHex) //nolint:errcheck
 	}()
 
-	// No startup sleep needed: clients[0] has a no-op syncer (set in
-	// newD8TestEnv), so the subscription poll loop is pure in-memory SQLite.
-	// The 30-second context timeout is ample headroom. Dispatch 1 will be
-	// picked up on the server's first or next poll regardless of scheduling
-	// order: syncAll writes it to stores[0] and the cursor starts at 0.
+	// Wait for the server's subscription goroutine to start before sending
+	// dispatch 1. Proper goroutine-startup gate (no sleep): srv.Ready() is
+	// closed by Serve immediately after Subscribe returns (campfireagent-401 re-fix).
+	select {
+	case <-srv.Ready():
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for server ready")
+	}
 
 	// Dispatch 1: sender (ids[2]) sends before revocation.
 	if _, err := env.clients[2].Send(protocol.SendRequest{
