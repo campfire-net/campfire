@@ -15,8 +15,10 @@ type AdmitRequest struct {
 }
 
 // handleAdmit adds a member to an invite-only campfire's peer list so they
-// can pass the join gate. Only existing members (verified by authMiddleware)
-// can admit new members.
+// can pass the join gate. Only the campfire creator (verified by CreatorPubkey
+// in the membership record) may admit new members. Non-creators are rejected
+// with 403 Forbidden. Fail-closed: if the membership record is absent or has
+// an empty CreatorPubkey, admission is also rejected.
 func (h *handler) handleAdmit(w http.ResponseWriter, r *http.Request, campfireID, senderHex string, body []byte) {
 	var req AdmitRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -29,6 +31,20 @@ func (h *handler) handleAdmit(w http.ResponseWriter, r *http.Request, campfireID
 	}
 	if len(req.MemberPubkey) != 64 {
 		http.Error(w, "member_pubkey must be 64 hex chars (32 bytes)", http.StatusBadRequest)
+		return
+	}
+
+	// Creator-only check: only the campfire creator may admit new members.
+	// Fail-closed: if GetMembership errors or CreatorPubkey is empty (legacy
+	// record), reject — we cannot verify the creator identity.
+	membership, err := h.store.GetMembership(campfireID)
+	if err != nil {
+		log.Printf("handleAdmit: GetMembership failed for campfire %s: %v", campfireID, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if membership == nil || membership.CreatorPubkey == "" || senderHex != membership.CreatorPubkey {
+		http.Error(w, "only the campfire creator may admit members", http.StatusForbidden)
 		return
 	}
 
