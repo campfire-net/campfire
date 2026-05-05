@@ -89,7 +89,16 @@ func Bridge(ctx context.Context, source, dest *Client, campfireID string, opts B
 
 	// pumpOne subscribes to `from` and sends each message to `to`.
 	// direction is a label for the OnMessage callback.
-	pumpOne := func(from, to *Client, direction string) error {
+	// senderKey, when non-empty, restricts forwarding to messages whose Sender
+	// matches the given hex pubkey. This is used in bidirectional mode to prevent
+	// a race where both pumps subscribe to the same campfire and compete to process
+	// messages: without sender filtering, the pump that polls first wins, causing
+	// the wrong direction label in OnMessage callbacks and spurious dedup skips.
+	// In bidirectional mode each pump is bound to the originating side's key
+	// (source pump: senderKey = source.PublicKeyHex(); dest pump: senderKey =
+	// dest.PublicKeyHex()), making direction assignment deterministic regardless
+	// of poll timing.
+	pumpOne := func(from, to *Client, direction, senderKey string) error {
 		sub := from.Subscribe(ctx, SubscribeRequest{
 			CampfireID: campfireID,
 			Tags:       opts.TagFilter,
@@ -105,6 +114,16 @@ func Bridge(ctx context.Context, source, dest *Client, campfireID string, opts B
 					}
 					return ctx.Err()
 				}
+
+				// In bidirectional mode, only forward messages that originated
+				// from the `from` side. Both pumps share the same campfire and
+				// can see each other's messages; without this guard whichever
+				// pump polls first claims a message, producing wrong direction
+				// labels and starving the other pump.
+				if senderKey != "" && msg.Sender != senderKey {
+					continue
+				}
+
 				if dedup.add(msg.ID) {
 					continue // already seen — skip to prevent loops
 				}
@@ -147,17 +166,22 @@ func Bridge(ctx context.Context, source, dest *Client, campfireID string, opts B
 	}
 
 	if !opts.Bidirectional {
-		return pumpOne(source, dest, "source→dest")
+		return pumpOne(source, dest, "source→dest", "")
 	}
 
 	// Bidirectional: run two pumps, first error or ctx cancel stops both.
+	// Each pump is bound to messages originating from its own side so they
+	// don't race over the same message.
+	srcKey := source.PublicKeyHex()
+	dstKey := dest.PublicKeyHex()
+
 	errCh := make(chan error, 2)
 
 	go func() {
-		errCh <- pumpOne(source, dest, "source→dest")
+		errCh <- pumpOne(source, dest, "source→dest", srcKey)
 	}()
 	go func() {
-		errCh <- pumpOne(dest, source, "dest→source")
+		errCh <- pumpOne(dest, source, "dest→source", dstKey)
 	}()
 
 	// Wait for the first error (or context cancellation propagated through a pump).

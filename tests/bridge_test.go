@@ -328,6 +328,132 @@ func TestBridgeE2EDedup(t *testing.T) {
 	cancel()
 }
 
+// TestBridgeDirectionalAssignment is a focused unit test for the senderKey filter
+// mechanism in pumpOne. It verifies that in bidirectional mode:
+//   - Messages sent by clientA (source) are routed to the source→dest pump and
+//     fire OnMessage with direction "source→dest".
+//   - Messages sent by clientB (dest) are routed to the dest→source pump and
+//     fire OnMessage with direction "dest→source".
+//   - Direction assignment is invariant under interleaved sends (timing cannot
+//     cause a message to be attributed to the wrong pump).
+//
+// This test MUST fail if the senderKey comparison is inverted
+// (msg.Sender != senderKey) or removed entirely.
+func TestBridgeDirectionalAssignment(t *testing.T) {
+	clientA, clientB, campfireID := setupE2EEnv(t)
+
+	keyA := clientA.PublicKeyHex()
+	keyB := clientB.PublicKeyHex()
+
+	type event struct {
+		senderKey string
+		direction string
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	var events []event
+
+	bridgeErr := make(chan error, 1)
+	go func() {
+		bridgeErr <- protocol.Bridge(ctx, clientA, clientB, campfireID, protocol.BridgeOptions{
+			Bidirectional: true,
+			OnMessage: func(msg *protocol.Message, direction string) {
+				mu.Lock()
+				events = append(events, event{senderKey: msg.Sender, direction: direction})
+				mu.Unlock()
+			},
+		})
+	}()
+
+	// Let both pumps subscribe before sending.
+	time.Sleep(200 * time.Millisecond)
+
+	const rounds = 5
+	// Interleave sends from A and B to expose any timing-dependent direction flip.
+	for i := 0; i < rounds; i++ {
+		_, err := clientA.Send(protocol.SendRequest{
+			CampfireID: campfireID,
+			Payload:    []byte("fromA"),
+			Tags:       []string{"status"},
+		})
+		if err != nil {
+			t.Fatalf("clientA.Send round %d: %v", i, err)
+		}
+		_, err = clientB.Send(protocol.SendRequest{
+			CampfireID: campfireID,
+			Payload:    []byte("fromB"),
+			Tags:       []string{"status"},
+		})
+		if err != nil {
+			t.Fatalf("clientB.Send round %d: %v", i, err)
+		}
+	}
+
+	// Wait for all 2*rounds events (one per send, each in the correct direction).
+	deadline := time.After(10 * time.Second)
+	for {
+		mu.Lock()
+		n := len(events)
+		mu.Unlock()
+		if n >= 2*rounds {
+			break
+		}
+		select {
+		case <-deadline:
+			mu.Lock()
+			t.Fatalf("timeout: got %d events, want %d; events so far: %v", len(events), 2*rounds, events)
+			mu.Unlock()
+		default:
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// Stop the bridge and drain so we don't race on events after assertion.
+	cancel()
+	<-bridgeErr
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Verify every event: sender key must match the direction label.
+	//   source→dest  ⟺  msg.Sender == keyA
+	//   dest→source  ⟺  msg.Sender == keyB
+	for i, ev := range events {
+		switch ev.direction {
+		case "source→dest":
+			if ev.senderKey != keyA {
+				t.Errorf("event[%d]: direction=%q but senderKey=%q (want keyA=%q) — senderKey filter broken", i, ev.direction, ev.senderKey, keyA)
+			}
+		case "dest→source":
+			if ev.senderKey != keyB {
+				t.Errorf("event[%d]: direction=%q but senderKey=%q (want keyB=%q) — senderKey filter broken", i, ev.direction, ev.senderKey, keyB)
+			}
+		default:
+			t.Errorf("event[%d]: unexpected direction label %q", i, ev.direction)
+		}
+	}
+
+	// Also verify we got exactly rounds events in each direction.
+	var countSrcDest, countDstSrc int
+	for _, ev := range events {
+		switch ev.direction {
+		case "source→dest":
+			countSrcDest++
+		case "dest→source":
+			countDstSrc++
+		}
+	}
+	if countSrcDest != rounds {
+		t.Errorf("expected %d source→dest events, got %d", rounds, countSrcDest)
+	}
+	if countDstSrc != rounds {
+		t.Errorf("expected %d dest→source events, got %d", rounds, countDstSrc)
+	}
+}
+
 // TestBridgeE2EGracefulShutdown verifies Bridge returns context.Canceled on
 // clean exit and does not leak goroutines.
 func TestBridgeE2EGracefulShutdown(t *testing.T) {
