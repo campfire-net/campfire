@@ -1,5 +1,12 @@
 package cmd
 
+// Tests in this file invoke rootCmd.Execute() with rootCmd.SetArgs and reset
+// the package-level jsonOutput flag in setup helpers. Because rootCmd is a
+// package-level cobra var, these tests MUST NOT run with t.Parallel(): two
+// goroutines mutating rootCmd.SetArgs concurrently produce non-deterministic
+// argv corruption. Keep this in mind when adding new tests in this package.
+// See campfireagent-2fe veracity finding (severity:low) for context.
+
 import (
 	"bytes"
 	"crypto/ed25519"
