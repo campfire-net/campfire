@@ -638,6 +638,30 @@ func waitForFulfillmentMessage(t *testing.T, client *protocol.Client, campfireID
 	return false
 }
 
+// waitForErrorFulfillmentMessage polls callerClient.Read until a message tagged
+// "convention:error" appears, or the timeout elapses.
+// The dispatch store marks "failed" before sendErrorFulfillment completes, so
+// a one-shot read immediately after waitForDispatch is racy (same pattern as
+// waitForFulfillmentMessage for the success path).
+func waitForErrorFulfillmentMessage(t *testing.T, client *protocol.Client, campfireID string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		result, err := client.Read(protocol.ReadRequest{
+			CampfireID: campfireID,
+			Tags:       []string{"convention:error"},
+		})
+		if err != nil {
+			t.Fatalf("callerClient.Read: %v", err)
+		}
+		if len(result.Messages) > 0 {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
 func TestDispatcher_Tier1_HandlerError_SendsErrorFulfillment(t *testing.T) {
 	env := setupDispatcherTestEnv(t)
 	ds := convention.NewMemoryDispatchStore()
@@ -680,14 +704,11 @@ func TestDispatcher_Tier1_HandlerError_SendsErrorFulfillment(t *testing.T) {
 	}
 
 	// Verify error fulfillment was posted.
-	result, err := env.callerClient.Read(protocol.ReadRequest{
-		CampfireID: env.campfireID,
-		Tags:       []string{"convention:error"},
-	})
-	if err != nil {
-		t.Fatalf("callerClient.Read: %v", err)
-	}
-	if len(result.Messages) == 0 {
+	// The dispatch store marks "failed" before sendErrorFulfillment posts the message,
+	// so a one-shot read immediately after waitForDispatch is racy. Poll until the
+	// convention:error message appears (same pattern as waitForFulfillmentMessage for
+	// the success path).
+	if !waitForErrorFulfillmentMessage(t, env.callerClient, env.campfireID, 2*time.Second) {
 		t.Fatal("expected at least one convention:error message")
 	}
 }
