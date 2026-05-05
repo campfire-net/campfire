@@ -147,13 +147,14 @@ client, result, err := protocol.Init(cfHomeDir, protocol.WithWalkUp())
 ```
 
 **After (0.30):**
-```go,illustrative
-import "github.com/campfire-net/campfire/pkg/protocol"
+```go
+import "github.com/campfire-net/campfire/cf-protocol/protocol"
 
 // Walk-up option is gone — just call Init:
 client, _, err := protocol.Init(cfHomeDir)
-if err != nil { ... }
+if err != nil {}
 // result.Recentered, result.WalkUpPath — do not exist; delete references.
+_ = client
 ```
 
 **.cf/config.toml before:**
@@ -205,12 +206,12 @@ client.Create(protocol.CreateRequest{
 ```
 
 **After (0.30):**
-```go,illustrative
+```go
 // Migrate to filesystem or HTTP transport:
 client.Create(protocol.CreateRequest{
-    Transport: protocol.TypeFilesystem,
+    Transport: protocol.FilesystemTransport{},
 })
-// or TypeHTTP for hosted/multi-machine scenarios
+// or P2PHTTPTransport for hosted/multi-machine scenarios
 ```
 
 ```bash
@@ -406,7 +407,7 @@ if strings.HasPrefix(msg.Tag, protocol.CampfireTagPrefix) { ... }
 ```
 
 **Available re-exports (cf-protocol/protocol):**
-```go,illustrative
+```go
 protocol.CampfireTagPrefix            // "campfire:"
 protocol.CampfireTagCompact           // "campfire:compact"
 protocol.CampfireTagMemberJoined      // "campfire:member-joined"
@@ -489,20 +490,22 @@ gate evaluation. The stub default means 0.19 code that does not wire a gate
 evaluator continues to compile and run.
 
 **Before (0.19):**
-```go,illustrative
+```go
 import "github.com/campfire-net/campfire/pkg/convention"
 
 exec := convention.NewExecutor(client)
 exec = exec.WithProvenance(checker)  // v1 interface
+_ = exec
 ```
 
 **After (0.30) — minimal (keep stub evaluator):**
-```go,illustrative
+```go
 import "github.com/campfire-net/campfire/pkg/convention"
 
 // Unchanged — AllowAllGateEvaluator is the default.
 exec := convention.NewExecutor(client)
 exec = exec.WithProvenance(checker)
+_ = exec
 ```
 
 **After (0.30) — production (wire real evaluator):**
@@ -713,7 +716,7 @@ freshness window across all hops. A hostile intermediate cannot extend the
 apparent freshness by declaring a long window.
 
 **Sentinel errors:**
-```go,illustrative
+```go
 cfdiscovery.ErrInviteOnly                // campfire is invite-only
 cfdiscovery.ErrPostJoinVerificationFailed // probe write did not propagate
 ```
@@ -838,30 +841,33 @@ appends exactly one provenance hop signed by the bridging campfire with
 survives end-to-end.
 
 **Before (0.19):**
-```go,illustrative
+```go
 // BridgeOptions had no Forward field.
 // Bridge always re-published (fresh message ID, bridging agent as sender).
 err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
     Bidirectional: true,
     TagFilter:     []string{"work:"},
 })
+_ = err
 ```
 
 **After (0.30) — re-publish (default, same behavior as 0.19):**
-```go,illustrative
+```go
 err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
     Bidirectional: true,
     TagFilter:     []string{"work:"},
     // Forward: false (default) — re-publish mode, same as 0.19
 })
+_ = err
 ```
 
 **After (0.30) — pass-through (new, preserves original attribution):**
-```go,illustrative
+```go
 err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
     Bidirectional: true,
     Forward: true,  // append blind-relay hop; preserve original Sender, Signature, Payload
 })
+_ = err
 ```
 
 **When to use `Forward: true`:**
@@ -943,15 +949,16 @@ trust pin management).
 `RootPrincipal`. Any rogue self-signed chain could receive `Allow`.
 
 **After (0.30):**
-```go,illustrative
+```go
 // When building GrantPayload manually (rare — most callers use cf-authority APIs):
 payload := trust.GrantPayload{
     ParentGrantID: parentID,
-    ChildPubKey:   childKey,
+    ChildPubkey:   childKey,
     Capabilities:  caps,
     Depth:         1,
     GranterPubKey: granterPubKey,  // FIELD 5 — required at last hop
 }
+_ = payload
 ```
 
 **Named struct literal callers are unaffected.** Only code that builds
@@ -1065,12 +1072,13 @@ exec = exec.WithGateEvaluator(evaluator)
 No import rewrites needed.
 
 **Convention API migration:**
-```go,illustrative
+```go
 // BEFORE (0.17): pkg/convention.NewExecutor
-exec := convention.NewExecutor(client)
+// exec := convention.NewExecutor(client)  ← was the 0.17 call
 
 // AFTER (0.30): unchanged — pkg/convention.NewExecutor is the forwarding shim
 exec := convention.NewExecutor(client)
+_ = exec
 ```
 
 **Optional: wire GateEvaluator for delegation support:**
@@ -1197,13 +1205,15 @@ convention dispatch.
 ```
 
 **Likely usage pattern (coordination only — no convention dispatch):**
-```go,illustrative
+```go
 // init:
 client, _, err := protocol.Init(cfHomeDir)
 // send:
-_, err = client.Send(protocol.SendRequest{...})
+_, err = client.Send(protocol.SendRequest{CampfireID: campfireID})
 // read:
-result, err = client.Read(protocol.ReadRequest{...})
+result, err := client.Read(protocol.ReadRequest{CampfireID: campfireID})
+_ = result
+_ = err
 ```
 
 This usage is unchanged in 0.30. The SDK-level `Client` API (Init, Send, Read,
@@ -1274,19 +1284,19 @@ Use this decision tree to determine the required changes for your consumer:
 
 ### Initializing a client (unchanged)
 
-```go,illustrative
+```go
 import "github.com/campfire-net/campfire/pkg/protocol"
 
 client, _, err := protocol.Init(cfHomeDir)
 if err != nil {
-    return fmt.Errorf("protocol.Init: %w", err)
+    _ = fmt.Errorf("protocol.Init: %w", err) // in real code: return this error
 }
 defer client.Close()
 ```
 
 ### Creating a convention executor with provenance (v1 — unchanged)
 
-```go,illustrative
+```go
 import (
     "github.com/campfire-net/campfire/pkg/convention"
     "github.com/campfire-net/campfire/pkg/protocol"
@@ -1294,6 +1304,7 @@ import (
 
 exec := convention.NewExecutor(client)
 exec = exec.WithProvenance(myProvenanceChecker) // v1 still works
+_ = exec
 ```
 
 ### Creating a convention executor with full gate evaluation (v2 — new)
@@ -1314,10 +1325,10 @@ exec = exec.WithProvenanceV2(provChecker)
 
 ### Listening for system events
 
-```go,illustrative
+```go
 import "github.com/campfire-net/campfire/cf-protocol/protocol"
 
-sub, err := client.Subscribe(ctx, protocol.SubscribeRequest{CampfireID: id})
+sub := client.Subscribe(ctx, protocol.SubscribeRequest{CampfireID: id})
 for msg := range sub.Messages() {
     // Message.Tags is []string — check each tag.
     for _, tag := range msg.Tags {
@@ -1331,6 +1342,20 @@ for msg := range sub.Messages() {
         }
     }
 }
+```
+
+### Session capability template (new in 0.30)
+
+```go
+import cfsession "github.com/campfire-net/campfire/cf-conventions/cf-session"
+
+// Define the capability scope for a session's workers.
+template := cfsession.CapabilityTemplate{
+    Convention: "swarm-coordination",
+    OpGlob:     "*",
+    Until:      time.Now().Add(2 * time.Hour),
+}
+_ = template
 ```
 
 ### Session management (new pattern)
