@@ -1,0 +1,16 @@
+azure:
+  app_id: "test-app-id"
+  app_password: "test-password"
+  tenant_id: "test-tenant"
+
+identity: "__IDENTITY_PATH__"
+cf_home: "__CF_HOME__"
+bridge_db: "__BRIDGE_DB__"
+listen: ":0"
+
+campfires:
+  - id: "abc123def456abc123def456abc123def456abc123def456abc123def456abc123"
+    teams_channel: "19:test@thread.tacv2"
+    poll_interval: 5s
+    urgent_poll_interval: 1s
+    urgent_tags: ["blocker"]
