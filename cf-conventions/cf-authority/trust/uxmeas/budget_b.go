@@ -75,7 +75,7 @@ type BudgetBRecord struct {
 	// median computation but useful for diagnosing grant-post latency.
 	LandedAt int64 `json:"landed_at,omitempty"`
 
-	// PredicateHash is a SHA-256 hash (hex, first 16 bytes = 32 hex chars) of the
+	// PredicateHash is a SHA-256 hash (hex, first 8 bytes = 16 hex chars) of the
 	// delegation:request failed_predicate JSON. Used to deduplicate repeated runs
 	// against the same predicate and to identify which predicate categories are slow.
 	// Does NOT contain predicate text or scope strings.
@@ -296,7 +296,7 @@ func scanUxmeasEnabled(tomlContent string) bool {
 	return false
 }
 
-// HashPredicate returns a 32-hex-char (16-byte) SHA-256 prefix of the
+// HashPredicate returns a 16-hex-char (8-byte) SHA-256 prefix of the
 // JSON-serialised failedPredicate map. Returns "0000000000000000" for nil input.
 //
 // This is the anonymised predicate_hash field in BudgetBRecord. It is used to:
