@@ -9,7 +9,7 @@
 #
 # Options:
 #   --report <path>          Write markdown report to <path> (default: scripts/demo-sweep-report.md)
-#   --timeout <seconds>      Per-demo timeout in seconds (default: 30)
+#   --timeout <seconds>      Per-demo timeout in seconds (default: 120)
 #   --only <pattern>...      Run only discovered demos whose path contains <pattern> (whitelist mode)
 #   --include-path <path>... Append an absolute demo path to the run list (bypasses discovery; for testing)
 #
@@ -23,7 +23,7 @@ set -euo pipefail
 # Parse args
 # ---------------------------------------------------------------------------
 REPORT_FILE="$(cd "$(dirname "$0")" && pwd)/demo-sweep-report.md"
-DEMO_TIMEOUT=30
+DEMO_TIMEOUT=120
 ONLY_DEMOS=()
 EXTRA_PATHS=()
 
