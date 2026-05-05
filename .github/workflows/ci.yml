@@ -88,6 +88,13 @@ jobs:
           contains(toJson(github.event.pull_request.files.*.filename), 'conformance/testdata/')
         run: go test -count=3 -v ./cf-conventions/cf-authority/trust/conformance/...
 
+      - name: MCP/CLI parity test suite (Phase 8 Gate 3)
+        # Parity tests are guarded by a `parity` build tag so they don't run
+        # in the standard test pass. The Phase 8 ship gate requires them to
+        # gate the build — a regression in MCP/CLI surface alignment must
+        # break CI. See cf-conventions/parity/ and campfireagent-e42.
+        run: go test -count=1 -tags parity ./cf-conventions/parity/...
+
   demo-sweep:
     name: Demo Sweep (Stage 8)
     runs-on: ubuntu-latest
