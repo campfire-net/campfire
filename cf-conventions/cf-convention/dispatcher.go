@@ -568,6 +568,11 @@ func (d *ConventionDispatcher) dispatchTier1(
 	}
 
 	// CAS-guard the fulfillment: only proceed if no re-dispatch has occurred.
+	// MarkFulfilledCAS writes the intermediate "fulfilling" status (not "fulfilled")
+	// so that external observers (waitForDispatch, billing sweep) cannot see a
+	// terminal "fulfilled" state before sendFulfillment has confirmed. The caller
+	// must call MarkFulfilled (on send success) or MarkFailedCAS (on send failure)
+	// to write the final terminal status.
 	// Use cleanupCtx so the CAS write is not affected by ctx cancellation.
 	ok, notFound, casErr := d.store.MarkFulfilledCAS(cleanupCtx, campfireID, msg.ID, gen)
 	if casErr != nil {
@@ -608,6 +613,13 @@ func (d *ConventionDispatcher) dispatchTier1(
 		}
 	}
 
+	// Send confirmed (or no response required). Transition from "fulfilling" to
+	// the terminal "fulfilled" status so billing and cleanup can observe it.
+	if markErr := d.store.MarkFulfilled(cleanupCtx, campfireID, msg.ID); markErr != nil {
+		d.logger.Printf("convention dispatcher: MarkFulfilled (msg %s): %v", msg.ID, markErr)
+		// Non-fatal: the send succeeded, metering and cursor advance normally.
+		// The record may be stuck in "fulfilling" but that is not a billing risk.
+	}
 	return "fulfilled", tokensConsumed
 }
 
@@ -700,6 +712,11 @@ func (d *ConventionDispatcher) dispatchTier2(
 		}
 		if !ok {
 			return "stale", 0
+		}
+		// MarkFulfilledCAS wrote "fulfilling"; finalize to "fulfilled" now that
+		// the tier-2 handler has confirmed via 202.
+		if markErr := d.store.MarkFulfilled(cleanupCtx, campfireID, msg.ID); markErr != nil {
+			d.logger.Printf("convention dispatcher: MarkFulfilled tier2 (msg %s): %v", msg.ID, markErr)
 		}
 		return "fulfilled", 0
 	}

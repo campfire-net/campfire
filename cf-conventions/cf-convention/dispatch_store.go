@@ -68,9 +68,17 @@ type DispatchStore interface {
 	// Returns 0 if the record does not exist.
 	GetRedispatchCount(ctx context.Context, campfireID, messageID string) (int, error)
 
-	// MarkFulfilledCAS updates the dispatch marker status to "fulfilled" only if
-	// the current RedispatchCount matches expectedGen. Returns three distinct states:
-	//   (true,  false, nil) = CAS succeeded
+	// MarkFulfilledCAS transitions the dispatch record to the intermediate
+	// "fulfilling" status, guarded by a CAS check on RedispatchCount. This
+	// claims exclusive ownership of the fulfillment slot — preventing a
+	// concurrent sweep re-dispatch from also attempting to send. The caller
+	// MUST subsequently call MarkFulfilled (on send success) or MarkFailedCAS
+	// (on send failure) to write the final terminal status.
+	//
+	// Using "fulfilling" as the intermediate state rather than "fulfilled"
+	// ensures external observers (waitForDispatch, billing sweep) never see
+	// "fulfilled" before the send has confirmed. Returns three distinct states:
+	//   (true,  false, nil) = CAS succeeded — caller owns the fulfillment slot
 	//   (false, false, nil) = CAS conflict (generation mismatch, stale handler)
 	//   (false, true,  nil) = record not found
 	//   (false, false, err) = real error
@@ -275,8 +283,14 @@ func (s *MemoryDispatchStore) GetRedispatchCount(_ context.Context, campfireID, 
 	return rec.RedispatchCount, nil
 }
 
-// MarkFulfilledCAS updates the dispatch marker status to "fulfilled" only if
-// the current RedispatchCount matches expectedGen.
+// MarkFulfilledCAS transitions the dispatch record to the intermediate
+// "fulfilling" status only if the current RedispatchCount matches expectedGen.
+// This claims exclusive ownership of the fulfillment slot; the caller must
+// subsequently call MarkFulfilled (on send success) or MarkFailedCAS (on send
+// failure) to write the final terminal status. Using "fulfilling" rather than
+// "fulfilled" prevents external observers from seeing a terminal "fulfilled"
+// state before the send has actually confirmed (fixes the race where
+// waitForDispatch returned "fulfilled" before MarkFailedCAS ran on send failure).
 func (s *MemoryDispatchStore) MarkFulfilledCAS(_ context.Context, campfireID, messageID string, expectedGen int) (bool, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -288,7 +302,7 @@ func (s *MemoryDispatchStore) MarkFulfilledCAS(_ context.Context, campfireID, me
 	if rec.RedispatchCount != expectedGen {
 		return false, false, nil
 	}
-	rec.Status = "fulfilled"
+	rec.Status = "fulfilling"
 	return true, false, nil
 }
 
@@ -394,7 +408,7 @@ func (s *MemoryDispatchStore) CleanupOldDispatches(_ context.Context, maxAge tim
 	threshold := time.Now().Add(-maxAge)
 	count := 0
 	for k, rec := range s.dispatches {
-		if (rec.Status == "fulfilled" || rec.Status == "failed") && rec.DispatchedAt.Before(threshold) {
+		if (rec.Status == "fulfilled" || rec.Status == "failed" || rec.Status == "fulfilling") && rec.DispatchedAt.Before(threshold) {
 			delete(s.dispatches, k)
 			delete(s.versions, k)
 			count++
