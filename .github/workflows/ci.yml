@@ -107,6 +107,15 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Install golangci-lint (required by depguard-check demo)
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.4.0
+          install-mode: binary
+          skip-cache: true
+          skip-pkg-cache: true
+          skip-build-cache: true
+
       - name: Build cf binary
         run: go build -o cf ./cmd/cf
 
