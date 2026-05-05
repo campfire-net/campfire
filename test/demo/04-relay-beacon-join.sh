@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQUIRES_FIX: relay-redeploy-pending — passes only after mcp.getcampfire.dev is redeployed with the UseNumber() fix (campfireagent-c39 / PR #544). Remove this marker after deploy.
 # 04-relay-beacon-join.sh — Server shares beacon. Daemon joins via
 # beacon URI (not raw --via). Same request-response cycle works.
 source "$(dirname "$0")/lib.sh"

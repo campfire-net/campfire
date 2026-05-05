@@ -3,6 +3,12 @@
 # Agent A creates a campfire on the relay. Agent B joins via the relay URL.
 # Both agents exchange tagged messages. Verifies cf ls and cf members.
 #
+# REQUIRES_FIX: relay-redeploy-pending — demo 02 passes only after the relay is
+# redeployed with the UseNumber() precision fix (campfireagent-c39 / PR #544). The relay
+# currently runs v0.30.0-rc.1 which loses int64 timestamp precision on relay-fetched
+# messages, breaking VerifySignature for cross-agent reads. Remove this marker after
+# the fix is deployed to mcp.getcampfire.dev.
+#
 source "$(dirname "$0")/lib.sh"
 require_hosted_relay
 

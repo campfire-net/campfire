@@ -338,6 +338,58 @@ func TestUnmarshalEntityPreservesInt64(t *testing.T) {
 	}
 }
 
+// TestInviteFromEntity_Precision verifies that inviteFromEntity correctly
+// preserves int64 UseCount and CreatedAt values when the entity was decoded
+// via unmarshalEntity (UseNumber path). This is the data path used by
+// ValidateAndUseInvite — the missed call site fixed in campfireagent-c39.
+//
+// Without UseNumber, UseCount and CreatedAt would be decoded as float64, losing
+// precision for large nanosecond timestamps (> 2^53 representable by float64).
+func TestInviteFromEntity_Precision(t *testing.T) {
+	// A nanosecond timestamp that exceeds float64 precision (> 2^53):
+	// int64(float64(1778023160419527281)) = 1778023160419527168 (loss of 113).
+	const nanoTS int64 = 1778023160419527281
+	const useCount int64 = 42
+
+	// Verify we're actually testing a precision-sensitive value.
+	if int64(float64(nanoTS)) == nanoTS {
+		t.Skip("this platform has exact float64 representation for the test timestamp — skip")
+	}
+
+	// Construct a raw entity JSON as Azure Table Storage would return it.
+	raw := []byte(fmt.Sprintf(`{
+		"PartitionKey": "code123",
+		"RowKey": "cfabc",
+		"CampfireID": "cfabc",
+		"InviteCode": "code123",
+		"CreatedBy": "agent-x",
+		"CreatedAt": %d,
+		"Revoked": 0,
+		"MaxUses": 10,
+		"UseCount": %d,
+		"Label": "test"
+	}`, nanoTS, useCount))
+
+	var m map[string]any
+	if err := unmarshalEntity(raw, &m); err != nil {
+		t.Fatalf("unmarshalEntity: %v", err)
+	}
+
+	inv := inviteFromEntity(m)
+	if inv == nil {
+		t.Fatal("inviteFromEntity returned nil")
+	}
+	if inv.CreatedAt != nanoTS {
+		t.Errorf("CreatedAt precision loss: got %d, want %d (diff=%d)", inv.CreatedAt, nanoTS, nanoTS-inv.CreatedAt)
+	}
+	if int64(inv.UseCount) != useCount {
+		t.Errorf("UseCount: got %d, want %d", inv.UseCount, useCount)
+	}
+	if inv.CampfireID != "cfabc" {
+		t.Errorf("CampfireID: got %q, want %q", inv.CampfireID, "cfabc")
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
 }

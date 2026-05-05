@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQUIRES_FIX: relay-redeploy-pending — passes only after mcp.getcampfire.dev is redeployed with the UseNumber() fix (campfireagent-c39 / PR #544). Remove this marker after deploy.
 # 07-relay-follow-mode.sh — cf read --follow --tag receives messages
 # as they arrive. Daemon is polling, server sends, daemon sees it.
 source "$(dirname "$0")/lib.sh"

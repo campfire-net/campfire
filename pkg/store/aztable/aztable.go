@@ -866,7 +866,7 @@ func (ts *TableStore) GetThresholdShare(campfireID string) (*store.ThresholdShar
 	if raw == nil {
 		return nil, nil
 	}
-	pid, _ := raw["ParticipantID"].(float64)
+	pid := toInt64(raw["ParticipantID"])
 	secretShare := getChunked(raw, "SecretShare")
 	publicData := getChunked(raw, "PublicData")
 	return &store.ThresholdShare{
@@ -910,7 +910,7 @@ func (ts *TableStore) ClaimPendingThresholdShare(campfireID string) (uint32, []b
 				return 0, nil, fmt.Errorf("aztable: ClaimPendingThresholdShare unmarshal: %w", err)
 			}
 			rk, _ := m["RowKey"].(string)
-			pid, _ := m["ParticipantID"].(float64)
+			pid := toInt64(m["ParticipantID"])
 			shareData := getChunked(m, "ShareData")
 
 			// Delete the claimed row.
@@ -1535,7 +1535,7 @@ func firstNonZero(vals ...any) any {
 
 // membershipFromEntity converts a map from Table Storage to a store.Membership.
 func membershipFromEntity(m map[string]any) (*store.Membership, error) {
-	enc, _ := m["Encrypted"].(float64)
+	enc := toInt64(m["Encrypted"])
 	threshold := toInt64(m["Threshold"])
 	if threshold == 0 {
 		threshold = 1
@@ -1889,7 +1889,7 @@ func (ts *TableStore) ValidateAndUseInvite(campfireID, inviteCode string) (*stor
 			return nil, fmt.Errorf("ValidateAndUseInvite: %w", err)
 		}
 		var m map[string]any
-		if err := json.Unmarshal(resp.Value, &m); err != nil {
+		if err := unmarshalEntity(resp.Value, &m); err != nil {
 			return nil, fmt.Errorf("ValidateAndUseInvite unmarshal: %w", err)
 		}
 		inv := inviteFromEntity(m)
