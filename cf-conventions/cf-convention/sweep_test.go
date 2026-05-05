@@ -469,9 +469,13 @@ func TestDispatcher_MarkFulfilledCAS_RejectsStaleGeneration(t *testing.T) {
 		t.Fatal("expected MarkFulfilledCAS to succeed with matching gen=0")
 	}
 
+	// MarkFulfilledCAS now writes the intermediate "fulfilling" status rather than
+	// "fulfilled" to prevent external observers from seeing a terminal "fulfilled"
+	// state before sendFulfillment has confirmed. The dispatcher calls MarkFulfilled
+	// afterwards to finalize to "fulfilled".
 	status, _ := ds.GetDispatchStatus(ctx, "cf1", "msg1")
-	if status != "fulfilled" {
-		t.Fatalf("expected 'fulfilled', got %q", status)
+	if status != "fulfilling" {
+		t.Fatalf("expected 'fulfilling' (intermediate pre-send state), got %q", status)
 	}
 }
 

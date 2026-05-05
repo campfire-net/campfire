@@ -344,8 +344,10 @@ func (s *TableDispatchStore) ListStaleDispatches(ctx context.Context, olderThan 
 // Returns the number of entries removed.
 func (s *TableDispatchStore) CleanupOldDispatches(ctx context.Context, maxAge time.Duration) (int, error) {
 	threshold := time.Now().Add(-maxAge).UnixNano()
-	// OData filter: (Status eq 'fulfilled' or Status eq 'failed') and DispatchedAt lt <threshold>
-	filter := fmt.Sprintf("(Status eq 'fulfilled' or Status eq 'failed') and DispatchedAt lt %d", threshold)
+	// OData filter: (Status eq 'fulfilled' or Status eq 'fulfilling' or Status eq 'failed') and DispatchedAt lt <threshold>
+	// "fulfilling" records are intermediate states from MarkFulfilledCAS; they are
+	// cleaned up here in case a process crashed between MarkFulfilledCAS and MarkFulfilled.
+	filter := fmt.Sprintf("(Status eq 'fulfilled' or Status eq 'fulfilling' or Status eq 'failed') and DispatchedAt lt %d", threshold)
 	opts := &aztables.ListEntitiesOptions{
 		Filter: strPtr(filter),
 	}
@@ -481,10 +483,13 @@ func (s *TableDispatchStore) updateDispatchStatusCAS(ctx context.Context, campfi
 	return false, false, fmt.Errorf("aztable: DispatchStore.%sCAS: too many retries on concurrency conflict", status)
 }
 
-// MarkFulfilledCAS updates the dispatch marker status to "fulfilled" only if
-// the current RedispatchCount matches expectedGen.
+// MarkFulfilledCAS transitions the dispatch record to the intermediate
+// "fulfilling" status only if the current RedispatchCount matches expectedGen.
+// The caller must subsequently call MarkFulfilled (on send success) or
+// MarkFailedCAS (on send failure) to write the final terminal status.
+// See DispatchStore.MarkFulfilledCAS for full contract.
 func (s *TableDispatchStore) MarkFulfilledCAS(ctx context.Context, campfireID, messageID string, expectedGen int) (bool, bool, error) {
-	return s.updateDispatchStatusCAS(ctx, campfireID, messageID, "fulfilled", expectedGen)
+	return s.updateDispatchStatusCAS(ctx, campfireID, messageID, "fulfilling", expectedGen)
 }
 
 // MarkFailedCAS updates the dispatch marker status to "failed" only if
