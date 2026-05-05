@@ -46,16 +46,22 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// cfBinaryForUxmeas is the path to the cf binary built (or located) by
-// buildCFBinaryForUxmeas.  It is set once and reused across subtests.
-var cfBinaryForUxmeas string
+// cfBinaryForUxmeas caches the path to the built cf binary across test runs
+// (-count>1).  The binary is placed under os.TempDir() (not t.TempDir()) so it
+// outlives any individual test's cleanup.  buildOnce ensures the build runs
+// exactly once per process regardless of how many times -count is set.
+var (
+	cfBinaryForUxmeas string
+	buildOnce         sync.Once
+)
 
-// buildCFBinaryForUxmeas builds the cf binary into a temp directory.
-// It returns the path to the binary and a cleanup function.
+// buildCFBinaryForUxmeas builds the cf binary into a stable directory under
+// os.TempDir() so the path remains valid across multiple -count runs.
 func buildCFBinaryForUxmeas(t *testing.T) string {
 	t.Helper()
 	// Allow an explicit override via env (CI cache, pre-built binary in PATH).
@@ -64,19 +70,30 @@ func buildCFBinaryForUxmeas(t *testing.T) string {
 			return override
 		}
 	}
-	if cfBinaryForUxmeas != "" {
-		return cfBinaryForUxmeas
-	}
 
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "cf")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/campfire-net/campfire/cmd/cf")
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("buildCFBinaryForUxmeas: go build: %v", err)
+	buildOnce.Do(func() {
+		// Use os.TempDir() — not t.TempDir() — so the directory is not cleaned
+		// up between runs when -count>1.
+		dir := filepath.Join(os.TempDir(), "uxmeas-cf-bin")
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			// Can't use t.Fatalf inside a goroutine/Once; store a sentinel and
+			// let the caller detect the missing binary.
+			return
+		}
+		bin := filepath.Join(dir, "cf")
+		cmd := exec.Command("go", "build", "-o", bin, "github.com/campfire-net/campfire/cmd/cf")
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			// Leave cfBinaryForUxmeas empty; the caller will t.Fatalf.
+			return
+		}
+		cfBinaryForUxmeas = bin
+	})
+
+	if cfBinaryForUxmeas == "" {
+		t.Fatal("buildCFBinaryForUxmeas: go build failed (see stderr above)")
 	}
-	cfBinaryForUxmeas = bin
-	return bin
+	return cfBinaryForUxmeas
 }
 
 // runCFUxmeas executes the cf binary with the given env and args.
