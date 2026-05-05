@@ -2,7 +2,7 @@
 
 `protocol.Bridge` pumps messages between two `*Client` instances for a shared campfire ID. The bridge is a layer-1 primitive: it is transport-agnostic (works over filesystem or HTTP) and is the correct tool whenever a campfire's message stream needs to cross a transport boundary.
 
-See `cf-protocol/protocol/bridge.go` and [`protocol-spec.md §4.2`](../docs/protocol-spec.md) for the wire-level specification.
+See `cf-protocol/protocol/bridge.go` and [`protocol-spec.md §4.2`](../../docs/protocol-spec.md) for the wire-level specification.
 
 ---
 
