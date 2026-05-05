@@ -71,6 +71,17 @@ import (
 // each run must use distinct SQLite in-memory database names.
 var d8StoreSeq atomic.Int64
 
+// d8NoopSyncer is a no-op protocol.Syncer installed on the server's client
+// (clients[0]) to prevent syncViaInterface from performing filesystem I/O on
+// every poll cycle. The D8 tests use syncAll to write messages directly into
+// each member's in-memory store, so the server does not need to read from the
+// filesystem transport. Eliminating the per-poll os.ReadDir + os.ReadFile calls
+// removes the I/O bottleneck that caused sporadic 30-second timeouts under
+// -race in CI (campfireagent-401).
+type d8NoopSyncer struct{}
+
+func (d8NoopSyncer) Sync(_ string) error { return nil }
+
 // d8TestEnv is the scaffold for the D8 walk-every-dispatch integration tests.
 // It holds a three-member chain: anchor (ids[0]) → mid (ids[1]) → sender (ids[2]).
 type d8TestEnv struct {
@@ -166,6 +177,14 @@ func newD8TestEnv(t *testing.T, n int) *d8TestEnv {
 		stores_[i] = s
 		clients[i] = protocol.New(s, ids[i])
 	}
+
+	// Install a no-op syncer on clients[0] (the anchor/server client) so that
+	// the server's Subscribe poll loop does NOT perform filesystem I/O on each
+	// cycle. The tests use syncAll to write messages directly into all in-memory
+	// stores, so the subscription only needs to query the local store — no
+	// filesystem round-trips required. This eliminates the I/O bottleneck that
+	// caused sporadic 30-second timeouts under -race in CI (campfireagent-401).
+	clients[0].SetSyncer(d8NoopSyncer{})
 
 	return &d8TestEnv{
 		campfireHex:  campfireHex,
@@ -305,9 +324,11 @@ func TestD8_WalkEveryDispatch_MidChainRevoke(t *testing.T) {
 		srv.Serve(ctx, env.campfireHex) //nolint:errcheck
 	}()
 
-	// Allow server to start polling. Under the race detector CI, goroutine
-	// scheduling is slower; 100ms gives the server time to enter its poll loop.
-	time.Sleep(100 * time.Millisecond)
+	// No startup sleep needed: clients[0] has a no-op syncer (set in
+	// newD8TestEnv), so the subscription poll loop is pure in-memory SQLite.
+	// The 30-second context timeout is ample headroom. Dispatch 1 will be
+	// picked up on the server's first or next poll regardless of scheduling
+	// order: syncAll writes it to stores[0] and the cursor starts at 0.
 
 	// Step 2: Dispatch 1 — sender sends ping before any revocation.
 	if _, err := env.clients[2].Send(protocol.SendRequest{
@@ -425,7 +446,11 @@ func TestD8_WalkEveryDispatch_DeepestKeyRevoke(t *testing.T) {
 		srv.Serve(ctx, env.campfireHex) //nolint:errcheck
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	// No startup sleep needed: clients[0] has a no-op syncer (set in
+	// newD8TestEnv), so the subscription poll loop is pure in-memory SQLite.
+	// The 30-second context timeout is ample headroom. Dispatch 1 will be
+	// picked up on the server's first or next poll regardless of scheduling
+	// order: syncAll writes it to stores[0] and the cursor starts at 0.
 
 	// Dispatch 1: sender (ids[2]) sends before revocation.
 	if _, err := env.clients[2].Send(protocol.SendRequest{
