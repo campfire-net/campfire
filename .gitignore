@@ -15,3 +15,6 @@ dist/
 # Keys / certs
 *.key
 *.pem
+
+# Demo sweep runtime logs (per-run, accumulate across sweeps)
+scripts/demo-sweep-logs/

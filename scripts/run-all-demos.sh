@@ -5,13 +5,19 @@
 # Exit code: 0 if all demos pass; nonzero if any fail.
 #
 # Usage:
-#   bash scripts/run-all-demos.sh [--report <path>] [--timeout <seconds>] [--only <path>...] [--include-path <abs-path>...]
+#   bash scripts/run-all-demos.sh [--report <path>] [--timeout <seconds>] [--only <path>...] [--include-path <abs-path>...] [--no-keep-logs]
 #
 # Options:
 #   --report <path>          Write markdown report to <path> (default: scripts/demo-sweep-report.md)
 #   --timeout <seconds>      Per-demo timeout in seconds (default: 120)
 #   --only <pattern>...      Run only discovered demos whose path contains <pattern> (whitelist mode)
 #   --include-path <path>... Append an absolute demo path to the run list (bypasses discovery; for testing)
+#   --no-keep-logs           Skip writing per-demo logs to scripts/demo-sweep-logs/ (useful for quick local runs)
+#
+# Per-demo logs (default, unless --no-keep-logs):
+#   Each demo's combined stdout+stderr is written to:
+#     scripts/demo-sweep-logs/<UTC-iso-timestamp>/<demo-rel-path>.log
+#   Logs survive sweep cleanup and accumulate across runs for post-hoc diagnosis.
 #
 # Skip markers (first 20 lines of a demo are scanned):
 #   # REQUIRES_PROD: <reason>   — demo needs Azure, DNS, hosted relay, etc. Skipped in CI.
@@ -26,6 +32,7 @@ REPORT_FILE="$(cd "$(dirname "$0")" && pwd)/demo-sweep-report.md"
 DEMO_TIMEOUT=120
 ONLY_DEMOS=()
 EXTRA_PATHS=()
+KEEP_LOGS=true
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -33,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --timeout)      DEMO_TIMEOUT="$2"; shift 2 ;;
         --only)         ONLY_DEMOS+=("$2"); shift 2 ;;
         --include-path) EXTRA_PATHS+=("$2"); shift 2 ;;
+        --no-keep-logs) KEEP_LOGS=false; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -42,6 +50,16 @@ done
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Per-run log directory (default-on; --no-keep-logs opts out)
+# ---------------------------------------------------------------------------
+RUN_LOG_DIR=""
+if [[ "$KEEP_LOGS" == true ]]; then
+    RUN_TS="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    RUN_LOG_DIR="$SCRIPT_DIR/demo-sweep-logs/$RUN_TS"
+    mkdir -p "$RUN_LOG_DIR"
+fi
 
 # ---------------------------------------------------------------------------
 # Discover demos
@@ -166,6 +184,13 @@ run_demo() {
         echo "  FAIL (exit $exit_code, ${elapsed}s): $rel_path"
     fi
 
+    # Persist per-demo log for post-hoc diagnosis (unless --no-keep-logs)
+    if [[ -n "$RUN_LOG_DIR" ]]; then
+        local dest_log="$RUN_LOG_DIR/${rel_path}.log"
+        mkdir -p "$(dirname "$dest_log")"
+        cp "$log_file" "$dest_log"
+    fi
+
     # Clean up per-demo CF_HOME
     rm -rf "$demo_cf_home"
 }
@@ -268,6 +293,9 @@ mkdir -p "$REPORT_DIR"
 
 echo ""
 echo "Report written to: $REPORT_FILE"
+if [[ -n "$RUN_LOG_DIR" ]]; then
+    echo "Per-demo logs:     $RUN_LOG_DIR/"
+fi
 
 # ---------------------------------------------------------------------------
 # Exit code
