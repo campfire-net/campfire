@@ -1211,12 +1211,13 @@ func TestDispatcher_Tier1_SendFulfillmentFailure_MeteringStillFires(t *testing.T
 	d.Dispatch(context.Background(), env.campfireID, msg)
 
 	// Wait for the metering hook rather than using waitForDispatch. The dispatch
-	// status transitions: "dispatched" → "fulfilled" (MarkFulfilledCAS) → "failed"
-	// (MarkFailedCAS revert after sendFulfillment fails). waitForDispatch exits on
-	// the first terminal state and can return "fulfilled" before the revert completes,
-	// causing a spurious failure on the status == "failed" assertion. The metering hook
-	// fires AFTER the "failed" revert, so it is the correct "everything is settled"
-	// signal for this test. Use a timeout so the test fails clearly if metering never fires.
+	// status transitions: "dispatched" → "fulfilling" (MarkFulfilledCAS) → "failed"
+	// (MarkFailedCAS revert after sendFulfillment fails). waitForDispatch returns
+	// only on terminal states; "fulfilling" is non-terminal so it waits past the
+	// intermediate state. We still prefer the metering hook here because it fires
+	// AFTER the "failed" revert, providing a stronger "everything is settled"
+	// signal than polling on the status alone. Use a timeout so the test fails
+	// clearly if metering never fires.
 	select {
 	case <-meterDone:
 	case <-time.After(5 * time.Second):
