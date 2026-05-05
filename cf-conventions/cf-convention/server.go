@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
@@ -81,6 +82,14 @@ type Server struct {
 	// resolver resolves sender pubkeys to IdentityInfo before handler dispatch.
 	// Defaults to NoopIdentityResolver{} when not set.
 	resolver IdentityResolver
+
+	// ready is closed by Serve when the subscription goroutine has been
+	// started and the server is ready to receive messages. Callers that
+	// need to ensure the server is polling before sending messages can
+	// wait on Ready(). readyOnce ensures close(ready) happens exactly once
+	// even if Serve is called concurrently (misuse guard).
+	ready     chan struct{}
+	readyOnce sync.Once
 }
 
 // NewServer creates a Server for the given convention Declaration.
@@ -93,7 +102,19 @@ func NewServer(client *protocol.Client, decl *Declaration) *Server {
 		pollInterval: 2 * time.Second,
 		errFn:        func(err error) {},
 		resolver:     NoopIdentityResolver{},
+		ready:        make(chan struct{}),
 	}
+}
+
+// Ready returns a channel that is closed when the server's subscription goroutine
+// has been started and the server is ready to receive messages. Use this in tests
+// or callers that must ensure the server is polling before sending the first message.
+//
+//	srv.Serve(ctx, campfireID) // start in background goroutine
+//	<-srv.Ready()              // wait until polling has started
+//	client.Send(...)           // safe: server will see this message
+func (s *Server) Ready() <-chan struct{} {
+	return s.ready
 }
 
 // WithIdentityResolver attaches an IdentityResolver to the Server.
@@ -182,6 +203,11 @@ func (s *Server) Serve(ctx context.Context, campfireID string) error {
 		Tags:         pollTags,
 		PollInterval: s.pollInterval,
 	})
+
+	// Signal readiness: the subscription goroutine has been started and the
+	// server is now polling for incoming messages. readyOnce ensures close is
+	// called exactly once even if Serve is misused concurrently.
+	s.readyOnce.Do(func() { close(s.ready) })
 
 	for msg := range sub.Messages() {
 		s.dispatch(ctx, campfireID, msg)

@@ -157,14 +157,23 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 		Reverse:            req.Reverse,
 	}
 
-	msgs, err := c.store.ListMessages(req.CampfireID, req.AfterTimestamp, f)
-	if err != nil {
-		return nil, fmt.Errorf("protocol.Client.Read: listing messages: %w", err)
-	}
-
+	// Snapshot the global max timestamp BEFORE listing tag-filtered messages.
+	// This prevents a TOCTOU race: if a new message is inserted between
+	// ListMessages and MaxMessageTimestamp, MaxMessageTimestamp would return a
+	// timestamp beyond any delivered message, advancing the subscription cursor
+	// past the new message and causing it to be permanently missed.
+	// By reading MaxTimestamp first, any message inserted between the two queries
+	// will have timestamp > snapshotMax and will be found in the next poll cycle.
+	// If ListMessages finds messages beyond the snapshot (inserted between the two
+	// calls), their timestamps are folded in so the cursor advances correctly.
 	maxTS, err := c.store.MaxMessageTimestamp(req.CampfireID, req.AfterTimestamp)
 	if err != nil {
 		return nil, fmt.Errorf("protocol.Client.Read: querying max timestamp: %w", err)
+	}
+
+	msgs, err := c.store.ListMessages(req.CampfireID, req.AfterTimestamp, f)
+	if err != nil {
+		return nil, fmt.Errorf("protocol.Client.Read: listing messages: %w", err)
 	}
 
 	if req.Limit > 0 && len(msgs) > req.Limit {
@@ -173,6 +182,16 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 		// timestamp as cursor — MaxTimestamp would skip unread messages.
 		if len(msgs) > 0 {
 			maxTS = msgs[len(msgs)-1].Timestamp
+		}
+	}
+
+	// Fold in timestamps of delivered messages that exceed the snapshot.
+	// This handles the case where a matching message was inserted between
+	// MaxMessageTimestamp and ListMessages: we still deliver it and advance
+	// the cursor to cover it, preventing a re-scan on the next poll.
+	for _, m := range msgs {
+		if m.Timestamp > maxTS {
+			maxTS = m.Timestamp
 		}
 	}
 
