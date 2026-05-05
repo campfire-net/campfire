@@ -166,7 +166,50 @@ func main() {
 	}
 
 	// HTTP handler for Bot Framework activities.
-	http.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/messages", buildMessagesHandler(channelToCampfire, bdb, inbound))
+
+	// Start HTTP server.
+	go func() {
+		log.Printf("HTTP server listening on %s", cfg.Listen)
+		if err := http.ListenAndServe(cfg.Listen, nil); err != nil {
+			log.Fatalf("http server: %v", err)
+		}
+	}()
+
+	select {
+	case <-sig:
+		log.Println("shutting down")
+	case err := <-errCh:
+		log.Printf("poller error: %v", err)
+	}
+	cancel()
+}
+
+// inboundHandler is the interface for handling Bot Framework activities that
+// buildMessagesHandler uses. Satisfied by *teams.InboundHandler.
+type inboundHandler interface {
+	HandleActivity(ctx context.Context, authHeader string, body []byte) (string, error)
+}
+
+// convRefStore is the interface for persisting conversation refs that
+// buildMessagesHandler uses. Satisfied by *state.DB.
+type convRefStore interface {
+	UpsertConversationRef(ref state.ConversationRef) error
+}
+
+// buildMessagesHandler returns an http.HandlerFunc that processes inbound Bot
+// Framework activities from Microsoft Teams.
+//
+// Parameters:
+//   - channelToCampfire: maps Teams channel IDs to campfire IDs
+//   - db: stores conversation refs for outbound message routing
+//   - inbound: handles validated activity payloads
+func buildMessagesHandler(
+	channelToCampfire map[string]string,
+	db convRefStore,
+	inbound inboundHandler,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -193,10 +236,7 @@ func main() {
 		// Bootstrap conversation ref from any inbound activity.
 		// Strip ";messageid=..." suffix — we want the channel-level conversation ID
 		// so outbound messages land as top-level posts, not thread replies.
-		convID := activity.Conversation.ID
-		if idx := strings.Index(convID, ";messageid="); idx != -1 {
-			convID = convID[:idx]
-		}
+		convID := stripMessageID(activity.Conversation.ID)
 		for channel, cfID := range channelToCampfire {
 			if containsChannel(convID, channel) {
 				ref := state.ConversationRef{
@@ -207,7 +247,7 @@ func main() {
 					ChannelID:   channel,
 					BotID:       activity.Recipient.ID,
 				}
-				if err := bdb.UpsertConversationRef(ref); err != nil {
+				if err := db.UpsertConversationRef(ref); err != nil {
 					log.Printf("inbound: upsert conv ref: %v", err)
 				} else {
 					log.Printf("inbound: conversation ref stored for campfire %s (conv=%s)", cfID, convID)
@@ -234,23 +274,17 @@ func main() {
 			log.Printf("inbound: ignoring activity type %s", activity.Type)
 			w.WriteHeader(http.StatusOK)
 		}
-	})
-
-	// Start HTTP server.
-	go func() {
-		log.Printf("HTTP server listening on %s", cfg.Listen)
-		if err := http.ListenAndServe(cfg.Listen, nil); err != nil {
-			log.Fatalf("http server: %v", err)
-		}
-	}()
-
-	select {
-	case <-sig:
-		log.Println("shutting down")
-	case err := <-errCh:
-		log.Printf("poller error: %v", err)
 	}
-	cancel()
+}
+
+// stripMessageID removes the ";messageid=..." suffix from a Teams conversation ID.
+// The suffix is present on thread-scoped activities; stripping it yields the
+// channel-level conversation ID needed for outbound top-level posts.
+func stripMessageID(convID string) string {
+	if idx := strings.Index(convID, ";messageid="); idx != -1 {
+		return convID[:idx]
+	}
+	return convID
 }
 
 // containsChannel checks if a Teams conversation ID contains the channel identifier.
