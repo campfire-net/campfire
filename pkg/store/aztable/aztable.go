@@ -266,7 +266,7 @@ func (ts *TableStore) ListMemberships() ([]store.Membership, error) {
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: ListMemberships unmarshal: %w", err)
 			}
 			mem, err := membershipFromEntity(m)
@@ -441,7 +441,7 @@ func (ts *TableStore) GetMessage(id string) (*store.MessageRecord, error) {
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: GetMessage unmarshal: %w", err)
 			}
 			rec, err := messageFromEntity(m)
@@ -472,7 +472,7 @@ func (ts *TableStore) GetMessageByPrefix(prefix string) (*store.MessageRecord, e
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: GetMessageByPrefix unmarshal: %w", err)
 			}
 			msgID, _ := m["MessageID"].(string)
@@ -525,7 +525,7 @@ func (ts *TableStore) ListMessages(campfireID string, afterTimestamp int64, filt
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: ListMessages unmarshal: %w", err)
 			}
 			rec, err := messageFromEntity(m)
@@ -620,7 +620,7 @@ func (ts *TableStore) ListReferencingMessages(messageID string) ([]store.Message
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: ListReferencingMessages unmarshal: %w", err)
 			}
 			rec, err := messageFromEntity(m)
@@ -728,7 +728,7 @@ func (ts *TableStore) ListPeerEndpoints(campfireID string) ([]store.PeerEndpoint
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: ListPeerEndpoints unmarshal: %w", err)
 			}
 			e := peerEndpointFromEntity(m)
@@ -778,7 +778,7 @@ func (ts *TableStore) ListCampfirePeerCounts(ctx context.Context) ([]CampfirePee
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: ListCampfirePeerCounts unmarshal: %w", err)
 			}
 			cid, _ := m["CampfireID"].(string)
@@ -822,7 +822,7 @@ func (ts *TableStore) ListMessagesOlderThan(ctx context.Context, campfireID stri
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: ListMessagesOlderThan unmarshal: %w", err)
 			}
 			rec, err := messageFromEntity(m)
@@ -906,7 +906,7 @@ func (ts *TableStore) ClaimPendingThresholdShare(campfireID string) (uint32, []b
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return 0, nil, fmt.Errorf("aztable: ClaimPendingThresholdShare unmarshal: %w", err)
 			}
 			rk, _ := m["RowKey"].(string)
@@ -970,7 +970,7 @@ func (ts *TableStore) GetLatestEpochSecret(campfireID string) (*store.EpochSecre
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: GetLatestEpochSecret unmarshal: %w", err)
 			}
 			es, err := epochSecretFromEntity(m, campfireID)
@@ -1093,7 +1093,7 @@ func (ts *TableStore) renameMessages(ctx context.Context, oldID, newID string) e
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return err
 			}
 			rk, _ := m["RowKey"].(string)
@@ -1135,7 +1135,7 @@ func (ts *TableStore) renamePeers(ctx context.Context, oldID, newID string) erro
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return err
 			}
 			rk, _ := m["RowKey"].(string)
@@ -1177,7 +1177,7 @@ func (ts *TableStore) renamePendingShares(ctx context.Context, oldID, newID stri
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return err
 			}
 			rk, _ := m["RowKey"].(string)
@@ -1206,7 +1206,7 @@ func (ts *TableStore) renameEpochs(ctx context.Context, oldID, newID string) err
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return err
 			}
 			rk, _ := m["RowKey"].(string)
@@ -1235,7 +1235,7 @@ func (ts *TableStore) renameFilters(ctx context.Context, oldID, newID string) er
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return err
 			}
 			rk, _ := m["RowKey"].(string)
@@ -1388,7 +1388,7 @@ func getEntity(ctx context.Context, client tableEntityClient, pk, rk string) (ma
 		return nil, err
 	}
 	var m map[string]any
-	if err := json.Unmarshal(resp.Value, &m); err != nil {
+	if err := unmarshalEntity(resp.Value, &m); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -1486,17 +1486,37 @@ func getChunked(entity map[string]any, prefix string) []byte {
 func toInt64(v any) int64 {
 	switch x := v.(type) {
 	case float64:
+		// float64 cannot represent all int64 values precisely (only 53-bit mantissa).
+		// Prefer json.Number (from unmarshalEntity with UseNumber) over float64. This
+		// branch is kept for robustness when the caller does not use unmarshalEntity.
 		return int64(x)
 	case int64:
 		return x
 	case int:
 		return int64(x)
+	case json.Number:
+		// json.Number preserves the exact decimal representation; parse without loss.
+		n, _ := x.Int64()
+		return n
 	case string:
 		var n int64
 		fmt.Sscan(x, &n)
 		return n
 	}
 	return 0
+}
+
+// unmarshalEntity decodes a raw Azure Table JSON entity into a map[string]any
+// using json.Decoder with UseNumber() so that integer properties (Edm.Int64)
+// are decoded as json.Number rather than float64. This preserves the full
+// 64-bit precision of nanosecond timestamps and other large int64 values.
+// Without UseNumber(), standard json.Unmarshal converts all JSON numbers to
+// float64 (53-bit mantissa), truncating high-precision int64 timestamps and
+// breaking message signature verification (timestamp is part of the sign input).
+func unmarshalEntity(raw []byte, m *map[string]any) error {
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	return dec.Decode(m)
 }
 
 // firstNonZero returns the first argument that converts to a non-zero int64.
@@ -1754,7 +1774,7 @@ func (ts *TableStore) LookupInvite(inviteCode string) (*store.InviteRecord, erro
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: LookupInvite unmarshal: %w", err)
 			}
 			return inviteFromEntity(m), nil
@@ -1811,7 +1831,7 @@ func (ts *TableStore) ListInvites(campfireID string) ([]store.InviteRecord, erro
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: ListInvites unmarshal: %w", err)
 			}
 			inv := inviteFromEntity(m)
@@ -2011,7 +2031,7 @@ func (ts *TableStore) DeleteProjectionEntries(campfireID, viewName string, messa
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return fmt.Errorf("aztable: DeleteProjectionEntries unmarshal: %w", err)
 			}
 			messageID := str(m, "MessageID")
@@ -2041,7 +2061,7 @@ func (ts *TableStore) DeleteAllProjectionEntries(campfireID, viewName string) er
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return fmt.Errorf("aztable: DeleteAllProjectionEntries unmarshal: %w", err)
 			}
 			pk := str(m, "PartitionKey")
@@ -2073,7 +2093,7 @@ func (ts *TableStore) ListProjectionEntries(campfireID, viewName string) ([]stor
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: ListProjectionEntries unmarshal: %w", err)
 			}
 			rk := str(m, "RowKey")

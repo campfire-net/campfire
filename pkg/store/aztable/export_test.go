@@ -105,7 +105,7 @@ func (s *TableDispatchStore) MarkBilledWithBarrier(ctx context.Context, campfire
 	}
 
 	var current map[string]any
-	if err := json.Unmarshal(resp.Value, &current); err != nil {
+	if err := unmarshalEntity(resp.Value, &current); err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilledWithBarrier: unmarshal: %w", err)
 	}
 	// Check BilledAt before stale-ETag (mirrors production MarkBilled ordering).

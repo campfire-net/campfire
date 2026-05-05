@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_PROD: hosted relay (mcp.getcampfire.dev) required; cf read on relay does not deliver messages from other members in CI. Use 09-local-relay.sh for a CI-equivalent test.
 # 12-rejoin-upgrade.sh — Leave and re-join a relay campfire.
 # Messages sent while away are still readable from relay.
 # New JoinedAt. Covers the binary upgrade path.

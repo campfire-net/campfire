@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_PROD: hosted relay (mcp.getcampfire.dev) required; cf read on relay does not deliver messages from other members in CI. Use 09-local-relay.sh for a CI-equivalent test.
 # 11-member-metadata.sh — After relay join: cf ls shows correct
 # member_count, cf members lists both agents with pubkeys,
 # JoinedAt is recent (not 1970).

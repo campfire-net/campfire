@@ -3,7 +3,6 @@
 # Agent A creates a campfire on the relay. Agent B joins via the relay URL.
 # Both agents exchange tagged messages. Verifies cf ls and cf members.
 #
-# REQUIRES_PROD: hosted relay (mcp.getcampfire.dev) required for cross-member message delivery; local CI has no hosted relay with full store sync. Use 09-local-relay.sh for a CI-equivalent test.
 source "$(dirname "$0")/lib.sh"
 require_hosted_relay
 
