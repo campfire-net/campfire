@@ -75,7 +75,7 @@ directly will not compile — use `cf-protocol/protocol` or the
 `convention.DispatchStore` from `pkg/convention` — L2 dep).
 
 **Before:**
-```go
+```go,illustrative
 import (
     "github.com/campfire-net/campfire/pkg/campfire"
     "github.com/campfire-net/campfire/pkg/protocol"
@@ -86,7 +86,7 @@ cf := campfire.New("open", nil, 1)
 ```
 
 **After:**
-```go
+```go,illustrative
 import (
     "github.com/campfire-net/campfire/cf-protocol/protocol"
 )
@@ -132,7 +132,7 @@ The center-finding feature (automatic campfire locality at `Init` time via
 - Config key `behavior.walk_up` in `.cf/config.toml` — silently ignored
 
 **Before (0.19):**
-```go
+```go,illustrative
 import "github.com/campfire-net/campfire/pkg/protocol"
 
 // Suppress walk-up during import:
@@ -147,7 +147,7 @@ client, result, err := protocol.Init(cfHomeDir, protocol.WithWalkUp())
 ```
 
 **After (0.30):**
-```go
+```go,illustrative
 import "github.com/campfire-net/campfire/pkg/protocol"
 
 // Walk-up option is gone — just call Init:
@@ -192,7 +192,7 @@ center-finding simply compiles away — no replacement call needed at the Init s
 - `cf join <github-url>` — returns error
 
 **Before (0.19):**
-```go
+```go,illustrative
 // Creating a GitHub-backed campfire:
 client.Create(protocol.CreateRequest{
     Transport: protocol.TypeGitHub,
@@ -205,7 +205,7 @@ client.Create(protocol.CreateRequest{
 ```
 
 **After (0.30):**
-```go
+```go,illustrative
 // Migrate to filesystem or HTTP transport:
 client.Create(protocol.CreateRequest{
     Transport: protocol.TypeFilesystem,
@@ -257,7 +257,7 @@ New APIs:
 - `cf-conventions/cf-session` package — lazy-mint per-worker grants
 
 **Before (0.19):**
-```go
+```go,illustrative
 import "github.com/campfire-net/campfire/pkg/protocol"
 
 // Orchestrator creates a shared-key session:
@@ -276,7 +276,7 @@ TOKEN=$(cf session create --ttl 2h)
 ```
 
 **After (0.30):**
-```go
+```go,illustrative
 import (
     "github.com/campfire-net/campfire/pkg/protocol"
     cfsession "github.com/campfire-net/campfire/cf-conventions/cf-session"
@@ -390,14 +390,14 @@ External callers: switch to `cf-protocol/protocol` re-exports or to the
 `cf-conventions/cf-convention/` re-exports.
 
 **Before (0.19):**
-```go
+```go,illustrative
 import "github.com/campfire-net/campfire/pkg/tagspec"
 
 if strings.HasPrefix(msg.Tag, tagspec.CampfirePrefix) { ... }
 ```
 
 **After (0.30):**
-```go
+```go,illustrative
 import "github.com/campfire-net/campfire/cf-protocol/protocol"
 
 if strings.HasPrefix(msg.Tag, protocol.CampfireTagPrefix) { ... }
@@ -406,7 +406,7 @@ if strings.HasPrefix(msg.Tag, protocol.CampfireTagPrefix) { ... }
 ```
 
 **Available re-exports (cf-protocol/protocol):**
-```go
+```go,illustrative
 protocol.CampfireTagPrefix            // "campfire:"
 protocol.CampfireTagCompact           // "campfire:compact"
 protocol.CampfireTagMemberJoined      // "campfire:member-joined"
@@ -456,7 +456,7 @@ operation with a `campfire:` or `session:` tag prefix will be rejected.
 ```
 
 **Code that listens for these tags:**
-```go
+```go,illustrative
 // Check for session:open event (Message.Tags is []string):
 for _, msg := range messages {
     for _, tag := range msg.Tags {
@@ -489,7 +489,7 @@ gate evaluation. The stub default means 0.19 code that does not wire a gate
 evaluator continues to compile and run.
 
 **Before (0.19):**
-```go
+```go,illustrative
 import "github.com/campfire-net/campfire/pkg/convention"
 
 exec := convention.NewExecutor(client)
@@ -497,7 +497,7 @@ exec = exec.WithProvenance(checker)  // v1 interface
 ```
 
 **After (0.30) — minimal (keep stub evaluator):**
-```go
+```go,illustrative
 import "github.com/campfire-net/campfire/pkg/convention"
 
 // Unchanged — AllowAllGateEvaluator is the default.
@@ -506,7 +506,7 @@ exec = exec.WithProvenance(checker)
 ```
 
 **After (0.30) — production (wire real evaluator):**
-```go
+```go,illustrative
 import (
     "github.com/campfire-net/campfire/pkg/convention"
     "github.com/campfire-net/campfire/cf-conventions/cf-authority/trust"
@@ -519,7 +519,7 @@ exec = exec.WithProvenanceV2(trust.NewDefaultProvenanceChecker(store))
 ```
 
 **Interface contract (frozen at cf-authority 1.0):**
-```go
+```go,illustrative
 type GateEvaluator interface {
     Evaluate(ctx context.Context, req EvaluateRequest) EvaluateResult
 }
@@ -547,7 +547,7 @@ A new `ProvenanceCheckerV2` interface is declared at L2. It supersedes the v1
 `ProvenanceChecker` (which had a single `Level(key string) int` method) for
 new callers.
 
-```go
+```go,illustrative
 // v1 (still compiles, backward compat):
 type ProvenanceChecker interface {
     Level(key string) int
@@ -563,7 +563,7 @@ type ProvenanceCheckerV2 interface {
 v2 takes precedence when both are set.
 
 **Before (0.19):**
-```go
+```go,illustrative
 type myChecker struct{}
 func (c *myChecker) Level(key string) int {
     return 1  // everyone is level 1
@@ -572,7 +572,7 @@ exec = exec.WithProvenance(&myChecker{})
 ```
 
 **After (0.30) — v2 (recommended for new code):**
-```go
+```go,illustrative
 type myCheckerV2 struct{}
 func (c *myCheckerV2) CheckProvenance(ctx context.Context, req convention.ProvenanceRequest) convention.ProvenanceResult {
     return convention.ProvenanceResult{Level: convention.ProvenanceLevelContactable}
@@ -581,7 +581,7 @@ exec = exec.WithProvenanceV2(&myCheckerV2{})
 ```
 
 **Level constants (L2-owned, frozen):**
-```go
+```go,illustrative
 convention.ProvenanceLevelAnonymous    = 0  // valid keypair only
 convention.ProvenanceLevelClaimed      = 1  // self-asserted identity
 convention.ProvenanceLevelContactable  = 2  // challenge/response verified
@@ -682,7 +682,7 @@ concepts:
   overrides beacon transport config (§12 of cf-discovery-spec.md)
 
 **Before (0.19):**
-```go
+```go,illustrative
 // No standardized discovery API — consumers either used
 // hard-coded campfire IDs, manual beacon parsing, or
 // protocol.Init walk-up.
@@ -690,7 +690,7 @@ client, _, err := protocol.Init(cfHomeDir, protocol.WithWalkUp())
 ```
 
 **After (0.30):**
-```go
+```go,illustrative
 import "github.com/campfire-net/campfire/cf-conventions/cf-discovery"
 
 // Tier 1 — validate and sign a snippet:
@@ -713,7 +713,7 @@ freshness window across all hops. A hostile intermediate cannot extend the
 apparent freshness by declaring a long window.
 
 **Sentinel errors:**
-```go
+```go,illustrative
 cfdiscovery.ErrInviteOnly                // campfire is invite-only
 cfdiscovery.ErrPostJoinVerificationFailed // probe write did not propagate
 ```
@@ -731,7 +731,7 @@ and joining (Tier 3) — matching how agents actually navigate namespaces.
 
 See BC-4 for the full migration. Summary of new session orchestration API:
 
-```go
+```go,illustrative
 import (
     "github.com/campfire-net/campfire/pkg/protocol"
     cfsession "github.com/campfire-net/campfire/cf-conventions/cf-session"
@@ -838,7 +838,7 @@ appends exactly one provenance hop signed by the bridging campfire with
 survives end-to-end.
 
 **Before (0.19):**
-```go
+```go,illustrative
 // BridgeOptions had no Forward field.
 // Bridge always re-published (fresh message ID, bridging agent as sender).
 err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
@@ -848,7 +848,7 @@ err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
 ```
 
 **After (0.30) — re-publish (default, same behavior as 0.19):**
-```go
+```go,illustrative
 err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
     Bidirectional: true,
     TagFilter:     []string{"work:"},
@@ -857,7 +857,7 @@ err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
 ```
 
 **After (0.30) — pass-through (new, preserves original attribution):**
-```go
+```go,illustrative
 err := protocol.Bridge(ctx, source, dest, campfireID, protocol.BridgeOptions{
     Bidirectional: true,
     Forward: true,  // append blind-relay hop; preserve original Sender, Signature, Payload
@@ -943,7 +943,7 @@ trust pin management).
 `RootPrincipal`. Any rogue self-signed chain could receive `Allow`.
 
 **After (0.30):**
-```go
+```go,illustrative
 // When building GrantPayload manually (rare — most callers use cf-authority APIs):
 payload := trust.GrantPayload{
     ParentGrantID: parentID,
@@ -1014,7 +1014,7 @@ The `pkg/protocol` and `pkg/convention` import paths are unchanged — they
 are forwarding shims. No import rewrite needed for rd.
 
 **ProvenanceChecker wiring (root.go):**
-```go
+```go,illustrative
 // BEFORE: v1 ProvenanceChecker — still works in 0.30 (backward compat)
 checker, err := provenance.NewStoreChecker(s, campfireID, creatorKey)
 exec = exec.WithProvenance(checker)
@@ -1028,7 +1028,7 @@ rd's convention declarations use `min_operator_level` — this still works in 0.
 (backward compat). No changes needed in declaration JSON files.
 
 **Optional upgrade — add GateEvaluator for real delegation support:**
-```go
+```go,illustrative
 // Add to requireExecutor() when port window opens:
 import (
     "github.com/campfire-net/campfire/cf-conventions/cf-authority/trust"
@@ -1065,7 +1065,7 @@ exec = exec.WithGateEvaluator(evaluator)
 No import rewrites needed.
 
 **Convention API migration:**
-```go
+```go,illustrative
 // BEFORE (0.17): pkg/convention.NewExecutor
 exec := convention.NewExecutor(client)
 
@@ -1074,7 +1074,7 @@ exec := convention.NewExecutor(client)
 ```
 
 **Optional: wire GateEvaluator for delegation support:**
-```go
+```go,illustrative
 // dontguess/pkg/exchange/init.go — add when port opens:
 import "github.com/campfire-net/campfire/cf-conventions/cf-authority/trust"
 
@@ -1197,7 +1197,7 @@ convention dispatch.
 ```
 
 **Likely usage pattern (coordination only — no convention dispatch):**
-```go
+```go,illustrative
 // init:
 client, _, err := protocol.Init(cfHomeDir)
 // send:
@@ -1274,7 +1274,7 @@ Use this decision tree to determine the required changes for your consumer:
 
 ### Initializing a client (unchanged)
 
-```go
+```go,illustrative
 import "github.com/campfire-net/campfire/pkg/protocol"
 
 client, _, err := protocol.Init(cfHomeDir)
@@ -1286,7 +1286,7 @@ defer client.Close()
 
 ### Creating a convention executor with provenance (v1 — unchanged)
 
-```go
+```go,illustrative
 import (
     "github.com/campfire-net/campfire/pkg/convention"
     "github.com/campfire-net/campfire/pkg/protocol"
@@ -1298,7 +1298,7 @@ exec = exec.WithProvenance(myProvenanceChecker) // v1 still works
 
 ### Creating a convention executor with full gate evaluation (v2 — new)
 
-```go
+```go,illustrative
 import (
     "github.com/campfire-net/campfire/pkg/convention"
     "github.com/campfire-net/campfire/cf-conventions/cf-authority/trust"
@@ -1314,7 +1314,7 @@ exec = exec.WithProvenanceV2(provChecker)
 
 ### Listening for system events
 
-```go
+```go,illustrative
 import "github.com/campfire-net/campfire/cf-protocol/protocol"
 
 sub, err := client.Subscribe(ctx, protocol.SubscribeRequest{CampfireID: id})
@@ -1335,7 +1335,7 @@ for msg := range sub.Messages() {
 
 ### Session management (new pattern)
 
-```go
+```go,illustrative
 import (
     "github.com/campfire-net/campfire/pkg/protocol"
     cfsession "github.com/campfire-net/campfire/cf-conventions/cf-session"
