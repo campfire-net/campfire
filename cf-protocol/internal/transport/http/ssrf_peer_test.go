@@ -33,6 +33,113 @@ import (
 	cfhttp "github.com/campfire-net/campfire/cf-protocol/internal/transport/http"
 )
 
+// ---------------------------------------------------------------------------
+// CF_ALLOW_LOOPBACK env-var tests (campfireagent-824 rework)
+// ---------------------------------------------------------------------------
+
+// TestSSRFSafeTransport_ProductionDefault verifies that without CF_ALLOW_LOOPBACK
+// set, the SSRF-safe transport blocks connections to loopback addresses.
+// This is the production default — loopback MUST be blocked.
+func TestSSRFSafeTransport_ProductionDefault(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "") // explicitly unset
+
+	ts := loopbackServer(t)
+	restoreSSRFSafeClient(t)
+
+	id := tempIdentity(t)
+	msg := newTestMessage(t, id)
+
+	err := cfhttp.Deliver(ts.URL, "prod-default-ssrf-test", msg, id)
+	if err == nil {
+		t.Fatal("production default: Deliver to loopback expected SSRF block, got nil error")
+	}
+	if !containsAny(err.Error(), "private", "blocked", "internal") {
+		t.Errorf("expected SSRF block message, got: %v", err)
+	}
+}
+
+// TestSSRFSafeTransport_AllowLoopbackEnvVar verifies that CF_ALLOW_LOOPBACK=1
+// allows the SSRF-safe transport to connect to loopback addresses.
+// This is the demo/local environment use case.
+func TestSSRFSafeTransport_AllowLoopbackEnvVar(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "1")
+
+	ts := loopbackServer(t)
+	// Install the SSRF-safe client. With CF_ALLOW_LOOPBACK=1 it should allow loopback.
+	cfhttp.RestoreSSRFSafeHTTPClientForTest()
+	t.Cleanup(func() {
+		cfhttp.OverrideHTTPClientForTest(&http.Client{Timeout: 30 * time.Second})
+	})
+
+	id := tempIdentity(t)
+	msg := newTestMessage(t, id)
+
+	err := cfhttp.Deliver(ts.URL, "allow-loopback-test", msg, id)
+	// The connection reaches the server (ts returns 200 OK to any request).
+	// Deliver may fail at the protocol layer (the stub doesn't speak campfire)
+	// but it MUST NOT fail with an SSRF block.
+	if err != nil && containsAny(err.Error(), "blocked", "resolves to a private") {
+		t.Errorf("CF_ALLOW_LOOPBACK=1: expected loopback to be allowed, got SSRF block: %v", err)
+	}
+}
+
+// TestSSRFSafeTransport_AllowLoopbackMutation verifies the mutation: when
+// CF_ALLOW_LOOPBACK is NOT set, an attempt to allow loopback by directly
+// overriding the env var to "0" still blocks loopback. This proves the env-var
+// check is the active gate.
+func TestSSRFSafeTransport_AllowLoopbackMutation(t *testing.T) {
+	// Explicitly set to "0" (not "1") — must still block.
+	t.Setenv("CF_ALLOW_LOOPBACK", "0")
+
+	ts := loopbackServer(t)
+	restoreSSRFSafeClient(t)
+
+	id := tempIdentity(t)
+	msg := newTestMessage(t, id)
+
+	err := cfhttp.Deliver(ts.URL, "mutation-loopback-test", msg, id)
+	if err == nil {
+		t.Fatal("CF_ALLOW_LOOPBACK=0: Deliver to loopback expected SSRF block, got nil error")
+	}
+	if !containsAny(err.Error(), "private", "blocked", "internal") {
+		t.Errorf("CF_ALLOW_LOOPBACK=0: expected SSRF block message, got: %v", err)
+	}
+}
+
+// TestValidateJoinerEndpoint_AllowLoopbackEnvVar verifies that CF_ALLOW_LOOPBACK=1
+// allows loopback literal IPs through validateJoinerEndpoint.
+func TestValidateJoinerEndpoint_AllowLoopbackEnvVar(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "1")
+
+	// Re-enable real SSRF validation (TestMain disables it).
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
+
+	if err := cfhttp.ValidateJoinerEndpoint("http://127.0.0.1:9999/"); err != nil {
+		t.Errorf("CF_ALLOW_LOOPBACK=1: expected loopback to be allowed, got: %v", err)
+	}
+	// Non-loopback private addresses must still be blocked even with CF_ALLOW_LOOPBACK=1.
+	if err := cfhttp.ValidateJoinerEndpoint("http://192.168.1.1:9999/"); err == nil {
+		t.Error("CF_ALLOW_LOOPBACK=1: RFC1918 192.168.x.x must still be blocked")
+	}
+	if err := cfhttp.ValidateJoinerEndpoint("http://10.0.0.1:9999/"); err == nil {
+		t.Error("CF_ALLOW_LOOPBACK=1: RFC1918 10.x.x.x must still be blocked")
+	}
+}
+
+// TestValidateJoinerEndpoint_ProductionDefaultBlocksLoopback verifies that without
+// CF_ALLOW_LOOPBACK, loopback is still blocked by validateJoinerEndpoint.
+func TestValidateJoinerEndpoint_ProductionDefaultBlocksLoopback(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "") // unset
+
+	cfhttp.RestoreValidateJoinerEndpoint()
+	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
+
+	if err := cfhttp.ValidateJoinerEndpoint("http://127.0.0.1:9999/"); err == nil {
+		t.Error("production default: loopback must be blocked without CF_ALLOW_LOOPBACK")
+	}
+}
+
 // loopbackServer starts a real httptest.Server on 127.0.0.1 and returns it.
 // The server responds 200 OK to any request so we can distinguish a successful
 // connection from a blocked one.

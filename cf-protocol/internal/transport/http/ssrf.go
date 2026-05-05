@@ -6,8 +6,23 @@ import (
 	"net"
 	nethttp "net/http"
 	"net/url"
+	"os"
 	"time"
 )
+
+// loopbackAllowed reports whether the operator has set CF_ALLOW_LOOPBACK=1.
+//
+// This env var is a security-sensitive escape hatch intended only for local
+// development and demo environments where multiple cf instances run on a
+// single machine and communicate via 127.0.0.1. It MUST NOT be set in
+// production deployments — doing so disables DNS-rebinding protection for
+// loopback addresses.
+//
+// Safe values: unset (default, loopback blocked) or "1" (loopback allowed).
+// Any other value is treated as false.
+func loopbackAllowed() bool {
+	return os.Getenv("CF_ALLOW_LOOPBACK") == "1"
+}
 
 // validateJoinerEndpoint validates that the given endpoint URL is safe to use
 // as a peer endpoint. It protects against SSRF by:
@@ -63,6 +78,11 @@ func validateJoinerEndpointImpl(endpoint string) error {
 	// If the host is an IP literal, check it directly — no DNS involved.
 	if ip := net.ParseIP(host); ip != nil {
 		if isPrivateIP(ip) {
+			// Loopback specifically: allow when operator has set CF_ALLOW_LOOPBACK=1.
+			// This is for local/demo environments only — not for production.
+			if ip.IsLoopback() && loopbackAllowed() {
+				return nil
+			}
 			return fmt.Errorf("endpoint resolves to a private/internal address")
 		}
 		return nil
@@ -82,6 +102,10 @@ func validateJoinerEndpointImpl(endpoint string) error {
 			continue
 		}
 		if isPrivateIP(ip) {
+			// Loopback specifically: allow when operator has set CF_ALLOW_LOOPBACK=1.
+			if ip.IsLoopback() && loopbackAllowed() {
+				continue
+			}
 			return fmt.Errorf("endpoint host %q resolves to a private/internal address", host)
 		}
 	}
@@ -113,6 +137,10 @@ func newSSRFSafeTransport() *nethttp.Transport {
 			// If all IPs are public but connections fail, return the last dial error
 			// (not an SSRF message) so callers can distinguish SSRF blocks from
 			// genuine network failures.
+			//
+			// CF_ALLOW_LOOPBACK=1 exempts loopback IPs from the block. This env var
+			// is for local/demo environments only — not for production.
+			allowLoopback := loopbackAllowed()
 			var lastDialErr error
 			for _, ipStr := range ips {
 				ip := net.ParseIP(ipStr)
@@ -120,6 +148,15 @@ func newSSRFSafeTransport() *nethttp.Transport {
 					continue
 				}
 				if isPrivateIP(ip) {
+					// Allow loopback when the operator has set CF_ALLOW_LOOPBACK=1.
+					if ip.IsLoopback() && allowLoopback {
+						conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+						if dialErr == nil {
+							return conn, nil
+						}
+						lastDialErr = dialErr
+						continue
+					}
 					return nil, fmt.Errorf("connection to %s blocked: resolves to a private/internal address", host)
 				}
 				// Attempt connection to this non-private IP.

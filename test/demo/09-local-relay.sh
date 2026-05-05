@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # 09-local-relay.sh — Same as 02 but against localhost cf-mcp.
 # No external deps. CI-friendly.
+#
+# CF_ALLOW_LOOPBACK=1 permits cf to connect to 127.0.0.1 (the local relay).
+# This is intentional for this demo — the relay is operator-configured, not
+# user-controlled. Do NOT set this env var in production deployments.
+export CF_ALLOW_LOOPBACK=1
+
 source "$(dirname "$0")/lib.sh"
 
 trap cleanup EXIT
