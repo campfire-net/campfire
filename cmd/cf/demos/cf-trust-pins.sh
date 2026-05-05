@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_FIX: cf trust pin/unpin/list/prune subcommands not implemented in HEAD; demo written ahead of feature. See campfireagent-3f3-trust-pins.
 # cf-trust-pins.sh — demonstrates cf trust pin/unpin/list/prune
 #
 # Exercises all four TOFU key pin management subcommands:
