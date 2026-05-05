@@ -809,6 +809,13 @@ func TestDispatcher_MeteringHook_FiredAfterDispatch(t *testing.T) {
 	ds := convention.NewMemoryDispatchStore()
 	d := convention.NewConventionDispatcher(ds, nil)
 
+	// meterDone is closed when the first metering event fires. Replaces the
+	// previous time.Sleep(50ms) which was racy under -race -count=N load.
+	var (
+		meterOnce sync.Once
+		meterDone = make(chan struct{})
+	)
+
 	var mu sync.Mutex
 	var events []convention.ConventionMeterEvent
 
@@ -816,6 +823,7 @@ func TestDispatcher_MeteringHook_FiredAfterDispatch(t *testing.T) {
 		mu.Lock()
 		events = append(events, ev)
 		mu.Unlock()
+		meterOnce.Do(func() { close(meterDone) })
 	}
 
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
@@ -827,8 +835,12 @@ func TestDispatcher_MeteringHook_FiredAfterDispatch(t *testing.T) {
 	d.Dispatch(context.Background(), env.campfireID, msg)
 	waitForDispatch(t, ds, env.campfireID, msg.ID, 2*time.Second)
 
-	// Give the metering hook a moment (it fires after MarkFulfilled).
-	time.Sleep(50 * time.Millisecond)
+	// Wait for metering hook to fire rather than sleeping a fixed duration.
+	select {
+	case <-meterDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for metering hook to fire")
+	}
 
 	mu.Lock()
 	n := len(events)
@@ -1072,12 +1084,20 @@ func TestDispatcher_Tier2_MeteringHook(t *testing.T) {
 	ds := convention.NewMemoryDispatchStore()
 	d := convention.NewConventionDispatcher(ds, nil)
 
+	// meterDone is closed when the first metering event fires. Replaces the
+	// previous time.Sleep(50ms) which was racy under -race -count=N load.
+	var (
+		meterOnce sync.Once
+		meterDone = make(chan struct{})
+	)
+
 	var mu sync.Mutex
 	var events []convention.ConventionMeterEvent
 	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
 		mu.Lock()
 		events = append(events, ev)
 		mu.Unlock()
+		meterOnce.Do(func() { close(meterDone) })
 	}
 
 	d.RegisterTier2Handler("cf1", "myconv", "myop", server.URL, nil, "server1", "")
@@ -1092,7 +1112,13 @@ func TestDispatcher_Tier2_MeteringHook(t *testing.T) {
 	}
 	d.Dispatch(context.Background(), "cf1", msg)
 	waitForDispatch(t, ds, "cf1", "msg-t2-meter", 3*time.Second)
-	time.Sleep(50 * time.Millisecond)
+
+	// Wait for metering hook to fire rather than sleeping a fixed duration.
+	select {
+	case <-meterDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Tier2 metering hook to fire")
+	}
 
 	mu.Lock()
 	n := len(events)
@@ -1135,12 +1161,25 @@ func TestDispatcher_Tier1_SendFulfillmentFailure_MeteringStillFires(t *testing.T
 	ds := convention.NewMemoryDispatchStore()
 	d := convention.NewConventionDispatcher(ds, nil)
 
+	// meterDone is closed (once) when the metering hook fires. This replaces the
+	// previous time.Sleep(50ms) guard which was racy: waitForDispatch returns as
+	// soon as MarkFailedCAS flips the dispatch record to "failed", but the metering
+	// hook fires slightly later in the same goroutine (after dispatchTier1 returns
+	// and invokeHandler reaches the MeteringHook call site). Under CPU contention
+	// (race detector + -count=20) 50 ms is not always enough. A channel-based
+	// synchronization is deterministic regardless of scheduler pressure.
+	var (
+		meterOnce sync.Once
+		meterDone = make(chan struct{})
+	)
+
 	var mu sync.Mutex
 	var events []convention.ConventionMeterEvent
 	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
 		mu.Lock()
 		events = append(events, ev)
 		mu.Unlock()
+		meterOnce.Do(func() { close(meterDone) })
 	}
 
 	// Use a client with a broken store so Send() will fail when posting the
@@ -1170,14 +1209,29 @@ func TestDispatcher_Tier1_SendFulfillmentFailure_MeteringStillFires(t *testing.T
 
 	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
 	d.Dispatch(context.Background(), env.campfireID, msg)
-	status := waitForDispatch(t, ds, env.campfireID, msg.ID, 3*time.Second)
 
+	// Wait for the metering hook rather than using waitForDispatch. The dispatch
+	// status transitions: "dispatched" → "fulfilled" (MarkFulfilledCAS) → "failed"
+	// (MarkFailedCAS revert after sendFulfillment fails). waitForDispatch exits on
+	// the first terminal state and can return "fulfilled" before the revert completes,
+	// causing a spurious failure on the status == "failed" assertion. The metering hook
+	// fires AFTER the "failed" revert, so it is the correct "everything is settled"
+	// signal for this test. Use a timeout so the test fails clearly if metering never fires.
+	select {
+	case <-meterDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for metering hook to fire after sendFulfillment failure")
+	}
+
+	// After metering fires, the dispatch record must be "failed".
+	status, err := ds.GetDispatchStatus(context.Background(), env.campfireID, msg.ID)
+	if err != nil {
+		t.Fatalf("GetDispatchStatus: %v", err)
+	}
 	if status != "failed" {
 		t.Fatalf("expected dispatch status 'failed' after sendFulfillment error, got %q", status)
 	}
 
-	// Metering hook must still have fired.
-	time.Sleep(50 * time.Millisecond)
 	mu.Lock()
 	n := len(events)
 	var ev convention.ConventionMeterEvent
@@ -1267,8 +1321,17 @@ func TestDispatcher_DispatchWithCancel_CancelFuncCalled(t *testing.T) {
 	}
 
 	waitForDispatch(t, ds, env.campfireID, msg.ID, 3*time.Second)
-	// Give a moment for the deferred cancel to run.
-	time.Sleep(50 * time.Millisecond)
+	// Poll for the deferred cancel to run. The cancel func is deferred in the
+	// dispatch goroutine and fires after invokeHandler returns — which is after
+	// MarkFulfilledCAS sets the terminal status. waitForDispatch can return before
+	// the deferred cancel runs, so we poll rather than sleep a fixed duration.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cancelCalled.Load() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	if !cancelCalled.Load() {
 		t.Fatal("expected cancel func to be called after dispatch goroutine completed")
@@ -1702,12 +1765,20 @@ func TestDispatcher_Tier1_TokensConsumed_MeteringEvent(t *testing.T) {
 
 	const expectedTokens int64 = 7777
 
+	// meterDone is closed when the first metering event fires. Replaces the
+	// previous time.Sleep(50ms) which was racy under -race -count=N load.
+	var (
+		meterOnce sync.Once
+		meterDone = make(chan struct{})
+	)
+
 	var mu sync.Mutex
 	var events []convention.ConventionMeterEvent
 	d.MeteringHook = func(ctx context.Context, ev convention.ConventionMeterEvent) {
 		mu.Lock()
 		events = append(events, ev)
 		mu.Unlock()
+		meterOnce.Do(func() { close(meterDone) })
 	}
 
 	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient,
@@ -1722,7 +1793,13 @@ func TestDispatcher_Tier1_TokensConsumed_MeteringEvent(t *testing.T) {
 	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
 	d.Dispatch(context.Background(), env.campfireID, msg)
 	waitForDispatch(t, ds, env.campfireID, msg.ID, 2*time.Second)
-	time.Sleep(50 * time.Millisecond)
+
+	// Wait for metering hook to fire rather than sleeping a fixed duration.
+	select {
+	case <-meterDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for metering hook to fire")
+	}
 
 	mu.Lock()
 	n := len(events)
