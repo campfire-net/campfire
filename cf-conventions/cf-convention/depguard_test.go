@@ -35,6 +35,17 @@ func TestDepguardL2NoExtensionsClean(t *testing.T) {
 	}
 
 	repoRoot := findRepoRoot(t)
+
+	// Pre-cleanup: remove the known depguard probe dir that
+	// TestDepguardL2NoExtensionsCatchesForbiddenImport creates inside the source tree.
+	// If a previous test run was killed before t.Cleanup ran, the probe dir persists
+	// and golangci-lint finds the stale violation, causing this test to fail spuriously.
+	// Same root cause as campfireagent-d71 (fixed symmetrically).
+	probeDir := filepath.Join(repoRoot, "cf-conventions", "cf-convention", "depguard-l2-violation-probe")
+	if err := os.RemoveAll(probeDir); err != nil {
+		t.Logf("pre-cleanup of stale probe dir failed (non-fatal): %v", err)
+	}
+
 	cmd := exec.Command(lintBin, "run", "--fast-only", "./cf-conventions/cf-convention/...")
 	cmd.Dir = repoRoot
 	out, err := cmd.CombinedOutput()
@@ -61,7 +72,11 @@ func TestDepguardL2NoExtensionsCatchesForbiddenImport(t *testing.T) {
 	// Create a temporary sub-package inside cf-conventions/cf-convention/ that imports
 	// cf-conventions/cf-convention-extension/identity — a deliberate L2 violation.
 	// Placed inside cf-conventions/cf-convention/ so the depguard rule files pattern matches.
+	//
+	// Pre-cleanup: remove any leftover from a previous run that was killed before t.Cleanup
+	// ran. Without this, TestDepguardL2NoExtensionsClean sees a stale violation and fails.
 	violationDir := filepath.Join(repoRoot, "cf-conventions", "cf-convention", "depguard-l2-violation-probe")
+	os.RemoveAll(violationDir) //nolint:errcheck // best-effort pre-cleanup; MkdirAll below is authoritative
 	if err := os.MkdirAll(violationDir, 0750); err != nil {
 		t.Fatalf("creating violation dir: %v", err)
 	}
