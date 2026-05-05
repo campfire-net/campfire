@@ -97,11 +97,21 @@ else
   fi
 fi
 
-# ── Version comparison (semver, integers only, no pre-release) ─────────────
+# ── Version comparison (semver X.Y.Z core, pre-release suffix stripped) ────
+#
+# Pre-release versions (e.g. v0.30.0-rc.1) and build metadata (+sha) are
+# treated as the underlying X.Y.Z for floor-met comparison. Per semver, a
+# pre-release of X.Y.Z is ordered below the X.Y.Z release, but for the
+# purpose of "available version satisfies floor v<MAJOR>.<MINOR>.<PATCH>"
+# we accept v0.30.0-rc.1 as satisfying a floor of v0.19.0. Tighter
+# semantics (rejecting pre-releases against released floors of the same
+# X.Y.Z) can be added when it becomes a real concern.
 
-# Strip leading 'v' for arithmetic comparison
+# Strip leading 'v' and any pre-release / build suffix for arithmetic
 floor_clean="${FLOOR_VERSION#v}"
 avail_clean="${AVAILABLE_VERSION#v}"
+floor_clean="${floor_clean%%[-+]*}"
+avail_clean="${avail_clean%%[-+]*}"
 
 IFS='.' read -r f_major f_minor f_patch <<< "$floor_clean"
 IFS='.' read -r a_major a_minor a_patch <<< "$avail_clean"
