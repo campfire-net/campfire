@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_FIX: cf init --policy flag not yet implemented in HEAD; demo written ahead of feature. See campfireagent-3f3-init-policy.
 # cf-init-policy.sh — demonstrates cf init --policy <preset> with three templates
 #
 # cf init --policy writes grant-template.json to the identity home, documenting
