@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_FIX: relay-redeploy-pending — passes only after mcp.getcampfire.dev is redeployed with the UseNumber() fix (campfireagent-c39 / PR #544). Remove this marker after deploy.
 # 03-relay-join-once-read-many.sh — Daemon joins once at startup.
 # Server sends 3 messages over time. Daemon reads each with cursor
 # advancement. No re-join needed.

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_FIX: relay-redeploy-pending — passes only after mcp.getcampfire.dev is redeployed with the UseNumber() fix (campfireagent-c39 / PR #544). Remove this marker after deploy.
 # 12-rejoin-upgrade.sh — Leave and re-join a relay campfire.
 # Messages sent while away are still readable from relay.
 # New JoinedAt. Covers the binary upgrade path.
