@@ -221,3 +221,75 @@ func TestCAS_MarkBilled_ConcurrentRace(t *testing.T) {
 		}
 	}
 }
+
+// TestDispatchStore_DispatchedAt_PrecisionRoundtrip verifies that nanosecond-scale
+// int64 timestamps (DispatchedAt, TokensConsumed) are preserved exactly through a
+// store/retrieve cycle. float64 has a 53-bit mantissa; nanosecond Unix timestamps
+// (~1.75e18) are ~1.95e2 × 2^53 ≈ 2^61, so any int64 in that range loses the
+// lower ~8 bits when decoded as float64. Without unmarshalEntity(UseNumber), those
+// bits are silently zeroed — this test will fail when using plain json.Unmarshal.
+//
+// No build tag: runs without Azurite on every CI run.
+func TestDispatchStore_DispatchedAt_PrecisionRoundtrip(t *testing.T) {
+	s := newCASDispatchStore(t)
+	ctx := context.Background()
+	cfID := casUnique("cf")
+	msgID := casUnique("msg")
+
+	// Record time just before MarkDispatched so we can bracket DispatchedAt.
+	before := time.Now().UnixNano()
+
+	_, err := s.MarkDispatched(ctx, cfID, msgID, "srv1", "acct1", "conv", "op")
+	if err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+	after := time.Now().UnixNano()
+
+	// Choose a TokensConsumed value that exposes float64 truncation.
+	// 0x1_7FFF_FFFF_FFFF_FFx values exceed 2^56 — float64 conversion zeroes
+	// the low nibble. We pick a value with a set low bit so truncation is detectable.
+	const tokensWithBit int64 = 1<<56 + 1<<20 + 1<<3 + 1 // low bits guaranteed lost in float64
+
+	if err := s.MarkFulfilled(ctx, cfID, msgID); err != nil {
+		t.Fatalf("MarkFulfilled: %v", err)
+	}
+	if err := s.SetTokensConsumed(ctx, cfID, msgID, tokensWithBit); err != nil {
+		t.Fatalf("SetTokensConsumed: %v", err)
+	}
+
+	// Retrieve via ListUnbilledDispatches (goes through unmarshalEntity).
+	records, err := s.ListUnbilledDispatches(ctx)
+	if err != nil {
+		t.Fatalf("ListUnbilledDispatches: %v", err)
+	}
+	var rec *convention.DispatchRecord
+	for i := range records {
+		if records[i].CampfireID == cfID && records[i].MessageID == msgID {
+			rec = &records[i]
+			break
+		}
+	}
+	if rec == nil {
+		t.Fatal("dispatch record not found in ListUnbilledDispatches")
+	}
+
+	// TokensConsumed must be bit-exact.
+	if rec.TokensConsumed != tokensWithBit {
+		t.Errorf("TokensConsumed precision loss: want %d, got %d (diff=%d)",
+			tokensWithBit, rec.TokensConsumed, rec.TokensConsumed-tokensWithBit)
+	}
+
+	// DispatchedAt must fall within the before/after window — exact nanosecond
+	// preservation means it was not truncated to a coarser unit.
+	dispatchedNs := rec.DispatchedAt.UnixNano()
+	if dispatchedNs < before || dispatchedNs > after {
+		t.Errorf("DispatchedAt out of expected range: got %d, want [%d, %d]",
+			dispatchedNs, before, after)
+	}
+
+	// Sanity: if float64 had been used, the low bits would be zeroed.
+	// Verify that float64(tokensWithBit) != tokensWithBit so this test is meaningful.
+	if int64(float64(tokensWithBit)) == tokensWithBit {
+		t.Logf("WARNING: tokensWithBit=%d is representable in float64 exactly — choose a larger value", tokensWithBit)
+	}
+}

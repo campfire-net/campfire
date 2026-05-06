@@ -95,7 +95,7 @@ func (ts *TableStore) ListStorageCounters(ctx context.Context) ([]StorageCounter
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: ListStorageCounters unmarshal: %w", err)
 			}
 			bytes := toInt64(m["BytesStored"])
@@ -155,7 +155,7 @@ func (ts *TableStore) incrementStorageCounter(ctx context.Context, campfireID st
 
 		// Row exists — decode, increment, write back with ETag guard.
 		var current map[string]any
-		if merr := json.Unmarshal(resp.Value, &current); merr != nil {
+		if merr := unmarshalEntity(resp.Value, &current); merr != nil {
 			return fmt.Errorf("aztable: incrementStorageCounter unmarshal: %w", merr)
 		}
 		current["BytesStored"] = toInt64(current["BytesStored"]) + deltaBytes
@@ -203,7 +203,7 @@ func (ts *TableStore) decrementStorageCounter(ctx context.Context, campfireID st
 		}
 
 		var current map[string]any
-		if merr := json.Unmarshal(resp.Value, &current); merr != nil {
+		if merr := unmarshalEntity(resp.Value, &current); merr != nil {
 			return fmt.Errorf("aztable: decrementStorageCounter unmarshal: %w", merr)
 		}
 
