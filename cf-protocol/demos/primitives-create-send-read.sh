@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_FIX: Step 0 runs go test ./cf-protocol/... which takes 130s+ (http transport 52s + protocol 60s); exceeds CI timeout. go test is redundant — CI already runs the full suite. campfireagent-3f3-primitives: extract Step 0 from the demo or add -short support.
 # cf-protocol/demos/primitives-create-send-read.sh
 #
 # Demo: cf-protocol 1.0 public surface — Init → Create → Send → Read →
@@ -59,8 +58,8 @@ if [[ -z "$CF_BIN" ]]; then
   fi
 fi
 
-# Verify binary works.
-if ! "$CF_BIN" version 2>/dev/null | grep -q campfire 2>/dev/null; then
+# Verify binary works (cf uses --version, not a version subcommand).
+if ! "$CF_BIN" --version 2>/dev/null | grep -q "cf version" 2>/dev/null; then
   _build_cf
 fi
 
@@ -72,12 +71,20 @@ echo "  cf binary: $CF_BIN"
 echo "  repo root: $REPO_ROOT"
 echo ""
 
-# ── Step 0: Go tests for cf-protocol packages ─────────────────────────────────
-echo "── Step 0: go test ./cf-protocol/... ────────────────────────────────"
+# ── Step 0: Go tests for packages exercised by this demo ──────────────────────
+# Scope is intentionally narrow: only the packages whose constants and logic
+# this demo directly exercises (reserved-ops, tagspec, fs transport).  The full
+# ./cf-protocol/... suite takes 130 s+; CI already runs it — running it again
+# here would push the demo past the 120 s budget. (campfireagent-72c)
+echo "── Step 0: go test (reserved-ops, tagspec, transport/fs) ────────────"
 cd "$REPO_ROOT"
-go test ./cf-protocol/... -count=1 2>&1 | sed 's/^/  /'
+go test \
+  ./cf-protocol/internal/reserved-ops/... \
+  ./cf-protocol/internal/tagspec/... \
+  ./cf-protocol/internal/transport/fs/... \
+  -count=1 2>&1 | sed 's/^/  /'
 echo ""
-echo "PASS: go test ./cf-protocol/... green."
+echo "PASS: go test (reserved-ops + tagspec + transport/fs) green."
 echo ""
 
 # ── Step 1: Init — temporary CF_HOME ─────────────────────────────────────────
