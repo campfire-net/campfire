@@ -28,18 +28,33 @@ var randRead = rand.Read
 
 
 // httpClient is used for all peer-to-peer HTTP operations (deliver, sync, join,
-// poll). SSRF protection is applied at the endpoint acceptance layer
-// (validateJoinerEndpoint) when peer endpoints are stored — not at every HTTP
-// call. This allows operator-configured endpoints (--via, --relay) including
-// loopback addresses for local development.
+// notify, rekey, sign). It uses an SSRF-safe transport that re-validates the
+// resolved IP at connection time on every dial, closing the DNS-rebinding TOCTOU
+// window between endpoint validation at admission and actual connection use.
+// OverrideHTTPClientForTest replaces this client in tests so that loopback
+// test servers (which the SSRF-safe transport blocks by design) are reachable.
 var httpClient = &http.Client{
-	Timeout: 30 * time.Second,
+	Timeout:   30 * time.Second,
+	Transport: newSSRFSafeTransport(),
 }
 
 // OverrideHTTPClientForTest replaces the package-level HTTP client.
 // Call from TestMain when tests use loopback servers.
 func OverrideHTTPClientForTest(c *http.Client) {
 	httpClient = c
+}
+
+// RestoreSSRFSafeHTTPClientForTest reinstalls the SSRF-safe transport on httpClient.
+// Use in tests that need to verify SSRF blocking on the Deliver/Sync/Join/Notify/
+// Rekey/Sign paths (TestMain replaces httpClient with an unprotected client so that
+// loopback servers work in normal happy-path tests; call this to reverse that override
+// for the duration of an SSRF-specific test, then call OverrideHTTPClientForTest to
+// restore the test client in t.Cleanup).
+func RestoreSSRFSafeHTTPClientForTest() {
+	httpClient = &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: newSSRFSafeTransport(),
+	}
 }
 
 // pollTransport is the http.RoundTripper used by Poll(). It defaults to an

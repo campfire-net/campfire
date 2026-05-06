@@ -158,7 +158,11 @@ run_demo() {
     fi
 
     local exit_code=0
+    # CF_ALLOW_LOOPBACK=1 permits demos that use a local relay (e.g. 09-local-relay.sh)
+    # to connect to 127.0.0.1. This is safe for the demo harness: relay URLs are
+    # operator-configured, not user-controlled. Do NOT set this in production deployments.
     CF_HOME="$demo_cf_home" \
+    CF_ALLOW_LOOPBACK=1 \
     PATH="$REPO_ROOT:$go_root/bin:/usr/local/go/bin:$PATH" \
     GOROOT="$go_root" \
     GO="$go_root/bin/go" \
