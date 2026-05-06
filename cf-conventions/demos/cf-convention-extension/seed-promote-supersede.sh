@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_FIX: cf-convention-extensions/ (plural) dir still exists alongside cf-convention-extension/ (singular); path reconciliation incomplete. Filed campfireagent-eb1.
 # cf-conventions/demos/cf-convention-extension/seed-promote-supersede.sh
 #
 # Demo: cf-convention-extension package — seed declarations + promote/supersede ops.
