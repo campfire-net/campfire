@@ -17,6 +17,7 @@ import (
 // TestValidateJoinerEndpoint_PrivateLiteralIPsRejected verifies that literal private
 // IPv4 and IPv6 addresses in endpoints are rejected by validateJoinerEndpoint.
 func TestValidateJoinerEndpoint_PrivateLiteralIPsRejected(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "") // production default: loopback must be blocked
 	// Restore real validation (TestMain disables it via OverrideValidateJoinerEndpointForTest);
 	// re-enable the override when the test finishes so other tests are not affected.
 	cfhttp.RestoreValidateJoinerEndpoint()
@@ -188,6 +189,7 @@ func TestJoinAcceptsPublicEndpoint(t *testing.T) {
 // TestSSRFSafeTransportBlocksLoopback verifies that the SSRF-safe transport refuses
 // to connect to loopback addresses (simulating a DNS rebind to an internal address).
 func TestSSRFSafeTransportBlocksLoopback(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "") // production default: loopback must be blocked
 	// Start a real HTTP server on loopback so there is a real port to attempt.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -212,6 +214,7 @@ func TestSSRFSafeTransportBlocksLoopback(t *testing.T) {
 // transport's DialContext blocks direct connections to loopback addresses.
 // This tests the transport-layer guard against DNS rebinding to loopback.
 func TestSSRFSafeTransport_RedirectToLoopbackBlocked(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "") // production default: loopback must be blocked
 	// Create a client with the SSRF-safe transport and extract the transport.
 	client := cfhttp.NewSSRFSafeClient()
 	tr := client.Transport.(*http.Transport)
@@ -291,6 +294,7 @@ func TestValidateJoinerEndpoint_LiteralIPErrorDoesNotContainIP(t *testing.T) {
 // hostname resolves to a private IP, the error message does NOT contain the specific
 // resolved IP (to prevent IP enumeration attacks).
 func TestValidateJoinerEndpoint_ResolvedIPErrorDoesNotContainIP(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "") // production default: loopback must be blocked
 	// Restore real validation; TestMain globally overrides the func-var to a no-op.
 	cfhttp.RestoreValidateJoinerEndpoint()
 	t.Cleanup(cfhttp.OverrideValidateJoinerEndpointForTest)
