@@ -3,6 +3,7 @@
 # gets rejected. Admitted agent joins and completes request-response.
 source "$(dirname "$0")/lib.sh"
 require_hosted_relay
+# REQUIRES_FIX: cross-relay-read-broken — even after rc.2 deploy with aztable JSON precision fix (c39/PR #544), daemon cannot read server messages via hosted relay. Local repro: server sends, daemon joins+reads → empty result. Suspect: another precision/serialization loss in the message path beyond aztable (HTTP transport JSON, message store sync, or daemon-side handling). See campfireagent-89c follow-up item.
 
 trap cleanup EXIT
 

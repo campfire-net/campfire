@@ -1,24 +1,24 @@
 
 [1m=== Setup: server + daemon identities ===[0m
-Server: 5e3e55ca99bad1402960e31563babd64374a08f33b4d62d6ac3a7474c041fd55
-Daemon: d5a2767fc31c6571316ea0d10c6a4a08f8b84a5573ae07f6d2b80d24a19f85dd
+Server: 2ed4d922803ece41ba8ea5a2c04400f8fe7930c02e9c079950dae9503782e2d8
+Daemon: 8172b323f7e841bf57d6524523c3b4a150a2c697f1a70e2dbecc3bf2710a9d0c
 
 [1m=== Server creates campfire on relay ===[0m
-Campfire: 441c16eda8d54467589b69c207e74d84bdee02635afbe5183d1de2825b08b96f
+Campfire: ca88441830dcfbc55d089e10405e5618b504da76a8e1ccf2911a6e91edb51903
 
 [1m=== Server sends a tagged request ===[0m
-54de22f0-0f14-4051-b72e-b48076fa23d6
+564f58ad-c319-45e4-88bf-0b2c9a41b06e
 Request sent
 
 [1m=== Daemon joins via relay ===[0m
-Joined campfire 441c16eda8d5
+Joined campfire ca88441830dc
 Daemon joined
 
 [1m=== Daemon reads with tag filter ===[0m
   [0;31mFAIL[0m: Daemon sees tagged request (output does not contain 'Process order #1234')
 
 [1m=== Daemon sends response ===[0m
-81878426-4860-4fc1-8cc3-40d008bd6040
+c88de24e-44ca-49be-91fb-8f01799dd0c5
 Response sent
 
 [1m=== Server reads response ===[0m
@@ -38,8 +38,8 @@ Response sent
   [0;32mPASS[0m: cf members returns JSON array
 
 [1m=== Cleanup ===[0m
-Left campfire 441c16eda8d5
-Left campfire 441c16eda8d5
+Left campfire ca88441830dc
+Left campfire ca88441830dc
 
 ================================
 Results: [0;32m5 passed[0m, [0;31m4 failed[0m
