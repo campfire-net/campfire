@@ -169,6 +169,7 @@ func restoreSSRFSafeClient(t *testing.T) {
 // target endpoint resolves to a loopback address — the SSRF-safe transport on
 // httpClient must reject the connection attempt.
 func TestDeliverSSRFBlocksLoopback(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "") // production default: loopback must be blocked
 	ts := loopbackServer(t)
 	restoreSSRFSafeClient(t)
 
@@ -190,6 +191,7 @@ func TestDeliverSSRFBlocksLoopback(t *testing.T) {
 // TestSyncSSRFBlocksLoopback verifies that Sync() is blocked when the target
 // endpoint resolves to a loopback address.
 func TestSyncSSRFBlocksLoopback(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "") // production default: loopback must be blocked
 	ts := loopbackServer(t)
 	restoreSSRFSafeClient(t)
 
@@ -208,6 +210,7 @@ func TestSyncSSRFBlocksLoopback(t *testing.T) {
 // TestJoinSSRFBlocksLoopback verifies that Join() is blocked when the peer endpoint
 // resolves to a loopback address.
 func TestJoinSSRFBlocksLoopback(t *testing.T) {
+	t.Setenv("CF_ALLOW_LOOPBACK", "") // production default: loopback must be blocked
 	// Start a real server that returns a valid-looking join response so we can
 	// distinguish "SSRF blocked before reaching server" from "server rejected us".
 	// Under the SSRF-safe transport the connection should be rejected before any
