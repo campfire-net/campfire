@@ -217,6 +217,7 @@ func (ts *TableStore) AddMembership(m store.Membership) error {
 		"Encrypted":       int64(enc),
 		"CampfirePrivKey": m.CampfirePrivKey,
 	}
+	annotateInt64(entity, "JoinedAt", "Threshold", "Encrypted")
 	return upsertEntity(context.Background(), ts.memberships, entity)
 }
 
@@ -359,6 +360,10 @@ func (ts *TableStore) AddMessage(m store.MessageRecord) (bool, error) {
 		"Instance":         m.Instance,
 		"SenderCampfireID": m.SenderCampfireID,
 	}
+	// Annotate int64 timestamps so Azure does not truncate them to Edm.Double.
+	// MsgTimestamp is signed (MessageSignInput) — any precision loss breaks
+	// signature verification and silently drops messages (campfireagent-ea1).
+	annotateInt64(entity, "MsgTimestamp", "ReceivedAt")
 	// Chunk large payload and signature.
 	setChunked(entity, "Payload", m.Payload)
 	setChunked(entity, "Signature", m.Signature)
@@ -937,6 +942,7 @@ func (ts *TableStore) UpsertEpochSecret(secret store.EpochSecret) error {
 		"Epoch":        fmt.Sprintf("%d", secret.Epoch),
 		"CreatedAt":    secret.CreatedAt,
 	}
+	annotateInt64(entity, "CreatedAt")
 	setChunked(entity, "RootSecret", secret.RootSecret)
 	setChunked(entity, "CEK", secret.CEK)
 	return upsertEntity(context.Background(), ts.epochs, entity)
@@ -1394,6 +1400,62 @@ func getEntity(ctx context.Context, client tableEntityClient, pk, rk string) (ma
 	return m, nil
 }
 
+// annotateInt64 marks the named properties as Edm.Int64 for Azure Tables OData.
+// Without an explicit Edm.Int64 hint, Azure Tables silently stores numeric values
+// > 2^31 as Edm.Double, which has only a 53-bit mantissa. Nanosecond timestamps
+// (~10^18) thus lose the lowest 1-3 decimal digits on round trip. The Ed25519
+// message signature verification covers the timestamp via MessageSignInput; even
+// a 1-ns drift makes the signature unverifiable and synced messages are silently
+// dropped (campfireagent-ea1).
+//
+// Azure OData wire convention for Edm.Int64: the value MUST be transmitted as a
+// JSON string, with a sibling "<name>@odata.type" property set to "Edm.Int64".
+// (Ints sent as JSON numbers without a type hint are stored as Edm.Int32 if they
+// fit, otherwise Edm.Double — neither preserves int64 precision.)
+//
+// This helper rewrites each named property's value to its decimal string form
+// and adds the type annotation. Mutates entity in place. Properties that are
+// absent or already strings are left untouched. After this call, json.Marshal
+// produces a body like:
+//
+//	{"MsgTimestamp":"1778034594549990354","MsgTimestamp@odata.type":"Edm.Int64"}
+//
+// On read, unmarshalEntity (json.Decoder with UseNumber) returns the value as
+// json.Number; toInt64 handles the json.Number, string, int64, and float64
+// branches uniformly.
+func annotateInt64(entity map[string]any, names ...string) {
+	for _, n := range names {
+		v, present := entity[n]
+		if !present {
+			continue
+		}
+		var s string
+		switch x := v.(type) {
+		case int64:
+			s = strconv.FormatInt(x, 10)
+		case int:
+			s = strconv.FormatInt(int64(x), 10)
+		case int32:
+			s = strconv.FormatInt(int64(x), 10)
+		case uint64:
+			s = strconv.FormatUint(x, 10)
+		case uint:
+			s = strconv.FormatUint(uint64(x), 10)
+		case json.Number:
+			s = x.String()
+		case string:
+			s = x
+		case float64:
+			// Best-effort: convert to int64 via formatting. Callers should pass int64.
+			s = strconv.FormatInt(int64(x), 10)
+		default:
+			s = fmt.Sprintf("%v", x)
+		}
+		entity[n] = s
+		entity[n+"@odata.type"] = "Edm.Int64"
+	}
+}
+
 // upsertEntity writes an entity using merge-or-insert semantics.
 func upsertEntity(ctx context.Context, client tableEntityClient, entity map[string]any) error {
 	data, err := json.Marshal(entity)
@@ -1757,6 +1819,7 @@ func (ts *TableStore) CreateInvite(inv store.InviteRecord) error {
 		"UseCount":     int64(inv.UseCount),
 		"Label":        inv.Label,
 	}
+	annotateInt64(entity, "CreatedAt", "Revoked", "MaxUses", "UseCount")
 	return upsertEntity(context.Background(), ts.invites, entity)
 }
 
@@ -1908,6 +1971,7 @@ func (ts *TableStore) ValidateAndUseInvite(campfireID, inviteCode string) (*stor
 		// Increment and write back with ETag guard.
 		inv.UseCount++
 		m["UseCount"] = int64(inv.UseCount)
+		annotateInt64(m, "CreatedAt", "Revoked", "MaxUses", "UseCount")
 		data, err := json.Marshal(m)
 		if err != nil {
 			return nil, fmt.Errorf("ValidateAndUseInvite marshal: %w", err)
@@ -1963,6 +2027,7 @@ func (ts *TableStore) InsertProjectionEntry(campfireID, viewName, messageID stri
 		"MsgTimestamp": int64(0),
 		"IndexedAt":    indexedAt,
 	}
+	annotateInt64(entity, "MsgTimestamp", "IndexedAt")
 	// Upsert to achieve idempotency.
 	return upsertEntity(context.Background(), ts.projections, entity)
 }
@@ -2005,6 +2070,7 @@ func (ts *TableStore) UpsertProjectionEntry(campfireID, viewName, messageID, ent
 		"MsgTimestamp": timestamp,
 		"IndexedAt":    indexedAt,
 	}
+	annotateInt64(entity, "MsgTimestamp", "IndexedAt")
 	return upsertEntity(ctx, ts.projections, entity)
 }
 
