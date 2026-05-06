@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# REQUIRES_PROD: hosted relay (mcp.getcampfire.dev) required; cf read on relay does not deliver messages from other members in CI. Use 09-local-relay.sh for a CI-equivalent test.
+# REQUIRES_FIX: relay-redeploy-pending — passes only after mcp.getcampfire.dev is redeployed with the UseNumber() fix (campfireagent-c39 / PR #544). Remove this marker after deploy.
 # 14-config-cascade-relay.sh — Configure relay once in ~/.cf/config.toml.
 # After that, cf create auto-registers on the relay without --relay flag.
 # This is the intended UX: set it and forget it.

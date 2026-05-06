@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# REQUIRES_PROD: hosted relay (mcp.getcampfire.dev) required; cf read on relay does not deliver messages from other members in CI. Use 09-local-relay.sh for a CI-equivalent test.
+# REQUIRES_FIX: relay-redeploy-pending — passes only after mcp.getcampfire.dev is redeployed with the UseNumber() fix (campfireagent-c39 / PR #544). Remove this marker after deploy.
 # 13-relay-invite-code.sh — Invite-only campfire using invite codes.
 # Creator gets an invite code back from cf create --relay. Anyone with
 # the code can join without pre-admission. Code is reusable.

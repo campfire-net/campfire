@@ -12,7 +12,6 @@ package aztable
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -139,7 +138,7 @@ func (s *tableConventionServerStore) ListConventionServers(ctx context.Context, 
 		}
 		for _, rawBytes := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(rawBytes, &m); err != nil {
+			if err := unmarshalEntity(rawBytes, &m); err != nil {
 				continue
 			}
 			result = append(result, conventionServerFromEntity(m))

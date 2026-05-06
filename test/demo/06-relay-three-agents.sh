@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# REQUIRES_PROD: hosted relay (mcp.getcampfire.dev) required; cf read on relay does not deliver messages from other members in CI. Use 09-local-relay.sh for a CI-equivalent test.
+# REQUIRES_FIX: relay-redeploy-pending — passes only after mcp.getcampfire.dev is redeployed with the UseNumber() fix (campfireagent-c39 / PR #544). Remove this marker after deploy.
 # 06-relay-three-agents.sh — Server + two daemons on same relay campfire.
 # Server sends. Both daemons read. Both respond. Server reads both.
 source "$(dirname "$0")/lib.sh"

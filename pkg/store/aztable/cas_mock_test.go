@@ -98,12 +98,14 @@ func (m *casMockTable) UpdateEntity(_ context.Context, entity []byte, opts *azta
 	}
 	var newData []byte
 	if opts != nil && opts.UpdateMode == aztables.UpdateModeMerge {
+		// Use unmarshalEntity (UseNumber) to preserve large int64 values through
+		// the merge — plain json.Unmarshal would truncate them to float64.
 		var base map[string]any
-		if jsonErr := json.Unmarshal(row.data, &base); jsonErr != nil {
+		if jsonErr := unmarshalEntity(row.data, &base); jsonErr != nil {
 			return aztables.UpdateEntityResponse{}, jsonErr
 		}
 		var patch map[string]any
-		if jsonErr := json.Unmarshal(entity, &patch); jsonErr != nil {
+		if jsonErr := unmarshalEntity(entity, &patch); jsonErr != nil {
 			return aztables.UpdateEntityResponse{}, jsonErr
 		}
 		for k, v := range patch {
@@ -155,8 +157,12 @@ func (m *casMockTable) NewListEntitiesPager(opts *aztables.ListEntitiesOptions) 
 
 	var filtered [][]byte
 	for _, row := range snapshot {
+		// Use unmarshalEntity (UseNumber) so large int64 values (e.g. nanosecond
+		// timestamps) are preserved as json.Number rather than truncated to float64.
+		// This mirrors how Azure Table Storage returns numeric values on the wire —
+		// as JSON numbers that Go decodes without precision loss when UseNumber is set.
 		var entity map[string]any
-		if err := json.Unmarshal(row.data, &entity); err != nil {
+		if err := unmarshalEntity(row.data, &entity); err != nil {
 			continue
 		}
 		entity["odata.etag"] = string(row.etag)
@@ -344,15 +350,9 @@ func entityNumeric(entity map[string]any, field string) int64 {
 	if !ok {
 		return 0
 	}
-	switch x := v.(type) {
-	case float64:
-		return int64(x)
-	case int64:
-		return x
-	case int:
-		return int64(x)
-	}
-	return 0
+	// Delegate to the package-level toInt64 which handles json.Number (from
+	// unmarshalEntity/UseNumber), float64, int64, and int uniformly.
+	return toInt64(v)
 }
 
 func indexOf(s, sub string) int {

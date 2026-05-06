@@ -158,7 +158,7 @@ func (s *TableDispatchStore) AdvanceCursor(ctx context.Context, serverID, campfi
 		}
 
 		var m map[string]any
-		if err := json.Unmarshal(resp.Value, &m); err != nil {
+		if err := unmarshalEntity(resp.Value, &m); err != nil {
 			return false, fmt.Errorf("aztable: DispatchStore.AdvanceCursor: unmarshal: %w", err)
 		}
 
@@ -330,7 +330,7 @@ func (s *TableDispatchStore) ListStaleDispatches(ctx context.Context, olderThan 
 		}
 		for _, rawBytes := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(rawBytes, &m); err != nil {
+			if err := unmarshalEntity(rawBytes, &m); err != nil {
 				continue
 			}
 			rec := dispatchRecordFromEntity(m)
@@ -361,7 +361,7 @@ func (s *TableDispatchStore) CleanupOldDispatches(ctx context.Context, maxAge ti
 		}
 		for _, rawBytes := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(rawBytes, &m); err != nil {
+			if err := unmarshalEntity(rawBytes, &m); err != nil {
 				continue
 			}
 			pk := str(m, "PartitionKey")
@@ -391,7 +391,7 @@ func (s *TableDispatchStore) IncrementRedispatchCount(ctx context.Context, campf
 			return 0, fmt.Errorf("aztable: DispatchStore.IncrementRedispatchCount: get: %w", err)
 		}
 		var m map[string]any
-		if err := json.Unmarshal(resp.Value, &m); err != nil {
+		if err := unmarshalEntity(resp.Value, &m); err != nil {
 			return 0, fmt.Errorf("aztable: DispatchStore.IncrementRedispatchCount: unmarshal: %w", err)
 		}
 		current := int(toInt64(m["RedispatchCount"]))
@@ -455,7 +455,7 @@ func (s *TableDispatchStore) updateDispatchStatusCAS(ctx context.Context, campfi
 			return false, false, fmt.Errorf("aztable: DispatchStore.%sCAS: get: %w", status, err)
 		}
 		var m map[string]any
-		if err := json.Unmarshal(resp.Value, &m); err != nil {
+		if err := unmarshalEntity(resp.Value, &m); err != nil {
 			return false, false, fmt.Errorf("aztable: DispatchStore.%sCAS: unmarshal: %w", status, err)
 		}
 		currentGen := int(toInt64(m["RedispatchCount"]))
@@ -520,7 +520,7 @@ func (s *TableDispatchStore) ListUnbilledDispatches(ctx context.Context) ([]conv
 		}
 		for _, rawBytes := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(rawBytes, &m); err != nil {
+			if err := unmarshalEntity(rawBytes, &m); err != nil {
 				continue
 			}
 			rec := dispatchRecordFromEntity(m)
@@ -561,7 +561,7 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 	}
 
 	var current map[string]any
-	if err := json.Unmarshal(resp.Value, &current); err != nil {
+	if err := unmarshalEntity(resp.Value, &current); err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: unmarshal: %w", err)
 	}
 	// Check BilledAt before the stale-ETag guard so that a second billing attempt

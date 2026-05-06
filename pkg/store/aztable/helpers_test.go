@@ -276,6 +276,120 @@ func TestListMessagesReverseSort(t *testing.T) {
 	}
 }
 
+// TestToInt64_JsonNumber verifies that toInt64 handles json.Number (UseNumber path)
+// without precision loss for nanosecond timestamps that exceed float64 mantissa (53 bits).
+// Regression test for the aztable float64 precision bug: when Azure Table returns Edm.Int64
+// properties via JSON, json.Unmarshal decodes them as float64 by default, losing precision
+// for values > 2^53. unmarshalEntity now uses UseNumber() to preserve exact integer values.
+func TestToInt64_JsonNumber(t *testing.T) {
+	// A nanosecond timestamp that exceeds float64 precision (> 2^53):
+	// float64(1778023160419527281) = 1778023160419527168 (loss of 113).
+	const nanoTS int64 = 1778023160419527281
+
+	// Verify the precision loss we are guarding against.
+	if int64(float64(nanoTS)) == nanoTS {
+		t.Skip("this platform has exact float64 representation for the test timestamp — skip")
+	}
+
+	// json.Number path (via unmarshalEntity / UseNumber).
+	import_json_number_json_encoded := []byte(`{"MsgTimestamp":1778023160419527281}`)
+	var m map[string]any
+	if err := unmarshalEntity(import_json_number_json_encoded, &m); err != nil {
+		t.Fatalf("unmarshalEntity: %v", err)
+	}
+	got := toInt64(m["MsgTimestamp"])
+	if got != nanoTS {
+		t.Errorf("toInt64(json.Number): want %d, got %d (diff=%d)", nanoTS, got, nanoTS-got)
+	}
+}
+
+// TestUnmarshalEntityPreservesInt64 verifies that unmarshalEntity uses UseNumber() so
+// large int64 timestamp values round-trip without float64 precision loss.
+func TestUnmarshalEntityPreservesInt64(t *testing.T) {
+	// Two timestamps that differ by less than float64 ulp at this magnitude
+	// (both would map to the same float64 approximation without UseNumber).
+	const ts1 int64 = 1778023160419527281
+	const ts2 int64 = 1778023160419527168
+
+	// Verify that float64 cannot distinguish the two.
+	if float64(ts1) != float64(ts2) {
+		t.Skip("float64 can distinguish test values on this platform — skip")
+	}
+
+	raw1 := []byte(`{"T":1778023160419527281}`)
+	raw2 := []byte(`{"T":1778023160419527168}`)
+	var m1, m2 map[string]any
+	if err := unmarshalEntity(raw1, &m1); err != nil {
+		t.Fatalf("unmarshalEntity raw1: %v", err)
+	}
+	if err := unmarshalEntity(raw2, &m2); err != nil {
+		t.Fatalf("unmarshalEntity raw2: %v", err)
+	}
+	got1 := toInt64(m1["T"])
+	got2 := toInt64(m2["T"])
+	if got1 == got2 {
+		t.Errorf("unmarshalEntity: ts1 and ts2 collide at %d (UseNumber not active)", got1)
+	}
+	if got1 != ts1 {
+		t.Errorf("ts1: want %d, got %d", ts1, got1)
+	}
+	if got2 != ts2 {
+		t.Errorf("ts2: want %d, got %d", ts2, got2)
+	}
+}
+
+// TestInviteFromEntity_Precision verifies that inviteFromEntity correctly
+// preserves int64 UseCount and CreatedAt values when the entity was decoded
+// via unmarshalEntity (UseNumber path). This is the data path used by
+// ValidateAndUseInvite — the missed call site fixed in campfireagent-c39.
+//
+// Without UseNumber, UseCount and CreatedAt would be decoded as float64, losing
+// precision for large nanosecond timestamps (> 2^53 representable by float64).
+func TestInviteFromEntity_Precision(t *testing.T) {
+	// A nanosecond timestamp that exceeds float64 precision (> 2^53):
+	// int64(float64(1778023160419527281)) = 1778023160419527168 (loss of 113).
+	const nanoTS int64 = 1778023160419527281
+	const useCount int64 = 42
+
+	// Verify we're actually testing a precision-sensitive value.
+	if int64(float64(nanoTS)) == nanoTS {
+		t.Skip("this platform has exact float64 representation for the test timestamp — skip")
+	}
+
+	// Construct a raw entity JSON as Azure Table Storage would return it.
+	raw := []byte(fmt.Sprintf(`{
+		"PartitionKey": "code123",
+		"RowKey": "cfabc",
+		"CampfireID": "cfabc",
+		"InviteCode": "code123",
+		"CreatedBy": "agent-x",
+		"CreatedAt": %d,
+		"Revoked": 0,
+		"MaxUses": 10,
+		"UseCount": %d,
+		"Label": "test"
+	}`, nanoTS, useCount))
+
+	var m map[string]any
+	if err := unmarshalEntity(raw, &m); err != nil {
+		t.Fatalf("unmarshalEntity: %v", err)
+	}
+
+	inv := inviteFromEntity(m)
+	if inv == nil {
+		t.Fatal("inviteFromEntity returned nil")
+	}
+	if inv.CreatedAt != nanoTS {
+		t.Errorf("CreatedAt precision loss: got %d, want %d (diff=%d)", inv.CreatedAt, nanoTS, nanoTS-inv.CreatedAt)
+	}
+	if int64(inv.UseCount) != useCount {
+		t.Errorf("UseCount: got %d, want %d", inv.UseCount, useCount)
+	}
+	if inv.CampfireID != "cfabc" {
+		t.Errorf("CampfireID: got %q, want %q", inv.CampfireID, "cfabc")
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
 }

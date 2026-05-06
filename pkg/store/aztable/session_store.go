@@ -19,7 +19,6 @@ package aztable
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -132,7 +131,7 @@ func (ss *SessionStore) LoadAllTokenEntries() ([]TokenEntryRecord, error) {
 		}
 		for _, raw := range page.Entities {
 			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if err := unmarshalEntity(raw, &m); err != nil {
 				return nil, fmt.Errorf("aztable: LoadAllTokenEntries unmarshal: %w", err)
 			}
 			revoked := toInt64(m["Revoked"]) != 0
