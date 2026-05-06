@@ -3,12 +3,6 @@
 # Agent A creates a campfire on the relay. Agent B joins via the relay URL.
 # Both agents exchange tagged messages. Verifies cf ls and cf members.
 #
-# REQUIRES_FIX: relay-redeploy-pending — demo 02 passes only after mcp.getcampfire.dev
-# is redeployed with the aztable Edm.Int64 precision fix (campfireagent-ea1).
-# v0.30.0-rc.2 stored nanosecond timestamps as Edm.Double in Azure Tables, losing
-# the lowest decimal digits on read and breaking VerifySignature for cross-agent
-# reads. Remove this marker after the fix is deployed to all three regions.
-#
 source "$(dirname "$0")/lib.sh"
 require_hosted_relay
 
