@@ -273,6 +273,17 @@ func TestDepguardL2NoCfAuthorityClean(t *testing.T) {
 	}
 
 	repoRoot := findConventionRepoRoot(t)
+
+	// Pre-cleanup: remove the known depguard probe dir that
+	// TestDepguardL2NoCfAuthorityCatchesForbiddenImport creates inside the source
+	// tree. If a previous test run was killed (CI timeout, OOM, signal) before
+	// t.Cleanup ran, the probe dir persists, and golangci-lint finds the stale
+	// L2-no-authority violation, causing this test to fail spuriously (campfireagent-d71).
+	probeDir := filepath.Join(repoRoot, "cf-conventions", "cf-convention", "depguard-l2-authority-violation-probe")
+	if err := os.RemoveAll(probeDir); err != nil {
+		t.Logf("pre-cleanup of stale probe dir failed (non-fatal): %v", err)
+	}
+
 	cmd := exec.Command(lintBin, "run", "--fast-only", "./cf-conventions/cf-convention/...")
 	cmd.Dir = repoRoot
 	out, err := cmd.CombinedOutput()
@@ -299,7 +310,12 @@ func TestDepguardL2NoCfAuthorityCatchesForbiddenImport(t *testing.T) {
 	// Create a temporary sub-package inside cf-conventions/cf-convention/ that imports
 	// cf-conventions/cf-authority/trust — a deliberate L2-no-authority violation.
 	// Placed inside cf-conventions/cf-convention/ so the depguard rule's files pattern matches.
+	//
+	// Pre-cleanup: remove any leftover from a previous run that was killed before t.Cleanup
+	// ran (e.g. CI timeout, OOM, signal). Without this, TestDepguardL2NoCfAuthorityClean
+	// would see a stale violation file and fail when golangci-lint scans the tree.
 	violationDir := filepath.Join(repoRoot, "cf-conventions", "cf-convention", "depguard-l2-authority-violation-probe")
+	os.RemoveAll(violationDir) //nolint:errcheck // best-effort pre-cleanup; MkdirAll below is authoritative
 	if err := os.MkdirAll(violationDir, 0750); err != nil {
 		t.Fatalf("creating violation dir: %v", err)
 	}
