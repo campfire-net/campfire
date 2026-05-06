@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_FIX: Section 7 runs go test on cf-protocol/protocol (~60s) and cf-conventions/cf-convention (~30s); exceeds CI timeout budget. campfireagent-3f3-identity: replace slow go test calls in §7 with go build or add t.Skip for integration tests.
 # identity-flow.sh — cf-identity Stage 3 demo: identity convention declarations + ceremony.
 #
 # Demonstrates:
@@ -157,24 +156,37 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Full test suite for affected packages
+# 7. Affected packages build cleanly (import-path regression guard)
 # ---------------------------------------------------------------------------
+# go test on cf-conventions/cf-convention (~60s), cmd/cf/cmd (~90s), and
+# cf-protocol/protocol (~80s) exceeds the 120s demo budget.  go build is
+# sufficient here: it proves import paths compile end-to-end and catches any
+# broken dependency introduced by the cf-identity migration.  Full test suites
+# run in CI via go test ./... — not in this demo.
 echo ""
-echo "--- 7. Affected packages build and test ---"
+echo "--- 7. Affected packages build ---"
 
-PACKAGES=(
-    "$REPO_ROOT/cf-conventions/cf-identity"
+# cf-conventions/cf-identity: fast unit tests already ran in §2; run them
+# again here only as a quick final check (~2s).
+if "$GO" test -count=1 "$REPO_ROOT/cf-conventions/cf-identity" 2>&1 | tail -1 | grep -q "^ok"; then
+    ok "cf-conventions/cf-identity tests pass"
+else
+    fail "cf-conventions/cf-identity tests failed"
+fi
+
+# Slow packages: build-only (proves import paths; full tests in CI).
+BUILD_PACKAGES=(
     "$REPO_ROOT/cf-conventions/cf-convention"
     "$REPO_ROOT/cmd/cf/cmd"
     "$REPO_ROOT/cf-protocol/protocol"
 )
 
-for pkg in "${PACKAGES[@]}"; do
+for pkg in "${BUILD_PACKAGES[@]}"; do
     pkg_name="${pkg#$REPO_ROOT/}"
-    if "$GO" test -count=1 "$pkg" 2>&1 | tail -1 | grep -q "^ok"; then
-        ok "$pkg_name tests pass"
+    if "$GO" build "$pkg" 2>&1; then
+        ok "$pkg_name builds"
     else
-        fail "$pkg_name tests failed"
+        fail "$pkg_name failed to build"
     fi
 done
 
