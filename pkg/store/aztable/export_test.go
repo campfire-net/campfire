@@ -129,6 +129,7 @@ func (s *TableDispatchStore) MarkBilledWithBarrier(ctx context.Context, campfire
 		"RowKey":       rk,
 		"BilledAt":     time.Now().UnixNano(),
 	}
+	annotateInt64(patch, "BilledAt")
 	data, err := json.Marshal(patch)
 	if err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilledWithBarrier: marshal: %w", err)

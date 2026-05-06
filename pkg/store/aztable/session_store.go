@@ -106,6 +106,10 @@ func (ss *SessionStore) SaveTokenEntry(token string, entry TokenEntryRecord) err
 		"GracePeriodUntilNs": gracePeriodNs,
 		"Operator":           operator,
 	}
+	// Annotate nanosecond timestamp fields as Edm.Int64 so Azure Table Storage
+	// does not silently coerce them to Edm.Double (53-bit mantissa), which
+	// loses precision for large nanosecond values. See annotateInt64 for rationale.
+	annotateInt64(entity, "IssuedAtNs", "GracePeriodUntilNs")
 	return upsertEntity(context.Background(), ss.tokens, entity)
 }
 
