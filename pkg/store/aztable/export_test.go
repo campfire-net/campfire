@@ -10,6 +10,46 @@ import (
 	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
 )
 
+// WriteStorageCounterForTest directly writes a counter row with the given
+// UpdatedAt value (bypassing the internal time.Now() call). This is a test
+// helper for precision regression tests — it allows injecting a
+// precision-sensitive nanosecond timestamp to verify Edm.Int64 annotation.
+func (ts *TableStore) WriteStorageCounterForTest(ctx context.Context, campfireID string, bytesStored, messageCount, updatedAt int64) error {
+	pk := ts.pk(campfireID)
+	entity := map[string]any{
+		"PartitionKey": pk,
+		"RowKey":       storageCountersRowKey,
+		"CampfireID":   campfireID,
+		"BytesStored":  bytesStored,
+		"MessageCount": messageCount,
+		"UpdatedAt":    updatedAt,
+	}
+	annotateInt64(entity, "BytesStored", "MessageCount", "UpdatedAt")
+	data, err := json.Marshal(entity)
+	if err != nil {
+		return fmt.Errorf("WriteStorageCounterForTest: marshal: %w", err)
+	}
+	_, err = ts.counters.UpsertEntity(ctx, data, &aztables.UpsertEntityOptions{
+		UpdateMode: aztables.UpdateModeReplace,
+	})
+	return err
+}
+
+// GetRawStorageCounter reads the counter row and returns (bytesStored,
+// messageCount, updatedAt, nil). Unlike GetStorageCounter, it also returns
+// UpdatedAt so precision tests can verify the full round-trip.
+func (ts *TableStore) GetRawStorageCounter(ctx context.Context, campfireID string) (bytesStored, messageCount, updatedAt int64, err error) {
+	pk := ts.pk(campfireID)
+	raw, err := getEntity(ctx, ts.counters, pk, storageCountersRowKey)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("GetRawStorageCounter: %w", err)
+	}
+	if raw == nil {
+		return 0, 0, 0, nil
+	}
+	return toInt64(raw["BytesStored"]), toInt64(raw["MessageCount"]), toInt64(raw["UpdatedAt"]), nil
+}
+
 // GetDispatchEntityETag calls GetEntity on the dispatched table for the given
 // campfireID/messageID and returns the raw ETag reported by Azure/Azurite.
 // Used by integration tests to compare the ETag from GetEntity against the

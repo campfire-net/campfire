@@ -138,6 +138,10 @@ func (ts *TableStore) incrementStorageCounter(ctx context.Context, campfireID st
 				"MessageCount": int64(1),
 				"UpdatedAt":    time.Now().UnixNano(),
 			}
+			// Annotate int64 fields so Azure Tables stores them as Edm.Int64,
+			// not Edm.Double. Without this, values >2^31 (nanosecond timestamps,
+			// large byte counters) lose precision in the 53-bit float64 mantissa.
+			annotateInt64(entity, "BytesStored", "MessageCount", "UpdatedAt")
 			data, merr := json.Marshal(entity)
 			if merr != nil {
 				return fmt.Errorf("aztable: incrementStorageCounter marshal: %w", merr)
@@ -161,6 +165,10 @@ func (ts *TableStore) incrementStorageCounter(ctx context.Context, campfireID st
 		current["BytesStored"] = toInt64(current["BytesStored"]) + deltaBytes
 		current["MessageCount"] = toInt64(current["MessageCount"]) + 1
 		current["UpdatedAt"] = time.Now().UnixNano()
+		// Re-annotate after modifying: unmarshalEntity returns values as
+		// json.Number/string; overwriting with int64 would lose the annotation
+		// on round-trip. annotateInt64 normalises all three fields.
+		annotateInt64(current, "BytesStored", "MessageCount", "UpdatedAt")
 
 		data, merr := json.Marshal(current)
 		if merr != nil {
@@ -235,6 +243,10 @@ func (ts *TableStore) decrementStorageCounter(ctx context.Context, campfireID st
 		}
 		current["MessageCount"] = newMsgCount
 		current["UpdatedAt"] = time.Now().UnixNano()
+		// Re-annotate after modifying: unmarshalEntity returns values as
+		// json.Number/string; overwriting with int64 would lose the Edm.Int64
+		// annotation on round-trip. annotateInt64 normalises all three fields.
+		annotateInt64(current, "BytesStored", "MessageCount", "UpdatedAt")
 
 		data, merr := json.Marshal(current)
 		if merr != nil {
