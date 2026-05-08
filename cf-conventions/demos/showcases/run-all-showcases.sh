@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # run-all-showcases.sh — Run all four cf 0.30 local-shenanigans showcases.
 #
+# REQUIRES_FIX: aggregator-redundant-in-sweep — sweep harness already runs each
+# showcase individually; aggregator passes locally but fails CI exit 127. See
+# campfireagent-74e for env-debug follow-up.
+#
 # Runs each showcase sequentially. Each showcase is self-contained — it creates
 # its own temp state and cleans up on exit. A single failure does NOT abort the
 # remaining showcases; all four are run and a summary is printed at the end.
