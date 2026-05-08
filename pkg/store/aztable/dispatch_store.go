@@ -218,6 +218,11 @@ func (s *TableDispatchStore) MarkDispatched(ctx context.Context, campfireID, mes
 		"TokensConsumed":  int64(0),
 		"BilledAt":        int64(0),
 	}
+	// Annotate int64 nanosecond timestamps and large counters so Azure Table
+	// Storage stores them as Edm.Int64 rather than silently coercing to
+	// Edm.Double (which has a 53-bit mantissa and loses precision for
+	// nanosecond-scale values). See annotateInt64 for full rationale.
+	annotateInt64(entity, "DispatchedAt", "TokensConsumed", "BilledAt")
 
 	data, err := json.Marshal(entity)
 	if err != nil {
@@ -315,8 +320,11 @@ func (s *TableDispatchStore) GetDispatchStatus(ctx context.Context, campfireID, 
 // the given threshold. Used by the fallback sweep.
 func (s *TableDispatchStore) ListStaleDispatches(ctx context.Context, olderThan time.Duration) ([]convention.DispatchRecord, error) {
 	threshold := time.Now().Add(-olderThan).UnixNano()
-	// OData filter: Status eq 'dispatched' and DispatchedAt lt <threshold>
-	filter := fmt.Sprintf("Status eq 'dispatched' and DispatchedAt lt %d", threshold)
+	// Filter by Status only on the server side. DispatchedAt is stored as
+	// Edm.Int64 (via annotateInt64); OData comparison of bare integer literals
+	// (Edm.Int32) against Edm.Int64 fields is not portable. Apply the
+	// timestamp predicate client-side after unmarshal.
+	filter := "Status eq 'dispatched'"
 	opts := &aztables.ListEntitiesOptions{
 		Filter: strPtr(filter),
 	}
@@ -333,6 +341,10 @@ func (s *TableDispatchStore) ListStaleDispatches(ctx context.Context, olderThan 
 			if err := unmarshalEntity(rawBytes, &m); err != nil {
 				continue
 			}
+			// Client-side predicate: DispatchedAt < threshold.
+			if toInt64(m["DispatchedAt"]) >= threshold {
+				continue
+			}
 			rec := dispatchRecordFromEntity(m)
 			result = append(result, rec)
 		}
@@ -344,10 +356,13 @@ func (s *TableDispatchStore) ListStaleDispatches(ctx context.Context, olderThan 
 // Returns the number of entries removed.
 func (s *TableDispatchStore) CleanupOldDispatches(ctx context.Context, maxAge time.Duration) (int, error) {
 	threshold := time.Now().Add(-maxAge).UnixNano()
-	// OData filter: (Status eq 'fulfilled' or Status eq 'fulfilling' or Status eq 'failed') and DispatchedAt lt <threshold>
+	// Filter by Status only on the server side. DispatchedAt is stored as
+	// Edm.Int64 (via annotateInt64); OData comparison of bare integer literals
+	// (Edm.Int32) against Edm.Int64 fields is not portable. Apply the
+	// timestamp predicate client-side after unmarshal.
 	// "fulfilling" records are intermediate states from MarkFulfilledCAS; they are
 	// cleaned up here in case a process crashed between MarkFulfilledCAS and MarkFulfilled.
-	filter := fmt.Sprintf("(Status eq 'fulfilled' or Status eq 'fulfilling' or Status eq 'failed') and DispatchedAt lt %d", threshold)
+	filter := "Status eq 'fulfilled' or Status eq 'fulfilling' or Status eq 'failed'"
 	opts := &aztables.ListEntitiesOptions{
 		Filter: strPtr(filter),
 	}
@@ -362,6 +377,10 @@ func (s *TableDispatchStore) CleanupOldDispatches(ctx context.Context, maxAge ti
 		for _, rawBytes := range page.Entities {
 			var m map[string]any
 			if err := unmarshalEntity(rawBytes, &m); err != nil {
+				continue
+			}
+			// Client-side predicate: DispatchedAt < threshold.
+			if toInt64(m["DispatchedAt"]) >= threshold {
 				continue
 			}
 			pk := str(m, "PartitionKey")
@@ -505,8 +524,12 @@ func (s *TableDispatchStore) MarkFailedCAS(ctx context.Context, campfireID, mess
 // ListUnbilledDispatches returns fulfilled dispatch records where
 // TokensConsumed > 0 and BilledAt == 0. Used by the billing sweep.
 func (s *TableDispatchStore) ListUnbilledDispatches(ctx context.Context) ([]convention.DispatchRecord, error) {
-	// OData filter: Status eq 'fulfilled' and TokensConsumed gt 0 and BilledAt eq 0
-	filter := "Status eq 'fulfilled' and TokensConsumed gt 0 and BilledAt eq 0"
+	// Filter by Status only on the server side. TokensConsumed and BilledAt are
+	// stored as Edm.Int64 (via annotateInt64); OData comparison of bare integer
+	// literals (Edm.Int32) against Edm.Int64 fields is not portable across
+	// Azurite versions and Azure Tables implementations. Apply those predicates
+	// client-side after unmarshal, where toInt64 handles the type correctly.
+	filter := "Status eq 'fulfilled'"
 	opts := &aztables.ListEntitiesOptions{
 		Filter: strPtr(filter),
 	}
@@ -521,6 +544,10 @@ func (s *TableDispatchStore) ListUnbilledDispatches(ctx context.Context) ([]conv
 		for _, rawBytes := range page.Entities {
 			var m map[string]any
 			if err := unmarshalEntity(rawBytes, &m); err != nil {
+				continue
+			}
+			// Client-side predicate: TokensConsumed > 0 and BilledAt == 0.
+			if toInt64(m["TokensConsumed"]) <= 0 || toInt64(m["BilledAt"]) != 0 {
 				continue
 			}
 			rec := dispatchRecordFromEntity(m)
@@ -587,6 +614,8 @@ func (s *TableDispatchStore) MarkBilled(ctx context.Context, campfireID, message
 		"RowKey":       rk,
 		"BilledAt":     time.Now().UnixNano(),
 	}
+	// Annotate BilledAt as Edm.Int64 to prevent Azure Tables float64 truncation.
+	annotateInt64(patch, "BilledAt")
 	data, err := json.Marshal(patch)
 	if err != nil {
 		return fmt.Errorf("aztable: DispatchStore.MarkBilled: marshal: %w", err)
@@ -631,6 +660,10 @@ func (s *TableDispatchStore) SetTokensConsumed(ctx context.Context, campfireID, 
 		return convention.ErrDispatchNotFound
 	}
 	raw["TokensConsumed"] = tokens
+	// Re-annotate int64 fields after mutation: the entity was read back from
+	// Azure as json.Number; annotateInt64 converts them to decimal strings with
+	// Edm.Int64 type hints so the re-write preserves precision.
+	annotateInt64(raw, "TokensConsumed", "DispatchedAt", "BilledAt")
 	if err := upsertEntity(ctx, s.dispatched, raw); err != nil {
 		return fmt.Errorf("aztable: DispatchStore.SetTokensConsumed: upsert: %w", err)
 	}
