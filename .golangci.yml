@@ -336,38 +336,6 @@ linters:
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-session"
               desc: "L2-no-extensions: L2 machinery (cf-convention/) must not import L3 cf-session. See design v2 §4.6 (campfireagent-c3a)"
 
-        # no-plural-extensions — New code must not import the stale plural path cf-convention-extensions/.
-        #
-        # cf-convention-extensions/ (plural, with 's') was renamed to cf-convention-extension/
-        # (singular, no 's') in campfireagent-a40. The plural path still exists with legacy code
-        # pending migration to the singular path. New imports of the plural path are forbidden;
-        # new code must use cf-convention-extension/ (singular) instead.
-        #
-        # Applies to: all non-test Go files outside the plural path itself.
-        # Exempt: files inside cf-convention-extensions/ (they self-reference their own path).
-        # Exempt: *_test.go files (test code is grandfathered for existing coverage).
-        #
-        # Tracked migration: campfireagent-171 (path-confusion fix). When the plural path is
-        # fully migrated and deleted, this rule and its exemptions are removed.
-        no-plural-extensions:
-          list-mode: lax
-          files:
-            - "**/*.go"
-            - "!**/cf-convention-extensions/**/*.go"
-            - "!**/cf-convention-extensions/*.go"
-            - "!**/*_test.go"
-          deny:
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions"
-              desc: "no-plural-extensions: use cf-convention-extension/ (singular) instead of the stale cf-convention-extensions/ (plural) path. See campfireagent-a40 (rename) and campfireagent-171 (path-confusion fix)."
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/delegation"
-              desc: "no-plural-extensions: use cf-convention-extension/delegation instead of cf-convention-extensions/delegation (plural, stale). See campfireagent-171."
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/billing"
-              desc: "no-plural-extensions: use cf-convention-extension/billing instead of cf-convention-extensions/billing (plural, stale). See campfireagent-171."
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/identity"
-              desc: "no-plural-extensions: use cf-convention-extension/identity instead of cf-convention-extensions/identity (plural, stale). See campfireagent-171."
-            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extensions/seed"
-              desc: "no-plural-extensions: use cf-convention-extension/seed instead of cf-convention-extensions/seed (plural, stale). See campfireagent-171."
-
         # L2-no-authority — cf-conventions/cf-convention/ (L2 machinery) must not import L3 authority.
         #
         # cf-conventions/cf-authority/ is the Layer-3 authority package: GateEvaluator default
