@@ -106,6 +106,7 @@ func TestDefaultBeaconDir_NoDirectories(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("CF_BEACON_DIR", "")
+	t.Setenv("CF_HOME", "") // ensure CF_HOME does not influence this case
 
 	want := filepath.Join(fakeHome, ".cf", "beacons")
 	got := DefaultBeaconDir()
@@ -120,6 +121,7 @@ func TestDefaultBeaconDir_OnlyCampfireExists(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("CF_BEACON_DIR", "")
+	t.Setenv("CF_HOME", "") // ensure CF_HOME does not influence this case
 
 	campfireDir := filepath.Join(fakeHome, ".campfire")
 	if err := os.MkdirAll(campfireDir, 0700); err != nil {
@@ -139,6 +141,7 @@ func TestDefaultBeaconDir_CfExists(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("CF_BEACON_DIR", "")
+	t.Setenv("CF_HOME", "") // ensure CF_HOME does not influence this case
 
 	cfDir := filepath.Join(fakeHome, ".cf")
 	if err := os.MkdirAll(cfDir, 0700); err != nil {
@@ -159,10 +162,48 @@ func TestDefaultBeaconDir_EnvOverride(t *testing.T) {
 	customDir := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("CF_BEACON_DIR", customDir)
+	t.Setenv("CF_HOME", "") // CF_BEACON_DIR wins even over CF_HOME
 
 	got := DefaultBeaconDir()
 	if got != customDir {
 		t.Errorf("DefaultBeaconDir() = %q, want %q (CF_BEACON_DIR env)", got, customDir)
+	}
+}
+
+// TestDefaultBeaconDir_CFHomeOverride verifies that CF_HOME takes precedence
+// over user home directory discovery when CF_BEACON_DIR is not set.
+// This is the key invariant for isolated --cf-home invocations: when the CLI
+// propagates --cf-home to CF_HOME (via PersistentPreRun), DefaultBeaconDir
+// returns $CF_HOME/beacons so that beacon scanning is limited to the isolated
+// identity's directory rather than the developer's ~/.cf/beacons (which may
+// contain hundreds of thousands of files and cause 30+ second scans).
+func TestDefaultBeaconDir_CFHomeOverride(t *testing.T) {
+	fakeHome := t.TempDir()
+	cfHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("CF_BEACON_DIR", "")
+	t.Setenv("CF_HOME", cfHome)
+
+	want := filepath.Join(cfHome, "beacons")
+	got := DefaultBeaconDir()
+	if got != want {
+		t.Errorf("DefaultBeaconDir() = %q, want %q (CF_HOME env should override home discovery)", got, want)
+	}
+}
+
+// TestDefaultBeaconDir_CFHomeDoesNotShadowCFBeaconDir verifies that CF_BEACON_DIR
+// takes precedence over CF_HOME when both are set.
+func TestDefaultBeaconDir_CFHomeDoesNotShadowCFBeaconDir(t *testing.T) {
+	fakeHome := t.TempDir()
+	cfHome := t.TempDir()
+	customDir := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("CF_HOME", cfHome)
+	t.Setenv("CF_BEACON_DIR", customDir)
+
+	got := DefaultBeaconDir()
+	if got != customDir {
+		t.Errorf("DefaultBeaconDir() = %q, want %q (CF_BEACON_DIR must outrank CF_HOME)", got, customDir)
 	}
 }
 
