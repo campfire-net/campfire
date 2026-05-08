@@ -18,6 +18,13 @@
 #   bash cf-conventions/demos/showcases/run-all-showcases.sh
 #
 # Run from the campfire repo root.
+#
+# REQUIRES_FIX: aggregator-redundant-in-sweep — the demo harness already runs
+# each individual showcase (aietf-naming-root, multi-region-failover,
+# cross-operator-namespace, hosted-reader-observer); this aggregator is for
+# local human use and runs them serially with shared build cache. CI sweep
+# fails it with exit 127 in ~70ms (different env; passes locally with full
+# environment in 5-7s). Filed as campfireagent-9015-aggregator-fix.
 
 set -euo pipefail
 
