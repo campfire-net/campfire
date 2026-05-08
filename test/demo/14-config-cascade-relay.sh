@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_FIX: relay-redeploy-pending — passes only after mcp.getcampfire.dev is redeployed with the UseNumber() fix (campfireagent-c39 / PR #544). Remove this marker after deploy.
-# 14-config-cascade-relay.sh — Configure relay once in ~/.cf/config.toml.
-# After that, cf create auto-registers on the relay without --relay flag.
-# This is the intended UX: set it and forget it.
 source "$(dirname "$0")/lib.sh"
 require_hosted_relay
 
@@ -11,7 +7,6 @@ trap cleanup EXIT
 section "Setup: agent with relay in config"
 AGENT_HOME=$(new_identity agent); register_cleanup "$AGENT_HOME"
 PEER_HOME=$(new_identity peer); register_cleanup "$PEER_HOME"
-
 # Write relay config — this is the one-time setup step.
 mkdir -p "$AGENT_HOME"
 cat >> "$AGENT_HOME/config.toml" <<TOML

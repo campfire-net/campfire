@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_FIX: relay-redeploy-pending — passes only after mcp.getcampfire.dev is redeployed with the UseNumber() fix (campfireagent-c39 / PR #544). Remove this marker after deploy.
-# 07-relay-follow-mode.sh — cf read --follow --tag receives messages
-# as they arrive. Daemon is polling, server sends, daemon sees it.
 source "$(dirname "$0")/lib.sh"
 require_hosted_relay
 
@@ -23,14 +20,12 @@ FOLLOW_OUT=$(mktemp /tmp/cf-follow-XXXX)
 register_cleanup "$FOLLOW_OUT"
 cf read "$CF_ID" --cf-home "$DAEMON_HOME" --follow --tag live 2>/dev/null >"$FOLLOW_OUT" &
 FOLLOW_PID=$!
-
 # Give the follow loop time to start
 sleep 2
 
 section "Server sends a message while daemon is polling"
 cf send "$CF_ID" --cf-home "$SERVER_HOME" --tag live "Live message 1" 2>/dev/null
 echo "Sent live message 1"
-
 # Wait for poll cycle to pick it up (relay round-trip + poll interval)
 sleep 10
 
