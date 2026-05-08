@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# REQUIRES_FIX: requires ~/projects/agentic-internet/docs/conventions/sysop-delegation.md which is not checked out in CI. campfireagent-3f3-22: either copy the spec into this repo or add a CI checkout step.
 # 22-sysop-override-removal.sh — OPEN-012: sysop_override removal spec conformance demo.
 #
 # This demo is a SPEC CONFORMANCE CHECK, not a network exercise.
@@ -30,11 +29,19 @@
 source "$(dirname "$0")/lib.sh"
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-AI_SPEC="${HOME}/projects/agentic-internet/docs/conventions/sysop-delegation.md"
 CAMPFIRE_DOCS="${REPO_ROOT}/docs"
 
-if [ ! -f "$AI_SPEC" ]; then
-    echo "FATAL: sysop-delegation.md not found at $AI_SPEC"
+# Prefer vendored copy (works in CI without external checkout).
+# Fall back to the live agentic-internet checkout for local dev.
+VENDORED_SPEC="${REPO_ROOT}/test/demo/fixtures/agentic-internet/docs/conventions/sysop-delegation.md"
+LIVE_SPEC="${HOME}/projects/agentic-internet/docs/conventions/sysop-delegation.md"
+
+if [ -f "$VENDORED_SPEC" ]; then
+    AI_SPEC="$VENDORED_SPEC"
+elif [ -f "$LIVE_SPEC" ]; then
+    AI_SPEC="$LIVE_SPEC"
+else
+    echo "FATAL: sysop-delegation.md not found at vendored path ($VENDORED_SPEC) or live path ($LIVE_SPEC)"
     exit 2
 fi
 
