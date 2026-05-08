@@ -29,8 +29,16 @@ import (
 	"github.com/campfire-net/campfire/cmd/cf-primitives/internal/primcmd"
 )
 
-func main() {
+// dispatch is the core entry-point logic. It calls primcmd.Execute and
+// translates errors to exit codes (0 = success, 1 = error). Extracted from
+// main so tests can exercise the dispatch path without forking a subprocess.
+func dispatch() int {
 	if err := primcmd.Execute(); err != nil {
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+func main() {
+	os.Exit(dispatch())
 }
