@@ -52,8 +52,15 @@ type DispatchStore interface {
 	// Returns "", nil if no dispatch record exists.
 	GetDispatchStatus(ctx context.Context, campfireID, messageID string) (string, error)
 
-	// ListStaleDispatches returns dispatched-but-not-fulfilled entries older than
-	// the given threshold. Used by the fallback sweep.
+	// ListStaleDispatches returns dispatch entries older than the given threshold
+	// that are eligible for re-dispatch by the fallback sweep. Returned records
+	// have status ∈ {"dispatched", "fulfilling"}: "dispatched" covers the
+	// pre-MarkFulfilledCAS crash window, "fulfilling" covers the
+	// post-MarkFulfilledCAS-but-pre-MarkFulfilled/MarkFailedCAS crash window
+	// (campfireagent-3f1: fulfilling-state liveness hole). Implementations must
+	// include both statuses; omitting "fulfilling" causes permanent silent
+	// message loss when the process crashes (or the store has a transient
+	// failure) mid-fulfillment.
 	ListStaleDispatches(ctx context.Context, olderThan time.Duration) ([]DispatchRecord, error)
 
 	// CleanupOldDispatches removes fulfilled/failed entries older than maxAge.
@@ -239,15 +246,33 @@ func (s *MemoryDispatchStore) GetDispatchStatus(_ context.Context, campfireID, m
 	return rec.Status, nil
 }
 
-// ListStaleDispatches returns dispatched-but-not-fulfilled entries older than
-// the given threshold. Used by the fallback sweep.
+// ListStaleDispatches returns dispatch entries that are eligible for re-dispatch
+// by the fallback sweep. A record is stale if it is older than the given
+// threshold AND its status is either:
+//
+//   - "dispatched": the handler never reached a terminal status (crash/timeout
+//     between MarkDispatched and MarkFulfilledCAS/MarkFailedCAS).
+//   - "fulfilling": the handler claimed the fulfillment slot via
+//     MarkFulfilledCAS but never wrote the terminal status — the process
+//     crashed (or a transient store error prevented the second CAS) between
+//     MarkFulfilledCAS and MarkFulfilled/MarkFailedCAS. Without this branch,
+//     such records are silently lost (campfireagent-3f1: fulfilling-state
+//     liveness hole).
+//
+// Re-dispatching a "fulfilling" record relies on sendFulfillment being
+// functionally idempotent: the duplicate "fulfills" message is harmless because
+// awaitFulfillment / Await pick the first matching antecedent and ignore later
+// duplicates.
 func (s *MemoryDispatchStore) ListStaleDispatches(_ context.Context, olderThan time.Duration) ([]DispatchRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	threshold := time.Now().Add(-olderThan)
 	var result []DispatchRecord
 	for _, rec := range s.dispatches {
-		if rec.Status == "dispatched" && rec.DispatchedAt.Before(threshold) {
+		if !rec.DispatchedAt.Before(threshold) {
+			continue
+		}
+		if rec.Status == "dispatched" || rec.Status == "fulfilling" {
 			result = append(result, *rec)
 		}
 	}
