@@ -128,11 +128,20 @@ func (b *Beacon) CampfireIDHex() string {
 }
 
 // DefaultBeaconDir returns the default beacon directory.
-// Uses ~/.cf/beacons. Falls back to ~/.campfire/beacons if ~/.campfire exists
-// but ~/.cf does not (deprecated; support will be removed in v0.17).
+// Resolution order:
+//  1. CF_BEACON_DIR env var (explicit override)
+//  2. $CF_HOME/beacons when CF_HOME is set (propagated from --cf-home by the CLI)
+//  3. ~/.cf/beacons
+//  4. ~/.campfire/beacons if ~/.campfire exists but ~/.cf does not (deprecated; support will be removed in v0.17)
 func DefaultBeaconDir() string {
 	if env := os.Getenv("CF_BEACON_DIR"); env != "" {
 		return env
+	}
+	// CF_HOME is set by the CLI's PersistentPreRun when --cf-home is passed.
+	// Respect it so that isolated --cf-home invocations (e.g. tests, demo
+	// scripts, multi-identity setups) do not scan the global ~/.cf/beacons.
+	if cfHome := os.Getenv("CF_HOME"); cfHome != "" {
+		return filepath.Join(cfHome, "beacons")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
