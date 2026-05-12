@@ -49,17 +49,22 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Unit tests pass (declarations + profile + ceremony flow)
 # ---------------------------------------------------------------------------
+# Run go test ONCE and capture both the verbose-trace output and the exit
+# code.  Running the same test 2-3 times in a single demo amplifies any
+# environmental flake (disk pressure, build-cache contention) by 2-3x with
+# zero added coverage.  The single invocation provides the verbose-trace for
+# operator visibility AND the canonical pass/fail via $? — no re-run needed.
 echo ""
 echo "--- 2. Unit tests ---"
-if "$GO" test -count=1 -v "$REPO_ROOT/cf-conventions/cf-identity" 2>&1 | grep -E "(PASS|FAIL|ok|---)" | head -40; then
+TEST_LOG="$(mktemp)"
+trap 'rm -f "$TEST_LOG"' EXIT
+TEST_EXIT=0
+"$GO" test -count=1 -v "$REPO_ROOT/cf-conventions/cf-identity" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
+grep -E "(PASS|FAIL|ok|---)" "$TEST_LOG" | head -40 || true
+if [ "$TEST_EXIT" -eq 0 ]; then
     ok "cf-conventions/cf-identity tests pass"
 else
-    fail "cf-conventions/cf-identity tests failed"
-fi
-
-# Re-run without -v to get canonical pass/fail result.
-if ! "$GO" test -count=1 "$REPO_ROOT/cf-conventions/cf-identity" 2>&1; then
-    fail "cf-conventions/cf-identity tests returned non-zero exit"
+    fail "cf-conventions/cf-identity tests failed (exit $TEST_EXIT)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -166,12 +171,15 @@ fi
 echo ""
 echo "--- 7. Affected packages build ---"
 
-# cf-conventions/cf-identity: fast unit tests already ran in §2; run them
-# again here only as a quick final check (~2s).
-if "$GO" test -count=1 "$REPO_ROOT/cf-conventions/cf-identity" 2>&1 | tail -1 | grep -q "^ok"; then
-    ok "cf-conventions/cf-identity tests pass"
+# cf-conventions/cf-identity: build-only here (tests already ran in §2).
+# Previously this re-ran `go test` — running the same idempotent test 2-3x
+# in a single demo amplified environmental flake (disk pressure, build-cache
+# contention) by N× with zero added coverage.  go build verifies §7's actual
+# purpose (the import-path regression guard) without re-invoking the test.
+if "$GO" build "$REPO_ROOT/cf-conventions/cf-identity" 2>&1; then
+    ok "cf-conventions/cf-identity builds"
 else
-    fail "cf-conventions/cf-identity tests failed"
+    fail "cf-conventions/cf-identity failed to build"
 fi
 
 # Slow packages: build-only (proves import paths; full tests in CI).
