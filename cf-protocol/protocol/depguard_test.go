@@ -117,10 +117,22 @@ func findGolangciLint(t *testing.T) string {
 }
 
 // TestDepguardL1ProtocolNoPkgProtocol proves the L1-protocol-no-pkgprotocol
-// depguard rule fires when cf-protocol/protocol/ imports pkg/protocol.
+// depguard rule fires when code under cf-protocol/protocol/ imports pkg/protocol.
 //
 // This satisfies campfireagent-9f4 done-condition 3: a probe verifies that
 // pkg/* substrate imports are forbidden from cf-protocol/protocol/.
+//
+// Implementation note (campfireagent-a44 flake fix):
+// The probe file is written into a fresh sub-package under
+// cf-protocol/protocol/, NOT directly into the cf-protocol/protocol package.
+// Writing the probe as a top-level file in cf-protocol/protocol/ caused
+// transient build failures in any concurrent or follow-up `go test` invocation
+// (e.g. the conformance harness in cf-conventions/cf-authority/trust/...)
+// because pkg/protocol no longer exists after the substrate strip — the
+// orphaned probe broke the regular package build until t.Cleanup ran. A
+// sub-package is still covered by the depguard rule (files glob is
+// **/cf-protocol/protocol/**/*.go) and is structurally isolated, so a
+// cleanup race no longer poisons the parent package compile.
 func TestDepguardL1ProtocolNoPkgProtocol(t *testing.T) {
 	lintBin := findGolangciLint(t)
 	if lintBin == "" {
@@ -129,27 +141,35 @@ func TestDepguardL1ProtocolNoPkgProtocol(t *testing.T) {
 
 	repoRoot := findRepoRoot(t)
 
-	// Create a temporary file inside cf-protocol/protocol/ that imports
+	// Create a temporary sub-package inside cf-protocol/protocol/ that imports
 	// pkg/protocol — a deliberate L1-protocol-no-pkgprotocol violation.
-	violationFile := filepath.Join(repoRoot, "cf-protocol", "protocol", "pkgprotocol_violation_probe_test_only.go")
+	// Sub-package isolation (vs. a top-level *_test_only.go file in the protocol
+	// package itself) prevents a cleanup race from breaking parent-package
+	// compiles. The depguard files glob still matches this path.
+	violationDir := filepath.Join(repoRoot, "cf-protocol", "protocol", "pkgprotocol-violation-probe")
+	if err := os.MkdirAll(violationDir, 0750); err != nil {
+		t.Fatalf("creating violation dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(violationDir) })
+
+	violationFile := filepath.Join(violationDir, "violation.go")
 	const violationSrc = `// DO NOT COMMIT: deliberate L1-protocol violation for depguard test.
 // Created by cf-protocol/protocol/depguard_test.go; deleted on test exit.
-package protocol
+package pkgprotocolviolationprobe
 
 import (
-	// L1-protocol violation: cf-protocol/protocol/ importing old pkg/protocol substrate.
+	// L1-protocol violation: cf-protocol/protocol/ subtree importing old pkg/protocol substrate.
 	_ "github.com/campfire-net/campfire/pkg/protocol"
 )
 `
 	if err := os.WriteFile(violationFile, []byte(violationSrc), 0600); err != nil {
 		t.Fatalf("writing violation file: %v", err)
 	}
-	t.Cleanup(func() { os.Remove(violationFile) })
 
-	// Run golangci-lint against just the cf-protocol/protocol/ package.
+	// Run golangci-lint against just the violation sub-package.
 	// We expect depguard to flag the import.
 	cmd := exec.Command(lintBin, "run", "--fast-only",
-		"./cf-protocol/protocol/...")
+		"./cf-protocol/protocol/pkgprotocol-violation-probe/...")
 	cmd.Dir = repoRoot
 	out, _ := cmd.CombinedOutput()
 	outStr := string(out)
