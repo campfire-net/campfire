@@ -189,6 +189,22 @@ func TestSend_NonConventionTagNoValidation(t *testing.T) {
 func TestSend_ConventionOpValidPayload(t *testing.T) {
 	campfireID, cleanup := setupDispatchEnv(t, nil)
 	defer cleanup()
+	// Reset --tag and related StringSlice flags after this test so cobra's
+	// flag-accumulation behaviour doesn't leak into subsequent Execute() calls.
+	// pflag.SliceValue.Replace() bypasses the internal changed-gate, giving a
+	// clean empty slice without appending.
+	t.Cleanup(func() {
+		for _, name := range []string{"tag", "reply-to", "antecedent"} {
+			f := sendCmd.Flags().Lookup(name)
+			if f == nil {
+				continue
+			}
+			if sv, ok := f.Value.(interface{ Replace([]string) error }); ok {
+				sv.Replace(nil) //nolint:errcheck
+			}
+			f.Changed = false
+		}
+	})
 
 	stderrOut, err := captureStderrOutput(t, func() error {
 		rootCmd.SetArgs([]string{"send", campfireID, string(sendTestValidDecl), "--tag", "convention:operation"})

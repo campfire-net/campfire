@@ -60,6 +60,7 @@ func setupAdoptEnv(t *testing.T) (*identity.Identity, store.Store, string, strin
 
 	t.Cleanup(func() {
 		cfHome = ""
+		conventionAdoptFromCampfire = ""
 		os.Unsetenv("CF_HOME")
 		os.Unsetenv("CF_BEACON_DIR")
 	})
