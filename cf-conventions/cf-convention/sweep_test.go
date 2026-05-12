@@ -3,8 +3,10 @@ package convention_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -611,5 +613,157 @@ func TestSweeper_MarkFailed_ErrConcurrentModification(t *testing.T) {
 	// was treated as unexpected rather than benign).
 	if strings.Contains(logged, "MarkFailed(cf1/msg1): concurrent modification") {
 		t.Errorf("ErrConcurrentModification was logged as an unexpected error: %q", logged)
+	}
+}
+
+// ---- Regression: campfireagent-3f1 — fulfilling-state liveness hole ----
+
+// flakyTerminalStore wraps MemoryDispatchStore and injects a transient error
+// into the FIRST call to MarkFulfilled (the terminal CAS that fires after a
+// successful sendFulfillment). Subsequent calls succeed. This simulates the
+// failure mode that causes the fulfilling-state liveness hole: the handler's
+// send succeeded, but the second CAS to write the terminal "fulfilled" status
+// fails (process crash or Azure Tables transient 503/timeout), leaving the
+// record stuck in the intermediate "fulfilling" status.
+//
+// Before the fix (campfireagent-3f1), the stuck record was never re-dispatched
+// because ListStaleDispatches only returned status == "dispatched", and
+// CleanupOldDispatches eventually deleted it without delivery — permanent
+// silent message loss.
+type flakyTerminalStore struct {
+	*convention.MemoryDispatchStore
+	mu        sync.Mutex
+	failOnce  bool       // when true, the next MarkFulfilled returns an error
+	failedFor [][2]string // (campfireID, messageID) of records we injected failures for
+}
+
+func (s *flakyTerminalStore) MarkFulfilled(ctx context.Context, campfireID, messageID string) error {
+	s.mu.Lock()
+	shouldFail := s.failOnce
+	if shouldFail {
+		s.failOnce = false
+		s.failedFor = append(s.failedFor, [2]string{campfireID, messageID})
+	}
+	s.mu.Unlock()
+	if shouldFail {
+		// Simulate transient Azure Tables failure: a 503-class error that prevents
+		// the terminal CAS from completing. The record stays in "fulfilling".
+		return errors.New("simulated transient store failure")
+	}
+	return s.MemoryDispatchStore.MarkFulfilled(ctx, campfireID, messageID)
+}
+
+func (s *flakyTerminalStore) injectFailure() {
+	s.mu.Lock()
+	s.failOnce = true
+	s.mu.Unlock()
+}
+
+func (s *flakyTerminalStore) failureCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.failedFor)
+}
+
+// TestSweeper_FulfillingStateRecoveredAfterTerminalFailure is the
+// campfireagent-3f1 regression test. It exercises the full dispatcher flow:
+//
+//  1. Dispatch a message → handler succeeds → sendFulfillment succeeds
+//     (the fulfillment message is actually posted to the campfire).
+//  2. The terminal MarkFulfilled CAS fails transiently → record stuck in
+//     "fulfilling".
+//  3. The sweep runs and must surface the stuck record.
+//  4. The sweep re-dispatches → handler runs again → MarkFulfilled now
+//     succeeds → record reaches the terminal "fulfilled" status.
+//
+// Without the fix (ListStaleDispatches returns only "dispatched"), step 3
+// fails: the sweep never sees the stuck record, the test deadlines waiting for
+// "fulfilled", and the message is permanently lost.
+//
+// With the fix (ListStaleDispatches also returns aged "fulfilling"), the sweep
+// re-dispatches and the record reaches terminal "fulfilled".
+//
+// Mutation verification: temporarily reverting the dispatch_store.go change
+// (removing the "fulfilling" branch from ListStaleDispatches) makes this test
+// fail with a deadline timeout — the record stays in "fulfilling" forever.
+func TestSweeper_FulfillingStateRecoveredAfterTerminalFailure(t *testing.T) {
+	env := setupDispatcherTestEnv(t)
+	inner := convention.NewMemoryDispatchStore()
+	flaky := &flakyTerminalStore{MemoryDispatchStore: inner}
+
+	d := convention.NewConventionDispatcher(flaky, nil)
+
+	var handlerCalls atomic.Int64
+	d.RegisterTier1Handler(env.campfireID, "myconv", "myop", env.serverClient, func(ctx context.Context, req *convention.Request) (*convention.Response, error) {
+		handlerCalls.Add(1)
+		return &convention.Response{Payload: map[string]any{"result": "ok"}}, nil
+	}, env.serverID.PublicKeyHex(), "")
+
+	// Arm the fault: the first terminal MarkFulfilled will fail.
+	flaky.injectFailure()
+
+	msg := makeConventionMsg(t, env, "myconv", "myop", nil)
+	if !d.Dispatch(context.Background(), env.campfireID, msg) {
+		t.Fatal("expected Dispatch to return true")
+	}
+
+	// Wait for the handler to run and the dispatcher to attempt (and fail) the
+	// terminal CAS. The record should now be stuck in "fulfilling".
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if flaky.failureCount() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if flaky.failureCount() == 0 {
+		t.Fatal("setup: expected MarkFulfilled fault to fire at least once")
+	}
+
+	// Confirm the record is stuck in "fulfilling".
+	status, err := inner.GetDispatchStatus(context.Background(), env.campfireID, msg.ID)
+	if err != nil {
+		t.Fatalf("GetDispatchStatus: %v", err)
+	}
+	if status != "fulfilling" {
+		t.Fatalf("expected record stuck in 'fulfilling', got %q", status)
+	}
+
+	// Age the record so the sweep considers it stale, then run the sweep.
+	inner.BackdateDispatch(env.campfireID, msg.ID, 10*time.Minute)
+	sw := convention.NewSweeper(d, flaky, nil)
+
+	// Poll: sweep + wait for terminal. With the fix the record is re-dispatched,
+	// the handler runs a second time, and MarkFulfilled (now non-flaky) succeeds.
+	deadline = time.Now().Add(3 * time.Second)
+	var finalStatus string
+	for time.Now().Before(deadline) {
+		if _, sweepErr := sw.RunWithThreshold(context.Background(), 5*time.Minute); sweepErr != nil {
+			t.Fatalf("RunWithThreshold: %v", sweepErr)
+		}
+		finalStatus, err = inner.GetDispatchStatus(context.Background(), env.campfireID, msg.ID)
+		if err != nil {
+			t.Fatalf("GetDispatchStatus: %v", err)
+		}
+		if finalStatus == "fulfilled" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if finalStatus != "fulfilled" {
+		// Without the fix this is where the test fails: the stuck "fulfilling"
+		// record is never surfaced by ListStaleDispatches, so the sweep never
+		// re-dispatches it, and the message is permanently lost.
+		t.Fatalf("regression (campfireagent-3f1: fulfilling-state liveness hole): "+
+			"record stuck in status %q after sweep; expected 'fulfilled'. "+
+			"Permanent message loss on transient terminal-CAS failure.", finalStatus)
+	}
+
+	// Handler must have been called at least twice: once for the original
+	// dispatch (which fulfilled but couldn't write terminal) and once for the
+	// sweep re-dispatch (which succeeded).
+	if calls := handlerCalls.Load(); calls < 2 {
+		t.Errorf("expected handler called >=2 times (original + re-dispatch), got %d", calls)
 	}
 }

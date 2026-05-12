@@ -347,3 +347,85 @@ func TestMemoryDispatchStore_InterfaceCompliance(t *testing.T) {
 	// Compile-time check that MemoryDispatchStore satisfies DispatchStore.
 	var _ DispatchStore = (*MemoryDispatchStore)(nil)
 }
+
+// TestMemoryDispatchStore_ListStaleDispatches_IncludesFulfilling is a regression
+// test for campfireagent-3f1 (fulfilling-state liveness hole). Verifies that a
+// dispatch record stuck in the intermediate "fulfilling" status (because the
+// process crashed between MarkFulfilledCAS and MarkFulfilled, or because a
+// transient store failure prevented the terminal CAS) is surfaced by
+// ListStaleDispatches once it ages past the threshold, so the fallback sweep
+// can re-dispatch it instead of silently losing the message.
+//
+// Before the fix: ListStaleDispatches only returned status == "dispatched", so
+// stuck "fulfilling" records were never re-dispatched and were eventually
+// deleted by CleanupOldDispatches → permanent silent message loss.
+//
+// After the fix: status ∈ {"dispatched", "fulfilling"} is eligible for re-dispatch.
+func TestMemoryDispatchStore_ListStaleDispatches_IncludesFulfilling(t *testing.T) {
+	store := NewMemoryDispatchStore()
+	ctx := context.Background()
+
+	// A stuck "fulfilling" record: MarkFulfilledCAS succeeded but the terminal
+	// CAS never ran (process crash / transient Azure failure). Age it past the
+	// threshold.
+	if _, err := store.MarkDispatched(ctx, "cf1", "stuck-fulfilling", "server1", "", "conv", "op"); err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+	if ok, _, err := store.MarkFulfilledCAS(ctx, "cf1", "stuck-fulfilling", 0); err != nil || !ok {
+		t.Fatalf("MarkFulfilledCAS: ok=%v err=%v", ok, err)
+	}
+	store.BackdateDispatch("cf1", "stuck-fulfilling", 10*time.Minute)
+
+	// A normal stale "dispatched" record (must continue to be returned).
+	if _, err := store.MarkDispatched(ctx, "cf1", "stale-dispatched", "server1", "", "conv", "op"); err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+	store.BackdateDispatch("cf1", "stale-dispatched", 10*time.Minute)
+
+	// A fresh "fulfilling" record (in-progress; must NOT be returned yet).
+	if _, err := store.MarkDispatched(ctx, "cf1", "fresh-fulfilling", "server1", "", "conv", "op"); err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+	if ok, _, err := store.MarkFulfilledCAS(ctx, "cf1", "fresh-fulfilling", 0); err != nil || !ok {
+		t.Fatalf("MarkFulfilledCAS: ok=%v err=%v", ok, err)
+	}
+
+	// A "fulfilled" record (terminal; must NOT be returned).
+	if _, err := store.MarkDispatched(ctx, "cf1", "done-fulfilled", "server1", "", "conv", "op"); err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+	if err := store.MarkFulfilled(ctx, "cf1", "done-fulfilled"); err != nil {
+		t.Fatalf("MarkFulfilled: %v", err)
+	}
+	store.BackdateDispatch("cf1", "done-fulfilled", 10*time.Minute)
+
+	stale, err := store.ListStaleDispatches(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("ListStaleDispatches: %v", err)
+	}
+
+	got := make(map[string]string, len(stale))
+	for _, rec := range stale {
+		got[rec.MessageID] = rec.Status
+	}
+
+	// Both stale records must be present.
+	if status, ok := got["stuck-fulfilling"]; !ok {
+		t.Errorf("regression: stuck 'fulfilling' record not returned by ListStaleDispatches (permanent message loss)")
+	} else if status != "fulfilling" {
+		t.Errorf("stuck-fulfilling has wrong status: %q", status)
+	}
+	if status, ok := got["stale-dispatched"]; !ok {
+		t.Errorf("stale 'dispatched' record not returned by ListStaleDispatches")
+	} else if status != "dispatched" {
+		t.Errorf("stale-dispatched has wrong status: %q", status)
+	}
+
+	// Fresh and terminal records must NOT be returned.
+	if _, ok := got["fresh-fulfilling"]; ok {
+		t.Errorf("fresh 'fulfilling' record incorrectly returned as stale")
+	}
+	if _, ok := got["done-fulfilled"]; ok {
+		t.Errorf("terminal 'fulfilled' record incorrectly returned as stale")
+	}
+}

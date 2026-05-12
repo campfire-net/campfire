@@ -316,15 +316,21 @@ func (s *TableDispatchStore) GetDispatchStatus(ctx context.Context, campfireID, 
 // ListStaleDispatches / CleanupOldDispatches
 // ---------------------------------------------------------------------------
 
-// ListStaleDispatches returns dispatched-but-not-fulfilled entries older than
-// the given threshold. Used by the fallback sweep.
+// ListStaleDispatches returns dispatch entries older than the given threshold
+// eligible for re-dispatch by the fallback sweep. Returns records with
+// status ∈ {"dispatched", "fulfilling"}: "dispatched" covers the pre-CAS crash
+// window; "fulfilling" covers the post-MarkFulfilledCAS-but-pre-terminal-CAS
+// crash window (campfireagent-3f1: fulfilling-state liveness hole). Omitting
+// "fulfilling" causes permanent silent message loss when the process crashes
+// (or Azure Tables transiently fails) between MarkFulfilledCAS and either
+// MarkFulfilled or MarkFailedCAS.
 func (s *TableDispatchStore) ListStaleDispatches(ctx context.Context, olderThan time.Duration) ([]convention.DispatchRecord, error) {
 	threshold := time.Now().Add(-olderThan).UnixNano()
 	// Filter by Status only on the server side. DispatchedAt is stored as
 	// Edm.Int64 (via annotateInt64); OData comparison of bare integer literals
 	// (Edm.Int32) against Edm.Int64 fields is not portable. Apply the
 	// timestamp predicate client-side after unmarshal.
-	filter := "Status eq 'dispatched'"
+	filter := "Status eq 'dispatched' or Status eq 'fulfilling'"
 	opts := &aztables.ListEntitiesOptions{
 		Filter: strPtr(filter),
 	}

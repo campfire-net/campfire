@@ -347,6 +347,89 @@ func TestDispatchStore_ListStaleDispatches(t *testing.T) {
 	}
 }
 
+// TestDispatchStore_ListStaleDispatches_IncludesFulfilling is the
+// campfireagent-3f1 regression test at the aztable layer. It verifies that a
+// dispatch record stuck in the intermediate "fulfilling" status (because the
+// terminal MarkFulfilled CAS failed after a successful sendFulfillment) is
+// surfaced by ListStaleDispatches so the fallback sweep can recover it.
+//
+// Before the fix: the OData filter was "Status eq 'dispatched'", so stuck
+// "fulfilling" records were silently lost (permanent message loss when the
+// dispatcher crashed or Azure Tables transiently failed between
+// MarkFulfilledCAS and MarkFulfilled/MarkFailedCAS).
+//
+// After the fix: filter is "Status eq 'dispatched' or Status eq 'fulfilling'".
+func TestDispatchStore_ListStaleDispatches_IncludesFulfilling(t *testing.T) {
+	s := newTestDispatchStore(t)
+	ctx := context.Background()
+
+	cfID := unique("cf-stuck-fulfilling")
+	serverID := unique("server")
+
+	// A stuck "fulfilling" record: MarkFulfilledCAS succeeded but the terminal
+	// CAS never ran (simulating crash / transient Azure failure).
+	stuckMsgID := unique("msg-stuck-fulfilling")
+	if _, err := s.MarkDispatched(ctx, cfID, stuckMsgID, serverID, "", "testconv", "testop"); err != nil {
+		t.Fatalf("MarkDispatched stuck: %v", err)
+	}
+	ok, _, err := s.MarkFulfilledCAS(ctx, cfID, stuckMsgID, 0)
+	if err != nil || !ok {
+		t.Fatalf("MarkFulfilledCAS stuck: ok=%v err=%v", ok, err)
+	}
+
+	// A normal stale "dispatched" record (must continue to be returned).
+	staleDispatchedID := unique("msg-stale-dispatched")
+	if _, err := s.MarkDispatched(ctx, cfID, staleDispatchedID, serverID, "", "testconv", "testop"); err != nil {
+		t.Fatalf("MarkDispatched stale: %v", err)
+	}
+
+	// A terminal "fulfilled" record (must NOT be returned).
+	fulfilledID := unique("msg-fulfilled")
+	if _, err := s.MarkDispatched(ctx, cfID, fulfilledID, serverID, "", "testconv", "testop"); err != nil {
+		t.Fatalf("MarkDispatched fulfilled: %v", err)
+	}
+	if err := s.MarkFulfilled(ctx, cfID, fulfilledID); err != nil {
+		t.Fatalf("MarkFulfilled: %v", err)
+	}
+
+	// A terminal "failed" record (must NOT be returned).
+	failedID := unique("msg-failed")
+	if _, err := s.MarkDispatched(ctx, cfID, failedID, serverID, "", "testconv", "testop"); err != nil {
+		t.Fatalf("MarkDispatched failed: %v", err)
+	}
+	if err := s.MarkFailed(ctx, cfID, failedID); err != nil {
+		t.Fatalf("MarkFailed: %v", err)
+	}
+
+	// Use olderThan=0 so all eligible entries are "stale".
+	stale, err := s.ListStaleDispatches(ctx, 0)
+	if err != nil {
+		t.Fatalf("ListStaleDispatches: %v", err)
+	}
+
+	got := make(map[string]string)
+	for _, rec := range stale {
+		got[rec.MessageID] = rec.Status
+	}
+
+	if status, ok := got[stuckMsgID]; !ok {
+		t.Errorf("regression (campfireagent-3f1): stuck 'fulfilling' record not returned by ListStaleDispatches — permanent message loss on transient terminal-CAS failure")
+	} else if status != "fulfilling" {
+		t.Errorf("stuck-fulfilling has wrong status: %q", status)
+	}
+	if status, ok := got[staleDispatchedID]; !ok {
+		t.Errorf("stale 'dispatched' record not returned by ListStaleDispatches")
+	} else if status != "dispatched" {
+		t.Errorf("stale-dispatched has wrong status: %q", status)
+	}
+	if _, ok := got[fulfilledID]; ok {
+		t.Errorf("terminal 'fulfilled' record incorrectly returned as stale")
+	}
+	if _, ok := got[failedID]; ok {
+		t.Errorf("terminal 'failed' record incorrectly returned as stale")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CleanupOldDispatches
 // ---------------------------------------------------------------------------
