@@ -5,9 +5,11 @@ package aztable
 
 import (
 	"fmt"
+	"net/http"
 	"sort"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 )
 
@@ -165,8 +167,15 @@ func TestErrorDetectors(t *testing.T) {
 		{"409 Conflict", isTableExistsError, true},
 		{"404 Not Found", isTableExistsError, false},
 		{"ResourceNotFound", isNotFoundError, true},
-		{"404 Not Found", isNotFoundError, true},
+		// "404 Not Found" used to match here via substring fallback, but that
+		// produced false positives on entity keys containing "404" as a digit
+		// subsequence (campfireagent-426 flake root cause). isNotFoundError now
+		// requires either a structured *azcore.ResponseError with status 404 or
+		// an error message containing the actual error code. The structured
+		// case is exercised below; this substring case is now expected false.
+		{"404 Not Found", isNotFoundError, false},
 		{"TableNotFound", isNotFoundError, true},
+		{"campfire-17774041234567-msg-abc", isNotFoundError, false},
 		{"EntityAlreadyExists", isConflictError, true},
 		{"409 Conflict", isConflictError, true},
 		{"200 OK", isConflictError, false},
@@ -177,6 +186,22 @@ func TestErrorDetectors(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("fn(%q) = %v, want %v", tc.msg, got, tc.want)
 		}
+	}
+
+	// Structured detection: a real *azcore.ResponseError with StatusCode 404
+	// must be classified as not-found even if its message text does not match
+	// any substring fallback.
+	structuredNotFound := &azcore.ResponseError{StatusCode: http.StatusNotFound}
+	if !isNotFoundError(structuredNotFound) {
+		t.Error("isNotFoundError(*azcore.ResponseError{StatusCode: 404}) = false, want true")
+	}
+	structuredErrorCode := &azcore.ResponseError{ErrorCode: "ResourceNotFound"}
+	if !isNotFoundError(structuredErrorCode) {
+		t.Error("isNotFoundError(*azcore.ResponseError{ErrorCode: ResourceNotFound}) = false, want true")
+	}
+	structuredOK := &azcore.ResponseError{StatusCode: http.StatusOK}
+	if isNotFoundError(structuredOK) {
+		t.Error("isNotFoundError(*azcore.ResponseError{StatusCode: 200}) = true, want false")
 	}
 
 	// nil should return false for all.

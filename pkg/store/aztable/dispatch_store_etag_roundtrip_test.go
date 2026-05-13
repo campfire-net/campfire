@@ -164,11 +164,13 @@ func TestDispatchStore_ETagRoundTrip_StaleETagRejected(t *testing.T) {
 	}
 	if newETag == originalETag {
 		t.Logf("WARNING: ETag did not change after IncrementRedispatchCount (originalETag=%q, newETag=%q). "+
-			"Azurite may not be updating ETags after writes — this would make the stale-ETag guard "+
-			"non-functional against Azurite (known Azurite limitation). "+
-			"The in-process string comparison in MarkBilled compensates for this.", originalETag, newETag)
-		// Do not skip: MarkBilled's in-process guard should still reject a stale ETag
-		// even when Azurite does not update ETags after writes (see MarkBilled source).
+			"Azurite may not be updating ETags after writes (known Azurite limitation). "+
+			"In this degenerate state the in-process string comparison cannot help — "+
+			"callerETag and resp.ETag are identical — so the test falls through to the "+
+			"UpdateEntity IfMatch precondition for protection. If both guards are bypassed, "+
+			"MarkBilled below will succeed and this test will (correctly) fail.", originalETag, newETag)
+		// Do not skip: real Azure always updates ETags on writes, so this branch
+		// indicates an Azurite quirk rather than a production code regression.
 	}
 
 	// Step 4: Call MarkBilled with the now-stale ETag; MUST fail.

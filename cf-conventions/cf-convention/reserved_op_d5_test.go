@@ -7,8 +7,14 @@ package convention_test
 //	L1 — cf-protocol     LIST — IsReservedOp(op)
 //	L2 — cf-conventions  ENFORCER — fires BEFORE invoking GateEvaluator (L3)
 //	                      Adds two D5 checks on top of the base -935 enforcement:
-//	                       D5a: reserved op with GrantChain depth > 1 → DENY(depth_exceeded)
-//	                       D5b: convention declaration declares level:0 on a reserved op → rejected
+//	                       D5a: reserved op with len(GrantChain) > 1 → DENY(depth_exceeded).
+//	                            "Depth" counts grant entries; a direct call from the owner
+//	                            (no grant chain, or a single owner-signed grant) is depth 1
+//	                            and is allowed. Two or more hops fail. Note that nil and
+//	                            empty GrantChain are treated equivalently (depth=0/1, allowed);
+//	                            see campfireagent-f52 for the L3 evaluator-side counterpart.
+//	                       D5b: convention declaration declares min_operator_level: 0 on a
+//	                            reserved op → rejected at parse time.
 //	L3 — cf-authority    EVALUATOR — grant-chain policy (future; campfireagent-02a)
 //
 // Cases:

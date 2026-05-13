@@ -92,7 +92,8 @@ type Syncer interface {
 // Membership-mutation operations (Admit, Leave, Evict, Disband) on the same
 // campfire ID are serialized via membershipMu -- a per-campfire write lock that
 // prevents concurrent DKG runs from operating on inconsistent membership
-// snapshots. The lock is NOT held across network I/O (DKG is local).
+// snapshots (FIX-1/MB1). The lock is NOT held across network I/O (DKG is
+// local).
 //
 // Client is NOT safe for concurrent use from multiple goroutines without external
 // synchronization for non-membership operations. Each goroutine should use its

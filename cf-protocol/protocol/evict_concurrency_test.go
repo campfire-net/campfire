@@ -13,8 +13,13 @@ package protocol_test
 // Tests:
 //   1. ConcurrentEvictEvict — two concurrent Evicts on the same campfire serialize;
 //      exactly one succeeds (second finds no peers to evict or campfire ID changed).
+//      Uses HTTP transport with real threshold DKG — covers the DKG race directly.
 //   2. ConcurrentAdmitEvict — concurrent Admit and Evict on the same campfire.
+//      Uses filesystem transport (no DKG) — exercises membershipMu lock-serialization,
+//      not DKG race protection.
 //   3. AdmitLeaveEvictTriple — admit + leave + evict running concurrently.
+//      Uses filesystem transport (no DKG) — exercises membershipMu lock-serialization
+//      across all three membership-mutation paths under -race, not DKG race protection.
 
 import (
 	"fmt"

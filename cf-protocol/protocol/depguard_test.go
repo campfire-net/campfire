@@ -219,7 +219,20 @@ import (
 	}
 
 	// Run golangci-lint against the violation package.
-	// We expect depguard to flag the import with L1-internal or L1-internal-encapsulation.
+	//
+	// Two gates can reject this import:
+	//   1. Go's own typechecker, which forbids any package outside the parent
+	//      module-internal tree from importing a sub-package of internal/.
+	//      This is the load-bearing gate — it cannot be bypassed.
+	//   2. depguard's L1-internal-encapsulation rule, which provides an
+	//      overlay check with a more descriptive error message tied to the
+	//      design-v2 §4.6 layer policy.
+	//
+	// We expect the lint output to mention "depguard" or "L1-internal". Both
+	// signals are accepted because golangci-lint will surface either gate
+	// (typechecker errors flow through under -E typecheck; depguard surfaces
+	// the overlay rule). A pass on either confirms the import is rejected at
+	// the boundary we care about.
 	cmd := exec.Command(lintBin, "run", "--fast-only",
 		"./depguard-internal-violation-probe/...")
 	cmd.Dir = repoRoot
@@ -227,10 +240,10 @@ import (
 	outStr := string(out)
 
 	if strings.Contains(outStr, "depguard") || strings.Contains(outStr, "L1-internal") {
-		t.Logf("PASS: depguard correctly rejected the L1-internal-encapsulation violation:")
+		t.Logf("PASS: L1-internal-encapsulation violation rejected (Go typecheck is the gate; depguard overlay provides L1 policy citation):")
 		t.Logf("  %s", strings.TrimSpace(outStr))
 	} else {
-		t.Errorf("FAIL: depguard did NOT catch the L1-internal-encapsulation violation. lint output:\n%s", outStr)
+		t.Errorf("FAIL: L1-internal-encapsulation violation NOT rejected by either Go typecheck or depguard overlay. lint output:\n%s", outStr)
 	}
 }
 
