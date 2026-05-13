@@ -20,13 +20,13 @@ import (
 
 	"github.com/campfire-net/campfire/cf-protocol/internal/campfire"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/internal/encoding"
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/internal/message"
 	"github.com/campfire-net/campfire/cf-protocol/internal/store"
 	"github.com/campfire-net/campfire/cf-protocol/internal/threshold"
 	"github.com/campfire-net/campfire/cf-protocol/internal/transport"
 	"github.com/campfire-net/campfire/cf-protocol/internal/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/cf-protocol/internal/transport/http"
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/google/uuid"
 )
 
@@ -225,6 +225,17 @@ func (c *Client) PublicKeyHex() string {
 		return ""
 	}
 	return c.identity.PublicKeyHex()
+}
+
+// NewSigner returns a Signer backed by the client's Ed25519 identity key.
+// Returns nil if the client has no identity (read-only). Callers that need to
+// sign out-of-band payloads (e.g. discovery unjoin-declarations per §11.5)
+// use this instead of accessing the identity directly.
+func (c *Client) NewSigner() Signer {
+	if c.identity == nil {
+		return nil
+	}
+	return c.identity.NewSigner()
 }
 
 // Send creates a signed message and delivers it via the transport that backs
