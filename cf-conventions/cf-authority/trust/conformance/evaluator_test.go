@@ -807,7 +807,9 @@ func TestD1_Determinism_AllCases(t *testing.T) {
 		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload := encodeGrantPayload(t, gp)
 
-	// 2-hop chain (root → intermediate → sender). Used by cases 03, 04, 05, 07, 08.
+	// 2-hop chain (root → intermediate → sender). Used by case-03 only —
+	// cases 04 and 05 construct their own payloads (different until/scope),
+	// and cases 07 and 08 build scope-specific chains below.
 	hop1Inter := buildGrantPayload(t, keys.intermediate, "ready", "claim|done",
 		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	hop1InterPayload := encodeGrantPayload(t, hop1Inter)
