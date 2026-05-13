@@ -104,7 +104,16 @@ func (s *server) loadConventionServersForCampfire(ctx context.Context, campfireI
 		// Only Tier 2 (HTTP) handlers can be loaded from the store.
 		// Tier 1 Go handlers are registered programmatically at startup.
 		if srv.Tier == 2 && srv.HandlerURL != "" {
-			s.conventionDispatcher.RegisterTier2Handler(
+			// RegisterTier2Handler returns ErrReservedOp only if the operation
+			// name is one of the L1-frozen reserved ops (-935). Records in the
+			// store were validated at install time, so this should be
+			// unreachable in normal operation; if it does fire (e.g. a stored
+			// record predates a reserved-op addition), the registration is
+			// silently dropped and the dispatcher will return "no handler" for
+			// that op — which is the correct fail-closed behavior. We log
+			// nothing because per-load noise on every campfire load would
+			// drown the signal.
+			_ = s.conventionDispatcher.RegisterTier2Handler(
 				campfireID,
 				srv.Convention,
 				srv.Operation,
