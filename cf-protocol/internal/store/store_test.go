@@ -288,6 +288,79 @@ func TestOpenMemory_EmptyNameError(t *testing.T) {
 	}
 }
 
+// TestOpenMemory_SameNameSharedStore verifies the load-bearing invariant
+// stated in the OpenMemory doc comment: two OpenMemory calls with the same
+// name return handles to the SAME underlying in-memory database, courtesy of
+// SQLite's shared-cache URI mode. Without this property, callers who reuse a
+// name would silently get independent stores and discover the mistake only
+// through downstream data-loss bugs (campfireagent-90f surfaced one such case).
+//
+// Test path: write to handle A; open a second handle with the same name and
+// read the write back. Read MUST succeed and return the written record.
+func TestOpenMemory_SameNameSharedStore(t *testing.T) {
+	const sharedName = "test_same_name_shared"
+
+	s1, err := OpenMemory(sharedName)
+	if err != nil {
+		t.Fatalf("OpenMemory(s1): %v", err)
+	}
+	defer s1.Close()
+
+	m := Membership{
+		CampfireID:    "cf_shared_invariant",
+		TransportDir:  "/tmp/fake",
+		JoinProtocol:  "open",
+		Role:          "full",
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	}
+	if err := s1.AddMembership(m); err != nil {
+		t.Fatalf("s1.AddMembership: %v", err)
+	}
+
+	// Open a second handle with the SAME name BEFORE closing s1. The shared
+	// cache stays alive as long as at least one connection holds it open, so
+	// s2 must see the row that s1 wrote.
+	s2, err := OpenMemory(sharedName)
+	if err != nil {
+		t.Fatalf("OpenMemory(s2 same name): %v", err)
+	}
+	defer s2.Close()
+
+	got, err := s2.GetMembership("cf_shared_invariant")
+	if err != nil {
+		t.Fatalf("s2.GetMembership: %v", err)
+	}
+	if got == nil {
+		t.Fatal("same-name shared-store invariant broken: s2.GetMembership returned nil; expected the row written via s1")
+	}
+	if got.CampfireID != "cf_shared_invariant" {
+		t.Errorf("s2 read returned unexpected campfire: got %q want %q", got.CampfireID, "cf_shared_invariant")
+	}
+	// Write a second row via s2; s1 must see it back. Verifies the channel
+	// is genuinely bidirectional, not just "s2 inherits s1's initial state".
+	m2 := Membership{
+		CampfireID:    "cf_shared_invariant_2",
+		TransportDir:  "/tmp/fake2",
+		JoinProtocol:  "open",
+		Role:          "full",
+		JoinedAt:      time.Now().UnixNano(),
+		Threshold:     1,
+		TransportType: "filesystem",
+	}
+	if err := s2.AddMembership(m2); err != nil {
+		t.Fatalf("s2.AddMembership: %v", err)
+	}
+	got2, err := s1.GetMembership("cf_shared_invariant_2")
+	if err != nil {
+		t.Fatalf("s1.GetMembership(after s2 write): %v", err)
+	}
+	if got2 == nil {
+		t.Fatal("same-name shared-store invariant broken (reverse direction): s1 cannot read row written via s2")
+	}
+}
+
 func TestAddListMembership(t *testing.T) {
 	s := testStore(t)
 
