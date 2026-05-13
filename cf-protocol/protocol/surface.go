@@ -177,8 +177,8 @@ const (
 // Open opens (or creates) a SQLite campfire store at the given path.
 var Open = store.Open
 
-// OpenMemory opens an in-memory campfire store (for testing).
-var OpenMemory = store.OpenMemory
+// OpenMemory has been moved to surface_inmemory.go (campfireagent-c5a) so the
+// test-only helper is visually separated from the production API surface.
 
 // NowNano returns the current time as a nanosecond Unix timestamp.
 var NowNano = store.NowNano
