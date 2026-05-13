@@ -3,6 +3,7 @@ package naming
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -37,6 +38,17 @@ type ResolverClientOptions struct {
 	// decoded campfire ID matches). Callers that do not need config precedence may
 	// leave this nil — beacon-only behaviour is preserved.
 	ConfigTransportFunc func(campfireID string) protocol.Transport
+
+	// ProbeTimeout overrides the default post-join probe timeout (§11.3.1).
+	// If zero, discovery.DefaultProbeTimeout (5s) is used.
+	// Operators of high-latency campfires should set this to 30s or more.
+	ProbeTimeout time.Duration
+
+	// Tier2VerifierFunc, when non-nil, is called with the protocol.Client to
+	// construct the Tier2Verifier used for post-join verification (§11).
+	// When nil, the standard clientTier2Verifier is used.
+	// Inject a stub here in tests to control probe/unjoin behaviour.
+	Tier2VerifierFunc func(*protocol.Client) discovery.Tier2Verifier
 }
 
 // NewResolverFromClient creates a Resolver backed by a protocol.Client.
@@ -53,13 +65,19 @@ func NewResolverFromClient(client *protocol.Client, rootID string, opts ...Resol
 
 	beaconDir := ""
 	var configTransportFunc func(string) protocol.Transport
+	probeTimeout := discovery.DefaultProbeTimeout
+	var tier2VerifierFunc func(*protocol.Client) discovery.Tier2Verifier
 	if len(opts) > 0 {
 		beaconDir = opts[0].BeaconDir
 		configTransportFunc = opts[0].ConfigTransportFunc
+		if opts[0].ProbeTimeout > 0 {
+			probeTimeout = opts[0].ProbeTimeout
+		}
+		tier2VerifierFunc = opts[0].Tier2VerifierFunc
 	}
 
 	r.AutoJoinFunc = func(campfireID string) error {
-		return autoJoinViaClient(client, campfireID, beaconDir, configTransportFunc)
+		return autoJoinViaClient(client, campfireID, beaconDir, configTransportFunc, probeTimeout, tier2VerifierFunc)
 	}
 	return r
 }
@@ -101,7 +119,19 @@ var ErrInviteOnly = fmt.Errorf("campfire is invite-only; cannot auto-join")
 // consulted before using the beacon-advertised transport. If it returns a non-nil
 // Transport for campfireID, that transport is used and the beacon transport is
 // discarded. See cf-discovery-spec.md §12 for the rationale.
-func autoJoinViaClient(client *protocol.Client, campfireID string, beaconDirOverride string, configTransportFunc func(string) protocol.Transport) error {
+//
+// §11 post-join verification: after a successful Join, the verifier runs
+// ProbeAndObserve. On ErrPostJoinVerificationFailed (send-not-ack), unjoin-declaration
+// is posted and the client leaves. On ErrPostJoinVerificationLatency (send-ack,
+// observe-timeout), the join is accepted with a warning log (§11.3.1 latency path).
+func autoJoinViaClient(
+	client *protocol.Client,
+	campfireID string,
+	beaconDirOverride string,
+	configTransportFunc func(string) protocol.Transport,
+	probeTimeout time.Duration,
+	tier2VerifierFunc func(*protocol.Client) discovery.Tier2Verifier,
+) error {
 	m, err := client.GetMembership(campfireID)
 	if err != nil {
 		return fmt.Errorf("checking membership: %w", err)
@@ -126,7 +156,7 @@ func autoJoinViaClient(client *protocol.Client, campfireID string, beaconDirOver
 				}
 				return fmt.Errorf("auto-join (config endpoint): %w", err)
 			}
-			return nil
+			return postJoinVerify(context.Background(), client, campfireID, probeTimeout, tier2VerifierFunc)
 		}
 	}
 
@@ -165,10 +195,46 @@ func autoJoinViaClient(client *protocol.Client, campfireID string, beaconDirOver
 			}
 			return fmt.Errorf("auto-join: %w", err)
 		}
-		return nil
+		return postJoinVerify(context.Background(), client, campfireID, probeTimeout, tier2VerifierFunc)
 	}
 
 	return fmt.Errorf("no beacon found for campfire %s", shortID(campfireID))
+}
+
+// postJoinVerify runs §11 post-join probe-write-then-observe after a successful
+// transport-level join. On verification failure (send-not-ack), posts unjoin-declaration
+// and leaves. On latency (send-ack, observe-timeout), logs a warning and continues.
+func postJoinVerify(
+	ctx context.Context,
+	client *protocol.Client,
+	campfireID string,
+	probeTimeout time.Duration,
+	tier2VerifierFunc func(*protocol.Client) discovery.Tier2Verifier,
+) error {
+	var verifier discovery.Tier2Verifier
+	if tier2VerifierFunc != nil {
+		verifier = tier2VerifierFunc(client)
+	} else {
+		verifier = discovery.NewClientTier2Verifier(client)
+	}
+
+	err := verifier.ProbeAndObserve(ctx, campfireID, probeTimeout)
+	switch {
+	case errors.Is(err, discovery.ErrPostJoinVerificationFailed):
+		// Send-not-acknowledged: suppression confirmed — post declaration and leave.
+		_ = verifier.PostUnjoinDeclaration(ctx, campfireID, "")
+		_ = client.Leave(campfireID)
+		return discovery.ErrPostJoinVerificationFailed
+	case errors.Is(err, discovery.ErrPostJoinVerificationLatency):
+		// Send-acknowledged but observe-timeout: high-latency path (§11.3.1).
+		// Do NOT unjoin — accept the join with a warning.
+		log.Printf("[WARN] naming: post-join probe timed out but send was acknowledged for campfire %s — accepting as latency (§11.3.1), not suppression", shortID(campfireID))
+		return nil
+	case err == nil:
+		return nil // verification passed
+	default:
+		return fmt.Errorf("post-join verification: %w", err)
+	}
 }
 
 // transportFromBeacon converts a beacon's transport config to a protocol.Transport.
