@@ -799,11 +799,59 @@ func TestD6_OwnerCeiling_BlanketDenyExact(t *testing.T) {
 
 func TestD1_Determinism_AllCases(t *testing.T) {
 	// Build a representative request for determinism testing.
+	// Every case from the 12-case conformance harness must run through the
+	// 3× determinism loop. New conformance cases MUST be added here.
 	keys := newTestKeys(t)
 
 	gp := buildGrantPayload(t, keys.sender, "ready", "claim",
 		canonicalT0Eval+oneDay, 1, nil, keys.root)
 	payload := encodeGrantPayload(t, gp)
+
+	// 2-hop chain (root → intermediate → sender). Used by case-03 only —
+	// cases 04 and 05 construct their own payloads (different until/scope),
+	// and cases 07 and 08 build scope-specific chains below.
+	hop1Inter := buildGrantPayload(t, keys.intermediate, "ready", "claim|done",
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
+	hop1InterPayload := encodeGrantPayload(t, hop1Inter)
+	hop1InterID, _ := trust.GrantPayloadID(hop1Inter)
+	hop2Sender := buildGrantPayload(t, keys.sender, "ready", "claim",
+		canonicalT0Eval+oneDay, 2, hop1InterID, keys.intermediate)
+	hop2SenderPayload := encodeGrantPayload(t, hop2Sender)
+
+	// 3-hop chain for depth-exceeded. Needs a third (sub) key.
+	subKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating sub key for case 06: %v", err)
+	}
+	hop1Depth := buildGrantPayload(t, keys.intermediate, "ready", "claim",
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
+	hop1DepthPayload := encodeGrantPayload(t, hop1Depth)
+	hop1DepthID, _ := trust.GrantPayloadID(hop1Depth)
+	hop2Depth := buildGrantPayload(t, keys.sender, "ready", "claim",
+		canonicalT0Eval+oneDay, 2, hop1DepthID, keys.intermediate)
+	hop2DepthPayload := encodeGrantPayload(t, hop2Depth)
+	hop2DepthID, _ := trust.GrantPayloadID(hop2Depth)
+	hop3Depth := buildGrantPayload(t, subKey, "ready", "claim",
+		canonicalT0Eval+oneDay, 3, hop2DepthID, keys.sender)
+	hop3DepthPayload := encodeGrantPayload(t, hop3Depth)
+
+	// Scope-narrowing chain (case 07): parent grants ready:*, child narrows to ready:claim.
+	scopeNarrowParent := buildGrantPayload(t, keys.intermediate, "ready", "*",
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
+	scopeNarrowParentPayload := encodeGrantPayload(t, scopeNarrowParent)
+	scopeNarrowParentID, _ := trust.GrantPayloadID(scopeNarrowParent)
+	scopeNarrowChild := buildGrantPayload(t, keys.sender, "ready", "claim",
+		canonicalT0Eval+oneDay, 2, scopeNarrowParentID, keys.intermediate)
+	scopeNarrowChildPayload := encodeGrantPayload(t, scopeNarrowChild)
+
+	// Scope-widening chain (case 08): parent grants ready:claim, child claims ready:*.
+	scopeWideParent := buildGrantPayload(t, keys.intermediate, "ready", "claim",
+		canonicalT0Eval+oneDay, 1, nil, keys.root)
+	scopeWideParentPayload := encodeGrantPayload(t, scopeWideParent)
+	scopeWideParentID, _ := trust.GrantPayloadID(scopeWideParent)
+	scopeWideChild := buildGrantPayload(t, keys.sender, "ready", "*",
+		canonicalT0Eval+oneDay, 2, scopeWideParentID, keys.intermediate)
+	scopeWideChildPayload := encodeGrantPayload(t, scopeWideChild)
 
 	cases := []struct {
 		name string
@@ -827,6 +875,26 @@ func TestD1_Determinism_AllCases(t *testing.T) {
 					CampfireID: "deadbeef", Sender: keys.sender,
 				},
 				ChainMessages: []trust.ChainMessage{makeMsg("g1", payload)},
+				RootPrincipal: keys.root, CurrentTime: t0(),
+			},
+		},
+		{
+			name: "case-03-valid-2-hop",
+			req: trust.EvaluateRequest{
+				Request: trust.OpRequest{
+					Convention: "ready", Operation: "claim",
+					CampfireID: "deadbeef", Sender: keys.sender,
+					Predicate: trust.PredicateAST{
+						Kind: trust.KindGrant,
+						Leaf: &trust.LeafPredicate{
+							GrantConvention: "ready", GrantOp: "claim",
+						},
+					},
+				},
+				ChainMessages: []trust.ChainMessage{
+					makeMsg("grant-2", hop2SenderPayload),
+					makeMsg("grant-1", hop1InterPayload),
+				},
 				RootPrincipal: keys.root, CurrentTime: t0(),
 			},
 		},
@@ -862,6 +930,55 @@ func TestD1_Determinism_AllCases(t *testing.T) {
 			},
 		},
 		{
+			name: "case-06-depth-exceeded",
+			req: trust.EvaluateRequest{
+				Request: trust.OpRequest{
+					Convention: "ready", Operation: "claim",
+					CampfireID: "deadbeef", Sender: subKey,
+				},
+				ChainMessages: []trust.ChainMessage{
+					makeMsg("grant-3", hop3DepthPayload),
+					makeMsg("grant-2", hop2DepthPayload),
+					makeMsg("grant-1", hop1DepthPayload),
+				},
+				RootPrincipal: keys.root, CurrentTime: t0(),
+			},
+		},
+		{
+			name: "case-07-scope-narrowing",
+			req: trust.EvaluateRequest{
+				Request: trust.OpRequest{
+					Convention: "ready", Operation: "claim",
+					CampfireID: "deadbeef", Sender: keys.sender,
+					Predicate: trust.PredicateAST{
+						Kind: trust.KindGrant,
+						Leaf: &trust.LeafPredicate{
+							GrantConvention: "ready", GrantOp: "claim",
+						},
+					},
+				},
+				ChainMessages: []trust.ChainMessage{
+					makeMsg("grant-2", scopeNarrowChildPayload),
+					makeMsg("grant-1", scopeNarrowParentPayload),
+				},
+				RootPrincipal: keys.root, CurrentTime: t0(),
+			},
+		},
+		{
+			name: "case-08-scope-widening-rejected",
+			req: trust.EvaluateRequest{
+				Request: trust.OpRequest{
+					Convention: "ready", Operation: "done", // not covered by parent "claim"
+					CampfireID: "deadbeef", Sender: keys.sender,
+				},
+				ChainMessages: []trust.ChainMessage{
+					makeMsg("grant-2", scopeWideChildPayload),
+					makeMsg("grant-1", scopeWideParentPayload),
+				},
+				RootPrincipal: keys.root, CurrentTime: t0(),
+			},
+		},
+		{
 			name: "case-09-unresolvable",
 			req: trust.EvaluateRequest{
 				Request: trust.OpRequest{
@@ -870,6 +987,27 @@ func TestD1_Determinism_AllCases(t *testing.T) {
 				},
 				ChainMessages: []trust.ChainMessage{makeMsg("corrupt", []byte{0xFF, 0xFE})},
 				RootPrincipal: keys.root, CurrentTime: t0(),
+			},
+		},
+		{
+			name: "case-10-stale-revocation",
+			req: trust.EvaluateRequest{
+				Request: trust.OpRequest{
+					Convention: "ready", Operation: "claim",
+					CampfireID: "deadbeef", Sender: keys.sender,
+				},
+				ChainMessages: []trust.ChainMessage{makeMsg("g1", payload)},
+				RootPrincipal: keys.root, CurrentTime: t0(),
+				RevocationView: []trust.RevocationViewEntry{
+					{
+						CampfireID:          "campfire-under-revocation-watch",
+						LatestObservedMsgID: "some-msg",
+						ObservedAt:          t0().Add(-2 * time.Minute), // 2m stale vs 1m limit
+					},
+				},
+				OwnerPolicy: trust.OwnerPolicy{
+					MaxRevocationStaleness: 1 * time.Minute,
+				},
 			},
 		},
 		{
@@ -893,6 +1031,21 @@ func TestD1_Determinism_AllCases(t *testing.T) {
 						keys.intermediate, "delegation", "delegation-grant",
 						canonicalT0Eval+oneDay, 1, nil, keys.root))),
 				},
+				RootPrincipal: keys.root, CurrentTime: t0(),
+			},
+		},
+		{
+			name: "case-12-await-fulfillment-ordering",
+			req: trust.EvaluateRequest{
+				Request: trust.OpRequest{
+					Convention: "ready", Operation: "claim",
+					CampfireID: "deadbeef", Sender: keys.sender,
+					Predicate: trust.PredicateAST{
+						Kind: trust.KindChainTo,
+						Leaf: &trust.LeafPredicate{ChainToPubkey: keys.root},
+					},
+				},
+				ChainMessages: []trust.ChainMessage{makeMsg("grant-1", payload)},
 				RootPrincipal: keys.root, CurrentTime: t0(),
 			},
 		},

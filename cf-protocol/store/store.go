@@ -45,9 +45,11 @@ const (
 )
 
 // Re-export all functions.
+//
+// OpenMemory has been moved to store_inmemory.go (campfireagent-c5a) so the
+// test-only helper is visually separated from the production API surface.
 var (
 	Open                  = store.Open
-	OpenMemory            = store.OpenMemory
 	NowNano               = store.NowNano
 	StorePath             = store.StorePath
 	HasTag                = store.HasTag
