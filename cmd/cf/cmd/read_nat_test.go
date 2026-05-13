@@ -56,37 +56,26 @@ func addTestMembership(t *testing.T, s store.Store, campfireID string) {
 // returns the endpoint URL and transport.
 func startTestTransport(t *testing.T, campfireID string, id *identity.Identity, s store.Store) (string, *cfhttp.Transport) {
 	t.Helper()
-	// Let the OS pick a free port by binding to :0 — not possible with net/http/httptest.
-	// Use an httptest.Server on random port instead.
-	// We need a real cfhttp.Transport because handlePoll lives there.
-	// Pick a deterministic but likely-free port.
-	addr := fmt.Sprintf("127.0.0.1:0")
-	// We can't use ":0" with net.Listen through cfhttp.New directly; use httptest.
-	// Instead, start transport on a specific port. Use a helper to find a free one.
-	_ = addr
 
-	// Register self as a peer so membership checks in handlePoll pass.
+	// Register self as a peer so membership checks in handlePoll pass. The
+	// endpoint will be replaced with the real one once the transport binds.
 	s.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 		CampfireID:   campfireID,
 		MemberPubkey: id.PublicKeyHex(),
 		Endpoint:     "http://placeholder",
 	})
 
-	// Use httptest.NewServer with the transport's handler. We need to extract
-	// the handler from the transport. Since cfhttp.Transport exposes no handler
-	// getter, we start the transport on a fixed test port.
-	//
-	// Pick a port from the process PID to avoid cross-test collisions.
-	base := 21000 + (os.Getpid() % 200)
-	listenAddr := fmt.Sprintf("127.0.0.1:%d", base+200)
-	ep := fmt.Sprintf("http://%s", listenAddr)
-
-	tr := cfhttp.New(listenAddr, s)
-	tr.SetSelfInfo(id.PublicKeyHex(), ep)
+	// Bind to "127.0.0.1:0" so the OS assigns a free port. Read the actual
+	// address back via tr.Addr() after Start() (campfireagent-c37 — replaces
+	// the prior PID-modulo allocation in the 21000-26499 range, which could
+	// collide across concurrent test packages).
+	tr := cfhttp.New("127.0.0.1:0", s)
 	if err := tr.Start(); err != nil {
-		t.Fatalf("starting transport on %s: %v", listenAddr, err)
+		t.Fatalf("starting transport on OS-assigned port: %v", err)
 	}
 	t.Cleanup(func() { tr.Stop() }) //nolint:errcheck
+	ep := fmt.Sprintf("http://%s", tr.Addr())
+	tr.SetSelfInfo(id.PublicKeyHex(), ep)
 
 	// Update the self peer endpoint to the real address.
 	s.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
@@ -227,12 +216,15 @@ func TestCfReadFollowTerminatesOnSignal(t *testing.T) {
 
 	addTestMembership(t, s, campfireID)
 
-	// Use httptest.NewServer as an alternative: create a minimal poll server.
-	// We'll use the real transport but deliver a message after the poll starts,
-	// then close stopCh to terminate.
-	base := 21000 + (os.Getpid() % 200)
-	listenAddr := fmt.Sprintf("127.0.0.1:%d", base+201)
-	ep := fmt.Sprintf("http://%s", listenAddr)
+	// OS-assigned port — bind to "127.0.0.1:0" and read tr.Addr() after Start
+	// (campfireagent-c37; replaces PID-modulo block in the 21000-26499 range).
+	tr := cfhttp.New("127.0.0.1:0", s)
+	if err := tr.Start(); err != nil {
+		t.Fatalf("starting transport: %v", err)
+	}
+	defer tr.Stop() //nolint:errcheck
+	ep := fmt.Sprintf("http://%s", tr.Addr())
+	tr.SetSelfInfo(id.PublicKeyHex(), ep)
 
 	s.UpsertPeerEndpoint(store.PeerEndpoint{ //nolint:errcheck
 		CampfireID:   campfireID,
@@ -240,12 +232,6 @@ func TestCfReadFollowTerminatesOnSignal(t *testing.T) {
 		Endpoint:     ep,
 	})
 
-	tr := cfhttp.New(listenAddr, s)
-	tr.SetSelfInfo(id.PublicKeyHex(), ep)
-	if err := tr.Start(); err != nil {
-		t.Fatalf("starting transport: %v", err)
-	}
-	defer tr.Stop() //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
 	stopCh := make(chan os.Signal, 1)
