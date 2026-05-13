@@ -121,7 +121,7 @@ func NamingRegisterDeclaration() *convention.Declaration {
 		Operation:   "naming-register",
 		Description: "Register a named endpoint in this campfire's namespace",
 		ProducesTags: []convention.TagRule{
-			{Tag: naming.TagNamePrefix, Cardinality: "zero_or_more", Pattern: naming.TagNamePrefix + "*"},
+			{Tag: naming.TagNamePrefix, Cardinality: "zero_to_many", Pattern: naming.TagNamePrefix + "*"},
 		},
 		RateLimit: &convention.RateLimit{
 			Max:    5,

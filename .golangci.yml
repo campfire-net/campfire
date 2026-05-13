@@ -64,20 +64,16 @@ linters:
         # interfaces (GateEvaluator, ProvenanceChecker) whose default implementations live
         # in L3 (pkg/trust, pkg/naming). The machinery must not import its own implementations.
         #
-        # Applies to: all non-test, non-exempted files in cf-conventions/cf-convention/.
-        # Exempt: *_test.go files, seed.go, parser.go (tracked allowances, see below).
+        # Applies to: all non-test files in cf-conventions/cf-convention/.
+        # Exempt: *_test.go files only.
         #
-        # Tracked allowances:
-        #   - cf-conventions/cf-convention/seed.go — imports pkg/naming for TagNamePrefix/TagPrefix
-        #     constants. Pending: Stage 3 refactor may extract these constants to a shared package.
-        #     Citation: design v2 §4.3, OPEN-018.
-        #
-        #   - cf-conventions/cf-convention/parser.go — imports pkg/naming for TagPrefix constants
-        #     used in the parser's deny list. Pending: same migration as seed.go; or
-        #     extract TagPrefix constants to a shared L1/L2 package (pkg/tagspec).
-        #     Citation: design v2 §4.1 (internal/tagspec extraction), OPEN-018.
-        #
-        # Note: legacy path pkg/convention/ no longer exists (moved in campfireagent-4d7).
+        # Note on prior exemptions: seed.go and parser.go previously had file-level
+        # exemptions while their TagPrefix constants still came from pkg/naming.
+        # seed.go was moved to cf-conventions/cf-convention-extension/seed/ in
+        # campfireagent-4d7 (no longer exists in this directory), and parser.go's
+        # naming-prefix deny list was hardcoded to the string "naming:" — so neither
+        # exemption is needed any longer. Legacy path pkg/convention/ no longer
+        # exists either (moved in campfireagent-4d7).
         #
         # To add an allowance: follow CONTRIBUTING.md §Cross-Layer Import Policy.
         L2-no-naming:
@@ -85,12 +81,10 @@ linters:
           files:
             - "**/cf-conventions/cf-convention/**/*.go"
             - "**/cf-conventions/cf-convention/*.go"
-            - "!**/cf-conventions/cf-convention/seed.go"
-            - "!**/cf-conventions/cf-convention/parser.go"
             - "!**/*_test.go"
           deny:
             - pkg: "github.com/campfire-net/campfire/pkg/naming"
-              desc: "B2: L2 (cf-conventions/cf-convention) must not import L3 (pkg/naming). See CONTRIBUTING.md §Cross-Layer Import Policy (design v2 §4.6). Exemptions for seed.go and parser.go are tracked in CONTRIBUTING.md pending §4.3 migration."
+              desc: "B2: L2 (cf-conventions/cf-convention) must not import L3 (pkg/naming). See CONTRIBUTING.md §Cross-Layer Import Policy (design v2 §4.6)."
 
         # L1-narrow — cf-protocol/ must not import cf-conventions (or any future L2/L3 layer).
         #
@@ -329,6 +323,8 @@ linters:
               desc: "L2-no-extensions: L2 machinery must not import L3 extension delegation (OPEN-018: identity_resolver.go exempt pending Stage 3 refactor). See design v2 §4.6 (campfireagent-4d7)"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension"
               desc: "L2-no-extensions: L2 machinery must not import L3 cf-convention-extension top-level package (promote/supersede ops). See design v2 §4.6 (campfireagent-a40)"
+            - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-convention-extension/seed"
+              desc: "L2-no-extensions: L2 machinery (cf-convention/) must not import L3 cf-convention-extension/seed (declaration seeds). See design v2 §4.6 (campfireagent-4d7 Stage 2)"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-identity"
               desc: "L2-no-extensions: L2 machinery (cf-convention/) must not import L3 cf-identity. See design v2 §4.6 (campfireagent-902)"
             - pkg: "github.com/campfire-net/campfire/cf-conventions/cf-discovery"

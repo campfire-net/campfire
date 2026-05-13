@@ -110,8 +110,8 @@ func TestInfrastructureSeedDeclarations(t *testing.T) {
 	if nr.ProducesTags[0].Pattern != "naming:name:*" {
 		t.Errorf("naming-register produces_tags[0].pattern: want %q, got %q", "naming:name:*", nr.ProducesTags[0].Pattern)
 	}
-	if nr.ProducesTags[0].Cardinality != "zero_or_more" {
-		t.Errorf("naming-register produces_tags[0].cardinality: want %q, got %q", "zero_or_more", nr.ProducesTags[0].Cardinality)
+	if nr.ProducesTags[0].Cardinality != "zero_to_many" {
+		t.Errorf("naming-register produces_tags[0].cardinality: want %q, got %q", "zero_to_many", nr.ProducesTags[0].Cardinality)
 	}
 	if nr.RateLimit == nil {
 		t.Fatal("naming-register rate_limit: expected non-nil")
