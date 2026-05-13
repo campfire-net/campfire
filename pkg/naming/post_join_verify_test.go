@@ -52,8 +52,15 @@ func newStubVerifierFunc(stub *stubVerifier) func(*protocol.Client) discovery.Ti
 
 // --- §11.3 happy path ---
 
-// TestPostJoinVerification_HappyPath verifies that a successful probe-write-then-observe
-// cycle results in a nil error and membership is retained.
+// TestPostJoinVerification_HappyPath verifies that the REAL clientTier2Verifier
+// (not a stub) round-trips a probe message on a real filesystem transport — the
+// probe is sent, the joiner reads it back from its own message stream, and
+// ProbeAndObserve returns nil (the success branch — not the latency branch).
+//
+// The veracity-relevant assertion is the discovery:probe message landing in
+// clientB's local view: this proves the probe write succeeded AND the read
+// observed it before timeout, which is exactly the §11.3 step-4 pass condition.
+// Membership-retained alone cannot distinguish success from latency-degrade.
 func TestPostJoinVerification_HappyPath(t *testing.T) {
 	clientA, clientB, campfireID, campfireTransportDir, beaconDir := setupTwoCampfireClients(t)
 	ctx := context.Background()
@@ -99,6 +106,24 @@ func TestPostJoinVerification_HappyPath(t *testing.T) {
 	if m == nil {
 		t.Error("clientB should be a member after successful post-join verification")
 	}
+
+	// Veracity assertion: the discovery:probe message MUST be in clientB's view.
+	// If it isn't, the probe either wasn't sent, wasn't stored, or wasn't read —
+	// any of which means ProbeAndObserve exited via the latency branch, not the
+	// success branch. The success branch (§11.3 step 4) is the only path that
+	// observes the probe via Read.
+	probeResult, err := clientB.Read(protocol.ReadRequest{
+		CampfireID: campfireID,
+		Tags:       []string{discovery.ProbeTag},
+	})
+	if err != nil {
+		t.Fatalf("reading probe messages: %v", err)
+	}
+	if len(probeResult.Messages) == 0 {
+		t.Fatal("happy path: no discovery:probe message in clientB's view — ProbeAndObserve fell through to latency branch instead of observing the probe (veracity gap)")
+	}
+	// At least one probe message present — verification succeeded by observation.
+	t.Logf("happy path: observed %d discovery:probe message(s) in clientB's view", len(probeResult.Messages))
 }
 
 // --- §11.6 + §11.3.1 send-rejected suppression ---

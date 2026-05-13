@@ -48,9 +48,16 @@ func NewClientTier2Verifier(client *protocol.Client) Tier2Verifier {
 // to unjoin (ErrPostJoinVerificationFailed) or degrade (ErrPostJoinVerificationLatency).
 func (v *clientTier2Verifier) ProbeAndObserve(ctx context.Context, campfireID string, probeTimeout time.Duration) error {
 	// Step 1: Send probe message tagged discovery:probe.
+	// Payload is an empty byte slice (NOT nil) because the local SQLite store
+	// has payload BLOB NOT NULL — a nil payload silently fails INSERT OR IGNORE
+	// and the probe never appears in subsequent Read calls (the probe is on
+	// the filesystem transport but absent from the store mirror, so observe
+	// always times out into the latency branch). The spec (§11.3 step 1) calls
+	// for "no content other than the probe tag and the joiner's signature";
+	// an empty byte slice satisfies that — the canonical zero-byte payload.
 	msg, err := v.client.Send(protocol.SendRequest{
 		CampfireID: campfireID,
-		Payload:    nil, // §11.3: no content other than tag and signature
+		Payload:    []byte{}, // §11.3: empty payload (NOT nil — see comment above)
 		Tags:       []string{ProbeTag},
 	})
 	if err != nil {
