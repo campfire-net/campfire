@@ -81,15 +81,10 @@ func TestJoinP2PHTTP_RelayStoredAsPeerEndpoint(t *testing.T) {
 	cfhttp.OverrideHTTPClientForTest(&http.Client{})
 	defer cfhttp.OverrideHTTPClientForTest(&http.Client{Transport: http.DefaultTransport})
 
-	// Start the relay transport. Use a PID-based port to avoid test collisions.
-	// This file's port block: 22500 + PID%100 (well clear of other cmd test files
-	// which use 21000 + PID%200 + small offsets).
-	base := 22500 + (os.Getpid() % 100)
-	listenAddr := fmt.Sprintf("127.0.0.1:%d", base)
-	relayEP := fmt.Sprintf("http://%s", listenAddr)
-
-	tr := cfhttp.New(listenAddr, hostStore)
-	tr.SetSelfInfo(hostID.PublicKeyHex(), relayEP)
+	// Start the relay transport on an OS-assigned port. Bind to "127.0.0.1:0"
+	// and read the actual address from tr.Addr() after Start()
+	// (campfireagent-c37; replaces PID-modulo block at 22500-22599).
+	tr := cfhttp.New("127.0.0.1:0", hostStore)
 	tr.SetKeyProvider(func(id string) ([]byte, []byte, error) {
 		if id == campfireID {
 			return cfPriv, cfPub, nil
@@ -97,9 +92,11 @@ func TestJoinP2PHTTP_RelayStoredAsPeerEndpoint(t *testing.T) {
 		return nil, nil, fmt.Errorf("key not found: %s", id)
 	})
 	if err := tr.Start(); err != nil {
-		t.Fatalf("starting relay transport on %s: %v", listenAddr, err)
+		t.Fatalf("starting relay transport: %v", err)
 	}
 	defer tr.Stop() //nolint:errcheck
+	relayEP := fmt.Sprintf("http://%s", tr.Addr())
+	tr.SetSelfInfo(hostID.PublicKeyHex(), relayEP)
 	time.Sleep(20 * time.Millisecond)
 
 	// Set up CF_HOME for joinP2PHTTP (needs to write campfire state files).
