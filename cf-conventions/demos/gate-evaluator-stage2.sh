@@ -26,29 +26,76 @@ FAIL=0
 check() {
     local label="$1"
     shift
-    if "$@" >/dev/null 2>&1; then
+    local err_file
+    err_file="$(mktemp)"
+    local rc=0
+    if "$@" >/dev/null 2>"$err_file"; then
         echo "  PASS: $label"
         PASS=$((PASS + 1))
     else
-        echo "  FAIL: $label"
+        rc=$?
+        echo "  FAIL ($rc): $label"
+        if [[ -s "$err_file" ]]; then
+            echo "    --- stderr ---"
+            sed 's/^/    /' "$err_file"
+            echo "    --- end stderr ---"
+        fi
         FAIL=$((FAIL + 1))
     fi
+    rm -f "$err_file"
 }
 
 check_output() {
     local label="$1"
     local expected="$2"
     shift 2
-    local out
-    out=$("$@" 2>&1)
+    local err_file out
+    err_file="$(mktemp)"
+    out=$("$@" 2>"$err_file")
     if echo "$out" | grep -q "$expected"; then
         echo "  PASS: $label"
         PASS=$((PASS + 1))
     else
         echo "  FAIL: $label (expected pattern: $expected)"
         echo "        actual output: $out"
+        if [[ -s "$err_file" ]]; then
+            echo "    --- stderr ---"
+            sed 's/^/    /' "$err_file"
+            echo "    --- end stderr ---"
+        fi
         FAIL=$((FAIL + 1))
     fi
+    rm -f "$err_file"
+}
+
+# fast_fail_check runs a check and exits immediately if it fails.
+# Use for prerequisite steps where subsequent checks are meaningless on failure
+# (e.g., compilation — all grep/test checks are irrelevant if the build is broken).
+fast_fail_check() {
+    local label="$1"
+    shift
+    local err_file
+    err_file="$(mktemp)"
+    local rc=0
+    if "$@" >/dev/null 2>"$err_file"; then
+        echo "  PASS: $label"
+        PASS=$((PASS + 1))
+    else
+        rc=$?
+        echo "  FAIL ($rc): $label"
+        if [[ -s "$err_file" ]]; then
+            echo "    --- stderr ---"
+            sed 's/^/    /' "$err_file"
+            echo "    --- end stderr ---"
+        fi
+        FAIL=$((FAIL + 1))
+        rm -f "$err_file"
+        echo ""
+        echo "=== Results: $PASS passed, $FAIL failed ==="
+        echo "Fatal: compilation failure — remaining checks skipped (they depend on a working build)."
+        exit 1
+    fi
+    rm -f "$err_file"
 }
 
 echo "=== Stage 2: GateEvaluator interface (campfireagent-2b9) ==="
@@ -56,7 +103,7 @@ echo ""
 
 # ── 1. Package compiles cleanly ───────────────────────────────────────────────
 echo "── Compilation ──"
-check "cf-conventions/cf-convention builds cleanly" \
+fast_fail_check "cf-conventions/cf-convention builds cleanly" \
     go build ./cf-conventions/cf-convention/...
 check "gate_evaluator.go has GateEvaluator interface" \
     grep -q "type GateEvaluator interface" cf-conventions/cf-convention/gate_evaluator.go
