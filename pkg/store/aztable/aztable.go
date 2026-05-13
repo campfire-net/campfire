@@ -24,13 +24,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/cf-protocol/crypto"
@@ -1748,13 +1751,33 @@ func isTableExistsError(err error) bool {
 }
 
 // isNotFoundError returns true if err is an Azure "entity not found" (404) error.
+//
+// Detection prefers the structured *azcore.ResponseError type carried by the
+// Azure SDK: HTTP 404 OR ErrorCode in {"ResourceNotFound","TableNotFound"}.
+// A substring fallback on those two error codes covers test mocks (see
+// cas_mock_test.go) and any rare path where an error reaches us without the
+// SDK wrapping. The previous implementation also matched the literal substring
+// "404", which produced false positives on entity keys derived from nanosecond
+// timestamps that happen to contain "404" as a digit subsequence — root cause
+// of the campfireagent-426 flake. The "404" fallback has been removed; real
+// Azure 404s always carry ResourceNotFound/TableNotFound or a structured
+// status code, both of which are still matched.
 func isNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var respErr *azcore.ResponseError
+	if errors.As(err, &respErr) {
+		if respErr.StatusCode == http.StatusNotFound {
+			return true
+		}
+		if respErr.ErrorCode == "ResourceNotFound" || respErr.ErrorCode == "TableNotFound" {
+			return true
+		}
+		return false
+	}
 	s := err.Error()
-	return strings.Contains(s, "ResourceNotFound") || strings.Contains(s, "404") ||
-		strings.Contains(s, "TableNotFound")
+	return strings.Contains(s, "ResourceNotFound") || strings.Contains(s, "TableNotFound")
 }
 
 // isConflictError returns true if err is an Azure "entity already exists" (409) error.
