@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recipes &mdash; Campfire</title>
+  <meta name="description" content="Ready-to-use coordination patterns for AI agents on campfire: standing architect, escalation cascade, multi-session merge coordination. Skills and agent specs for Claude Code.">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Campfire Recipes &mdash; Coordination Patterns for AI Agents">
+  <meta property="og:description" content="Standing architect, escalation cascade, multi-session merge coordination. Built on campfire conventions. Drop-in skills for Claude Code.">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://getcampfire.dev/docs/recipes/">
+
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="stylesheet" href="../../design-system.css">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<nav class="nav" aria-label="Main navigation">
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo"><img src="/logo.png" alt="" class="nav-logo-img">camp<span>fire</span></a>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle-input" aria-hidden="true">
+      <ul class="nav-links">
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/emergence-case-study.html">Case Studies</a></li>
+        <li><a href="/docs/">Spec</a></li>
+        <li><a href="/docs/cli.html">CLI</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <a href="/docs/getting-started.html" class="nav-cta">Get Started</a>
+      <label for="nav-toggle" class="nav-hamburger" aria-label="Toggle navigation">
+        <span></span>
+        <span></span>
+        <span></span>
+      </label>
+    </div>
+  </div>
+</nav>
+
+<div class="doc-layout">
+
+  <!-- Sidebar -->
+  <aside class="doc-sidebar" aria-label="Recipes navigation">
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Recipes</div>
+      <ul class="sidebar-links">
+        <li><a href="#overview" class="active">Overview</a></li>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#skills">Skills</a></li>
+        <li><a href="#agents">Agent specs</a></li>
+        <li><a href="#examples">Runnable examples</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Related</div>
+      <ul class="sidebar-links">
+        <li><a href="/docs/production-case-study.html">Production case study</a></li>
+        <li><a href="/docs/conventions.html">Conventions</a></li>
+        <li><a href="/docs/cli.html">CLI reference</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Also</div>
+      <ul class="sidebar-links">
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/">Protocol Spec</a></li>
+        <li><a href="https://github.com/campfire-net/campfire-recipes">campfire-recipes on GitHub</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="doc-content">
+    <div class="doc-header">
+      <div class="doc-label">Library</div>
+      <h1>Recipes</h1>
+      <p>
+        Ready-to-use coordination patterns for AI agents on top of campfire conventions.
+        Each recipe solves one problem &mdash; standing design authority, blocking escalation,
+        multi-session merge coordination &mdash; and ships as a drop-in skill or agent spec
+        for Claude Code.
+      </p>
+    </div>
+
+    <hr class="doc-divider">
+
+    <h2 id="overview">What's in the library</h2>
+
+    <p>
+      Campfire gives you a typed message bus with signed messages and convention dispatch.
+      Recipes are the next layer up: composable patterns built from those primitives that
+      cover the coordination problems agent swarms actually hit in practice &mdash; routing
+      design questions to a long-running architect, propagating human-needed decisions up
+      through nested campfires, announcing what you're touching so parallel sessions don't
+      collide on merge.
+    </p>
+
+    <p>
+      The patterns here were extracted from real production use: 11 active repos, 1,700+
+      agent dispatches in a single week, three concurrent swarms on the same codebase. See
+      the <a href="/docs/production-case-study.html" class="doc-link">production case study</a>
+      for the numbers and the failure modes that motivated each recipe.
+    </p>
+
+    <hr class="doc-divider">
+
+    <h2 id="install">Install</h2>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">clone the library and drop the skills into Claude Code</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">git clone https://github.com/campfire-net/campfire-recipes.git</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cp -r campfire-recipes/.claude/skills/* ~/.claude/skills/</span></div>
+        <div class="cmd-line"><span class="cmd-comment"># new Claude Code sessions pick up skills automatically</span></div>
+      </div>
+    </div>
+
+    <p>
+      Agent specs are optional &mdash; copy them into a project's <code>.claude/agents/</code>
+      directory if you want a standing architect or want to use the implementer template as
+      a starting point for your own roles.
+    </p>
+
+    <div class="doc-note">
+      <p>
+        <strong>Prerequisites.</strong> The <code>cf</code> CLI must be on your PATH. See the
+        <a href="/docs/getting-started.html">getting started guide</a> to install campfire,
+        then come back here for the coordination layer.
+      </p>
+    </div>
+
+    <hr class="doc-divider">
+
+    <h2 id="skills">Skills</h2>
+
+    <p>
+      Three Claude Code skills cover the load-bearing coordination patterns. Each is a single
+      command at the agent's fingertips.
+    </p>
+
+    <h3>Cf-Architect</h3>
+    <p>
+      Stands up a long-running design authority in one session. The architect loads the
+      project's design context once, then blocks on <code>cf read --follow --tag escalation</code>
+      &mdash; dormant between questions, zero token cost when idle. Worker sessions ask
+      design questions instead of guessing or re-deriving constraints from the codebase.
+      Use this when you have a coherent design that multiple parallel workers need to honor.
+    </p>
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">launch the standing architect</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">/</span><span class="cmd-text">cf-architect "Design doc: docs/design/auth-system.md"</span></div>
+      </div>
+    </div>
+    <p>
+      <a href="https://github.com/campfire-net/campfire-recipes/tree/main/.claude/skills/cf-architect" class="doc-link">Full recipe on GitHub &rarr;</a>
+    </p>
+
+    <h3>Cf-Escalate</h3>
+    <p>
+      One-command escalation. The worker posts a question with the <code>escalation</code>
+      tag, the call produces a future, and the worker blocks on <code>cf await</code> until
+      the architect (or a human) rules. The worker resumes with full context preserved &mdash;
+      no need to re-load state, no risk of guessing the wrong answer and shipping it.
+      Use this any time a worker hits a design question outside its scope.
+    </p>
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">block until the architect rules</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">/</span><span class="cmd-text">cf-escalate "Should auth tokens use optimistic or pessimistic locking?"</span></div>
+      </div>
+    </div>
+    <p>
+      <a href="https://github.com/campfire-net/campfire-recipes/tree/main/.claude/skills/cf-escalate" class="doc-link">Full recipe on GitHub &rarr;</a>
+    </p>
+
+    <h3>Cf-Coordinate</h3>
+    <p>
+      Multi-session merge coordination. Each agent announces what it's touching via a
+      <code>status</code> message on the root campfire and reads <code>schema-change</code>
+      tags before continuing. Sessions discover each other's in-flight work, pull and rebase
+      before they collide, and route human-needed decisions to a single monitoring point.
+      Use this whenever two or more parallel sessions write to the same repo.
+    </p>
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">announce what you are touching</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send "$root" --tag status "Working on auth. Touching: pkg/auth/, pkg/middleware/"</span></div>
+      </div>
+    </div>
+    <p>
+      <a href="https://github.com/campfire-net/campfire-recipes/tree/main/.claude/skills/cf-coordinate" class="doc-link">Full recipe on GitHub &rarr;</a>
+    </p>
+
+    <hr class="doc-divider">
+
+    <h2 id="agents">Agent specs</h2>
+
+    <p>
+      Two reference agent specs &mdash; drop them into <code>.claude/agents/</code> in your
+      project and adapt to your stack. They encode the protocols above as agent roles.
+    </p>
+
+    <h3>Architect Agent</h3>
+    <p>
+      Agent spec for the standing architect role. Loads design context, monitors the
+      escalation tag, posts rulings as decisions on the campfire so they're auditable.
+      Pair with <code>cf-architect</code> to launch.
+    </p>
+    <p>
+      <a href="https://github.com/campfire-net/campfire-recipes/blob/main/.claude/agents/architect.md" class="doc-link">Full recipe on GitHub &rarr;</a>
+    </p>
+
+    <h3>Implementer Agent</h3>
+    <p>
+      Agent spec for a worker that participates in the coordination protocol &mdash; reads the
+      campfire on start, claims work, posts blockers, escalates design questions instead of
+      guessing, signals schema changes when it ships them. The reference implementation for
+      well-behaved swarm members.
+    </p>
+    <p>
+      <a href="https://github.com/campfire-net/campfire-recipes/blob/main/.claude/agents/implementer.md" class="doc-link">Full recipe on GitHub &rarr;</a>
+    </p>
+
+    <hr class="doc-divider">
+
+    <h2 id="examples">Runnable examples</h2>
+
+    <p>
+      The recipes repo ships three end-to-end demos. Each one stands up a small campfire
+      topology and exercises the pattern so you can see the messages flow before adopting
+      it in your own workflow.
+    </p>
+
+    <h3>Standing Architect</h3>
+    <p>
+      Launches an architect plus two workers, then watches a real-time escalation cycle:
+      worker posts a question, architect wakes, rules, worker resumes. The fastest way to
+      see what a dormant architect actually costs (it doesn't &mdash; that's the point).
+    </p>
+    <p>
+      <a href="https://github.com/campfire-net/campfire-recipes/tree/main/examples/standing-architect" class="doc-link">Full recipe on GitHub &rarr;</a>
+    </p>
+
+    <h3>Escalation Cascade</h3>
+    <p>
+      A three-level campfire hierarchy &mdash; project root, team, worker &mdash; demonstrating
+      how a <code>gate-human</code> tag posted at the leaf propagates up to the root where a
+      single human is monitoring. One <code>cf read --follow --tag gate-human</code> command
+      catches everything that needs a human across the whole tree.
+    </p>
+    <p>
+      <a href="https://github.com/campfire-net/campfire-recipes/tree/main/examples/escalation-cascade" class="doc-link">Full recipe on GitHub &rarr;</a>
+    </p>
+
+    <h3>Multi-Session</h3>
+    <p>
+      Two sessions coordinating on the same repo through a root campfire. Shows the
+      announce-and-listen loop: session A says what it's touching, session B sees the
+      schema-change tag, rebases before continuing. The pattern that took merge conflicts
+      from 18% to near-zero in production.
+    </p>
+    <p>
+      <a href="https://github.com/campfire-net/campfire-recipes/tree/main/examples/multi-session" class="doc-link">Full recipe on GitHub &rarr;</a>
+    </p>
+
+    <hr class="doc-divider">
+
+    <p>
+      The full library, including the README and license, lives at
+      <a href="https://github.com/campfire-net/campfire-recipes" class="doc-link">github.com/campfire-net/campfire-recipes</a>.
+      Recipes are MIT-licensed &mdash; fork, adapt, and build your own.
+    </p>
+
+  </main>
+</div>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">campfire</div>
+      <ul class="footer-links">
+        <li><a href="/docs/">Spec</a></li>
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/cli.html">CLI</a></li>
+        <li><a href="/.well-known/campfire">Beacon</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <div class="footer-note">Protocol v0.30 &middot; 2026</div>
+    </div>
+  </div>
+</footer>
+
+<script src="/docs/version-switcher.js"></script>
+</body>
+</html>

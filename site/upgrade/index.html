@@ -41,11 +41,20 @@
         migration path per the breaking-changes inventory below.
       </p>
       <div class="doc-meta">
-        <a href="https://github.com/campfire-net/campfire/blob/main/docs/upgrade-0.19-to-0.30.md">Full upgrade-0.19-to-0.30.md &rarr;</a>
-        &nbsp;&middot;&nbsp;
         <a href="/releases/0.30/">Release notes &rarr;</a>
       </div>
     </div>
+
+    <!-- Section index -->
+    <nav class="upgrade-toc" aria-label="Breaking changes index">
+      <span class="upgrade-toc-label">On this page:</span>
+      <a href="#consumer-matrix">Consumer matrix</a>
+      <a href="#bc-1">BC-1 substrate</a>
+      <a href="#bc-2">BC-2 conventions</a>
+      <a href="#bc-3">BC-3 session tokens</a>
+      <a href="#bc-4">BC-4 gate evaluator</a>
+      <a href="#bc-5">BC-5 center-finding</a>
+    </nav>
 
     <!-- Consumer port matrix -->
     <section class="upgrade-section" id="consumer-matrix">
@@ -117,8 +126,57 @@
       <p class="upgrade-section-desc">
         <strong>Fix:</strong> Replace direct substrate imports with <code>cf-protocol/protocol</code>.
         The <code>pkg/protocol</code> forwarding shim continues to compile for the common SDK path.
-        See the <a href="https://github.com/campfire-net/campfire/blob/main/docs/upgrade-0.19-to-0.30.md#bc-1--substrate-packages-moved-to-cf-protocol">full import path table</a>.
+        Most consumers (rd, dontguess, social, freeso) only use <code>pkg/protocol</code> and
+        <code>pkg/convention</code> &mdash; they are not affected by the substrate move.
       </p>
+
+      <h3 class="upgrade-sub-title">Migration details</h3>
+      <p class="upgrade-section-desc"><strong>Import path table:</strong></p>
+      <table class="field-table">
+        <thead>
+          <tr><th>Before (0.19)</th><th>After (0.30)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>pkg/campfire</code></td><td>moved to <code>cf-protocol/internal/campfire</code>; re-exported via <code>cf-protocol/protocol</code></td></tr>
+          <tr><td><code>pkg/message</code></td><td>moved to <code>cf-protocol/internal/message</code>; re-exported via <code>cf-protocol/protocol</code></td></tr>
+          <tr><td><code>pkg/store</code></td><td>moved to <code>cf-protocol/internal/store</code>; re-exported via <code>cf-protocol/protocol</code></td></tr>
+          <tr><td><code>pkg/transport/fs</code></td><td>moved to <code>cf-protocol/internal/transport/fs</code></td></tr>
+          <tr><td><code>pkg/transport/http</code></td><td>moved to <code>cf-protocol/internal/transport/http</code></td></tr>
+          <tr><td><code>pkg/threshold</code></td><td>moved to <code>cf-protocol/internal/threshold</code></td></tr>
+          <tr><td><code>pkg/projection</code></td><td>moved to <code>cf-protocol/internal/projection</code></td></tr>
+          <tr><td><code>pkg/predicate</code></td><td>moved to <code>cf-protocol/internal/predicate</code></td></tr>
+          <tr><td><code>pkg/crypto</code></td><td>moved to <code>cf-protocol/internal/crypto</code></td></tr>
+          <tr><td><code>pkg/encoding</code></td><td>moved to <code>cf-protocol/internal/encoding</code></td></tr>
+          <tr><td><code>pkg/admission</code></td><td>moved to <code>cf-protocol/internal/admission</code></td></tr>
+          <tr><td><code>pkg/tagspec</code></td><td>moved to <code>cf-protocol/internal/tagspec</code>; constants re-exported as <code>protocol.CampfireTagPrefix</code>, etc.</td></tr>
+        </tbody>
+      </table>
+      <p class="upgrade-section-desc">
+        <code>pkg/store/aztable</code> remains at its original path (it implements
+        <code>convention.DispatchStore</code> from <code>pkg/convention</code>, an L2 dependency).
+      </p>
+
+      <p class="upgrade-section-desc"><strong>Before (0.19):</strong></p>
+      <pre><code>import (
+    "github.com/campfire-net/campfire/pkg/campfire"
+    "github.com/campfire-net/campfire/pkg/protocol"
+)
+
+// Direct substrate use:
+cf := campfire.New("open", nil, 1)</code></pre>
+
+      <p class="upgrade-section-desc"><strong>After (0.30):</strong></p>
+      <pre><code>import (
+    "github.com/campfire-net/campfire/cf-protocol/protocol"
+)
+
+// Substrate types are re-exported:
+cf := protocol.NewCampfire("open", nil, 1)
+
+// For the common case (Init + client methods): pkg/protocol still compiles
+// via the forwarding shim. The SDK-level API is unchanged.
+import "github.com/campfire-net/campfire/pkg/protocol"
+client, _, err := protocol.Init(cfHome)</code></pre>
     </section>
 
     <!-- BC-2 -->
@@ -130,10 +188,54 @@
         <code>cf-conventions/</code> Go module with strict layer boundaries.
       </p>
       <p class="upgrade-section-desc">
-        <strong>Fix:</strong> Update import paths. <code>pkg/durability</code> →
-        <code>cf-conventions/cf-durability</code>.
-        <code>cf-convention-extensions/connect/</code> → <code>cf-conventions/cf-connect</code>.
+        <strong>Fix:</strong> Update import paths. Convention authors that previously
+        wired ad-hoc tag prefixes can now rely on <code>protocol.DefaultDeniedTagPrefixes</code>
+        to block reserved <code>campfire:</code> and <code>session:</code> tags at the
+        dispatch boundary.
       </p>
+
+      <h3 class="upgrade-sub-title">Migration details</h3>
+      <p class="upgrade-section-desc"><strong>Convention module move:</strong></p>
+      <table class="field-table">
+        <thead>
+          <tr><th>Before (0.19)</th><th>After (0.30)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>pkg/convention</code></td><td><code>cf-conventions/cf-convention</code> (interfaces &amp; dispatcher)</td></tr>
+          <tr><td><code>pkg/durability</code></td><td><code>cf-conventions/cf-durability</code></td></tr>
+          <tr><td><code>cf-convention-extensions/connect/</code></td><td><code>cf-conventions/cf-connect</code></td></tr>
+          <tr><td>tag constants in <code>pkg/tagspec</code></td><td>re-exported as <code>protocol.CampfireTagPrefix</code>, <code>protocol.CampfireTagMemberJoined</code>, <code>protocol.TagSessionOpen</code>, <code>protocol.TagSessionClose</code>, &hellip;</td></tr>
+        </tbody>
+      </table>
+
+      <p class="upgrade-section-desc"><strong>Three new reserved L1 tags are frozen in the wire format:</strong></p>
+      <table class="field-table">
+        <thead>
+          <tr><th>Tag</th><th>Emitted by</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>campfire:visibility-changed</code></td><td><code>Client.Admit</code> / <code>Client.Evict</code></td><td>Campfire visibility (open / invite-only) transitioned</td></tr>
+          <tr><td><code>session:open</code></td><td><code>protocol.EmitSessionOpen</code></td><td>Session campfire opened; capability template attached</td></tr>
+          <tr><td><code>session:close</code></td><td><code>protocol.EmitSessionClose</code></td><td>Session campfire closed; coordination log eligible for compaction</td></tr>
+        </tbody>
+      </table>
+      <p class="upgrade-section-desc">
+        Convention declarations <em>must not</em> use these tags as operation tags. The L2
+        dispatcher rejects any operation whose tag is in the <code>campfire:</code> or
+        <code>session:</code> prefix at parse time with a <em>denied tag prefix</em> error.
+      </p>
+
+      <p class="upgrade-section-desc"><strong>Before (0.19):</strong></p>
+      <pre><code>import "github.com/campfire-net/campfire/pkg/tagspec"
+
+if strings.HasPrefix(msg.Tag, tagspec.CampfirePrefix) { ... }</code></pre>
+
+      <p class="upgrade-section-desc"><strong>After (0.30):</strong></p>
+      <pre><code>import "github.com/campfire-net/campfire/cf-protocol/protocol"
+
+if strings.HasPrefix(msg.Tag, protocol.CampfireTagPrefix) { ... }
+// or use cf-conventions/cf-convention for L2 re-exports:
+//   convention.DefaultDeniedTagPrefixes</code></pre>
     </section>
 
     <!-- BC-3 -->
@@ -147,7 +249,66 @@
       <p class="upgrade-section-desc">
         <strong>Fix:</strong> Re-generate all session tokens. Any stored v1 token must
         be replaced. The <code>swarm-coordination</code> convention has been ported to <code>cfs2_</code>.
+        Token TTL is unchanged (2 h default, 24 h maximum).
       </p>
+
+      <h3 class="upgrade-sub-title">Migration details</h3>
+      <p class="upgrade-section-desc"><strong>Removed APIs (shared-key session form):</strong></p>
+      <table class="field-table">
+        <thead>
+          <tr><th>Removed in 0.30</th><th>Replacement</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>JoinSession(token string)</code></td><td>Admission-based join &mdash; worker key is materialized into jail dir; orchestrator key never shared</td></tr>
+          <tr><td>Shared-key <code>NewSession</code> variant</td><td><code>client.NewSession(ttl)</code> &mdash; uses creator&rsquo;s own identity key</td></tr>
+          <tr><td><code>cfs1_</code> token prefix</td><td><code>cfs2_</code> &mdash; embeds real transport config (endpoint URL, transport type) instead of a raw private key</td></tr>
+        </tbody>
+      </table>
+
+      <p class="upgrade-section-desc"><strong>Before (0.19) &mdash; CLI:</strong></p>
+      <pre><code>TOKEN=$(cf session create --ttl 2h)
+# Returns: cfs1_&lt;base64-encoded-private-key&gt;
+
+cf session $TOKEN claim-item --item_id rd-abc --description "Fix auth"</code></pre>
+
+      <p class="upgrade-section-desc"><strong>After (0.30) &mdash; CLI:</strong></p>
+      <pre><code>TOKEN=$(cf session create --ttl 2h)
+# Returns: cfs2_&lt;base64-encoded-transport-config&gt;
+
+cf session $TOKEN claim-item --item_id rd-abc --description "Fix auth"
+# cfs1_ tokens return a migration error &mdash; regenerate with: cf session create</code></pre>
+
+      <p class="upgrade-section-desc"><strong>Before (0.19) &mdash; Go (shared-key form):</strong></p>
+      <pre><code>import "github.com/campfire-net/campfire/pkg/protocol"
+
+// Orchestrator creates a shared-key session:
+sess, token, err := client.NewSession(2 * time.Hour)
+// token is cfs1_... &mdash; shares a private key with all workers
+
+// Worker joins using the shared key:
+workerClient, workerSess, err := protocol.JoinSession(token, cfHomeDir)</code></pre>
+
+      <p class="upgrade-section-desc"><strong>After (0.30) &mdash; Go (lazy-mint form):</strong></p>
+      <pre><code>import (
+    "github.com/campfire-net/campfire/pkg/protocol"
+    cfsession "github.com/campfire-net/campfire/cf-conventions/cf-session"
+)
+
+// Orchestrator creates session campfire (uses own identity key):
+sess, sessionID, err := client.NewSession(2 * time.Hour)
+
+// Emit session:open with capability template for lazy-mint issuance:
+openMsg, err := protocol.EmitSessionOpen(client, sessionID, cfsession.CapabilityTemplate{
+    Convention: "swarm-coordination",
+    OpGlob:     "*",
+    TTL:        2 * time.Hour,
+})
+
+// Issue per-worker grant on identify:
+grant, err := cfsession.IssueWorkerGrant(client, sessionID, workerPubKey, capTemplate)
+
+// Materialize worker identity in jail dir (worker never holds orchestrator key):
+workerKeyPath, err := cfsession.MaterializeWorkerIdentity(jailDir, workerPubKey, grant)</code></pre>
     </section>
 
     <!-- BC-4 -->
@@ -164,6 +325,78 @@
         now required for trust-anchor validation. Existing grants without this field will be
         rejected by <code>DefaultGateEvaluator</code>. Re-issue grants after upgrading.
       </p>
+
+      <h3 class="upgrade-sub-title">Migration details</h3>
+      <p class="upgrade-section-desc">
+        <strong>Backward compatibility:</strong> the L2 dispatcher ships with a stub
+        <code>AllowAllGateEvaluator</code> as the default. 0.19 code that does not wire a gate
+        evaluator continues to compile and run &mdash; you only need the production evaluator
+        when you want real trust enforcement.
+      </p>
+
+      <p class="upgrade-section-desc"><strong>Before (0.19):</strong></p>
+      <pre><code>import "github.com/campfire-net/campfire/pkg/convention"
+
+exec := convention.NewExecutor(client)
+exec = exec.WithProvenance(checker)  // v1 interface</code></pre>
+
+      <p class="upgrade-section-desc"><strong>After (0.30) &mdash; minimal (keep stub evaluator):</strong></p>
+      <pre><code>import "github.com/campfire-net/campfire/pkg/convention"
+
+// Unchanged &mdash; AllowAllGateEvaluator is the default.
+exec := convention.NewExecutor(client)
+exec = exec.WithProvenance(checker)</code></pre>
+
+      <p class="upgrade-section-desc"><strong>After (0.30) &mdash; production (wire real evaluator):</strong></p>
+      <pre><code>import (
+    "github.com/campfire-net/campfire/pkg/convention"
+    "github.com/campfire-net/campfire/cf-conventions/cf-authority/trust"
+)
+
+evaluator := trust.NewDefaultGateEvaluator(trustStore)
+exec := convention.NewExecutor(client)
+exec = exec.WithGateEvaluator(evaluator)
+exec = exec.WithProvenanceV2(trust.NewDefaultProvenanceChecker(store))</code></pre>
+
+      <p class="upgrade-section-desc"><strong>Frozen interface contract (cf-authority 1.0):</strong></p>
+      <pre><code>type GateEvaluator interface {
+    Evaluate(ctx context.Context, req EvaluateRequest) EvaluateResult
+}
+
+type EvaluateResult struct {
+    Decision         Decision    // GateAllow | GateDeny | GateUnresolvable
+    Reason           DenyReason  // set when GateDeny
+    MissingMessageID string      // set when GateUnresolvable
+}</code></pre>
+
+      <p class="upgrade-section-desc"><strong>Provenance levels (L2-owned, frozen):</strong></p>
+      <table class="field-table">
+        <thead>
+          <tr><th>Constant</th><th>Value</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>ProvenanceLevelAnonymous</code></td><td>0</td><td>valid keypair only</td></tr>
+          <tr><td><code>ProvenanceLevelClaimed</code></td><td>1</td><td>self-asserted identity</td></tr>
+          <tr><td><code>ProvenanceLevelContactable</code></td><td>2</td><td>challenge/response verified</td></tr>
+          <tr><td><code>ProvenanceLevelPresent</code></td><td>3</td><td>level 2 within freshness window</td></tr>
+        </tbody>
+      </table>
+
+      <p class="upgrade-section-desc">
+        <strong>GrantPayload CBOR field 5 (security critical, BC-18):</strong>
+        <code>GranterPubKey []byte</code> (Ed25519, 32 bytes) is now required at the last hop.
+        Without it, <code>DefaultGateEvaluator</code> returns <code>Deny</code> /
+        <code>DenyReservedOpFloor</code> &mdash; closing a CVE-class trust-anchor bypass.
+        Named struct literal callers are unaffected; only positional <code>GrantPayload</code>
+        construction (test fixtures, custom chain-builders) must add the fifth field.
+      </p>
+      <pre><code>payload := trust.GrantPayload{
+    ParentGrantID: parentID,
+    ChildPubkey:   childKey,
+    Capabilities:  caps,
+    Depth:         1,
+    GranterPubKey: granterPubKey,  // FIELD 5 &mdash; required at last hop
+}</code></pre>
     </section>
 
     <!-- BC-5 -->
@@ -179,14 +412,80 @@
       <p class="upgrade-section-desc">
         <strong>Fix:</strong> Locality resolution moves to the discovery layer (<code>cf-discovery</code>).
         Replace any <code>WithWalkUp()</code> calls with discovery-layer equivalents.
-        See <code>cf-discovery-spec.md</code> §3 for the new locality model.
+        See <a href="/docs/0.30/cf-discovery.html">the cf-discovery spec</a> for the new discovery-based locality model — snippet wire format (§1), producer/consumer requirements (§5–§6), and post-join verification (§11) collectively replace the old walk-up.
       </p>
+
+      <h3 class="upgrade-sub-title">Migration details</h3>
+      <p class="upgrade-section-desc"><strong>Removed symbols:</strong></p>
+      <table class="field-table">
+        <thead>
+          <tr><th>Symbol</th><th>Disposition</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>protocol.WithWalkUp()</code></td><td>deleted</td></tr>
+          <tr><td><code>protocol.WithNoWalkUp()</code></td><td>deleted</td></tr>
+          <tr><td><code>protocol.WalkUpEnabled()</code></td><td>deleted</td></tr>
+          <tr><td><code>InitResult.WalkUpPath</code></td><td>field deleted</td></tr>
+          <tr><td><code>InitResult.Recentered</code></td><td>field deleted</td></tr>
+          <tr><td><code>InitResult.DelegationIssued</code></td><td>field deleted</td></tr>
+          <tr><td><code>RecenterClaim</code> type</td><td>deleted</td></tr>
+          <tr><td><code>RecenterCanonicalPayload</code></td><td>deleted</td></tr>
+          <tr><td>config key <code>behavior.walk_up</code></td><td>silently ignored &mdash; remove from <code>.cf/config.toml</code></td></tr>
+        </tbody>
+      </table>
+
+      <p class="upgrade-section-desc"><strong>Before (0.19):</strong></p>
+      <pre><code>import "github.com/campfire-net/campfire/pkg/protocol"
+
+// Suppress walk-up during import:
+client, result, err := protocol.Init(cfHomeDir, protocol.WithNoWalkUp())
+if result.Recentered {
+    log.Printf("recentered to %s via %v", result.WalkUpPath[0], result.WalkUpPath)
+}
+
+// Or enable walk-up explicitly:
+client, result, err := protocol.Init(cfHomeDir, protocol.WithWalkUp())</code></pre>
+
+      <p class="upgrade-section-desc"><strong>After (0.30):</strong></p>
+      <pre><code>import "github.com/campfire-net/campfire/cf-protocol/protocol"
+
+// Walk-up option is gone &mdash; just call Init:
+client, _, err := protocol.Init(cfHomeDir)
+// result.Recentered, result.WalkUpPath &mdash; do not exist; delete references.</code></pre>
+
+      <p class="upgrade-section-desc"><strong>.cf/config.toml before:</strong></p>
+      <pre><code>[behavior]
+walk_up = true</code></pre>
+
+      <p class="upgrade-section-desc"><strong>.cf/config.toml after:</strong></p>
+      <pre><code># Remove the behavior.walk_up key entirely.
+# (It is silently ignored in 0.30; clean it up to avoid confusion.)</code></pre>
+
+      <p class="upgrade-section-desc"><strong>New discovery-layer API (cf-discovery):</strong></p>
+      <pre><code>import "github.com/campfire-net/campfire/cf-conventions/cf-discovery"
+
+// Tier 2 &mdash; resolve a name with TOFU pinning:
+resolver := cfdiscovery.NewResolver(client)
+campfireID, err := resolver.Resolve("baron.dontguess")
+// ErrInviteOnly &mdash; campfire requires admission
+// ErrPostJoinVerificationFailed &mdash; campfire failed probe-write verification
+
+// Multi-level chain:
+chain, err := resolver.ResolveChain("rd.ready.3dl")
+// chain contains per-hop snippets with composed freshness windows.
+// Multi-hop chains use the MINIMUM freshness window across all hops &mdash;
+// a hostile intermediate cannot extend apparent freshness.</code></pre>
     </section>
 
     <div class="upgrade-cta">
-      <a href="https://github.com/campfire-net/campfire/blob/main/docs/upgrade-0.19-to-0.30.md" class="btn-primary">Full upgrade guide on GitHub &rarr;</a>
-      <a href="/releases/0.30/" class="btn-ghost">Release notes</a>
+      <a href="/releases/0.30/" class="btn-primary">cf 0.30 release notes &rarr;</a>
+      <a href="/getting-started/" class="btn-ghost">Get started</a>
     </div>
+
+    <p class="upgrade-source-note">
+      Source: <a href="https://github.com/campfire-net/campfire/blob/main/docs/upgrade-0.19-to-0.30.md"><code>docs/upgrade-0.19-to-0.30.md</code></a>
+      &mdash; raw markdown with the full 18-item breaking-changes inventory and per-consumer migration plans.
+    </p>
 
   </div>
 </main>
@@ -246,6 +545,102 @@
 .upgrade-note code { font-family: var(--ds-font-mono); font-size: 0.875em; background: var(--ds-code-bg); padding: 1px 4px; border-radius: 3px; color: var(--ds-accent-primary-light); }
 
 .upgrade-cta { display: flex; gap: var(--ds-space-sm); margin-top: var(--ds-space-2xl); flex-wrap: wrap; }
+.upgrade-source-note { margin-top: var(--ds-space-md); font-size: var(--ds-text-sm); color: var(--ds-text-muted); }
+.upgrade-source-note a { color: var(--ds-accent-secondary-light); }
+.upgrade-source-note code { font-family: var(--ds-font-mono); font-size: 0.875em; background: var(--ds-code-bg); padding: 1px 5px; border-radius: 3px; color: var(--ds-accent-primary-light); border: 1px solid var(--ds-border); }
+
+.upgrade-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-sm);
+  align-items: center;
+  padding: 12px 16px;
+  margin-bottom: var(--ds-space-xl);
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-lg);
+  font-size: var(--ds-text-sm);
+}
+.upgrade-toc-label {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ds-text-muted);
+  margin-right: 4px;
+}
+.upgrade-toc a {
+  color: var(--ds-accent-secondary-light);
+  text-decoration: none;
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+.upgrade-toc a:hover {
+  border-color: var(--ds-border);
+  background: var(--ds-code-bg);
+}
+
+.upgrade-sub-title {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ds-accent-primary);
+  margin: var(--ds-space-lg) 0 var(--ds-space-sm);
+}
+
+.upgrade-section .field-table { width: 100%; border-collapse: collapse; margin: 12px 0 16px; font-size: var(--ds-text-sm); }
+.upgrade-section .field-table thead th {
+  text-align: left;
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ds-text-muted);
+  padding: 10px 12px;
+  border-bottom: 2px solid var(--ds-border);
+}
+.upgrade-section .field-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ds-border);
+  vertical-align: top;
+  line-height: var(--ds-line-height);
+  color: var(--ds-text-secondary);
+}
+.upgrade-section .field-table tr:last-child td { border-bottom: none; }
+.upgrade-section .field-table code {
+  font-family: var(--ds-font-mono);
+  font-size: 0.875em;
+  background: var(--ds-code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--ds-accent-primary-light);
+  border: 1px solid var(--ds-border);
+}
+
+.upgrade-section pre {
+  background: var(--ds-code-bg);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius);
+  padding: 14px 18px;
+  overflow-x: auto;
+  margin: 8px 0 16px;
+}
+.upgrade-section pre code {
+  font-family: var(--ds-font-mono);
+  font-size: 13px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--ds-text);
+  line-height: 1.65;
+}
 
 @media (max-width: 700px) {
   .port-row { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto; }

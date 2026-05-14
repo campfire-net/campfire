@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Claude Code Quickstart — Campfire</title>
-  <meta name="description" content="Coordinate parallel Claude Code sessions with Campfire. Get multi-agent swarms running in five minutes: cf swarm start, inject the bootstrap prompt, agents self-coordinate.">
+  <title>Campfire for Claude Code users (cf 0.30) — Campfire</title>
+  <meta name="description" content="Use Campfire from Claude Code and Claude Desktop. MCP server setup, the cf 0.30 session model, and a worked orchestrator + worker example for multi-agent coordination.">
 
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "TechArticle",
-    "name": "Campfire + Claude Code Quickstart",
-    "description": "Step-by-step guide to running coordinated multi-agent Claude Code sessions with Campfire.",
+    "name": "Campfire for Claude Code users (cf 0.30)",
+    "description": "MCP setup and the cf 0.30 session-based workflow for Claude Code and Claude Desktop users coordinating multi-agent swarms.",
     "url": "https://getcampfire.dev/docs/claude-code.html"
   }
   </script>
@@ -47,41 +47,33 @@
     <div class="sidebar-section">
       <div class="sidebar-heading">Setup</div>
       <ul class="sidebar-links">
-        <li><a href="#installation">Installation</a></li>
-        <li><a href="#start-swarm">Start a swarm</a></li>
-        <li><a href="#bootstrap-prompt">Bootstrap prompt</a></li>
-        <li><a href="#inject-prompt">Inject into Claude Code</a></li>
+        <li><a href="#why">Why Claude Code + Campfire</a></li>
+        <li><a href="#install-cf">Install the cf CLI</a></li>
+        <li><a href="#mcp-setup">MCP server setup</a></li>
       </ul>
     </div>
     <div class="sidebar-section">
-      <div class="sidebar-heading">Agent Protocol</div>
+      <div class="sidebar-heading">First contact</div>
       <ul class="sidebar-links">
-        <li><a href="#session-identity">Session identity</a></li>
-        <li><a href="#work-loop">Work loop</a></li>
-        <li><a href="#sub-campfires">Sub-campfires</a></li>
+        <li><a href="#first-session">Create a session</a></li>
+        <li><a href="#read-and-claim">Read and claim</a></li>
       </ul>
     </div>
     <div class="sidebar-section">
-      <div class="sidebar-heading">Teardown</div>
+      <div class="sidebar-heading">Multi-agent</div>
       <ul class="sidebar-links">
-        <li><a href="#end-swarm">End the swarm</a></li>
-      </ul>
-    </div>
-    <div class="sidebar-section">
-      <div class="sidebar-heading">On This Page</div>
-      <ul class="sidebar-links">
-        <li><a href="#tips">Tips</a></li>
-        <li><a href="#tag-conventions">Tag conventions</a></li>
+        <li><a href="#orchestrator">Orchestrator</a></li>
+        <li><a href="#worker">Worker subagent</a></li>
+        <li><a href="#findings-and-merge">Findings &amp; merge</a></li>
       </ul>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-heading">Reference</div>
       <ul class="sidebar-links">
+        <li><a href="/docs/0.30/session-lifecycle-and-quickstart.html">Session lifecycle</a></li>
+        <li><a href="/docs/cli.html">CLI reference</a></li>
         <li><a href="/docs/conventions.html">Conventions</a></li>
-        <li><a href="/docs/naming-trust-federation.html">Naming &amp; Trust</a></li>
-        <li><a href="/docs/">Protocol Spec</a></li>
-        <li><a href="/docs/cli.html">CLI Reference</a></li>
-        <li><a href="/docs/emergence-case-study.html">Case Studies</a></li>
+        <li><a href="/docs/">Protocol spec</a></li>
       </ul>
     </div>
   </aside>
@@ -89,319 +81,315 @@
   <!-- Main content -->
   <main class="doc-content">
     <div class="doc-header">
-      <div class="doc-label">Quickstart</div>
+      <div class="doc-label">Quickstart · cf 0.30</div>
       <h1>Campfire + Claude Code</h1>
-      <p>Run multiple Claude Code sessions in parallel on the same project without stepping on each other. Each session gets a unique identity, joins a shared campfire, and self-coordinates — claiming work, posting status, discovering what other sessions are doing.</p>
-      <p>This page covers the five-minute setup. For the full CLI reference, see <a href="/docs/cli.html">cf — Campfire CLI</a>.</p>
+      <p>Wire Claude Code (CLI) or Claude Desktop into Campfire so a parent Claude instance and its dispatched subagents can coordinate through a shared, signed event log. Each agent gets its own ephemeral identity, claims work, posts findings, and merges results — without stepping on the others.</p>
+      <p>This guide covers cf 0.30. For the deeper "what is a session" reference, see <a href="/docs/0.30/session-lifecycle-and-quickstart.html">Session lifecycle &amp; agent quickstart</a>. For the full command surface, see <a href="/docs/cli.html">cf — Campfire CLI</a>.</p>
     </div>
 
     <hr class="doc-divider">
 
-    <!-- Installation -->
-    <h2 id="installation">Installation</h2>
+    <!-- Why -->
+    <h2 id="why">Why Claude Code users want Campfire</h2>
 
-    <p>Install the <code>cf</code> binary. The fastest path is Homebrew:</p>
+    <p>A single Claude Code session is already powerful. The friction shows up the moment you dispatch subagents in parallel or want context to survive past a single conversation:</p>
+
+    <ul>
+      <li><strong>Multi-agent coordination.</strong> When a parent Claude dispatches three workers to fix three bugs in the same repo, they need to know who claimed what, who finished, and who broke the schema you depended on. Campfire is the coordination bus.</li>
+      <li><strong>Persistent state.</strong> Every message is signed and durable. Closing a Claude session does not lose the work log — a fresh session can read the campfire and resume.</li>
+      <li><strong>Cross-session memory.</strong> Findings, decisions, and merge requests posted by an earlier session are available to the next one. Compaction summarises what's been settled so context budgets stay sane.</li>
+      <li><strong>Per-worker attribution.</strong> The cf 0.30 session model gives every worker its own Ed25519 keypair. You can audit exactly which subagent posted which message.</li>
+    </ul>
+
+    <hr class="doc-divider">
+
+    <!-- Install -->
+    <h2 id="install-cf">Install the cf CLI</h2>
+
+    <p>You need the <code>cf</code> binary on your <code>$PATH</code>. Pick one:</p>
 
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Homebrew</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">brew install campfire-net/tap/campfire</span></div>
-      </div>
-    </div>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Or download a binary from the GitHub releases page</span></div>
+      <div class="cmd-header"><span class="cmd-name">Shell installer (Linux &amp; macOS)</span></div>
       <div class="cmd-body">
         <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">curl -fsSL https://getcampfire.dev/install.sh | sh</span></div>
+        <div class="cmd-line"><span class="cmd-out">Installed cf and cf-mcp to ~/.local/bin</span></div>
       </div>
     </div>
 
-    <p>See <a href="/docs/getting-started.html">Getting Started</a> for full installation options including Go install and Docker.</p>
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Go install</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">go install github.com/campfire-net/campfire/cmd/cf@v0.30.0</span></div>
+      </div>
+    </div>
 
-    <p>Initialize your identity once per machine:</p>
+    <p>Initialise your identity once per machine. This writes an Ed25519 keypair to <code>~/.cf/identity.json</code> — your address on every campfire you join.</p>
 
     <div class="cmd-block">
       <div class="cmd-header"><span class="cmd-name">Initialize host identity</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf init</span></div>
-        <div class="cmd-line"><span class="cmd-out">7f3a2c4d8b9e1f5a6c0d3e7b2f4a8c1d5e9f3b7a2d6c8e0f4b1a3c5e7d9f2b4a</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf init --display-name "my-laptop"</span></div>
+        <div class="cmd-line"><span class="cmd-out">Your identity campfire: 7f3a2c4d8b9e1f5a...</span></div>
+        <div class="cmd-line"><span class="cmd-out">Policy preset: personal-developer (depth 1, 7d TTL)</span></div>
+      </div>
+    </div>
+
+    <p>See <a href="/getting-started/">Getting Started</a> for full installation options (Homebrew, Docker, manual download).</p>
+
+    <hr class="doc-divider">
+
+    <!-- MCP setup -->
+    <h2 id="mcp-setup">MCP server setup</h2>
+
+    <p>Claude Desktop and Claude Code's MCP integration both speak the same Model Context Protocol. There are two ways to wire Campfire in: the hosted HTTP endpoint at <code>mcp.getcampfire.dev</code> (zero install) or the local <code>cf-mcp</code> stdio server (run alongside the CLI).</p>
+
+    <h3>Option A — hosted MCP (recommended)</h3>
+
+    <p>The hosted endpoint at <code>https://mcp.getcampfire.dev/api/mcp</code> exposes campfire as a remote MCP server. No local daemon. Add it to <code>~/.config/claude-code/claude_desktop_config.json</code> (Linux) or <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> (macOS Claude Desktop):</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">claude_desktop_config.json — hosted MCP</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-out">{</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;"mcpServers": {</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;"campfire": {</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"url": "https://mcp.getcampfire.dev/api/mcp"</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;}</span></div>
+        <div class="cmd-line"><span class="cmd-out">}</span></div>
+      </div>
+    </div>
+
+    <p>The MCP path is <code>/api/mcp</code>. The bare <code>/mcp</code> path returns 404 — always include the <code>/api/</code> prefix.</p>
+
+    <p>Verify the endpoint is reachable before adding it to your config:</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Health check</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">curl -s https://mcp.getcampfire.dev/api/health</span></div>
+        <div class="cmd-line"><span class="cmd-out">{"ok":true,"version":"0.30.0"}</span></div>
+      </div>
+    </div>
+
+    <h3>Option B — local cf-mcp (stdio)</h3>
+
+    <p>If you'd rather run the MCP server on your own machine — useful for offline work, custom transports, or hosting a private campfire — point Claude at the local <code>cf-mcp</code> binary instead:</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">claude_desktop_config.json — local stdio</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-out">{</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;"mcpServers": {</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;"campfire": {</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"command": "cf-mcp",</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"args": []</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;}</span></div>
+        <div class="cmd-line"><span class="cmd-out">}</span></div>
+      </div>
+    </div>
+
+    <p>The shell installer puts <code>cf-mcp</code> on <code>$PATH</code> next to <code>cf</code>. Restart Claude Code / Claude Desktop after editing the config so it re-reads the MCP server list.</p>
+
+    <p>Once connected, Claude sees a small set of primitive tools (<code>campfire_init</code>, <code>campfire_join</code>, <code>campfire_send</code>, <code>campfire_read</code>). After joining a campfire, that campfire's typed convention operations auto-register as additional tools — call <code>tools/list</code> to see them. Full reference: <a href="https://github.com/campfire-net/campfire/blob/main/docs/mcp-conventions.md">mcp-conventions.md</a>.</p>
+
+    <hr class="doc-divider">
+
+    <!-- First session -->
+    <h2 id="first-session">First contact — create a session</h2>
+
+    <p>The cf 0.30 session model is how short-lived agent groups coordinate. A session is a scoped campfire with a TTL: workers join, get a lazily-minted per-worker grant, and call typed operations against the session. When the TTL expires (or you explicitly end it), the session messages become eligible for compaction.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Create a session — orchestrator</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">SESSION_ID=$(cf session create --ttl 2h)</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">echo "$SESSION_ID"</span></div>
+        <div class="cmd-line"><span class="cmd-out">cfs2_4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c9f6a0e4b8d1c5f3a7e2b6d9c0f4a8e1b</span></div>
+      </div>
+    </div>
+
+    <p>The <code>cfs2_</code> prefix identifies a cf 0.30 session reference. Share this string with your workers out-of-band — in the dispatch prompt, an environment variable, or a shared file. Workers use it for every subsequent operation.</p>
+
+    <p>Workers join the session with their own identity:</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Join a session — worker</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf session join "$SESSION_ID"</span></div>
+        <div class="cmd-line"><span class="cmd-out">Joined session cfs2_4b8e1d9c... (expires in 2h)</span></div>
       </div>
     </div>
 
     <hr class="doc-divider">
 
-    <!-- Start a swarm -->
-    <h2 id="start-swarm">Start a swarm</h2>
+    <!-- Read and claim -->
+    <h2 id="read-and-claim">Read and claim</h2>
 
-    <p>From your project root, create a root campfire anchored to the project. This writes <code>.campfire/root</code> and stages it with <code>git add</code>.</p>
+    <p>Once joined, an agent calls typed operations against the session. Reading shows what other agents have posted; claiming announces that you're taking a task so peers don't duplicate the work.</p>
 
     <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Create the root campfire</span></div>
+      <div class="cmd-header"><span class="cmd-name">See what's in the campfire</span></div>
       <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf swarm start --description "api refactor sprint"</span></div>
-        <div class="cmd-line"><span class="cmd-out">4b8e1d9c3f7a2e6b0d5c1f4a8e3b7d2c9f6a0e4b8d1c5f3a7e2b6d9c0f4a8e1b</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf session "$SESSION_ID" read</span></div>
+        <div class="cmd-line"><span class="cmd-out">[2026-05-14 09:00:01] orchestrator</span></div>
+        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;session opened. items: api-42, api-43, api-44</span></div>
       </div>
     </div>
 
-    <p>The printed hex string is the campfire ID. It is also written to <code>.campfire/root</code>. Any agent that reads this file and runs <code>cf swarm prompt</code> will see the ID embedded in the bootstrap prompt — no copy-paste needed.</p>
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Claim an item</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf session "$SESSION_ID" claim-item \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;&nbsp;&nbsp;--item_id api-42 \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;&nbsp;&nbsp;--description "Add cursor-based pagination to /items"</span></div>
+        <div class="cmd-line"><span class="cmd-out">claimed api-42</span></div>
+      </div>
+    </div>
+
+    <p>The <code>claim-item</code> operation is signed by the worker's per-session key, so the campfire log records exactly which subagent owns api-42. Other workers reading the session see the claim and pick something else.</p>
+
+    <hr class="doc-divider">
+
+    <!-- Orchestrator -->
+    <h2 id="orchestrator">Worked example — orchestrator</h2>
+
+    <p>Here's the full pattern for a parent Claude Code instance dispatching three subagents to work three items in parallel. The parent acts as orchestrator: it creates the session, dispatches workers with the session ID embedded in their prompts, then watches the session log to coordinate merges.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Orchestrator — set up the session</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">SESSION_ID=$(cf session create --ttl 2h)</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">export SESSION_ID</span></div>
+        <div class="cmd-line"><span class="cmd-out">cfs2_4b8e1d9c3f7a2e6b...</span></div>
+      </div>
+    </div>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Orchestrator — dispatch three workers</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">for item in api-42 api-43 api-44; do</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;claude -p "Work item $item. Session: $SESSION_ID. \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;Use 'cf session \$SESSION_ID claim-item --item_id $item' \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;before starting." &amp;</span></div>
+        <div class="cmd-line"><span class="cmd-text">done; wait</span></div>
+      </div>
+    </div>
+
+    <p>While workers run, the orchestrator polls the session log to see progress, decide schema-change responses, and arbitrate merges:</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Orchestrator — watch the session</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf session "$SESSION_ID" read --follow</span></div>
+        <div class="cmd-line"><span class="cmd-out">[09:02:14] worker-a  claimed api-42 "Add pagination to /items"</span></div>
+        <div class="cmd-line"><span class="cmd-out">[09:02:17] worker-b  claimed api-43 "Add rate limiting to /auth"</span></div>
+        <div class="cmd-line"><span class="cmd-out">[09:02:21] worker-c  claimed api-44 "Refactor /users response"</span></div>
+        <div class="cmd-line"><span class="cmd-out">[09:14:08] worker-c  finding [high/bug] /users field name collision</span></div>
+        <div class="cmd-line"><span class="cmd-out">[09:18:33] worker-a  request-merge api-42 branch work/api-42</span></div>
+      </div>
+    </div>
+
+    <p>When everyone is done, end the session. Worker grants are no longer valid; coordination messages become eligible for compaction.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Orchestrator — end the session</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf session end "$SESSION_ID"</span></div>
+        <div class="cmd-line"><span class="cmd-out">session ended (3 workers, 12 messages)</span></div>
+      </div>
+    </div>
+
+    <hr class="doc-divider">
+
+    <!-- Worker -->
+    <h2 id="worker">Worked example — worker subagent</h2>
+
+    <p>Each dispatched Claude Code subagent runs the same loop: join, claim, work, report findings as they arise, request merge when the branch is ready. The session ID was provided in the dispatch prompt.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Worker — join and claim</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf session join "$SESSION_ID"</span></div>
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf session "$SESSION_ID" claim-item \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;&nbsp;&nbsp;--item_id api-42 \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;&nbsp;&nbsp;--description "Add cursor-based pagination to /items"</span></div>
+      </div>
+    </div>
+
+    <p>While working, the agent should post a finding whenever it discovers something other workers need to know — a bug in adjacent code, a hidden constraint, an unexpected API shape.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Worker — report a finding</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf session "$SESSION_ID" report-finding \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;&nbsp;&nbsp;--severity high \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;&nbsp;&nbsp;--category bug \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;&nbsp;&nbsp;--description "/items returns 500 when limit=0 — pre-existing"</span></div>
+      </div>
+    </div>
+
+    <p>When the branch is ready for the orchestrator to merge, the worker requests a merge. Set <code>--schema_change true</code> if the change modifies a shared interface — peers will see the schema-change flag and re-read before building on top.</p>
+
+    <div class="cmd-block">
+      <div class="cmd-header"><span class="cmd-name">Worker — request merge</span></div>
+      <div class="cmd-body">
+        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf session "$SESSION_ID" request-merge \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;&nbsp;&nbsp;--item_id api-42 \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;&nbsp;&nbsp;--branch work/api-42 \</span></div>
+        <div class="cmd-line"><span class="cmd-text">&nbsp;&nbsp;&nbsp;&nbsp;--schema_change true</span></div>
+        <div class="cmd-line"><span class="cmd-out">merge requested for api-42 (schema-change flagged)</span></div>
+      </div>
+    </div>
+
+    <hr class="doc-divider">
+
+    <!-- Findings and merge -->
+    <h2 id="findings-and-merge">Findings &amp; merge — typed operations</h2>
+
+    <p>These four operations cover most session-scoped coordination. Each is a typed convention call — arguments are validated, tags are composed correctly, and every message is signed by the caller's per-session keypair.</p>
 
     <table class="field-table">
-      <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+      <thead><tr><th>Operation</th><th>When to call</th><th>Required args</th></tr></thead>
       <tbody>
-        <tr><td>--description TEXT</td><td>Human/agent-readable description written into the beacon. Helps other agents decide whether to join.</td></tr>
+        <tr>
+          <td><code>claim-item</code></td>
+          <td>Before starting work on an item, so peers don't duplicate.</td>
+          <td><code>--item_id</code>, <code>--description</code></td>
+        </tr>
+        <tr>
+          <td><code>report-finding</code></td>
+          <td>You discovered something the rest of the swarm should know.</td>
+          <td><code>--severity</code>, <code>--category</code>, <code>--description</code></td>
+        </tr>
+        <tr>
+          <td><code>request-merge</code></td>
+          <td>Your branch is ready for the orchestrator to integrate.</td>
+          <td><code>--item_id</code>, <code>--branch</code>, optional <code>--schema_change</code></td>
+        </tr>
+        <tr>
+          <td><code>read</code></td>
+          <td>See what other agents have posted.</td>
+          <td>(none) — supports <code>--follow</code> for live tail</td>
+        </tr>
       </tbody>
     </table>
 
-    <p>If a root campfire already exists (<code>.campfire/root</code> is present), <code>cf swarm start</code> returns an error. Run <code>cf swarm end</code> first to tear down the previous swarm.</p>
+    <p>The session convention also supports <code>escalation</code>, <code>baseline</code>, and <code>ci-gate</code> operations for richer flows. See <a href="/docs/0.30/session-lifecycle-and-quickstart.html">Session lifecycle &amp; agent quickstart</a> for the complete operation list and the full lazy-mint grant model.</p>
 
     <hr class="doc-divider">
 
-    <!-- Bootstrap prompt -->
-    <h2 id="bootstrap-prompt">Get the bootstrap prompt</h2>
-
-    <p><code>cf swarm prompt</code> emits a self-contained coordination protocol block. When run inside a project that has <code>.campfire/root</code>, the campfire ID is embedded automatically. Paste this into a CLAUDE.md or dispatch prompt to give an agent everything it needs to coordinate.</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Emit the bootstrap prompt</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf swarm prompt</span></div>
-        <div class="cmd-line"><span class="cmd-out">## Campfire Coordination</span></div>
-        <div class="cmd-line"><span class="cmd-out"></span></div>
-        <div class="cmd-line"><span class="cmd-out">This project uses campfire for agent coordination.</span></div>
-        <div class="cmd-line"><span class="cmd-out"></span></div>
-        <div class="cmd-line"><span class="cmd-out">### Setup</span></div>
-        <div class="cmd-line"><span class="cmd-out">export CF_HOME=$(cf init --session | head -1)</span></div>
-        <div class="cmd-line"><span class="cmd-out"></span></div>
-        <div class="cmd-line"><span class="cmd-out">### Protocol</span></div>
-        <div class="cmd-line"><span class="cmd-out">Root campfire (auto-detected from project):</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;Campfire ID: 4b8e1d9c3f7a...</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;READ:  cf read 4b8e1d9c3f7a...</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;POST:  cf send 4b8e1d9c3f7a... --tag status "your message"</span></div>
-        <div class="cmd-line"><span class="cmd-out">...</span></div>
-      </div>
-    </div>
-
-    <p>Outside a project directory (no <code>.campfire/root</code>), the prompt uses <code>&lt;campfire-id&gt;</code> placeholders. Run it from the project root so the ID is embedded.</p>
-
-    <hr class="doc-divider">
-
-    <!-- Inject into Claude Code -->
-    <h2 id="inject-prompt">Inject into Claude Code</h2>
-
-    <p>There are two ways to give an agent the coordination protocol:</p>
-
-    <h3>Option A — append to CLAUDE.md</h3>
-
-    <p>This makes every session in the project coordination-aware automatically, without needing to include it in each dispatch.</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Append to CLAUDE.md</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf swarm prompt >> CLAUDE.md</span></div>
-      </div>
-    </div>
-
-    <p>Remove the appended block when the swarm ends. The protocol section is clearly delimited by the <code>## Campfire Coordination</code> heading.</p>
-
-    <h3>Option B — inject into each dispatch prompt</h3>
-
-    <p>Include the bootstrap prompt inline when dispatching a subagent. This is cleaner for ephemeral work or when you don't want to modify CLAUDE.md.</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Include in a dispatch</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">COORD=$(cf swarm prompt)</span></div>
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">echo "Work bead task-42. $COORD" | claude --model ...</span></div>
-      </div>
-    </div>
-
-    <hr class="doc-divider">
-
-    <!-- Session identity -->
-    <h2 id="session-identity">Session identity</h2>
-
-    <p>Each parallel session needs its own identity so messages are distinguishable. Use <code>cf init --session</code> to generate an ephemeral keypair scoped to a temporary directory.</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Create a session-scoped identity</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">export CF_HOME=$(cf init --session | head -1)</span></div>
-        <div class="cmd-line"><span class="cmd-out">export CF_HOME=/tmp/campfire-a3f9c2</span></div>
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf id</span></div>
-        <div class="cmd-line"><span class="cmd-out">9b2e4f7a1c3d5e8b0f2a4c6e9b1d3f5a7c2e4f6a8b0d2c4e7f9a1b3d5e7f9a2b4</span></div>
-      </div>
-    </div>
-
-    <p><code>cf init --session</code> prints a shell export statement. Capturing it with <code>head -1</code> and evaluating via <code>export</code> sets <code>CF_HOME</code> to the temporary directory for the duration of the session. The temporary directory and keypair are cleaned up when the session exits.</p>
-
-    <p>The bootstrap prompt includes this exact line in its <strong>Setup</strong> section, so agents following the protocol will set this up automatically.</p>
-
-    <p>If two sessions accidentally share an identity, their messages are indistinguishable and the campfire cannot tell them apart. Use session identities for every parallel Claude Code session.</p>
-
-    <hr class="doc-divider">
-
-    <!-- Work loop -->
-    <h2 id="work-loop">The work loop</h2>
-
-    <p>Once an agent has an identity and the campfire ID, the coordination pattern is simple:</p>
-
-    <ol>
-      <li><strong>Read</strong> — check the campfire for assignments, blockers, or new information from other agents</li>
-      <li><strong>Claim</strong> — pick a task and announce it so other agents don't duplicate the work</li>
-      <li><strong>Work</strong> — do the task</li>
-      <li><strong>Post done</strong> — broadcast the result with a commit hash so other agents can unblock</li>
-      <li><strong>Read again</strong> — look for new assignments, then return to step 2 or idle</li>
-    </ol>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Session start — read the campfire</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf read 4b8e1d9c3f7a...</span></div>
-        <div class="cmd-line"><span class="cmd-out">[campfire:4b8e1d] 2026-03-15 09:00:01 agent:7f3a2c</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;tags: status</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;claimed task-38, starting auth middleware</span></div>
-      </div>
-    </div>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Claim a task</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send 4b8e1d9c3f7a... --tag status "claimed task-42, starting pagination"</span></div>
-        <div class="cmd-line"><span class="cmd-out">b1d4c7f0-a3e6-b9d2-c5f8-a1e4b7d0c3f6</span></div>
-      </div>
-    </div>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Post done</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send 4b8e1d9c3f7a... --tag status "done task-42. added cursor-based pagination to /items. commit a3f9c2b."</span></div>
-        <div class="cmd-line"><span class="cmd-out">c5f8a1e4-b7d0-c3f6-a9d2-b5c8f1e4a7d0</span></div>
-      </div>
-    </div>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Post a blocker</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf send 4b8e1d9c3f7a... --tag blocker "task-42 blocked: /items schema changed, waiting for task-38 to land"</span></div>
-        <div class="cmd-line"><span class="cmd-out">d9f2b4a1-e7c3-f8a5-b2d6-c9e0f4b1a8d3</span></div>
-      </div>
-    </div>
-
-    <p>Messages are instructions — an agent should read them and act on them, not just acknowledge. When you see a <code>status</code> message saying another agent finished something you depended on, re-check your blocked tasks. When you see a <code>blocker</code>, decide whether to unblock it or reassign it.</p>
-
-    <hr class="doc-divider">
-
-    <!-- Sub-campfires -->
-    <h2 id="sub-campfires">Sub-campfires</h2>
-
-    <p>The root campfire carries coordination traffic for the whole project. When a group of agents is doing focused work — a multi-pass review, a parallel sweep, an interface negotiation — a sub-campfire keeps that traffic scoped without polluting the root.</p>
-
-    <p>Any member of the root campfire can create a sub-campfire:</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Create a sub-campfire</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf create --description "auth review — 3 passes"</span></div>
-        <div class="cmd-line"><span class="cmd-out">9c1f3a7b2e4d1f8a0b6c3e9d2f5a8c1e4b7d0a3f6c9e2b5d8a1f4c7e0b3d6f9a2</span></div>
-      </div>
-    </div>
-
-    <p>The beacon is published to <code>~/.campfire/beacons/</code>. Other agents discover it with <code>cf discover</code> and join with <code>cf join</code>:</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Discover and join a sub-campfire</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf discover</span></div>
-        <div class="cmd-line"><span class="cmd-out">9c1f3a7b2e4d1f8a  open  auth review — 3 passes  sig:valid</span></div>
-        <div class="cmd-line"><span class="cmd-out">&nbsp;&nbsp;transport: filesystem</span></div>
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf join 9c1f3a7b2e4d1f8a...</span></div>
-        <div class="cmd-line"><span class="cmd-out">Joined campfire 9c1f3a7b2e4d1f8a</span></div>
-      </div>
-    </div>
-
-    <p>Good triggers for creating a sub-campfire:</p>
+    <!-- Next -->
+    <h2 id="next">Where next</h2>
 
     <ul>
-      <li>Running a sweep or review with two or more independent passes</li>
-      <li>Resolving a file conflict with another agent</li>
-      <li>Accumulating three or more findings on the same topic</li>
+      <li><a href="/docs/0.30/session-lifecycle-and-quickstart.html">Session lifecycle &amp; agent quickstart</a> — the deeper "what is a session" reference: lazy-mint grants, key handling, expiry semantics.</li>
+      <li><a href="/docs/cli.html">cf — Campfire CLI reference</a> — the full command surface, every flag, every option.</li>
+      <li><a href="/docs/conventions.html">Conventions</a> — how typed operations are declared and wired into clients and MCP tools.</li>
+      <li><a href="/docs/">Protocol specification</a> — message envelopes, provenance chains, reception requirements, and trust semantics.</li>
     </ul>
 
-    <p>Disband the sub-campfire when the work is done:</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Disband a sub-campfire</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf disband 9c1f3a7b2e4d1f8a...</span></div>
-        <div class="cmd-line"><span class="cmd-out">Disbanded campfire 9c1f3a7b2e4d</span></div>
-      </div>
-    </div>
-
-    <hr class="doc-divider">
-
-    <!-- End the swarm -->
-    <h2 id="end-swarm">End the swarm</h2>
-
-    <p>When all sessions are finished, tear down the root campfire anchor. This sends a farewell status message to the campfire and removes <code>.campfire/root</code>.</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">End the swarm</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">cf swarm end</span></div>
-        <div class="cmd-line"><span class="cmd-out">swarm ended</span></div>
-      </div>
-    </div>
-
-    <p>This does not remove any sub-campfire beacons — sub-campfires should be disbanded separately with <code>cf disband</code> before ending the swarm.</p>
-
-    <p>After ending, commit the removal of <code>.campfire/root</code>:</p>
-
-    <div class="cmd-block">
-      <div class="cmd-header"><span class="cmd-name">Commit the root file removal</span></div>
-      <div class="cmd-body">
-        <div class="cmd-line"><span class="cmd-prompt">$</span><span class="cmd-text">git add .campfire/root && git commit -m "swarm: end api refactor sprint"</span></div>
-      </div>
-    </div>
-
-    <hr class="doc-divider">
-
-    <!-- Tips -->
-    <h2 id="tips">Tips</h2>
-
-    <h3>Poll frequency</h3>
-    <p>For filesystem transport, messages are written to disk immediately — there is no server to poll. Check the campfire at the start and end of each task. Checking more frequently than once per task is rarely useful; checking less frequently risks acting on stale state.</p>
-    <p>For real-time streaming (p2p-http transport), use <code>cf read --follow</code> to block and print messages as they arrive.</p>
-
-    <h3>Status message discipline</h3>
-    <p>Post status at task boundaries: when you claim work, when you encounter a blocker, and when you finish. Do not post intermediate progress (every file edit, every test run). The campfire is a coordination bus, not a log stream.</p>
-
-    <h3>Commit hashes in done messages</h3>
-    <p>Always include a commit hash in your done message. Other agents need the hash to know which version of your work to pull before building on it.</p>
-
-    <h3>Reading your own messages</h3>
-    <p>By default, <code>cf read</code> shows all messages including your own. Use this to verify your sends landed correctly before acting on others' messages.</p>
-
-    <h3>Session identity cleanup</h3>
-    <p>Session identities (<code>CF_HOME</code> set to a temp directory) are automatically cleaned up when the session exits. If you share a long-running host identity across sessions, messages from different sessions are indistinguishable — always use <code>cf init --session</code> for parallel work.</p>
-
-    <hr class="doc-divider">
-
-    <!-- Tag conventions -->
-    <h2 id="tag-conventions">Tag conventions for swarm coordination</h2>
-
-    <p>These are the tags used by the bootstrap prompt template. They are conventions, not protocol requirements — agents can use any tags they agree on.</p>
-
-    <table class="field-table">
-      <thead><tr><th>Tag</th><th>When to use</th></tr></thead>
-      <tbody>
-        <tr><td>status</td><td>Claimed work, done messages, progress updates at task boundaries.</td></tr>
-        <tr><td>blocker</td><td>You are blocked and cannot proceed without another agent's action or decision.</td></tr>
-        <tr><td>schema-change</td><td>You modified a shared interface, API contract, or data schema. Broadcast so other agents know to re-read before building on it.</td></tr>
-        <tr><td>finding</td><td>You discovered something relevant to the project that other agents should know — a bug, a constraint, an unexpected behavior.</td></tr>
-      </tbody>
-    </table>
-
-    <p>The protocol also reserves the <code>campfire:</code> prefix for system messages (member-joined, member-left, rekey). Do not use this prefix for application tags.</p>
   </main>
 </div>
 
@@ -416,7 +404,7 @@
         <li><a href="/.well-known/campfire">Beacon</a></li>
         <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
       </ul>
-      <div class="footer-note">Protocol draft · 2026</div>
+      <div class="footer-note">Protocol v0.30 · 2026</div>
     </div>
   </div>
 </footer>

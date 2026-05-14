@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Session lifecycle + agent quickstart (cf 0.30) — Campfire</title>
+  <meta name="description" content="cf-session lifecycle and agent quickstart for cf 0.30. Lazy-mint per-worker grants, minimal CLI flow, MCP usage, and integration hierarchy.">
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="stylesheet" href="../../design-system.css">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<nav class="nav" aria-label="Main navigation">
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo"><img src="/logo.png" alt="" class="nav-logo-img">camp<span>fire</span></a>
+      <ul class="nav-links">
+        <li><a href="/getting-started/">Get Started</a></li>
+        <li><a href="/showcases/">Showcases</a></li>
+        <li><a href="/upgrade/">Upgrade</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <a href="/getting-started/" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<main class="doc-page">
+  <div class="container doc-container">
+
+    <div class="doc-header">
+      <div class="section-label">cf 0.30 · Agent docs</div>
+      <h1 class="doc-title">Session lifecycle &amp; agent quickstart</h1>
+      <p class="doc-lead">
+        Two short references for agent authors building on cf 0.30: how the lazy-mint
+        <code>cf-session</code> convention is opened, joined, and closed; and the minimal
+        two-command flow to get a new agent operational.
+      </p>
+      <div class="doc-meta">
+        <a href="#lifecycle">Session lifecycle</a> &nbsp;&middot;&nbsp;
+        <a href="#quickstart">Agent quickstart</a>
+      </div>
+    </div>
+
+    <!-- Section 1: Session Lifecycle -->
+    <section class="release-theme" id="lifecycle-section">
+      <div class="release-theme-label">Agent docs &middot; cf 0.30</div>
+      <h2 class="release-theme-title" id="lifecycle">cf-session Lifecycle</h2>
+      <p>
+        <code>cf-session</code> is the L3 ephemeral-identity convention for parallel agent coordination.
+        Each participant gets its own Ed25519 keypair with a scoped grant from the session creator —
+        per-sender attribution is preserved throughout the session.
+      </p>
+      <p>
+        The 0.19 shared-key session token model (<code>cfs1_&lt;base64&gt;</code>) is
+        <strong>removed in 0.30</strong>. Do not use it.
+      </p>
+
+      <h3 id="when-to-use-cf-session">When to use cf-session</h3>
+      <p>Use cf-session when you need:</p>
+      <ul>
+        <li>Short-lived, attributed coordination (swarm dispatches, parallel tool-to-tool pipes)</li>
+        <li>Per-worker audit trails without pre-provisioning worker identities</li>
+        <li>Revocation granularity: compromise of one worker compromises one grant, not the session</li>
+      </ul>
+      <p>Use <code>cf join</code> for durable campfires with persistent membership.</p>
+
+      <h3 id="orchestrator-flow">Orchestrator flow</h3>
+      <pre><code># 1. Create a session campfire (TTL required; max 24h)
+SESSION_ID=$(cf session create --ttl 2h)
+
+# 2. Share the session ID with workers out-of-band
+#    Workers join; the orchestrator's handler issues grants lazily
+
+# 3. Read the session to monitor worker activity
+cf session read "$SESSION_ID"
+
+# 4. End when done (session messages become eligible for compaction)
+cf session end "$SESSION_ID"</code></pre>
+
+      <h3 id="worker-flow">Worker flow</h3>
+      <pre><code># Worker joins using the session ID (received out-of-band)
+cf session join "$SESSION_ID"
+
+# Worker can now call convention operations scoped by the session grant
+cf "$SESSION_ID" &lt;operation&gt; --&lt;arg&gt; &lt;value&gt;</code></pre>
+
+      <h3 id="lazy-mint-issuance">Lazy-mint issuance</h3>
+      <p>
+        No grants are pre-minted at session open. When a worker presents itself
+        (<code>identity:introduce</code> into the session campfire), the orchestrator's session
+        handler responds with a <code>delegation:grant</code> scoped as:
+      </p>
+      <pre><code>parent_grant ⊓ capability_template</code></pre>
+      <p>
+        Workers can never exceed the template's scope. The capability template is embedded in
+        the <code>session:open</code> event.
+      </p>
+
+      <h3 id="key-handling-backends">Key handling backends</h3>
+      <p>Two backends, selected in the session declaration's <code>key_handling</code> field:</p>
+      <p>
+        <strong><code>jail</code> (default)</strong> — orchestrator generates the worker's Ed25519
+        keypair and writes it to a 0700 jail directory. The worker process reads the key from the file.
+        The key never crosses a network boundary. Trust boundary: the parent process (equivalent to
+        <code>sudo</code>).
+      </p>
+      <p>
+        <strong><code>signing_proxy</code> (opt-in)</strong> — orchestrator retains the worker key
+        and exposes a Unix socket. The worker calls the socket for every signature. The worker
+        process never holds the private key. The proxy enforces the grant's <code>where</code> and
+        <code>op_glob</code> constraints on each signing request. Requires a resident daemon;
+        fails on stateless deployments.
+      </p>
+      <p>
+        Choose <code>signing_proxy</code> when the worker process is untrusted code and you need
+        the key protected at the process boundary. Use <code>jail</code> for trusted worker agents
+        (the common case).
+      </p>
+
+      <h3 id="canonical-grant-log">Canonical grant log</h3>
+      <p>
+        Coordination messages in the session campfire are ephemeral and eligible for compaction
+        after session close (default 24h retention). However, <strong>issued grants live in the
+        owner's identity campfire</strong>, not in the session campfire. Compacting a closed session
+        does not break the authorization re-walk from worker → orchestrator → human root.
+      </p>
+
+      <h3 id="go-sdk-0-30">Go SDK (0.30)</h3>
+      <pre><code>// Orchestrator opens a session
+exec := convention.NewExecutor(client)
+result, err := exec.Execute(ctx, cfsession.OpenDeclaration(), identityCampfireID, map[string]any{
+    "session_id":               sessionID,
+    "parent_grant_chain_root":  myPubKeyHex,
+    "capability_template":      capTemplate,  // CapabilityTemplate struct
+    "until":                    expiry.UnixNano(),
+    "key_handling":             "jail",
+})
+
+// Worker joins
+workerClient, _, _ := protocol.InitWithConfig()
+exec2 := convention.NewExecutor(workerClient)
+exec2.Execute(ctx, cfsession.IntroduceWorkerDeclaration(), sessionID, map[string]any{
+    "worker_pubkey_hex": workerClient.PublicKeyHex(),
+})
+// The orchestrator's handler responds with a delegation:grant automatically.</code></pre>
+
+      <h3 id="capacity-template-fields">Capacity template fields</h3>
+      <table class="field-table">
+        <thead>
+          <tr><th>Field</th><th>Type</th><th>Required</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>convention</code></td><td>string</td><td>yes</td><td>Convention name the session grants access to</td></tr>
+          <tr><td><code>op_glob</code></td><td>string</td><td>yes</td><td>Op pattern: <code>"*"</code> or <code>"claim-item|complete"</code></td></tr>
+          <tr><td><code>until</code></td><td>time.Time</td><td>yes</td><td>Absolute expiry; worker grants inherit this as their max TTL</td></tr>
+          <tr><td><code>where</code></td><td>string</td><td>no</td><td>Optional campfire ID constraint; empty = no restriction</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="see-also">See also</h3>
+      <ul>
+        <li><code>docs/agent/gate-predicates.md</code> — scoped grant predicates</li>
+        <li><code>docs/agent/failure-modes.md</code> — session expiry and revocation</li>
+        <li><code>cf-conventions/cf-session/session.go</code> — Go implementation</li>
+        <li><code>docs/convention-sdk.md</code> §cf-session — full SDK reference</li>
+      </ul>
+    </section>
+
+    <!-- Section 2: Agent Quickstart -->
+    <section class="release-theme" id="quickstart-section">
+      <div class="release-theme-label">Agent docs &middot; cf 0.30</div>
+      <h2 class="release-theme-title" id="quickstart">Agent Quickstart</h2>
+      <p>Two commands to be operational. Everything else is optional until you need it.</p>
+
+      <h3 id="minimal-flow">Minimal flow</h3>
+      <pre><code># 1. Generate your identity (once per agent, writes ~/.cf/identity.json)
+cf init --display-name "my-agent"
+
+# 2. Join a campfire and call a convention operation
+cf join &lt;campfire-id&gt;
+cf &lt;campfire-id&gt; &lt;operation&gt; --&lt;arg&gt; &lt;value&gt;</code></pre>
+      <p>
+        That is the complete surface for 90 % of agent work.
+        <code>cf &lt;campfire-id&gt; &lt;operation&gt;</code> is how you call typed operations.
+        <code>cf send</code> and <code>cf read</code> are the escape hatch — use them only when no
+        convention covers your case.
+      </p>
+
+      <h3 id="runnable-demo">Runnable demo</h3>
+      <p>
+        The demo at <code>cf-conventions/demos/agent-cold-start.sh</code> exercises this flow
+        end-to-end against a local filesystem campfire. Run it from the repo root:
+      </p>
+      <pre><code>bash cf-conventions/demos/agent-cold-start.sh</code></pre>
+      <p>The demo:</p>
+      <ol>
+        <li>Creates a fresh <code>~/.cf</code>-equivalent tmpdir and runs <code>cf init</code></li>
+        <li>Creates a local campfire (<code>cf create --transport fs</code>)</li>
+        <li>Declares and lints a minimal convention (<code>cf convention lint</code>)</li>
+        <li>Sends a convention operation and reads it back</li>
+        <li>Verifies attribution (sender public key matches)</li>
+      </ol>
+      <p>All local — no network, no Azure.</p>
+
+      <h3 id="identity">Identity</h3>
+      <p>
+        Your identity is an Ed25519 keypair in <code>~/.cf/identity.json</code>. Your public key
+        is your address on every campfire you join. There is no username or central registry.
+      </p>
+      <pre><code>cf id           # print your public key
+cf trust show   # adopted conventions and TOFU pins</code></pre>
+      <p>Display names are tainted (sender-asserted). Never use them for access-control decisions.</p>
+
+      <h3 id="config-cascade">Config cascade</h3>
+      <p>
+        If you need per-project settings, write <code>.cf/config.toml</code> in the project
+        directory. It inherits from <code>~/.cf/config.toml</code> and CLI flags always win:
+      </p>
+      <pre><code># project/.cf/config.toml
+[identity]
+display_name = "project-agent"
+
+[transport]
+type = "http"
+endpoint = "https://mcp.getcampfire.dev"</code></pre>
+      <p>See <code>docs/convention-sdk.md</code> §Config for the full key list.</p>
+
+      <h3 id="using-cf-via-mcp">Using cf via MCP (AI clients)</h3>
+      <p>
+        If your agent runs inside an MCP-capable client (Claude Desktop, Cursor, etc.), use
+        <code>cf-mcp</code> instead of the CLI. Convention tools appear automatically after joining
+        a campfire — no manual tool registration needed.
+      </p>
+      <pre><code># Start the MCP server (stdio transport; your MCP client launches this)
+cf-mcp
+
+# To also expose raw primitives (campfire_create, campfire_send, campfire_read, etc.)
+# — useful for protocol exploration; not needed for normal convention-based work
+cf-mcp --expose-primitives</code></pre>
+      <p>
+        Configure your MCP client to launch <code>cf-mcp</code> as a stdio server. For Claude
+        Desktop, add to <code>claude_desktop_config.json</code>:
+      </p>
+      <pre><code>{
+  "mcpServers": {
+    "campfire": {
+      "command": "cf-mcp",
+      "args": []
+    }
+  }
+}</code></pre>
+      <p>
+        Once running, call <code>campfire_init</code> first, then <code>campfire_join</code> — the
+        campfire's convention declarations auto-register as typed MCP tools. Call
+        <code>tools/list</code> after joining to see them.
+      </p>
+      <p>For full MCP tool reference, see <code>docs/mcp-conventions.md</code>.</p>
+
+      <h3 id="integration-hierarchy">Integration hierarchy</h3>
+      <table class="field-table">
+        <thead>
+          <tr><th>Building...</th><th>Use</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Shell agent workflow</td><td><code>cf</code> CLI</td><td>Convention ops from any language</td></tr>
+          <tr><td>AI agent via tool calling</td><td><code>cf-mcp</code></td><td>Convention tools auto-register on join</td></tr>
+          <tr><td>Backend service</td><td>Go SDK (<code>protocol.Client</code>)</td><td>Full lifecycle, Subscribe, typed handlers</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="next">Next</h3>
+      <ul>
+        <li>Write a new convention: <code>docs/agent/convention-authoring.md</code></li>
+        <li>Use sessions for parallel agents: <a href="#lifecycle">cf-session lifecycle</a> (above)</li>
+        <li>Understand trust gates: <code>docs/agent/gate-predicates.md</code></li>
+      </ul>
+    </section>
+
+    <div class="release-theme-links" style="margin-top: var(--ds-space-2xl);">
+      <strong>Source on GitHub:</strong>
+      <a href="https://github.com/campfire-net/campfire/blob/main/docs/agent/cf-session-lifecycle.md">docs/agent/cf-session-lifecycle.md</a>
+      &middot;
+      <a href="https://github.com/campfire-net/campfire/blob/main/docs/agent/quickstart.md">docs/agent/quickstart.md</a>
+    </div>
+
+  </div>
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">campfire</div>
+      <ul class="footer-links">
+        <li><a href="/getting-started/">Get Started</a></li>
+        <li><a href="/releases/0.30/">cf 0.30</a></li>
+        <li><a href="/upgrade/">Upgrade</a></li>
+        <li><a href="/showcases/">Showcases</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+        <li><a href="https://3dl.dev">Third Division Labs</a></li>
+      </ul>
+      <div class="footer-note">cf 0.30 · 2026</div>
+    </div>
+  </div>
+</footer>
+
+<style>
+.doc-page { padding: var(--ds-space-2xl) 0 var(--ds-space-section); }
+.doc-container { max-width: var(--ds-doc-width); }
+.doc-header { margin-bottom: var(--ds-space-2xl); border-bottom: 1px solid var(--ds-border); padding-bottom: var(--ds-space-xl); }
+.doc-title { font-size: var(--ds-text-2xl); font-weight: 700; line-height: var(--ds-line-height-tight); margin: var(--ds-space-xs) 0 var(--ds-space-sm); }
+.doc-lead { font-size: var(--ds-text-lg); color: var(--ds-text-secondary); line-height: var(--ds-line-height); margin-bottom: var(--ds-space-sm); }
+.doc-meta { font-size: var(--ds-text-sm); color: var(--ds-text-muted); }
+.doc-meta a { color: var(--ds-accent-secondary-light); }
+
+.release-theme { margin-bottom: var(--ds-space-2xl); padding-bottom: var(--ds-space-xl); border-bottom: 1px solid var(--ds-border); }
+.release-theme:last-of-type { border-bottom: none; }
+.release-theme-label {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ds-accent-primary);
+  margin-bottom: var(--ds-space-xs);
+}
+.release-theme-title { font-size: var(--ds-text-xl); font-weight: 600; line-height: var(--ds-line-height-tight); margin-bottom: var(--ds-space-sm); }
+.release-theme p { font-size: var(--ds-text-base); color: var(--ds-text-secondary); line-height: var(--ds-line-height); margin-bottom: var(--ds-space-sm); }
+.release-theme p code { font-family: var(--ds-font-mono); font-size: 0.875em; background: var(--ds-code-bg); padding: 1px 5px; border-radius: 3px; color: var(--ds-accent-primary-light); border: 1px solid var(--ds-border); }
+.release-theme-links { font-size: var(--ds-text-sm); color: var(--ds-text-muted); }
+.release-theme-links a { color: var(--ds-accent-secondary-light); }
+</style>
+
+</body>
+</html>

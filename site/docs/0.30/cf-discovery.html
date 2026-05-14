@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cf-discovery spec (cf 0.30) — Campfire</title>
+  <meta name="description" content="cf-discovery 1.0 — snippet schema, signing rules, freshness semantics, trust model, post-join verification, and config-vs-beacon endpoint precedence for cf 0.30.">
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="stylesheet" href="/design-system.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<nav class="nav" aria-label="Main navigation">
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo"><img src="/logo.png" alt="" class="nav-logo-img">camp<span>fire</span></a>
+      <ul class="nav-links">
+        <li><a href="/getting-started/">Get Started</a></li>
+        <li><a href="/showcases/">Showcases</a></li>
+        <li><a href="/upgrade/">Upgrade</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <a href="/getting-started/" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<main class="doc-page">
+  <div class="container doc-container">
+
+    <div class="doc-header">
+      <div class="section-label">Specification · cf 0.30</div>
+      <h1 class="doc-title">cf-discovery 1.0 — Snippet Schema Specification</h1>
+      <p class="doc-lead">
+        cf-discovery defines how campfire namespaces expose child campfire metadata to members
+        of the parent namespace without requiring the browsing member to join the child. The core
+        artifact is the <strong>snippet</strong> — a parent-signed, schema-locked summary record
+        published as a <code>naming:preview</code> message in the parent campfire.
+      </p>
+      <div class="doc-meta">
+        Status: Draft — cf 0.30.0 &nbsp;&middot;&nbsp;
+        Resolves: OPEN-014 (snippet schema standardization / beacon redesign alignment) &nbsp;&middot;&nbsp;
+        References: 0.30-design.md §3, round-2/multi-level-snippet-chain.md
+      </div>
+    </div>
+
+    <section id="overview">
+      <h2 id="overview-heading">Overview</h2>
+      <p>
+        cf-discovery defines how campfire namespaces expose child campfire metadata to members of
+        the parent namespace without requiring the browsing member to join the child. The core
+        artifact is the <strong>snippet</strong> — a parent-signed, schema-locked summary record
+        published as a <code>naming:preview</code> message in the parent campfire.
+      </p>
+      <p>This document formalizes:</p>
+      <ul>
+        <li>The snippet wire format (JSON fields, types, constraints)</li>
+        <li>Signing rules (who signs, what is signed, how to verify)</li>
+        <li>Freshness semantics (declared window, per-hop composition, degradation)</li>
+        <li>Conformance rules for producers and consumers</li>
+      </ul>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="snippet-wire-format">
+      <h2 id="snippet-wire-format">1. Snippet Wire Format</h2>
+
+      <h3 id="message-envelope">1.1 Message Envelope</h3>
+      <p>A snippet is sent as a standard campfire message with the following envelope fields set by the protocol:</p>
+      <pre><code>tag:    "naming:preview"
+signer: &lt;parent campfire's Ed25519 key&gt;</code></pre>
+      <p>The message body is a JSON object. The protocol transport preserves the signature over the concatenation of the tag and the JSON payload bytes (UTF-8, no BOM, no trailing newline).</p>
+
+      <h3 id="snippet-json-schema">1.2 Snippet JSON Schema</h3>
+      <pre><code>{
+  "name":               "&lt;string&gt;",
+  "description":        "&lt;string&gt;",
+  "member_count_bucket":"&lt;string&gt;",
+  "freshness_window":   "&lt;string&gt;",
+  "parent_signature":   "&lt;string&gt;"
+}</code></pre>
+      <p>All five fields are <strong>required</strong>. A snippet missing any field MUST be rejected by consumers as malformed.</p>
+
+      <h3 id="field-definitions">1.3 Field Definitions</h3>
+
+      <h4 id="field-name"><code>name</code> — string, required</h4>
+      <p>The registered child name, exactly as written in the parent's name registration (<code>naming:name:&lt;name&gt;</code> tag). Single segment only — dots are not permitted.</p>
+      <p><strong>Constraints:</strong></p>
+      <ul>
+        <li>Non-empty.</li>
+        <li>Valid naming segment: matches <code>^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$</code>.</li>
+        <li>Must not contain a dot (<code>.</code>). A snippet represents a single-hop child, never a multi-segment path.</li>
+      </ul>
+      <p><strong>Adversarial rule:</strong> A consumer MUST reject a snippet whose <code>name</code> field contains a dot. A multi-segment <code>name</code> would impersonate a grandchild, which the parent campfire cannot vouch for (no transitive trust — see §4).</p>
+
+      <h4 id="field-description"><code>description</code> — string, required</h4>
+      <p>A human-readable summary of the child campfire. Length is advisory; producers SHOULD keep descriptions under 512 bytes (UTF-8).</p>
+      <p><strong>Constraints:</strong></p>
+      <ul>
+        <li>Non-empty.</li>
+        <li>No embedded newlines (LF or CRLF). Producers MUST strip newlines; consumers MAY reject snippets with embedded newlines.</li>
+        <li>No null bytes.</li>
+      </ul>
+      <p><strong>Privacy rule:</strong> The description MUST NOT contain member identities, content previews, or any information not approved by the child campfire's operator. The parent operator writes the description at registration time; the child operator reviews it before registration completes (see §2 signing flow).</p>
+
+      <h4 id="field-member-count-bucket"><code>member_count_bucket</code> — string, required</h4>
+      <p>A bucketed (coarse) indicator of the child campfire's approximate membership. Exact counts are not published to avoid deanonymization through count timing.</p>
+      <p><strong>Permitted values (exhaustive):</strong></p>
+      <table class="field-table">
+        <thead><tr><th>Value</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>"1"</code></td><td>Solo / single-member</td></tr>
+          <tr><td><code>"2-5"</code></td><td>Small group</td></tr>
+          <tr><td><code>"6-25"</code></td><td>Medium group</td></tr>
+          <tr><td><code>"26+"</code></td><td>Large group or public space</td></tr>
+        </tbody>
+      </table>
+      <p><strong>Constraints:</strong></p>
+      <ul>
+        <li>MUST be one of the four values above. Any other value is malformed.</li>
+        <li>The bucket is declared by the <strong>parent</strong> at registration time, derived from whatever membership information the parent has access to (typically the child registration payload). It is not recomputed on read.</li>
+      </ul>
+      <p><strong>Adversarial rule:</strong> A consumer receiving a snippet with <code>member_count_bucket</code> outside the permitted set MUST reject it as malformed. A hostile namespace could attempt to embed signals in non-standard bucket strings.</p>
+
+      <h4 id="field-freshness-window"><code>freshness_window</code> — string, required</h4>
+      <p>The duration after which a consumer SHOULD treat this snippet as stale. Stale snippets are flagged degraded; they are NOT auto-refreshed or hidden, but the UI MUST display a degradation indicator.</p>
+      <p><strong>Format:</strong> Go duration string — a sequence of decimal numbers with unit suffixes. Permitted units: <code>s</code>, <code>m</code>, <code>h</code>. Examples: <code>"5m"</code>, <code>"1h"</code>, <code>"30s"</code>.</p>
+      <p><strong>Constraints:</strong></p>
+      <ul>
+        <li>Non-empty.</li>
+        <li>Must parse as a Go <code>time.Duration</code> with <code>time.ParseDuration</code>.</li>
+        <li>Minimum: <code>"1s"</code>. Maximum: <code>"24h"</code>.</li>
+        <li>Duration MUST be positive.</li>
+      </ul>
+      <p><strong>Semantics:</strong> The window is declared by the <strong>parent</strong> operator — not by the child. The parent knows how frequently it refreshes its registration data. A child declaring its own freshness window is not accepted.</p>
+      <p><strong>Multi-hop composition:</strong> When a resolver walks a chain of snippets across multiple namespace hops, the freshness window displayed to the user is the <strong>minimum</strong> across all hops — not the window at the final hop. This collapses the freshness-stacking attack where a hostile intermediate could pin a stale entry by advertising a long window. See §3.2.</p>
+
+      <h4 id="field-parent-signature"><code>parent_signature</code> — string, required</h4>
+      <p>The Ed25519 signature produced by the <strong>immediate parent</strong> campfire's key, over the canonical signing payload (see §2.2).</p>
+      <p><strong>Format:</strong> Base64 standard encoding (RFC 4648), URL-safe alphabet (<code>-</code> and <code>_</code> in place of <code>+</code> and <code>/</code>), no padding (<code>=</code>). Length after decode: 64 bytes (Ed25519 signature).</p>
+      <p><strong>Constraints:</strong></p>
+      <ul>
+        <li>Non-empty.</li>
+        <li>Decodable as URL-safe base64 without padding.</li>
+        <li>Decoded length: exactly 64 bytes.</li>
+        <li>Signature verifies against the parent campfire's current Ed25519 key using the canonical signing payload (§2.2).</li>
+      </ul>
+      <p><strong>Adversarial rule:</strong> <code>parent_signature</code> MUST be produced by the <strong>immediate</strong> parent in the registration tree. A resolver MUST NOT accept a snippet whose signer is a grandparent, a root authority, or any campfire other than the direct parent of the named child. Depth-2+ chains present separate per-hop signatures; there is no co-signing across hops. See §4.</p>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="signing-rules">
+      <h2 id="signing-rules">2. Signing Rules</h2>
+
+      <h3 id="who-signs">2.1 Who Signs</h3>
+      <p>The parent campfire signs every snippet it publishes. "Parent campfire" means the campfire whose <code>naming:name:&lt;name&gt;</code> registration contains the child's campfire ID — i.e., the immediate parent in the registration tree.</p>
+      <p>The parent uses its current Ed25519 private key (the one associated with its campfire identity). Key rotation (<code>campfire:rekey</code>) invalidates all previously signed snippets; a consumer receiving a snippet that no longer verifies against the parent's current key MUST treat it as stale/degraded, not as forged.</p>
+
+      <h3 id="canonical-signing-payload">2.2 Canonical Signing Payload</h3>
+      <p>The signing payload is the UTF-8 encoding of:</p>
+      <pre><code>naming:preview\n&lt;json-object&gt;</code></pre>
+      <p>Where <code>&lt;json-object&gt;</code> is the snippet JSON with:</p>
+      <ul>
+        <li>Keys in the canonical field order: <code>name</code>, <code>description</code>, <code>member_count_bucket</code>, <code>freshness_window</code>. (The <code>parent_signature</code> field is excluded from the payload — it is the signature of the other four fields.)</li>
+        <li>No trailing whitespace.</li>
+        <li>No trailing newline after the JSON object.</li>
+      </ul>
+      <p>Producers MUST serialize in canonical field order. Consumers MUST verify using the same canonical form, not the wire-received JSON (which may have re-ordered fields due to transport or tooling).</p>
+      <p>Example canonical payload (showing the separator newline between tag and JSON):</p>
+      <pre><code>naming:preview
+{"name":"lobby","description":"General discussion","member_count_bucket":"6-25","freshness_window":"5m"}</code></pre>
+
+      <h3 id="verification-steps">2.3 Verification Steps</h3>
+      <p>A consumer MUST verify a snippet in this order, rejecting on any failure:</p>
+      <ol>
+        <li><strong>Field presence:</strong> all five fields present and non-empty.</li>
+        <li><strong>Field type:</strong> all fields are JSON strings.</li>
+        <li><strong>Field constraints:</strong> <code>name</code> matches the segment regex and contains no dot; <code>member_count_bucket</code> is one of the four permitted values; <code>freshness_window</code> parses as a duration in <code>[1s, 24h]</code>; <code>parent_signature</code> decodes to 64 bytes.</li>
+        <li><strong>Parent identity:</strong> the signer of the enclosing campfire message is the <strong>immediate parent</strong> campfire's key (not a grandparent, not a foreign key).</li>
+        <li><strong>Signature:</strong> the Ed25519 signature in <code>parent_signature</code> verifies over the canonical signing payload (§2.2) using the parent's current public key.</li>
+        <li><strong>Freshness:</strong> the snippet is not stale (current time is within <code>freshness_window</code> of the message timestamp). If stale, mark degraded — do not reject.</li>
+      </ol>
+      <p>Step 6 produces degradation, not rejection. Steps 1–5 produce rejection.</p>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="freshness-semantics">
+      <h2 id="freshness-semantics">3. Freshness Semantics</h2>
+
+      <h3 id="single-hop-freshness">3.1 Single-Hop Freshness</h3>
+      <p>A snippet is <strong>fresh</strong> if:</p>
+      <pre><code>current_time ≤ message_timestamp + parse(freshness_window)</code></pre>
+      <p>A snippet is <strong>stale</strong> (degraded) if this condition is false.</p>
+      <p>Consumers MUST display a degradation indicator for stale snippets. Stale snippets MUST NOT be silently dropped or auto-refreshed on the consumer side — degradation is informational and is the expected behavior when the parent campfire has not re-published recently.</p>
+
+      <h3 id="multi-hop-freshness-composition">3.2 Multi-Hop Freshness Composition</h3>
+      <p>When a resolver walks a namespace chain of depth ≥ 2, the displayed freshness window is the <strong>minimum</strong> of the freshness windows at each hop:</p>
+      <pre><code>displayed_window = min(w_1, w_2, …, w_n)</code></pre>
+      <p>Where <code>w_i</code> is the parsed <code>freshness_window</code> of the snippet at hop <code>i</code>.</p>
+      <p>A resolver MUST flag the entire resolved entry as degraded if <strong>any</strong> hop's snippet is stale — not just the final hop. This prevents a hostile intermediate from hiding staleness by advertising a long freshness window at an upper hop while a lower hop is already expired.</p>
+      <p><strong>Example:</strong></p>
+      <ul>
+        <li><code>freeso</code> publishes a snippet for <code>metropolis</code> with <code>freshness_window: "5m"</code></li>
+        <li><code>metropolis</code> publishes a snippet for <code>lot42</code> with <code>freshness_window: "1h"</code></li>
+        <li>Displayed freshness window: <code>5m</code></li>
+        <li>If the <code>freeso→metropolis</code> snippet's timestamp is more than 5 minutes old, the entire <code>freeso.metropolis.lot42</code> entry is shown as degraded — regardless of the <code>metropolis→lot42</code> snippet's freshness.</li>
+      </ul>
+
+      <h3 id="degradation-is-not-removal">3.3 Degradation is Not Removal</h3>
+      <p>A degraded snippet remains visible. The consumer displays a staleness indicator (e.g., "last updated 12 minutes ago — may be stale"). The consumer MUST NOT remove the snippet from the browse list or treat it as a resolution failure.</p>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="trust-model">
+      <h2 id="trust-model">4. Trust Model</h2>
+
+      <h3 id="parent-signs-for-immediate-children-only">4.1 Parent Signs for Immediate Children Only</h3>
+      <p>A parent campfire MUST publish snippets only for its <strong>immediate</strong> children — campfires it directly registers via <code>naming:name:&lt;name&gt;</code>. It MUST NOT publish snippets for grandchildren or deeper descendants.</p>
+      <p><strong>Why:</strong> The parent operator cannot observe the state of grandchildren. A snippet signed by a grandparent would imply a vouch-for-state the grandparent cannot verify. Per §1.3.1 ("Adversarial rule" for <code>name</code>), any snippet with a dotted <code>name</code> field is malformed and MUST be rejected.</p>
+
+      <h3 id="no-transitive-trust">4.2 No Transitive Trust</h3>
+      <p>The <code>parent_signature</code> in a snippet always means: "the immediate parent in the registration tree asserts this child exists with this metadata." It does NOT mean:</p>
+      <ul>
+        <li>The root authority vouches for the child.</li>
+        <li>The parent vouches for what the child publishes about its own children.</li>
+        <li>Trust at one hop implies trust at the next.</li>
+      </ul>
+      <p>In a depth-2 chain (<code>A → B → C</code>), the user's trust in <code>B</code>'s snippet of <code>C</code> derives from the user's TOFU pin on <code>B</code>'s key — formed independently at the moment the user joined <code>B</code>. <code>A</code>'s signature on the <code>A→B</code> snippet says nothing about <code>C</code>.</p>
+
+      <h3 id="resolver-must-check-signer-identity">4.3 Resolver Must Check Signer Identity</h3>
+      <p>When verifying <code>parent_signature</code>, the resolver MUST check that the <strong>signer of the enclosing campfire message</strong> is the known parent campfire key — not just that the signature bytes are valid under some key.</p>
+      <p>Concretely: a resolver that has joined <code>freeso</code> and is reading its snippets MUST verify that the message signer matches <code>freeso</code>'s known public key. A snippet injected by a member of <code>freeso</code> who is not the campfire itself (i.e., not the campfire's own key) MUST be rejected.</p>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="producer-requirements">
+      <h2 id="producer-requirements">5. Producer Requirements</h2>
+      <p>A campfire operator publishing snippets MUST:</p>
+      <ol>
+        <li>Publish snippets only for names it has registered via <code>naming:name:&lt;name&gt;</code>.</li>
+        <li>Use the canonical field order (§2.2) when serializing the JSON payload.</li>
+        <li>Sign with the campfire's current Ed25519 key.</li>
+        <li>Declare a <code>freshness_window</code> that reflects the actual re-publish cadence.</li>
+        <li>Not include dotted names (multi-segment paths).</li>
+        <li>Not embed member identities, message content, or private data in <code>description</code>.</li>
+        <li>Re-publish snippets before the <code>freshness_window</code> expires to keep them fresh.</li>
+        <li>Emit a fresh snippet immediately after key rotation (<code>campfire:rekey</code>) to replace all now-invalid signatures.</li>
+      </ol>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="consumer-requirements">
+      <h2 id="consumer-requirements">6. Consumer Requirements</h2>
+      <p>A consumer reading snippets MUST:</p>
+      <ol>
+        <li>Perform all six verification steps (§2.3) in order.</li>
+        <li>Reject (not display) malformed snippets (failed steps 1–5).</li>
+        <li>Display (with degradation indicator) stale snippets (failed step 6).</li>
+        <li>Apply multi-hop freshness composition (§3.2) when resolving chains.</li>
+        <li>Not auto-join a child campfire based solely on snippet presence — snippets are for browsing; joining requires an explicit user action or Tier-2 scoped auto-join.</li>
+        <li>Not expose snippet <code>description</code> content to non-members of the parent (the snippet is a parent-namespace artifact; it is readable only by parent members).</li>
+      </ol>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="adversarial-cases">
+      <h2 id="adversarial-cases">7. Adversarial Cases</h2>
+      <p>These cases MUST be tested by conformance harnesses and demo scripts.</p>
+
+      <h3 id="dotted-name-injection">7.1 Dotted Name Injection</h3>
+      <p><strong>Attack:</strong> A hostile parent publishes a snippet with <code>name: "child.grandchild"</code>, attempting to make the resolver believe it is vouching for a two-hop path.</p>
+      <p><strong>Expected behavior:</strong> Consumer rejects the snippet as malformed (§1.3 name constraint: no dot permitted).</p>
+
+      <h3 id="invalid-bucket-value">7.2 Invalid Bucket Value</h3>
+      <p><strong>Attack:</strong> A hostile parent publishes <code>member_count_bucket: "10000"</code> or <code>member_count_bucket: ""</code> to embed a signal or evade bucket enforcement.</p>
+      <p><strong>Expected behavior:</strong> Consumer rejects the snippet as malformed — <code>member_count_bucket</code> must be one of the four permitted values.</p>
+
+      <h3 id="out-of-range-freshness-window">7.3 Out-of-Range Freshness Window</h3>
+      <p><strong>Attack:</strong> A hostile parent publishes <code>freshness_window: "999h"</code> to prevent degradation for an extended period after the parent goes offline.</p>
+      <p><strong>Expected behavior:</strong> Consumer rejects the snippet as malformed — <code>freshness_window</code> must be in the range <code>[1s, 24h]</code>.</p>
+
+      <h3 id="freshness-stacking-attack">7.4 Freshness-Stacking Attack</h3>
+      <p><strong>Attack:</strong> At chain depth 2, the intermediate namespace publishes <code>freshness_window: "24h"</code> while the root snippet has a much shorter window. The attacker hopes the resolver uses the bottom-hop window, masking staleness at the top.</p>
+      <p><strong>Expected behavior:</strong> The resolver applies MIN-composition (§3.2). The displayed window and the degradation gate are both governed by the shortest window in the chain.</p>
+
+      <h3 id="grandparent-signer">7.5 Grandparent Signer</h3>
+      <p><strong>Attack:</strong> A snippet claims to be signed by a root authority rather than the immediate parent, attempting to establish broad trust by impersonating a well-known key.</p>
+      <p><strong>Expected behavior:</strong> Consumer verifies that the enclosing message signer matches the known immediate parent key. A mismatch causes rejection (§4.3).</p>
+
+      <h3 id="empty-required-field">7.6 Empty Required Field</h3>
+      <p><strong>Attack:</strong> A snippet is published with <code>description: ""</code> or any other required field set to an empty string.</p>
+      <p><strong>Expected behavior:</strong> Consumer rejects the snippet as malformed (§1.3: all fields non-empty).</p>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="relation-to-other-artifacts">
+      <h2 id="relation-to-other-artifacts">8. Relation to Other Artifacts</h2>
+      <table class="field-table">
+        <thead><tr><th>Artifact</th><th>Signer</th><th>Location</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>Snippet (<code>naming:preview</code>)</td><td>Parent campfire key</td><td>Parent namespace campfire</td><td>Browse-before-join metadata</td></tr>
+          <tr><td>Beacon</td><td>Child campfire key</td><td>Distributed / passed out-of-band</td><td>Cold-start dialing (endpoint, campfire ID)</td></tr>
+          <tr><td>Name registration (<code>naming:name:&lt;name&gt;</code>)</td><td>Member (registrar) key</td><td>Parent campfire</td><td>Authoritative name → campfire ID mapping</td></tr>
+        </tbody>
+      </table>
+      <p>A snippet SHOULD include the child's beacon string (for cold-start dialing) as an additional JSON field named <code>beacon</code>. This field is <strong>optional</strong> and is not part of the five required fields. Consumers that do not recognize <code>beacon</code> MUST ignore it — unknown fields are tolerated.</p>
+      <p>The beacon field, if present, is:</p>
+      <ul>
+        <li>Signed by the parent along with the other four fields (included in the canonical signing payload between <code>freshness_window</code> and before the closing brace).</li>
+        <li>Subject to the same signing constraints as the other fields.</li>
+      </ul>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="wire-example">
+      <h2 id="wire-example">9. Wire Example</h2>
+
+      <h3 id="valid-snippet">9.1 Valid Snippet</h3>
+      <pre><code>{
+  "name": "lobby",
+  "description": "General discussion for social members",
+  "member_count_bucket": "6-25",
+  "freshness_window": "5m",
+  "parent_signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}</code></pre>
+      <p><em>(The <code>parent_signature</code> above is a placeholder; real signatures are 64-byte Ed25519 signatures encoded in URL-safe base64 without padding.)</em></p>
+
+      <h3 id="invalid-snippets">9.2 Invalid Snippets (rejection expected)</h3>
+      <table class="field-table">
+        <thead><tr><th>Snippet issue</th><th>Field</th><th>Why rejected</th></tr></thead>
+        <tbody>
+          <tr><td><code>"name": "child.grand"</code></td><td><code>name</code></td><td>Contains dot — multi-segment path</td></tr>
+          <tr><td><code>"member_count_bucket": "10000"</code></td><td><code>member_count_bucket</code></td><td>Not a permitted value</td></tr>
+          <tr><td><code>"freshness_window": "999h"</code></td><td><code>freshness_window</code></td><td>Exceeds 24h maximum</td></tr>
+          <tr><td><code>"freshness_window": "0s"</code></td><td><code>freshness_window</code></td><td>Not positive</td></tr>
+          <tr><td><code>"description": ""</code></td><td><code>description</code></td><td>Empty required field</td></tr>
+          <tr><td>Missing <code>parent_signature</code></td><td><code>parent_signature</code></td><td>Required field absent</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="stage-3-reference">
+      <h2 id="stage-3-reference">10. Stage 3 Reference</h2>
+      <p>Implementers of cf-discovery Stage 3 (the Tier-1 snippet producer and consumer) MUST implement this specification in full. The following conformance invariants apply:</p>
+      <ol>
+        <li>Every snippet produced passes a local validation that runs §2.3 steps 1–3 before signing.</li>
+        <li>Every snippet consumed is validated through §2.3 steps 1–6 before display.</li>
+        <li>Multi-hop freshness composition is implemented per §3.2.</li>
+        <li>All seven adversarial cases in §7 are covered by automated tests.</li>
+      </ol>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="post-join-verification">
+      <h2 id="post-join-verification">11. Post-Join Verification (Tier 2 — Honeypot Defense)</h2>
+
+      <h3 id="post-join-overview">11.1 Overview</h3>
+      <p>When a client auto-joins a campfire via Tier-2 scoped auto-join (§3.2 of 0.30-design.md), the beacon's <code>join_protocol: "open"</code> claim is <strong>tainted-by-construction</strong> — the signature proves the campfire operator published this claim, but does NOT prove the campfire currently honors it. A hostile operator could advertise <code>join_protocol: "open"</code> in a beacon, wait for a non-member to auto-join, and then harvest the mandatory rekey that fires on member admission ("honeypot-rekey harvest").</p>
+      <p>Post-join verification closes this attack by requiring the joiner to <strong>observe</strong> the campfire's behavior before committing to membership.</p>
+
+      <h3 id="chosen-mechanism">11.2 Chosen Mechanism: probe-write-then-observe</h3>
+      <p><strong>Decision (OPEN-015):</strong> The chosen post-join verification mechanism is <strong>probe-write-then-observe</strong>.</p>
+      <p>The alternative considered and rejected was <strong>member-set Merkle-compare on first sync</strong> — computing a Merkle root of the returned member set and comparing it against a value the inviter encoded in the invite token. That approach was rejected for three reasons:</p>
+      <ol>
+        <li><strong>Invite-token coupling.</strong> Member-set Merkle-compare requires the inviter to encode a member-set commitment in the token at invite time. Tier-2 scoped auto-join is designed for configured namespace roots, not invite flows — there is no inviter embedding a token, so there is no commitment to compare against.</li>
+        <li><strong>State staleness.</strong> The member set returned on first sync may differ from the commitment if members joined or left between invite issuance and the joiner's first sync. This produces false-positive verification failures in normal operation.</li>
+        <li><strong>Complexity.</strong> Merkle-compare adds ~150 LOC of hash-tree machinery plus a commitment-encoding scheme in the invite token format. The probe-write-then-observe mechanism reuses the existing send/read primitives already present in the protocol client.</li>
+      </ol>
+      <p><strong>Probe-write-then-observe</strong> was chosen because:</p>
+      <ul>
+        <li>It exercises the same send/read path every member uses — no new primitives.</li>
+        <li>It directly detects enforcement-mode campfires (campfires that silently drop non-member writes or queue them for operator review rather than delivering them openly).</li>
+        <li>It fires per-hop in multi-hop chain resolution, providing the same protection depth-1 and depth-n (see OPEN-005 round-2 doc, multi-level-snippet-chain.md).</li>
+        <li>LOC budget: ~30 LOC addition to the <code>AutoJoinFunc</code> scaffold at <code>naming/resolve.go:121-126</code>.</li>
+      </ul>
+
+      <h3 id="mechanism-steps">11.3 Mechanism Steps</h3>
+      <p>After the transport-level join completes (identity admitted, rekey received), but before the joiner records the campfire as a trusted member in local state, the client executes the following probe:</p>
+      <ol>
+        <li><strong>Send a probe message.</strong> The joiner sends a benign, schema-neutral message to the campfire. The message MUST be tagged <code>discovery:probe</code> and MUST contain no content other than the probe tag and the joiner's signature. The probe message is transient — it carries no meaning and MUST NOT be interpreted as content by other members.</li>
+        <li><strong>Read back the probe.</strong> The joiner reads the campfire's message stream and checks whether the probe message appears. A campfire that is genuinely open MUST deliver the joiner's own message back to them on read (all members see all messages, including their own).</li>
+        <li><strong>Compare.</strong> If the probe message appears in the read result within the verification timeout (default: 5 seconds), verification passes. If the probe message does NOT appear — because the campfire silently dropped it, queued it for moderation, or filtered it — verification fails.</li>
+        <li><strong>On pass:</strong> The joiner records the campfire as a trusted Tier-2 member. Normal reads and convention dispatches proceed.</li>
+        <li><strong>On fail (unjoin trigger):</strong> The joiner executes the unjoin protocol (§11.4).</li>
+      </ol>
+
+      <h4 id="probe-timeout-false-positives">§11.3.1 Probe Timeout False-Positives on High-Latency Campfires</h4>
+      <p>The 5-second verification timeout conflates two <strong>distinct</strong> timeout failure modes that require different responses:</p>
+      <p><strong>Timeout due to suppression (honeypot):</strong> The campfire received the probe write but silently dropped or queued it — the probe never entered the message stream. This is the enforcement-mode honeypot scenario (§11.6). The probe message will never appear regardless of how long the joiner waits.<br>
+      → <strong>Correct response: unjoin-declaration + leave.</strong></p>
+      <p><strong>Timeout due to latency (false-positive risk):</strong> The campfire accepted the probe write and the message is in the stream, but the joiner's read call returned before the message was delivered — because the campfire is on a high-latency network path (e.g., a relay with &gt; 5 s round-trip, a campfire hosted in a distant region, or a backpressured HTTP transport). The probe message would appear if the joiner waited longer. This failure mode is indistinguishable from suppression at the transport level within the default timeout window.<br>
+      → <strong>False-positive risk: the joiner unjoins a legitimate open campfire.</strong></p>
+      <p><strong>The spec does not currently provide a mechanical way to distinguish the two modes.</strong> A suppressed probe and a delayed probe look identical to the joiner within the timeout window. The design accepts this ambiguity with the following acknowledged trade-off:</p>
+      <ul>
+        <li>The 5-second default is intentionally aggressive. It optimizes for fast honeypot detection at the cost of false-positive risk on high-latency campfires.</li>
+        <li>Operators of high-latency campfires (or clients connecting across high-latency paths) SHOULD configure a longer probe timeout via the <code>discovery.probe_timeout</code> config key (e.g., <code>30s</code> or <code>60s</code>). The default of 5 seconds is appropriate for co-located or low-latency deployments.</li>
+        <li>A false-positive unjoin-declaration is forensically benign: the joiner leaves, the snippet is degraded, and the operator can inspect the declaration and identify the timeout as a latency event (probe_msg_id will be present in the campfire's message log, proving the probe was delivered). The joiner may manually re-join outside the auto-join path.</li>
+      </ul>
+      <p><strong>If a future implementation can distinguish the modes mechanically</strong> (e.g., by checking a transport-level acknowledgement from the send step before starting the observe timeout), the behavior SHOULD be updated to:</p>
+      <ul>
+        <li>On send-not-acknowledged: treat as suppression → unjoin immediately.</li>
+        <li>On send-acknowledged but observe-timeout: treat as latency → retry with backoff up to a configurable maximum, then degrade (not unjoin).</li>
+      </ul>
+      <p>Until such a transport-level send acknowledgement is available, the 5-second timeout with operator-configurable override is the correct posture. File a follow-up item if you are implementing the mechanical distinction (it requires transport changes and is out of scope for this spec clarification).</p>
+
+      <h3 id="unjoin-trigger-and-protocol">11.4 Unjoin Trigger and Protocol</h3>
+      <p>Verification failure means the campfire is behaving inconsistently with its advertised <code>join_protocol: "open"</code> claim — this is the <strong>honeypot scenario</strong>: a campfire that advertises open membership but enforces non-open semantics to harvest joiner identity from the admission rekey.</p>
+      <p>When verification fails, the client MUST:</p>
+      <ol>
+        <li><strong>Leave the campfire.</strong> Issue a protocol-level leave, removing the campfire from the local member list and preventing further message reads.</li>
+        <li><strong>Sign and post an unjoin-declaration.</strong> Before leaving, the joiner signs and posts an <code>unjoin-declaration</code> message to the campfire with the following fields:
+          <ul>
+            <li><code>campfire_id</code> — the campfire being unjoined.</li>
+            <li><code>reason</code> — the string <code>"probe-verification-failed"</code>.</li>
+            <li><code>observed_inconsistency</code> — a human-readable description of the inconsistency observed (e.g., <code>"probe message not visible on read after join"</code>).</li>
+            <li><code>probe_msg_id</code> — the message ID of the probe that was not returned.</li>
+            <li><code>joiner_pubkey</code> — the joiner's Ed25519 public key hex.</li>
+          </ul>
+          The unjoin-declaration is signed by the <strong>joiner's own Ed25519 key</strong>. The signed claim is: "I joined this campfire, observed inconsistent state (probe message not returned), and am unjoining." The campfire operator can read this declaration; the campfire cannot suppress it because the joiner is still a member at the moment of posting.
+        </li>
+        <li><strong>Degrade the discovery entry.</strong> Mark the campfire's snippet in the parent namespace as degraded with reason <code>"post-join-verification-failed"</code>. The degraded entry remains visible to the user with a warning indicator; it is NOT silently removed. Future auto-join attempts for the same campfire are suppressed until the user explicitly clears the degraded status or the parent namespace republishes a fresh snippet.</li>
+        <li><strong>Do not retry automatically.</strong> Automatic retry after unjoin is prohibited. A campfire that fails verification once is not retried by the auto-join path. The user may manually attempt a direct join (outside the auto-join path), at which point verification runs again.</li>
+      </ol>
+
+      <h3 id="unjoin-signature-contract">11.5 Unjoin Signature Contract</h3>
+      <p>The unjoin-declaration message has the following signing contract:</p>
+      <ul>
+        <li><strong>Who signs:</strong> The <strong>joiner</strong> — the identity that attempted to join and observed the inconsistency. The campfire operator does NOT sign the unjoin-declaration.</li>
+        <li><strong>What is signed:</strong> The canonical signing payload is the UTF-8 encoding of <code>discovery:unjoin-declaration\n&lt;json-object&gt;</code>, where <code>&lt;json-object&gt;</code> is the JSON serialization of the five unjoin fields in canonical field order (see §11.5.1 below).</li>
+        <li><strong>Why the joiner signs:</strong> The joiner's signature makes the inconsistency claim attributable and non-repudiable. A third party reading the unjoin-declaration can verify (a) the declaration came from the key that joined, (b) the declared probe_msg_id matches the probe message on record, and (c) the joiner's pubkey matches the admitted member — all without trusting the campfire operator.</li>
+        <li><strong>What the signature does NOT prove:</strong> The signature proves the joiner sent the unjoin-declaration, not that the campfire is definitively hostile. The campfire operator may have a legitimate explanation (e.g., a race condition during rekey). The unjoin-declaration is a forensic record, not a verdict.</li>
+      </ul>
+
+      <h4 id="canonical-unjoin-signing-payload">§11.5.1 Canonical Signing Payload</h4>
+      <p><strong>Prefix bytes.</strong> The signing payload begins with the ASCII/UTF-8 string <code>discovery:unjoin-declaration</code> followed by a single LF byte (0x0A). No CR (0x0D) precedes the LF. The prefix is not JSON — it is a domain separator that prevents cross-protocol signature reuse.</p>
+      <p><strong>Canonical field order.</strong> The five fields are serialized in alphabetical order (RFC 8259 imposes no ordering requirement on JSON objects; this spec imposes alphabetical ordering to ensure byte-reproducible payloads across implementations):</p>
+      <ol>
+        <li><code>campfire_id</code></li>
+        <li><code>joiner_pubkey</code></li>
+        <li><code>observed_inconsistency</code></li>
+        <li><code>probe_msg_id</code></li>
+        <li><code>reason</code></li>
+      </ol>
+      <p><strong>JSON serialization rules.</strong></p>
+      <ul>
+        <li>No whitespace between tokens (no spaces after <code>:</code> or <code>,</code>).</li>
+        <li>UTF-8 encoding, no BOM.</li>
+        <li>String escape rules per RFC 8259 §7: only characters that require escaping are escaped (<code>"</code>, <code>\</code>, and control characters U+0000–U+001F). No unnecessary Unicode escapes (e.g., <code>a</code> must not be written <code>a</code>).</li>
+        <li>No trailing newline after the closing <code>}</code>.</li>
+      </ul>
+      <p><strong>Full signing payload structure</strong> (showing the LF separator between prefix and JSON object):</p>
+      <pre><code>discovery:unjoin-declaration\n&lt;canonical-json-object&gt;</code></pre>
+      <p>where <code>\n</code> is exactly one LF byte (0x0A) and <code>&lt;canonical-json-object&gt;</code> is the JSON object with fields in alphabetical order per the rules above.</p>
+      <p><strong>Example canonical signing payload</strong> (the bytes fed to Ed25519 Sign):</p>
+      <pre><code>discovery:unjoin-declaration
+{"campfire_id":"a1b2c3d4e5f6","joiner_pubkey":"4a6f686e446f65456432353531394b657948657846656564426162654361666500","observed_inconsistency":"probe message not visible on read after join","probe_msg_id":"msg-7890abcdef12","reason":"probe-verification-failed"}</code></pre>
+      <p>The first line ends with a single LF (0x0A). The second line is the canonical JSON object with no trailing newline. Together they form the byte sequence over which the Ed25519 signature is computed.</p>
+      <p>Producers MUST serialize in canonical field order. Consumers MUST verify using the same canonical form, not the wire-received JSON (which may have re-ordered fields due to transport or tooling).</p>
+
+      <h3 id="honeypot-scenario">11.6 Honeypot Scenario: Concrete Detection</h3>
+      <p>The following concrete scenario MUST be detectable by the probe-write-then-observe mechanism:</p>
+      <p><strong>Scenario: Enforcement-mode campfire with open beacon.</strong></p>
+      <ol>
+        <li>Operator publishes a campfire with beacon advertising <code>join_protocol: "open"</code>.</li>
+        <li>The campfire is internally configured in enforcement mode: new members are admitted at the identity layer (rekey fires, joiner gets the shared key), but the campfire silently drops or queues messages from members who have not been explicitly approved by the operator.</li>
+        <li>A Tier-2 auto-join fires for the campfire (e.g., it is a registered namespace root in roll-up config).</li>
+        <li>The joiner is admitted (identity rekey fires — the operator has harvested the joiner's rekey event and the joiner's public key from the admission flow).</li>
+        <li>The joiner sends the <code>discovery:probe</code> message.</li>
+        <li>The campfire drops the probe (enforcement mode suppresses it).</li>
+        <li>The joiner reads the campfire and does NOT see the probe message.</li>
+        <li><strong>Verification fires:</strong> unjoin-declaration is posted and signed by the joiner. The joiner leaves. The snippet is degraded.</li>
+      </ol>
+      <p><strong>Detection is guaranteed</strong> because in an open campfire, the sender always sees their own messages on read — this is a protocol invariant (all members receive all messages, including their own, in delivery order). An enforcement-mode campfire that suppresses member messages necessarily violates this invariant, which is exactly what the probe detects.</p>
+      <p><strong>A second concrete scenario: write-invisible campfire.</strong></p>
+      <p>A campfire that delivers reads normally but silently drops all writes from new members (to prevent participation while harvesting join events) is detected identically: the probe write is dropped, the read returns no probe, verification fails.</p>
+
+      <h3 id="verification-at-every-hop">11.7 Verification at Every Hop</h3>
+      <p>In multi-hop namespace resolution (OPEN-005), post-join verification fires at <strong>every hop</strong> where the resolver auto-joins an intermediate namespace campfire, not just at the top hop. A hostile intermediate namespace campfire (e.g., <code>metropolis</code> in <code>freeso.metropolis.lot42</code>) cannot evade verification by being positioned at depth 2 — the <code>AutoJoinFunc</code> in <code>naming/resolve.go</code> runs probe-write-then-observe every time it joins a new campfire in the chain.</p>
+      <p>If verification fails at any hop, the chain truncates at that hop and the failure is propagated up: the resolver returns an error indicating which namespace failed verification, and the entire resolution is treated as degraded.</p>
+
+      <h3 id="conformance-requirements-post-join">11.8 Conformance Requirements</h3>
+      <p>Implementers of cf-discovery Stage 0 (post-join verification) MUST:</p>
+      <ol>
+        <li>Implement probe-write-then-observe as described in §11.3.</li>
+        <li>Execute verification after every Tier-2 auto-join before recording the campfire as trusted in local state.</li>
+        <li>Post the signed unjoin-declaration (§11.5) before leaving on failure.</li>
+        <li>Degrade the discovery entry on failure; never silently suppress it.</li>
+        <li>Suppress automatic retry after a verification failure.</li>
+        <li>Run verification at every hop in multi-hop chain resolution (§11.7).</li>
+        <li>Cover the honeypot scenario (§11.6) in automated tests.</li>
+      </ol>
+    </section>
+
+    <hr class="doc-divider">
+
+    <section id="config-vs-beacon-endpoint-precedence">
+      <h2 id="config-vs-beacon-endpoint-precedence">12. Config-vs-Beacon Endpoint Precedence</h2>
+      <div class="doc-note">
+        <p><strong>Status (IMPLEMENTED — 0.30.x):</strong> Enforcement lands in <code>pkg/naming/client_transport.go</code> via <code>ResolverClientOptions.ConfigTransportFunc</code>. Callers supply a transport-lookup function; <code>autoJoinViaClient</code> consults it before beacon scan. All four adversarial cases are covered by <code>TestAutoJoinPrefersConfigOverBeacon_Case{A,B,C,D}</code>.</p>
+        <p><strong>Resolves:</strong> OPEN-025</p>
+      </div>
+
+      <h3 id="the-rule">12.1 The Rule</h3>
+      <p>If the local roll-up config (<code>.cf/config.toml</code> or its project-level override) declares an alias or an explicit endpoint for a campfire, that declaration <strong>overrides</strong> any beacon advertising a different transport or endpoint for the same campfire.</p>
+      <p>The rule is stated as a priority ordering:</p>
+      <pre><code>config-declared endpoint  &gt;  beacon-advertised endpoint</code></pre>
+      <p>A beacon is an <strong>untrusted hint</strong>: it tells the client where a campfire claims to be reachable, signed only by the campfire itself. The campfire operator could rotate the endpoint at any time, advertise a honeypot address, or let the beacon expire. Local config, by contrast, was explicitly written by the user or the repository operator and is trusted at the same level as the local identity.</p>
+
+      <h3 id="conflict-scenario">12.2 Conflict Scenario</h3>
+      <p>The following concrete scenario names the case where config and beacon <strong>disagree</strong> on the transport endpoint:</p>
+      <p><strong>Scenario: operator changes transport, beacon is stale.</strong></p>
+      <ol>
+        <li>A repository's <code>.cf/config.toml</code> contains <code>behavior.auto_join</code> with a beacon string for campfire <code>A</code> pointing to endpoint <code>old.host:8080</code>.</li>
+        <li>The campfire operator migrates to a new host and publishes a fresh beacon pointing to <code>new.host:9090</code>.</li>
+        <li>The client scans beacons and finds the new beacon (<code>new.host:9090</code>).</li>
+        <li>The client also reads <code>.cf/config.toml</code> and finds the explicit alias/endpoint for campfire <code>A</code> pointing to <code>old.host:8080</code> (derived from the committed beacon in config).</li>
+      </ol>
+      <p><strong>Under this rule:</strong> the config-declared endpoint (<code>old.host:8080</code>) wins. The client uses it — even though the beacon advertises a newer address. The user must update <code>.cf/config.toml</code> explicitly to adopt the new endpoint. This is intentional: config-declared endpoints are a trust anchor; silent beacon-driven endpoint substitution is the attack vector that post-join verification (§11) is designed to catch.</p>
+      <p><strong>Why config wins and not beacon:</strong> A beacon is signed by the campfire itself, which means a compromised or hostile campfire can advertise any endpoint it chooses. A config-declared endpoint was explicitly approved by the local operator. The precedence rule prevents a beacon from silently redirecting the client to a new transport without local operator consent.</p>
+
+      <h3 id="config-beacon-adversarial-case">12.3 Adversarial Case</h3>
+      <p><strong>Attack:</strong> A hostile campfire operator publishes a beacon advertising a new transport endpoint (<code>exfil.attacker.example</code>) after the user has joined. The user's local beacon file (<code>~/.campfire/beacons/</code>) is updated by a background scan. On the next auto-join (e.g., name resolution walk), the client picks up the new beacon endpoint and connects to the attacker's relay.</p>
+      <p><strong>Expected behavior under this rule:</strong> If the campfire was originally joined via config-declared entry (<code>.cf/config.toml</code> <code>behavior.auto_join</code>), the config endpoint is used and the updated beacon is ignored. If the campfire was joined via beacon only (no config entry), the post-join verification mechanism (§11) provides the safety net — the probe message is required to confirm the campfire behaves consistently with its advertised protocol.</p>
+
+      <h3 id="conformance-requirements-config-beacon">12.4 Conformance Requirements (IMPLEMENTED)</h3>
+      <p>Resolvers MUST:</p>
+      <ol>
+        <li><strong>IMPLEMENTED</strong> — Before using a beacon transport endpoint for auto-join, check whether the local roll-up config declares an alias or endpoint for the same campfire ID. (<code>autoJoinViaClient</code> calls <code>ConfigTransportFunc</code> before beacon scan.)</li>
+        <li><strong>IMPLEMENTED</strong> — If a config entry exists, use its transport — discard the beacon transport. Log the override at DEBUG level: <code>"config endpoint overrides beacon for campfire &lt;short-id&gt;"</code>. (<code>log.Printf("[DEBUG] naming: config endpoint overrides beacon...")</code>)</li>
+        <li><strong>PARTIALLY IMPLEMENTED</strong> — If no config entry exists, proceed with the beacon transport (IMPLEMENTED: beacon fallback path preserved; nil <code>ConfigTransportFunc</code> = beacon-only). NOT YET IMPLEMENTED: post-join verification (§11) before recording the campfire as trusted — §11 probe-write-then-observe is not yet wired into <code>autoJoinViaClient</code>. Tracked separately; see cf-discovery-spec.md §11 PLANNED markers.</li>
+        <li><strong>IMPLEMENTED</strong> — Never silently substitute a beacon-advertised endpoint for a config-declared endpoint without user action (manual <code>cf join</code> with an explicit beacon argument is the only bypass). (Config path returns before beacon scan is reached.)</li>
+      </ol>
+    </section>
+
+    <hr class="doc-divider">
+
+    <p><em>End of cf-discovery 1.0 snippet schema specification.</em></p>
+
+    <div class="release-theme-links" style="margin-top: var(--ds-space-xl);">
+      <a href="https://github.com/campfire-net/campfire/blob/main/docs/cf-discovery-spec.md">Source on GitHub →</a>
+    </div>
+
+  </div>
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">campfire</div>
+      <ul class="footer-links">
+        <li><a href="/getting-started/">Get Started</a></li>
+        <li><a href="/releases/0.30/">cf 0.30</a></li>
+        <li><a href="/upgrade/">Upgrade</a></li>
+        <li><a href="/showcases/">Showcases</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+        <li><a href="https://3dl.dev">Third Division Labs</a></li>
+      </ul>
+      <div class="footer-note">cf 0.30 · 2026</div>
+    </div>
+  </div>
+</footer>
+
+<style>
+.doc-page { padding: var(--ds-space-2xl) 0 var(--ds-space-section); }
+.doc-container { max-width: var(--ds-doc-width); }
+.doc-header { margin-bottom: var(--ds-space-2xl); border-bottom: 1px solid var(--ds-border); padding-bottom: var(--ds-space-xl); }
+.doc-title { font-size: var(--ds-text-2xl); font-weight: 700; line-height: var(--ds-line-height-tight); margin: var(--ds-space-xs) 0 var(--ds-space-sm); }
+.doc-lead { font-size: var(--ds-text-lg); color: var(--ds-text-secondary); line-height: var(--ds-line-height); margin-bottom: var(--ds-space-sm); }
+.doc-meta { font-size: var(--ds-text-sm); color: var(--ds-text-muted); }
+.doc-meta a { color: var(--ds-accent-secondary-light); }
+</style>
+
+</body>
+</html>

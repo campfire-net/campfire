@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wire-format freeze (cf 0.30) — Campfire</title>
+  <meta name="description" content="cf 0.30 wire-format freeze snapshot: canonical surface enumeration for Phase 8 Gate 4. L1 cf-protocol 1.0 and L3 cf-authority 1.0 frozen surfaces.">
+  <meta name="keywords" content="campfire wire format, cf 0.30 freeze, cf-protocol 1.0, cf-authority 1.0, CBOR field freeze">
+
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="stylesheet" href="../design-system.css">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<nav class="nav" aria-label="Main navigation">
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo">camp<span>fire</span></a>
+      <ul class="nav-links">
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/emergence-case-study.html">Case Studies</a></li>
+        <li><a href="/docs/">Spec</a></li>
+        <li><a href="/docs/cli.html">CLI</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <a href="/docs/getting-started.html" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<div class="doc-layout">
+
+  <!-- Sidebar -->
+  <aside class="doc-sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Wire-Format Freeze</div>
+      <ul class="sidebar-links">
+        <li><a href="#l1-cf-protocol-freeze">§1 — L1 cf-protocol Freeze</a></li>
+        <li><a href="#envelope-structure">§1.1 Envelope Structure</a></li>
+        <li><a href="#signatures">§1.2 Signatures</a></li>
+        <li><a href="#hop-chain-provenancehop">§1.3 Hop Chain</a></li>
+        <li><a href="#system-events">§1.4 System Events</a></li>
+        <li><a href="#reserved-op-floor-list">§1.5 Reserved-Op Floor LIST</a></li>
+        <li><a href="#future-fulfills-reserved-tags">§1.6 future / fulfills Tags</a></li>
+        <li><a href="#antecedent-fulfillment-fusion">§1.7 Antecedent/Fulfillment Fusion</a></li>
+        <li><a href="#client-await-contract">§1.8 Client.Await Contract</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">L3 cf-authority</div>
+      <ul class="sidebar-links">
+        <li><a href="#l3-cf-authority-freeze">§2 — L3 cf-authority Freeze</a></li>
+        <li><a href="#grant-cbor-layout">§2.1 Grant CBOR Layout</a></li>
+        <li><a href="#predicate-ast-schema">§2.2 Predicate AST Schema</a></li>
+        <li><a href="#gateevaluator-interface">§2.3 GateEvaluator Interface</a></li>
+        <li><a href="#denyreason-enum-10-codes">§2.4 DenyReason Enum</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">CBOR Tables</div>
+      <ul class="sidebar-links">
+        <li><a href="#cbor-field-tag-table">§3 — CBOR Field Tag Table</a></li>
+        <li><a href="#l1-message-envelope-cbor-fields">§3.1 L1 Message Envelope</a></li>
+        <li><a href="#l1-provenancehop-cbor-fields">§3.2 L1 ProvenanceHop</a></li>
+        <li><a href="#l3-capability-cbor-field-ids">§3.3 L3 Capability</a></li>
+        <li><a href="#l3-grantpayload-cbor-field-ids">§3.4 L3 GrantPayload</a></li>
+        <li><a href="#l3-wherematcher-cbor-kind-values">§3.5 L3 WhereMatcher</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Conformance</div>
+      <ul class="sidebar-links">
+        <li><a href="#conformance-contract">§4 — Conformance Contract</a></li>
+        <li><a href="#what-is-frozen">§4.1 What IS frozen</a></li>
+        <li><a href="#what-is-not-frozen">§4.2 What is NOT frozen</a></li>
+        <li><a href="#minor-compat-ci-workflow">§4.3 Minor-compat CI workflow</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="doc-content" id="main-content">
+    <div class="doc-header">
+      <div class="doc-label">Specification · Frozen · 2026-04-28</div>
+      <h1>cf 0.30 Wire-Format Freeze Snapshot</h1>
+      <p><strong>Status:</strong> Frozen at cf 0.30 / cf-protocol 1.0 / cf-authority 1.0.<br>
+      <strong>Purpose:</strong> Canonical surface enumeration for Phase 8 Gate 4. Tests in <code>test/demo/20-wire-format-freeze.sh</code> verify this snapshot against the upstream spec text.<br>
+      <strong>Sources:</strong> <code>docs/protocol-spec.md</code> (L1), <code>docs/cf-authority-spec.md</code> (L3).<br>
+      <strong>Item:</strong> campfireagent-529.</p>
+    </div>
+
+    <hr class="doc-divider">
+
+    <h2 id="l1-cf-protocol-freeze">§1 — L1 cf-protocol Freeze</h2>
+    <p>Layer 1 surfaces frozen at cf-protocol 1.0. No PR may alter these surfaces after the 0.30 tag without a major-version bump.</p>
+
+    <h3 id="envelope-structure">§1.1 Envelope Structure</h3>
+    <p><strong>Source:</strong> <code>protocol-spec.md:147–156</code></p>
+    <p>The L1 message envelope is the canonical wire unit. Every message shares this structure:</p>
+    <pre><code>Message {
+  id: uuid                          # [verified] unique identifier
+  sender: public_key                # [verified] must match signature key
+  payload: bytes                    # [TAINTED] sender-controlled content
+  tags: [string]                    # [TAINTED] sender-chosen labels (campfire:* verified separately)
+  antecedents: [uuid]               # [TAINTED] sender-asserted causal claims, not proofs
+  timestamp: uint64                 # [TAINTED] sender's wall clock, not authoritative
+  signature: bytes                  # [verified] sender signs (id + payload + tags + antecedents + timestamp)
+  provenance: [ProvenanceHop]       # [verified] each hop independently verifiable
+}</code></pre>
+    <p>The signed payload covers: <code>id + payload + tags + antecedents + timestamp</code>. These six fields are the signature inputs and cannot change position or type without breaking all existing signatures. The <code>antecedents</code> field is CBOR field 5 of the signed envelope — freezing the envelope freezes the antecedents wire binding.</p>
+
+    <h3 id="signatures">§1.2 Signatures</h3>
+    <p><strong>Source:</strong> <code>protocol-spec.md:154, 163–165, 188</code></p>
+    <p>All signatures are Ed25519. Two signing authorities:</p>
+    <ul>
+      <li><strong>Member key</strong> — signs the message envelope. The <code>signature</code> field in <code>Message</code> is the sender's Ed25519 signature over <code>(id + payload + tags + antecedents + timestamp)</code>.</li>
+      <li><strong>Campfire key</strong> — signs provenance hops and system events. The <code>signature</code> field in <code>ProvenanceHop</code> is the campfire's Ed25519 signature over <code>(message.id + all hop fields including role)</code>.</li>
+    </ul>
+    <p>Tags in the <code>campfire:</code> namespace (except the three member-signed exceptions: <code>campfire:vouch</code>, <code>campfire:revoke</code>, <code>campfire:invite</code>) MUST be signed by the campfire's own key. Receivers MUST reject any <code>campfire:*</code> message whose signature does not verify against the campfire's public key.</p>
+
+    <h3 id="hop-chain-provenancehop">§1.3 Hop Chain (ProvenanceHop)</h3>
+    <p><strong>Source:</strong> <code>protocol-spec.md:180–198</code></p>
+    <p>Each campfire that relays a message appends a hop:</p>
+    <pre><code>ProvenanceHop {
+  campfire_id: public_key              # [verified] must match hop signature key
+  membership_hash: bytes               # [verified] Merkle root, independently resolvable
+  member_count: uint                   # [verified] derivable from membership hash
+  join_protocol: string                # [verified] campfire-asserted policy
+  reception_requirements: [string]     # [verified] campfire-asserted policy
+  timestamp: uint64                    # [verified] campfire-asserted (not sender-controlled)
+  role: string                         # [verified] membership role at time of relay (omitted when empty)
+  signature: bytes                     # [verified] campfire signs (message.id + all fields above)
+}</code></pre>
+    <p>The <code>role</code> field was added in protocol-spec.md v0.4. When omitted (empty string), it is not included in the CBOR encoding so that hops produced by pre-role implementations verify identically. A bridge sets <code>role = "blind-relay"</code> on forwarded hops.</p>
+    <p>All hop fields are verified: the campfire key signs <code>message.id + campfire_id + membership_hash + member_count + join_protocol + reception_requirements + timestamp + role</code>. No hop field may be forged by the original message sender.</p>
+
+    <h3 id="system-events">§1.4 System Events</h3>
+    <p><strong>Source:</strong> <code>protocol-spec.md:1126–1152</code></p>
+
+    <h4 id="pre-0-30-system-events-frozen-at-p1">Pre-0.30 system events (frozen at P1)</h4>
+    <table class="field-table">
+      <thead><tr><th>Tag</th><th>Signed by</th><th>Introduced</th></tr></thead>
+      <tbody>
+        <tr><td><code>campfire:member-joined</code></td><td>campfire key</td><td>P0</td></tr>
+        <tr><td><code>campfire:member-evicted</code></td><td>campfire key</td><td>P0</td></tr>
+        <tr><td><code>campfire:member-left</code></td><td>campfire key</td><td>P0</td></tr>
+        <tr><td><code>campfire:eviction</code></td><td>campfire key</td><td>P0</td></tr>
+        <tr><td><code>campfire:rekey</code></td><td>campfire key (OLD key)</td><td>P0</td></tr>
+        <tr><td><code>campfire:disband</code></td><td>campfire key</td><td>P0</td></tr>
+        <tr><td><code>campfire:invite</code></td><td>member key (exception)</td><td>P0</td></tr>
+        <tr><td><code>campfire:vouch</code></td><td>member key (exception)</td><td>P0</td></tr>
+        <tr><td><code>campfire:revoke</code></td><td>member key (exception)</td><td>P0</td></tr>
+        <tr><td><code>campfire:compact</code></td><td>campfire key (<code>full</code> role required)</td><td>P1</td></tr>
+        <tr><td><code>campfire:view</code></td><td>campfire key (<code>full</code> role required)</td><td>P1</td></tr>
+        <tr><td><code>campfire:member-role-changed</code></td><td>campfire key</td><td>P1</td></tr>
+      </tbody>
+    </table>
+
+    <h4 id="0-30-additions-frozen-at-cf-protocol-1-0">0.30 additions (frozen at cf-protocol 1.0)</h4>
+    <p><strong>Source:</strong> <code>protocol-spec.md:1144–1146, 1162–1212</code></p>
+    <table class="field-table">
+      <thead><tr><th>Tag</th><th>Signed by</th><th>Introduced</th></tr></thead>
+      <tbody>
+        <tr><td><code>campfire:visibility-changed</code></td><td>campfire key (NOT a member-signed exception)</td><td>0.30</td></tr>
+        <tr><td><code>session:open</code></td><td>campfire key (NOT a member-signed exception)</td><td>0.30</td></tr>
+        <tr><td><code>session:close</code></td><td>campfire key (NOT a member-signed exception)</td><td>0.30</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>campfire:visibility-changed</strong> (<code>protocol-spec.md:1165–1183</code>):<br>
+    Fires when a campfire transitions from <code>open</code> to <code>invite-only</code>. Campfire-key-signed. Receivers MUST treat as authoritative and invalidate cached join-policy state on receipt.</p>
+
+    <p>Field layout:</p>
+    <pre><code>campfire:visibility-changed payload {
+  previous_join_protocol: string   # "open" — the prior join policy
+  new_join_protocol:      string   # "invite-only" — the new join policy
+  changed_at:             uint64   # unix nanosecond timestamp of the change
+}</code></pre>
+
+    <p><strong>session:open</strong> (<code>protocol-spec.md:1185–1198</code>):<br>
+    Emitted by the session orchestrator when a new ephemeral session campfire is initialized. Campfire-key-signed.</p>
+
+    <p>Field layout:</p>
+    <pre><code>session:open payload {
+  session_id:                    string   # campfire ID of this session campfire
+  parent_grant_chain_root:       string   # hex-encoded public key of the chain root (human)
+  dispatcher_capability_template: object  # capability template intersected with worker grants
+  until:                         uint64   # session expiry in unix nanoseconds
+}</code></pre>
+
+    <p><strong>session:close</strong> (<code>protocol-spec.md:1200–1210</code>):<br>
+    Emitted by the orchestrator when the session ends. Campfire-key-signed.</p>
+
+    <p>Field layout:</p>
+    <pre><code>session:close payload {
+  session_id:  string   # campfire ID of this session campfire
+  closed_at:   uint64   # unix nanosecond timestamp of closure
+  reason:      string   # "expired" | "orchestrator-closed" | "eviction"
+}</code></pre>
+
+    <h3 id="reserved-op-floor-list">§1.5 Reserved-Op Floor LIST</h3>
+    <p><strong>Source:</strong> <code>protocol-spec.md:1230–1242</code></p>
+    <p>The ten reserved ops form the <strong>reserved-op floor</strong>: a protocol-level minimum that no convention declaration and no parent grant can lower. The clamping order is fixed and one-directional: owner ceiling &gt; parent grant &gt; convention declaration. Convention authors are not in the trusted computing base for these operations.</p>
+
+    <p><strong>Canonical list (10 ops):</strong></p>
+    <pre><code>disband | evict | admit | grant | revoke |
+delegation-grant | delegation-revoke | delegation-accept |
+member-roster | compaction</code></pre>
+
+    <p>Architecture: the LIST lives at Layer 1 (<code>cf-protocol/internal/reserved-ops.go</code>); the ENFORCER (intercepts dispatch, consults the L1 list) lives at Layer 2; the EVALUATOR (applies actual grant-chain policy) lives at Layer 3 <code>cf-authority</code>. No convention may declare access to a reserved op without a grant from a principal with owner-level authority.</p>
+
+    <h3 id="future-fulfills-reserved-tags">§1.6 future / fulfills Reserved Tags</h3>
+    <p><strong>Source:</strong> <code>protocol-spec.md:1155–1159, 1214–1228</code></p>
+    <p>The <code>"future"</code> and <code>"fulfills"</code> tags are ratified as Layer-1 frozen reserved tags as of cf-protocol 1.0. They are member-signed (the sender's key covers them), not campfire-key-signed.</p>
+    <ul>
+      <li><strong><code>future</code></strong> — a message tagged <code>future</code> is a commitment pending fulfillment. Its payload explains what qualifies as fulfillment.</li>
+      <li><strong><code>fulfills</code></strong> — a message tagged <code>fulfills</code> with the future's ID in <code>antecedents</code> satisfies the future. Both conditions are required (see Client.Await Contract, §1.8).</li>
+    </ul>
+    <p>The DAG semantics are frozen together with the message envelope and cannot be split into a separate layer-3 convention. <code>Antecedents []string</code> sits at CBOR field 5 of the signed envelope. Closes OPEN-001.</p>
+
+    <h3 id="antecedent-fulfillment-fusion">§1.7 Antecedent/Fulfillment Fusion</h3>
+    <p><strong>Source:</strong> <code>protocol-spec.md:1244–1250</code></p>
+    <p>Antecedent links and fulfillment semantics are <strong>inseparable</strong> from the signed-message substrate. The <code>antecedents</code> field is part of the signed message envelope (CBOR field 5 of the canonical layout, covered by the sender signature). The <code>"future"</code> and <code>"fulfills"</code> reserved tags and the <code>Client.Await</code> contract are Layer-1 primitives, not Layer-3 projections.</p>
+    <p>There is no <code>cf-protocol-without-DAG</code> profile, no <code>cf-causality</code> Layer-3 carve-out, and no internal sub-package boundary that promises future separability.</p>
+    <p><strong>What this does NOT freeze:</strong> Activation semantics remain agent-local. The protocol defines what an antecedent and a fulfillment ARE — not what a consumer must DO when it sees one.</p>
+
+    <h3 id="client-await-contract">§1.8 Client.Await Contract</h3>
+    <p><strong>Source:</strong> <code>protocol-spec.md:1252–1266</code></p>
+    <p><code>Client.Await</code> is a Layer-1 read primitive. Its contract is wire-frozen at cf-protocol 1.0.</p>
+    <p><strong>Fulfillment predicate.</strong> A message M fulfills future F if and only if:</p>
+    <ul>
+      <li>M carries the <code>"fulfills"</code> tag, AND</li>
+      <li>F's message ID appears in M's <code>antecedents</code> array.</li>
+    </ul>
+    <p>Both conditions are required. A <code>"fulfills"</code>-tagged message that does not reference the target ID is NOT a fulfillment. A message that references the target ID without <code>"fulfills"</code> is a dependent, not a fulfillment.</p>
+    <p><strong>Fulfillment ordering — earliest-timestamp wins.</strong> When multiple messages fulfill the same future, <code>Client.Await</code> returns the fulfillment with the earliest timestamp. Ties are broken by lexicographically smaller message ID. This ordering is deterministic: two implementations given the same set of fulfilling messages will always return the same winner.</p>
+    <p><strong>Timeout.</strong> An <code>Await</code> with a specified timeout exits with <code>ErrAwaitTimeout</code> when the deadline expires. An <code>Await</code> with no timeout (zero value) blocks until fulfilled or context-cancelled. Negative timeout values are rejected at call time.</p>
+
+    <hr class="doc-divider">
+
+    <h2 id="l3-cf-authority-freeze">§2 — L3 cf-authority Freeze</h2>
+    <p>Layer 3 surfaces frozen at cf-authority 1.0. Location: <code>cf-conventions/cf-authority/trust/</code>.</p>
+
+    <h3 id="grant-cbor-layout">§2.1 Grant CBOR Layout</h3>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:33–113</code></p>
+
+    <h4 id="capability-tuple-5-tuple-nonce">§2.1.1 Capability tuple (5-tuple + nonce)</h4>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:34–44</code></p>
+    <p>Each capability is a CBOR map with integer keys:</p>
+    <pre><code>Capability = {
+  1: convention   ; tstr — exact convention name; no wildcards, no cross-convention
+  2: op_pattern   ; tstr — within-convention op pattern; exact | alternation ("|") | "*"
+  3: where        ; [+ WhereMatcher]  — OR-composition; empty = "wherever agent is a member"
+  4: bounds       ; {tstr =&gt; BoundValue}  — reserved keys only; see §2.1.4
+  5: until        ; int64 — mandatory expiry, nanoseconds-since-Unix-epoch UTC
+  6: nonce        ; bstr — 16 bytes, random; grant-id = SHA-256(canonical-CBOR(Capability))
+}</code></pre>
+    <p>Field 5 (<code>until</code>) is mandatory. Grants without <code>until</code> MUST be rejected at parse time. There are no "forever" grants.</p>
+
+    <h4 id="grant-envelope-wire-message-payload">§2.1.2 Grant envelope (wire message payload)</h4>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:51–65</code></p>
+    <p>A <code>delegation:grant</code> message carries a CBOR-encoded payload:</p>
+    <pre><code>GrantPayload = {
+  1: parent_grant_id   ; bstr | null — null for owner-root grants
+  2: child_pubkey      ; bstr — Ed25519 public key, 32 bytes raw
+  3: capabilities      ; [+ Capability]
+  4: depth             ; uint — hop depth of this grant (0 = owner-root)
+}</code></pre>
+    <p>The <strong>grant-id</strong> is <code>SHA-256(deterministic-CBOR(GrantPayload))</code>. The grant message is signed by the granting party (the parent); the child's pubkey is embedded in the payload. Signature verification is the dispatcher's responsibility before invoking the evaluator.</p>
+
+    <h4 id="wherematcher">§2.1.3 WhereMatcher</h4>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:68–80</code></p>
+    <p>Three matcher kinds compose as OR. An empty <code>where</code> list means "wherever the agent is a member":</p>
+    <pre><code>WhereMatcher =
+  CampfireByID   ; {kind: 1, id: bstr}    — exact campfire hex-id
+  | NamePrefix   ; {kind: 2, prefix: tstr} — campfire name prefix match
+  | TagMatcher   ; {kind: 3, tag: tstr}    — campfire carries this tag</code></pre>
+
+    <h4 id="boundvalue-reserved-keys">§2.1.4 BoundValue (reserved keys)</h4>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:82–95</code></p>
+    <p>The <code>bounds</code> map uses reserved string keys only. Unknown keys MUST cause parse failure (fail closed):</p>
+    <table class="field-table">
+      <thead><tr><th>Key</th><th>Value type</th><th>Semantics</th></tr></thead>
+      <tbody>
+        <tr><td><code>rate</code></td><td><code>{per: tstr, count: uint, window: tstr}</code></td><td>Op rate cap</td></tr>
+        <tr><td><code>quota</code></td><td><code>{unit: tstr, max: uint}</code></td><td>Lifetime op count cap</td></tr>
+        <tr><td><code>spend</code></td><td><code>{unit: tstr, max: uint}</code></td><td>Monetary/scrip spend cap</td></tr>
+        <tr><td><code>ttl</code></td><td><code>uint</code></td><td>Seconds; lifetime bound on any derived grant</td></tr>
+      </tbody>
+    </table>
+
+    <h4 id="depth-limit-and-transitivity">§2.1.5 Depth limit and transitivity</h4>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:98–113</code></p>
+    <p><strong>Hard depth limit: 2.</strong> The deployment shape is <code>human (depth 0) → agent (depth 1) → ephemeral worker (depth 2)</code>. Reserved ops are capped at depth 1.</p>
+    <p>Sub-grant scope is set-intersection on each axis: <code>convention</code> MUST equal parent's; <code>op_pattern</code> MUST be a within-convention subset; <code>where</code> union MUST be a containment-subset; <code>bounds</code> are <code>MIN(parent, child)</code> per axis; <code>until ≤ parent.until</code>. A grant that violates any of these is a scope-widening attempt → <code>Deny / DenyReasonScopeWidening</code>.</p>
+
+    <h3 id="predicate-ast-schema">§2.2 Predicate AST Schema</h3>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:119–231</code></p>
+
+    <h4 id="leaf-predicates-6-leaf-kinds">§2.2.1 Leaf predicates (6 leaf kinds)</h4>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:123–197</code></p>
+    <pre><code>LeafPredicate =
+  LevelPredicate          ; { kind: "level", n: uint }
+  | GrantPredicate        ; { kind: "grant", convention: tstr, op: tstr }
+  | GrantInPredicate      ; { kind: "grant_in", convention: tstr, op_glob: tstr, where: WhereMatcher }
+  | GrantQuotaPredicate   ; { kind: "grant_quota", axis: tstr, bound: uint }
+  | ChainToPredicate      ; { kind: "chain_to", pubkey: bstr }
+  | ChainToQuorumPredicate ; { kind: "chain_to_quorum", m: uint, pubkeys: [+ bstr] }</code></pre>
+    <p>There is no <code>not:</code> predicate — complement predicates are escalation primitives; banning them is a deliberate safety property of the language.</p>
+    <p><code>chain_to</code> is by KEY (32-byte Ed25519 pubkey), not by name. Naming-as-authority is a security vector.</p>
+
+    <h4 id="composite-predicates">§2.2.2 Composite predicates</h4>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:199–215</code></p>
+    <pre><code>AllOfPredicate = { kind: "all_of", children: [+ PredicateAST] }
+AnyOfPredicate = { kind: "any_of", children: [+ PredicateAST] }</code></pre>
+    <p><strong>Maximum nesting depth: 3.</strong> Predicates with depth &gt; 3 MUST be rejected at parse time.</p>
+
+    <h4 id="predicateast-complete-type">§2.2.3 PredicateAST (complete type)</h4>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:217–231</code></p>
+    <pre><code>type PredicateAST struct {
+    Kind     PredicateKind
+    Leaf     *LeafPredicate    // populated for leaf kinds
+    Children []PredicateAST    // populated for all_of / any_of
+}</code></pre>
+    <p>Location: <code>cf-conventions/cf-authority/trust/evaluator.go</code></p>
+
+    <h3 id="gateevaluator-interface">§2.3 GateEvaluator Interface</h3>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:239–327</code></p>
+    <pre><code>// Frozen at cf-authority 1.0.
+type GateEvaluator interface {
+    Evaluate(ctx context.Context, req EvaluateRequest) EvaluateResult
+}</code></pre>
+    <p><code>EvaluateRequest</code> carries: <code>Request OpRequest</code>, <code>ChainMessages []message.Message</code>, <code>RootPrincipal ed25519.PublicKey</code>, <code>CurrentTime time.Time</code>, <code>RevocationView []RevocationViewEntry</code>, <code>OwnerPolicy OwnerPolicy</code>. The evaluator assumes pre-verified inputs — signature verification is the caller's responsibility.</p>
+    <p><code>EvaluateResult</code> carries: <code>Decision Decision</code> (Allow=1, Deny=2, Unresolvable=3), <code>Reason DenyReason</code> (set when Deny), <code>MissingMessageID string</code> (set when Unresolvable).</p>
+    <p>Location: <code>cf-conventions/cf-authority/trust/evaluator.go</code></p>
+
+    <h3 id="denyreason-enum-10-codes">§2.4 DenyReason Enum (10 codes)</h3>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:330–349</code></p>
+    <p>Stable string codes, frozen at cf-authority 1.0. Part of the wire freeze: two implementations that agree on <code>Deny</code> MUST agree on the reason code for any canonical input.</p>
+    <pre><code>const (
+    DenyExpired         DenyReason = "expired"              // grant.until &lt; CurrentTime
+    DenyRevoked         DenyReason = "revoked"              // active revocation in view
+    DenyDepthExceeded   DenyReason = "depth_exceeded"       // chain depth &gt; 2
+    DenyScopeMismatch   DenyReason = "scope_mismatch"       // grant scope does not cover request
+    DenyScopeWidening   DenyReason = "scope_widening"       // child claimed wider than parent
+    DenyStaleRevocation DenyReason = "stale_revocation"     // view stale beyond max staleness
+    DenyReservedOpFloor DenyReason = "reserved_op_floor"    // reserved-op depth/level floor
+    DenyOwnerCeiling    DenyReason = "owner_ceiling"        // owner policy blanket denies
+    DenyPredicate       DenyReason = "predicate_unsatisfied" // gate predicate not satisfied
+    DenyStoreRead       DenyReason = "store_read_error"     // chain truncated; fail-closed
+)</code></pre>
+
+    <hr class="doc-divider">
+
+    <h2 id="cbor-field-tag-table">§3 — CBOR Field Tag Table</h2>
+    <p>All CBOR in this spec is deterministic per RFC 8949 §4.2.1: definite-length encoding, map keys sorted by RFC 8949 §4.2.1 rules, smallest-int encoding, no NaN/Inf floats.</p>
+
+    <h3 id="l1-message-envelope-cbor-fields">§3.1 L1 Message Envelope CBOR Fields</h3>
+    <p>The signed envelope field positions are implicit in the Go struct and enforced by deterministic CBOR encoding. The <code>antecedents</code> field binds at position 5 in the canonical CBOR encoding — this is the key constraint motivating antecedent/fulfillment fusion at L1.</p>
+    <table class="field-table">
+      <thead><tr><th>Field</th><th>Wire type</th><th>Verified</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>UUID string</td><td>yes</td><td>Covered by sender signature</td></tr>
+        <tr><td><code>sender</code></td><td>bstr (32 bytes)</td><td>yes</td><td>Ed25519 pubkey; must match signing key</td></tr>
+        <tr><td><code>payload</code></td><td>bstr</td><td>TAINTED</td><td>Sender-controlled content</td></tr>
+        <tr><td><code>tags</code></td><td>[tstr]</td><td>TAINTED</td><td><code>campfire:*</code> verified separately by campfire key</td></tr>
+        <tr><td><code>antecedents</code></td><td>[tstr] (UUIDs)</td><td>TAINTED</td><td>CBOR field 5; covered by sender signature</td></tr>
+        <tr><td><code>timestamp</code></td><td>uint64</td><td>TAINTED</td><td>Nanoseconds since Unix epoch</td></tr>
+        <tr><td><code>signature</code></td><td>bstr (64 bytes)</td><td>yes</td><td>Ed25519 sig over (id+payload+tags+antecedents+timestamp)</td></tr>
+        <tr><td><code>provenance</code></td><td>[ProvenanceHop]</td><td>yes</td><td>Each hop independently signed by campfire key</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="l1-provenancehop-cbor-fields">§3.2 L1 ProvenanceHop CBOR Fields</h3>
+    <table class="field-table">
+      <thead><tr><th>Field</th><th>Wire type</th><th>Verified</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>campfire_id</code></td><td>bstr (32 bytes)</td><td>yes</td><td>Ed25519 pubkey; must match hop signing key</td></tr>
+        <tr><td><code>membership_hash</code></td><td>bstr</td><td>yes</td><td>Merkle root</td></tr>
+        <tr><td><code>member_count</code></td><td>uint</td><td>yes</td><td>Derivable from membership hash</td></tr>
+        <tr><td><code>join_protocol</code></td><td>tstr</td><td>yes</td><td>Campfire-asserted</td></tr>
+        <tr><td><code>reception_requirements</code></td><td>[tstr]</td><td>yes</td><td>Campfire-asserted</td></tr>
+        <tr><td><code>timestamp</code></td><td>uint64</td><td>yes</td><td>Campfire-asserted; not sender-controlled</td></tr>
+        <tr><td><code>role</code></td><td>tstr</td><td>yes</td><td>Omitted when empty (backward compat); <code>"blind-relay"</code> for bridge hops</td></tr>
+        <tr><td><code>signature</code></td><td>bstr (64 bytes)</td><td>yes</td><td>Ed25519 sig over (message.id + all fields above)</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="l3-capability-cbor-field-ids">§3.3 L3 Capability CBOR Field IDs</h3>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:37–44</code></p>
+    <table class="field-table">
+      <thead><tr><th>Field ID</th><th>Field name</th><th>CBOR type</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><code>convention</code></td><td>tstr</td></tr>
+        <tr><td>2</td><td><code>op_pattern</code></td><td>tstr</td></tr>
+        <tr><td>3</td><td><code>where</code></td><td>[+ WhereMatcher]</td></tr>
+        <tr><td>4</td><td><code>bounds</code></td><td>{tstr =&gt; BoundValue}</td></tr>
+        <tr><td>5</td><td><code>until</code></td><td>int64 (nanoseconds-since-Unix-epoch UTC)</td></tr>
+        <tr><td>6</td><td><code>nonce</code></td><td>bstr (16 bytes)</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="l3-grantpayload-cbor-field-ids">§3.4 L3 GrantPayload CBOR Field IDs</h3>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:55–61</code></p>
+    <table class="field-table">
+      <thead><tr><th>Field ID</th><th>Field name</th><th>CBOR type</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><code>parent_grant_id</code></td><td>bstr | null</td></tr>
+        <tr><td>2</td><td><code>child_pubkey</code></td><td>bstr (32 bytes)</td></tr>
+        <tr><td>3</td><td><code>capabilities</code></td><td>[+ Capability]</td></tr>
+        <tr><td>4</td><td><code>depth</code></td><td>uint</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="l3-wherematcher-cbor-kind-values">§3.5 L3 WhereMatcher CBOR kind values</h3>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:70–79</code></p>
+    <table class="field-table">
+      <thead><tr><th>kind value</th><th>Matcher type</th><th>Primary field</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><code>CampfireByID</code></td><td><code>id: bstr</code></td></tr>
+        <tr><td>2</td><td><code>NamePrefix</code></td><td><code>prefix: tstr</code></td></tr>
+        <tr><td>3</td><td><code>TagMatcher</code></td><td><code>tag: tstr</code></td></tr>
+      </tbody>
+    </table>
+
+    <hr class="doc-divider">
+
+    <h2 id="conformance-contract">§4 — Conformance Contract</h2>
+
+    <h3 id="what-is-frozen">§4.1 What IS frozen (cannot change in 0.30.x patch releases)</h3>
+    <p>The following surfaces are frozen. A PR that modifies any of them after the 0.30 tag MUST include a major-version bump declaration (<code>cf-protocol</code> → 2.0 or <code>cf-authority</code> → 2.0, as appropriate) and a migration guide:</p>
+
+    <p><strong>L1 cf-protocol 1.0 frozen surfaces:</strong></p>
+    <ul>
+      <li>Message envelope structure (fields, types, CBOR positions)</li>
+      <li>Signature inputs: the set of fields covered by the sender's Ed25519 signature</li>
+      <li>ProvenanceHop structure (fields, types, CBOR positions)</li>
+      <li>Hop signature inputs: <code>message.id + all ProvenanceHop fields</code></li>
+      <li>Reserved tag namespace (<code>campfire:*</code>) and signing rules (campfire-key vs. member-key)</li>
+      <li>The three member-signed exceptions: <code>campfire:vouch</code>, <code>campfire:revoke</code>, <code>campfire:invite</code></li>
+      <li><code>campfire:visibility-changed</code> field layout and campfire-key-signing requirement</li>
+      <li><code>session:open</code> and <code>session:close</code> field layouts and campfire-key-signing requirement</li>
+      <li><code>"future"</code> and <code>"fulfills"</code> tags as L1 reserved tags (member-signed; DAG semantics)</li>
+      <li><code>antecedents</code> as CBOR field 5 of the signed envelope</li>
+      <li>Client.Await fulfillment predicate (fulfills tag + target-in-antecedents)</li>
+      <li>Client.Await ordering rule (earliest-timestamp wins; lexicographic-message-ID tiebreaker)</li>
+      <li>Reserved-op floor LIST (the canonical 10 ops: <code>disband | evict | admit | grant | revoke | delegation-grant | delegation-revoke | delegation-accept | member-roster | compaction</code>)</li>
+      <li>Reserved-op clamping order: owner ceiling &gt; parent grant &gt; convention declaration</li>
+    </ul>
+
+    <p><strong>L3 cf-authority 1.0 frozen surfaces:</strong></p>
+    <ul>
+      <li>Capability 5-tuple field IDs (CBOR integer keys 1–6)</li>
+      <li>GrantPayload field IDs (CBOR integer keys 1–4)</li>
+      <li>WhereMatcher kind values (1 = CampfireByID, 2 = NamePrefix, 3 = TagMatcher)</li>
+      <li>BoundValue reserved key names (<code>rate</code>, <code>quota</code>, <code>spend</code>, <code>ttl</code>)</li>
+      <li>Hard depth limit: 2</li>
+      <li>LeafPredicate kind strings (6 kinds: <code>level</code>, <code>grant</code>, <code>grant_in</code>, <code>grant_quota</code>, <code>chain_to</code>, <code>chain_to_quorum</code>)</li>
+      <li>CompositePredicate kind strings (<code>all_of</code>, <code>any_of</code>)</li>
+      <li>Absence of <code>not:</code> predicate (deliberate safety property)</li>
+      <li>Maximum nesting depth: 3</li>
+      <li>GateEvaluator interface signature (Go types)</li>
+      <li>DenyReason string codes (10 codes, as enumerated in §2.4)</li>
+      <li>Determinism requirement: same inputs → same output, byte-for-byte</li>
+      <li>Fail-closed requirement: Unresolvable on unresolvable chain (never Allow)</li>
+      <li>Predicate-AST canonicalization rules (sort order for <code>all_of</code>/<code>any_of</code> children)</li>
+      <li>CBOR canonicalization rules (RFC 8949 §4.2.1 deterministic encoding)</li>
+    </ul>
+
+    <h3 id="what-is-not-frozen">§4.2 What is NOT frozen (may evolve in 0.30.x patch releases)</h3>
+    <ul>
+      <li>Activation semantics: agent-local interpretation of antecedents and futures</li>
+      <li>Convention declarations: new declarations may be added; existing declarations may be versioned</li>
+      <li>Named-filter predicate grammar extensions (new leaf types) — subject to minor-version bump</li>
+      <li>Transport implementations (filesystem, HTTP, GitHub) — not part of the wire format</li>
+      <li>CLI/MCP surface: convenience sugar; not part of the wire format</li>
+      <li>Filter optimization algorithms</li>
+      <li>Retention policies (implementation hints)</li>
+    </ul>
+
+    <h3 id="minor-compat-ci-workflow">§4.3 Minor-compat CI workflow</h3>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:527–530</code></p>
+    <p>Gate 4 (wire-format freeze): this snapshot is published; <code>COMPATIBILITY.md</code> shipped; minor-compat CI workflow active. No PR may modify frozen surfaces after the 0.30 tag without a major-bump declaration.</p>
+    <p>The conformance harness (<code>cf-authority/trust/conformance/</code>) runs twelve canonical test cases. Third-party implementations of <code>GateEvaluator</code> MUST pass all twelve before being eligible to back a cf-authority-conforming dispatcher.</p>
+    <p><strong>Source:</strong> <code>cf-authority-spec.md:439–520</code> (§5 Conformance Harness)</p>
+
+    <hr class="doc-divider">
+
+    <p><em>Snapshot generated: 2026-04-28. Status: FROZEN at cf 0.30 / cf-protocol 1.0 / cf-authority 1.0.</em><br>
+    <em>This document is the Phase 8 Gate 4 artifact. Tests: <code>test/demo/20-wire-format-freeze.sh</code>.</em></p>
+
+    <p><a href="https://github.com/campfire-net/campfire/blob/main/docs/0.30-wire-format-freeze.md">Source on GitHub &rarr;</a></p>
+
+  </main>
+</div>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">campfire</div>
+      <ul class="footer-links">
+        <li><a href="/docs/">Spec</a></li>
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/cli.html">CLI</a></li>
+        <li><a href="/releases/0.30/">cf 0.30</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <div class="footer-note">cf 0.30 · 2026</div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

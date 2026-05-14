@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cf-authority spec (cf 0.30) — Campfire</title>
+  <meta name="description" content="cf-authority 1.0 wire schema specification: grant CBOR layout, predicate AST, evaluator interface, deny reasons, and conformance contract. Frozen at cf 0.30.">
+  <meta name="keywords" content="cf-authority, campfire trust, delegation, gate evaluator, predicate AST, CBOR grant, cf 0.30">
+
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="stylesheet" href="../../design-system.css">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<nav class="nav" aria-label="Main navigation">
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo">camp<span>fire</span></a>
+      <ul class="nav-links">
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/emergence-case-study.html">Case Studies</a></li>
+        <li><a href="/docs/">Spec</a></li>
+        <li><a href="/docs/cli.html">CLI</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <a href="/docs/getting-started.html" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<div class="doc-layout">
+
+  <!-- Sidebar -->
+  <aside class="doc-sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Overview</div>
+      <ul class="sidebar-links">
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#delegation-extent-invariant">§0 Delegation Extent Invariant</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">§1 Grant CBOR Layout</div>
+      <ul class="sidebar-links">
+        <li><a href="#grant-cbor-layout">Grant CBOR Layout</a></li>
+        <li><a href="#capability-tuple">§1.1 Capability tuple</a></li>
+        <li><a href="#grant-envelope">§1.2 Grant envelope</a></li>
+        <li><a href="#where-matcher">§1.3 WhereMatcher</a></li>
+        <li><a href="#bound-value">§1.4 BoundValue</a></li>
+        <li><a href="#depth-limit-transitivity">§1.5 Depth limit and transitivity</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">§2 Predicate AST</div>
+      <ul class="sidebar-links">
+        <li><a href="#predicate-ast-schema">Predicate AST Schema</a></li>
+        <li><a href="#leaf-predicates">§2.1 Leaf predicates</a></li>
+        <li><a href="#composite-predicates">§2.2 Composite predicates</a></li>
+        <li><a href="#predicate-ast">§2.3 PredicateAST</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">§3 Evaluator Interface</div>
+      <ul class="sidebar-links">
+        <li><a href="#evaluator-interface">Evaluator Interface</a></li>
+        <li><a href="#gate-evaluator-interface">§3.1 GateEvaluator</a></li>
+        <li><a href="#evaluate-request">§3.2 EvaluateRequest</a></li>
+        <li><a href="#evaluate-result">§3.3 EvaluateResult</a></li>
+        <li><a href="#deny-reason">§3.4 DenyReason</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">§4 Conformance Contract</div>
+      <ul class="sidebar-links">
+        <li><a href="#conformance-contract">Conformance Contract</a></li>
+        <li><a href="#determinism">§4.1 Determinism</a></li>
+        <li><a href="#fail-closed">§4.2 Fail-closed</a></li>
+        <li><a href="#predicate-ast-canonicalization">§4.3 AST canonicalization</a></li>
+        <li><a href="#cbor-canonicalization">§4.4 CBOR canonicalization</a></li>
+        <li><a href="#reserved-op-floor">§4.5 Reserved-op floor</a></li>
+        <li><a href="#unresolvable-handling">§4.6 Unresolvable handling</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">§5 Conformance Harness</div>
+      <ul class="sidebar-links">
+        <li><a href="#conformance-harness">Conformance Harness</a></li>
+        <li><a href="#twelve-canonical-test-cases">§5.1 Twelve canonical cases</a></li>
+        <li><a href="#determinism-check">§5.2 Determinism check</a></li>
+        <li><a href="#cross-implementer-differential-check">§5.3 Differential check</a></li>
+        <li><a href="#fixture-data">§5.4 Fixture data</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">§6–§7</div>
+      <ul class="sidebar-links">
+        <li><a href="#phase-8-ship-gates">§6 Phase 8 Ship Gates</a></li>
+        <li><a href="#open-follow-ups">§7 Open Follow-ups</a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Reference</div>
+      <ul class="sidebar-links">
+        <li><a href="/releases/0.30/">cf 0.30 Release Notes</a></li>
+        <li><a href="/docs/">Protocol Spec</a></li>
+        <li><a href="/docs/cli.html">CLI Reference</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="doc-content" id="main-content">
+    <div class="doc-header">
+      <div class="doc-label">Specification · Frozen at cf-authority 1.0 · cf 0.30</div>
+      <h1>cf-authority 1.0 — Wire Schema Specification</h1>
+      <p><strong>Status:</strong> Frozen at cf-authority 1.0 (0.30 release).<br>
+      <strong>Layer:</strong> L3 — RFC convention (<code>cf-conventions/cf-authority/</code>).<br>
+      <strong>Design references:</strong> 0.30-design.md §2, §2.2–§2.5.1, §7; gate-evaluator-conformance-harness.md.</p>
+    </div>
+
+    <hr class="doc-divider">
+
+    <!-- Overview -->
+    <h2 id="overview">Overview</h2>
+    <p><code>cf-authority</code> is the scoped-grant, bounded-transitivity, chain-evaluating authorization system for the campfire protocol. It externalizes identity-and-delegation policy into a layer-3 convention built on top of the signed-message substrate.</p>
+
+    <p>This document specifies:</p>
+    <ol>
+      <li><strong>Grant CBOR layout</strong> — the wire format for scoped capability grants (§1)</li>
+      <li><strong>Predicate AST schema</strong> — the gate-predicate language (§2)</li>
+      <li><strong><code>EvaluateRequest</code> / <code>EvaluateResult</code> Go types</strong> — the evaluator interface (§3)</li>
+      <li><strong><code>DenyReason</code> enum</strong> — stable string codes (§3.4)</li>
+      <li><strong>Conformance contract</strong> — determinism and canonicalization rules (§4)</li>
+    </ol>
+
+    <p>All CBOR in this spec is deterministic per RFC 8949 §4.2.1 (definite-length, sorted map keys, smallest-int encoding, no NaN/Inf floats). Implementations that re-encode to a different canonical form lose signature validity.</p>
+
+    <hr class="doc-divider">
+
+    <!-- §0 -->
+    <h2 id="delegation-extent-invariant">§0 — Delegation Extent Invariant</h2>
+    <p><strong>Invariant:</strong> An owner may delegate any action scope they hold. No one may delegate identity. Reserved ops cap at depth 1.</p>
+
+    <p>This invariant establishes the outer boundary of what the delegation system can express. Three sub-claims compose it, each independently enforced:</p>
+
+    <p><strong>Sub-claim (a) — scope delegation:</strong> An owner holds a set of action scopes rooted in their ownership relation to a campfire. They may delegate any action scope they hold downward in the chain. The system places no floor on what an owner may share — only a ceiling on what a delegate may claim (see §1.5 for scope intersection rules; see D6 clamping order in <code>0.30-deal-breakers.md</code>).</p>
+
+    <p><strong>Sub-claim (b) — identity is not delegable:</strong> Identity — the binding between an Ed25519 key and the authorization flows anchored to it — is not a scope and cannot appear in any grant payload. No one may delegate identity. An agent may receive action scopes, but the chain root's identity cannot be laundered through a delegate. The <code>chain_to</code> predicate enforces this structurally: it anchors to a 32-byte Ed25519 public key, not to a claimed identity string; there is no wire-level mechanism for an intermediate to present itself as the root. Attempts to construct a chain that re-roots authority in a delegated key are defeated by the chain-walk verification (§4.2, §4.3; D3 in <code>0.30-deal-breakers.md</code>).</p>
+
+    <p><strong>Sub-claim (c) — reserved ops cap at depth 1:</strong> The ten reserved operations (<code>disband | evict | admit | grant | revoke | delegation-grant | delegation-revoke | delegation-accept | member-roster | compaction</code>) carry a protocol-level depth floor of 1 — they may be held by an owner (depth 0) or delegated to a direct agent (depth 1), but not delegated further. Reserved ops cap at depth 1. This is a protocol-level floor that no convention declaration and no parent grant can lower (D5 in <code>0.30-deal-breakers.md</code>). The depth cap is enforced by the reserved-op floor check before the convention declaration is consulted.</p>
+
+    <p><strong>Design references:</strong> OPEN-002; <code>0.30-design.md</code> §2; D5 (reserved-op floor, <code>0.30-deal-breakers.md</code> §D5); D6 (clamping order, <code>0.30-deal-breakers.md</code> §D6).</p>
+
+    <hr class="doc-divider">
+
+    <!-- §1 -->
+    <h2 id="grant-cbor-layout">§1 — Grant CBOR Layout</h2>
+
+    <h3 id="capability-tuple">§1.1 Capability tuple</h3>
+    <p>A <strong>grant</strong> carries a set of capabilities. Each capability is a 5-tuple plus a nonce. Wire format is a CBOR map. Field keys are integers (compact encoding):</p>
+
+    <pre><code>Capability = {
+  1: convention   ; tstr — exact convention name; no wildcards, no cross-convention
+  2: op_pattern   ; tstr — within-convention op pattern; exact | alternation ("|") | "*"
+  3: where        ; [+ WhereMatcher]  — OR-composition; empty = "wherever agent is a member"
+  4: bounds       ; {tstr =&gt; BoundValue}  — reserved keys only; see §1.3
+  5: until        ; int64 — mandatory expiry, nanoseconds-since-Unix-epoch UTC
+  6: nonce        ; bstr — 16 bytes, random; grant-id = SHA-256(canonical-CBOR(Capability))
+}</code></pre>
+
+    <p>Field 5 (<code>until</code>) is mandatory. There are no "forever" grants. Grants without <code>until</code> MUST be rejected at parse time.</p>
+
+    <h3 id="grant-envelope">§1.2 Grant envelope (wire message payload)</h3>
+    <p>A <code>delegation:grant</code> message carries a CBOR-encoded payload:</p>
+
+    <pre><code>GrantPayload = {
+  1: parent_grant_id   ; bstr | null — null for owner-root grants
+  2: child_pubkey      ; bstr — Ed25519 public key, 32 bytes raw
+  3: capabilities      ; [+ Capability]
+  4: depth             ; uint — hop depth of this grant (0 = owner-root)
+}</code></pre>
+
+    <p>The <strong>grant-id</strong> is <code>SHA-256(deterministic-CBOR(GrantPayload))</code>. It is the canonical identifier for revocation (<code>delegation:revoke</code> references grant-id).</p>
+
+    <p>The grant message is signed by the granting party (the parent); the child's pubkey is embedded in the payload. Signature verification is the dispatcher's responsibility before invoking the evaluator.</p>
+
+    <h3 id="where-matcher">§1.3 WhereMatcher</h3>
+    <p>Three matcher kinds compose as OR. An empty <code>where</code> list means "wherever the agent is a member":</p>
+
+    <pre><code>WhereMatcher =
+  CampfireByID   ; {kind: 1, id: bstr}    — exact campfire hex-id
+  | NamePrefix   ; {kind: 2, prefix: tstr} — campfire name prefix match
+  | TagMatcher   ; {kind: 3, tag: tstr}    — campfire carries this tag</code></pre>
+
+    <h3 id="bound-value">§1.4 BoundValue</h3>
+    <p>The <code>bounds</code> map uses reserved string keys only. Unknown keys MUST cause parse failure (fail closed). The reserved keys are:</p>
+
+    <table class="field-table">
+      <thead>
+        <tr><th>Key</th><th>Value type</th><th>Semantics</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>rate</code></td><td><code>{per: tstr, count: uint, window: tstr}</code></td><td>Op rate cap (e.g. <code>{per: "keypair", count: 10, window: "1m"}</code>)</td></tr>
+        <tr><td><code>quota</code></td><td><code>{unit: tstr, max: uint}</code></td><td>Lifetime op count cap</td></tr>
+        <tr><td><code>spend</code></td><td><code>{unit: tstr, max: uint}</code></td><td>Monetary/scrip spend cap</td></tr>
+        <tr><td><code>ttl</code></td><td><code>uint</code></td><td>Seconds; lifetime bound on any derived grant</td></tr>
+      </tbody>
+    </table>
+
+    <p>Convention authors declare which bound keys they honor. Unknown keys FAIL CLOSED; a grant carrying an unrecognized bound key is rejected.</p>
+
+    <h3 id="depth-limit-transitivity">§1.5 Depth limit and transitivity rules</h3>
+    <p><strong>Hard depth limit: 2.</strong> The deployment shape is <code>human (depth 0) → agent (depth 1) → ephemeral worker (depth 2)</code>. Reserved ops are capped at depth 1. Deeper chains require explicit owner widening through the approval flow.</p>
+
+    <p>Sub-grant scope is set-intersection on each axis of <code>parent ⊓ proposed</code>:</p>
+    <ul>
+      <li><code>convention</code> MUST equal parent's; no convention-jumping.</li>
+      <li><code>op_pattern</code> MUST be a within-convention subset of parent's pattern.</li>
+      <li><code>where</code> union MUST be a containment-subset of parent's union.</li>
+      <li><code>bounds</code> are <code>MIN(parent, child)</code> per axis; child MUST declare a bound on every axis the parent constrained.</li>
+      <li><code>until ≤ parent.until</code>.</li>
+    </ul>
+
+    <p>A grant that violates any of these rules is a scope-widening attempt. The evaluator returns <code>Deny / DenyReasonScopeWidening</code>.</p>
+
+    <hr class="doc-divider">
+
+    <!-- §2 -->
+    <h2 id="predicate-ast-schema">§2 — Predicate AST Schema</h2>
+
+    <h3 id="leaf-predicates">§2.1 Leaf predicates</h3>
+    <p>Five leaf predicate kinds. There is no <code>not:</code> predicate — complement predicates are escalation primitives; banning them is a deliberate safety property of the language.</p>
+
+    <pre><code>LeafPredicate =
+  LevelPredicate
+  | GrantPredicate
+  | GrantInPredicate
+  | GrantQuotaPredicate
+  | ChainToPredicate
+  | ChainToQuorumPredicate</code></pre>
+
+    <h4><code>level: N</code> — Minimum provenance level</h4>
+    <pre><code>LevelPredicate = { kind: "level", n: uint }</code></pre>
+
+    <p>The chain root's provenance level MUST be &gt;= N. The four levels:</p>
+
+    <table class="field-table">
+      <thead>
+        <tr><th>Level</th><th>Meaning</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>0</td><td>Anonymous — valid keypair only</td></tr>
+        <tr><td>1</td><td>Claimed — self-asserted operator identity (tainted)</td></tr>
+        <tr><td>2</td><td>Contactable — verified by challenge/response or blind-relay hop</td></tr>
+        <tr><td>3</td><td>Present — level 2 within a freshness window</td></tr>
+      </tbody>
+    </table>
+
+    <h4><code>grant: &lt;conv&gt;:&lt;op&gt;</code> — Exact capability check</h4>
+    <pre><code>GrantPredicate = { kind: "grant", convention: tstr, op: tstr }</code></pre>
+    <p>The chain carries a capability matching <code>convention</code> exactly and <code>op</code> exactly.</p>
+
+    <h4><code>grant_in: &lt;conv&gt;:&lt;op-glob&gt; at &lt;where-matcher&gt;</code> — Scoped capability check</h4>
+    <pre><code>GrantInPredicate = {
+  kind: "grant_in"
+  convention: tstr
+  op_glob: tstr          ; within-convention pattern
+  where: WhereMatcher    ; the request target MUST be covered by this matcher
+}</code></pre>
+
+    <h4><code>grant_quota: &lt;axis&gt; &gt;= &lt;bound&gt;</code> — Bound check</h4>
+    <pre><code>GrantQuotaPredicate = {
+  kind: "grant_quota"
+  axis: tstr           ; one of the reserved bound keys (rate | quota | spend | ttl)
+  bound: uint          ; bound NOT yet exhausted check
+}</code></pre>
+
+    <h4><code>chain_to: &lt;principal&gt;</code> — Trust anchor check</h4>
+    <pre><code>ChainToPredicate = { kind: "chain_to", pubkey: bstr }  ; 32-byte Ed25519 key</code></pre>
+    <p>Chain root is the named principal <strong>by KEY, not by name</strong>. Naming-as-authority is a security vector.</p>
+
+    <h4><code>chain_to_quorum: M-of-N</code> — Multi-sysop authority</h4>
+    <pre><code>ChainToQuorumPredicate = {
+  kind: "chain_to_quorum"
+  m: uint           ; minimum signers required
+  pubkeys: [+ bstr] ; N Ed25519 public keys (32 bytes each), sorted ascending
+}</code></pre>
+
+    <p>Composed via <code>all_of</code> for team-sysop authority patterns.</p>
+
+    <h3 id="composite-predicates">§2.2 Composite predicates</h3>
+    <pre><code>CompositePredicate =
+  AllOfPredicate
+  | AnyOfPredicate
+
+AllOfPredicate = { kind: "all_of", children: [+ PredicateAST] }
+AnyOfPredicate = { kind: "any_of", children: [+ PredicateAST] }</code></pre>
+
+    <p><strong>Maximum nesting depth: 3.</strong> The evaluator is a finite tree-walk, O(predicate-nodes × chain-depth). Predicates with depth &gt; 3 MUST be rejected at parse time.</p>
+
+    <p><strong>No <code>not:</code> predicate.</strong> Complement predicates change the language's safety category. Adding a content-equality primitive (<code>hash_equals</code>) is rejected on the same grounds; it addresses keys by literal value, the same escalation-vector class as <code>not:</code>.</p>
+
+    <h3 id="predicate-ast">§2.3 PredicateAST (complete type)</h3>
+    <pre><code>PredicateAST =
+  LeafPredicate
+  | CompositePredicate
+
+; Go encoding (in cf-authority/trust/evaluator.go):
+type PredicateAST struct {
+    Kind     PredicateKind
+    Leaf     *LeafPredicate    ; populated for leaf kinds
+    Children []PredicateAST    ; populated for all_of / any_of
+}</code></pre>
+
+    <hr class="doc-divider">
+
+    <!-- §3 -->
+    <h2 id="evaluator-interface">§3 — Evaluator Interface (Go)</h2>
+    <p>Location: <code>cf-conventions/cf-authority/trust/evaluator.go</code></p>
+
+    <h3 id="gate-evaluator-interface">§3.1 GateEvaluator interface</h3>
+    <pre><code>// GateEvaluator decides whether a request is permitted, denied, or
+// unresolvable given a delegation chain, root principal, current time,
+// freshness-bounded revocation view, and owner policy.
+//
+// Frozen at cf-authority 1.0.
+type GateEvaluator interface {
+    Evaluate(ctx context.Context, req EvaluateRequest) EvaluateResult
+}</code></pre>
+
+    <h3 id="evaluate-request">§3.2 EvaluateRequest</h3>
+    <pre><code>type EvaluateRequest struct {
+    // Request describes the operation under gate.
+    Request OpRequest
+
+    // ChainMessages is the verified delegation chain, ordered sender→anchor.
+    // May be empty (anchor-self case). Signature verification is the caller's
+    // responsibility — the evaluator assumes pre-verified inputs.
+    ChainMessages []message.Message
+
+    // RootPrincipal is the trust anchor at which ChainMessages terminates.
+    // Expressed as a key (chain_to predicate is by KEY, not name).
+    RootPrincipal ed25519.PublicKey
+
+    // CurrentTime is the wall-clock time used for expiry/freshness checks.
+    // Passed as input (not read from a clock) to ensure determinism.
+    CurrentTime time.Time
+
+    // RevocationView is the local observation of revocation state.
+    // Empty/missing entries are NOT "no revocations" — they are "no view,"
+    // which the evaluator MAY surface as Unresolvable depending on
+    // OwnerPolicy.MaxRevocationStaleness.
+    RevocationView []RevocationViewEntry
+
+    // OwnerPolicy is the owner-of-record's ceiling.
+    // Composition: owner &gt; parent &gt; declaration (one-directional).
+    OwnerPolicy OwnerPolicy
+}
+
+type OpRequest struct {
+    Convention string            // exact convention name
+    Operation  string            // operation name within convention
+    CampfireID string            // target campfire (hex)
+    Tags       []string          // request tags (for tag-matcher gates)
+    Sender     ed25519.PublicKey // request sender
+    Predicate  PredicateAST      // the gate's compiled predicate tree
+}
+
+type RevocationViewEntry struct {
+    CampfireID          string
+    LatestObservedMsgID string
+    ObservedAt          time.Time
+}
+
+type OwnerPolicy struct {
+    MaxRevocationStaleness time.Duration
+    MinLevelOverride       int      // owner-imposed level floor (0 = no override)
+    BlanketDeny            []string // convention:op patterns blanket-denied by owner
+}</code></pre>
+
+    <h3 id="evaluate-result">§3.3 EvaluateResult</h3>
+    <pre><code>type EvaluateResult struct {
+    Decision Decision
+
+    // Reason is set when Decision == Deny. Required, non-empty.
+    // Stable codes are part of the conformance contract.
+    Reason DenyReason
+
+    // MissingMessageID is set when Decision == Unresolvable.
+    // Identifies the chain message the evaluator could not resolve.
+    MissingMessageID string
+}
+
+type Decision uint8
+
+const (
+    Allow        Decision = iota + 1
+    Deny
+    Unresolvable
+)</code></pre>
+
+    <h3 id="deny-reason">§3.4 DenyReason enum (frozen)</h3>
+    <p>Stable string codes. Part of the cf-authority 1.0 wire freeze. Two implementations that agree on <code>Deny</code> MUST agree on the reason code for any canonical input; the conformance harness asserts this.</p>
+
+    <pre><code>type DenyReason string
+
+const (
+    DenyExpired         DenyReason = "expired"           // grant.until &lt; CurrentTime
+    DenyRevoked         DenyReason = "revoked"           // active revocation in view
+    DenyDepthExceeded   DenyReason = "depth_exceeded"    // chain depth &gt; 2
+    DenyScopeMismatch   DenyReason = "scope_mismatch"    // grant scope does not cover request
+    DenyScopeWidening   DenyReason = "scope_widening"    // child claimed wider than parent
+    DenyStaleRevocation DenyReason = "stale_revocation"  // view stale beyond max staleness
+    DenyReservedOpFloor DenyReason = "reserved_op_floor" // reserved-op depth/level floor
+    DenyOwnerCeiling    DenyReason = "owner_ceiling"     // owner policy blanket denies
+    DenyPredicate       DenyReason = "predicate_unsatisfied" // gate predicate not satisfied
+    DenyStoreRead       DenyReason = "store_read_error"  // chain truncated; fail-closed
+)</code></pre>
+
+    <hr class="doc-divider">
+
+    <!-- §4 -->
+    <h2 id="conformance-contract">§4 — Conformance Contract</h2>
+
+    <h3 id="determinism">§4.1 Determinism (deal-breaker D1)</h3>
+    <p>An implementation of <code>GateEvaluator</code> MUST be a <strong>pure function of its inputs</strong>:</p>
+    <ul>
+      <li>Same inputs → same output, byte-for-byte.</li>
+      <li>No hidden global state.</li>
+      <li>No clocks read inside the call (<code>CurrentTime</code> is an input).</li>
+      <li>No store reads inside the call (<code>ChainMessages</code> is an input).</li>
+    </ul>
+    <p>The conformance harness runs each test case <strong>three times</strong> with identical inputs and asserts byte-equal results. Non-determinism is its own failure category.</p>
+
+    <h3 id="fail-closed">§4.2 Fail-closed (deal-breaker D2)</h3>
+    <p>When an implementation cannot resolve an introducer locally (chain truncated, missing grant message), it MUST return <code>Unresolvable</code> with <code>MissingMessageID</code> populated.</p>
+    <p>An implementation MUST NEVER return <code>Allow</code> on inputs that cannot be resolved.</p>
+    <p>Dispatchers treat <code>Unresolvable</code> as <code>Deny</code> (fail closed) but MAY synthesize a <code>delegation:request</code> future to populate the local view on the upgrade path to the approval flow.</p>
+
+    <h3 id="predicate-ast-canonicalization">§4.3 Predicate-AST canonicalization</h3>
+    <p>Children of <code>all_of</code> and <code>any_of</code> nodes MUST be sorted in canonical order:</p>
+    <ol>
+      <li>Primary sort: <code>PredicateKind</code> (numeric enum order).</li>
+      <li>Secondary sort: operand (lexicographic on string representation of the leaf's primary operand — <code>convention:op</code> for grant predicates, pubkey hex for <code>chain_to</code>, level N for <code>level</code>).</li>
+    </ol>
+    <p>Implementations that disagree on canonical child ordering disagree on outputs under short-circuit evaluation. <strong>AST canonicalization is part of the conformance contract</strong>, not an implementation detail.</p>
+
+    <h3 id="cbor-canonicalization">§4.4 CBOR canonicalization</h3>
+    <p>All grant CBOR is deterministic per RFC 8949 §4.2.1:</p>
+    <ul>
+      <li>Definite-length encoding for all maps and arrays.</li>
+      <li>Map keys sorted by RFC 8949 §4.2.1 (length-then-bytes for text keys; numeric keys sorted by integer value).</li>
+      <li>Smallest integer encoding (no leading zero bytes).</li>
+      <li>No NaN or Infinity float values.</li>
+    </ul>
+    <p>An implementation that re-encodes grant CBOR to a different canonical form will fail signature verification on all test cases that include signed grants.</p>
+
+    <h3 id="reserved-op-floor">§4.5 Reserved-op floor</h3>
+    <p>The ten reserved ops carry a protocol-level minimum that no convention declaration and no parent grant can lower:</p>
+
+    <pre><code>disband | evict | admit | grant | revoke | delegation-grant |
+delegation-revoke | delegation-accept | member-roster | compaction</code></pre>
+
+    <p>The enforcement chain is fixed and one-directional:</p>
+
+    <pre><code>owner ceiling &gt; parent grant &gt; convention declaration</code></pre>
+
+    <p>The LIST lives at L1 (<code>cf-protocol/internal/reserved-ops.go</code>). The ENFORCER (intercepts dispatch, consults L1 list) lives at L2. The EVALUATOR (applies actual policy) is L3 <code>cf-authority</code>. Convention authors are not in the trusted computing base; a convention that declares <code>level: 0</code> on <code>delegation-grant</code> is rejected with <code>DenyReservedOpFloor</code>.</p>
+
+    <h3 id="unresolvable-handling">§4.6 UNRESOLVABLE handling</h3>
+    <p><code>UNRESOLVABLE</code> is a first-class third decision. It differs from gnupg-style designs that assume a global keyring; AIETF does not have one:</p>
+    <ul>
+      <li>Evaluator CANNOT resolve an introducer → MUST return <code>Unresolvable</code>.</li>
+      <li>Dispatcher MUST treat <code>Unresolvable</code> as <code>Deny</code> (fail closed).</li>
+      <li>Dispatcher MAY synthesize <code>delegation:request</code> future to populate the local view.</li>
+      <li>Bounded fetch attempt, then closed. No silent degradation.</li>
+    </ul>
+
+    <hr class="doc-divider">
+
+    <!-- §5 -->
+    <h2 id="conformance-harness">§5 — Conformance Harness</h2>
+    <p>Location: <code>cf-conventions/cf-authority/trust/conformance/</code></p>
+
+    <p>The <code>GateEvaluatorConformance(t, factory)</code> harness ships twelve canonical test cases. Third-party implementations of <code>GateEvaluator</code> MUST pass all twelve before being eligible to back a cf-authority-conforming dispatcher.</p>
+
+    <h3 id="twelve-canonical-test-cases">§5.1 Twelve canonical test cases</h3>
+    <table class="field-table">
+      <thead>
+        <tr><th>#</th><th>Case</th><th>Expected</th><th>Falsifies</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td><code>anchor-self</code> — sender == root_principal; empty chain; <code>level: 0</code></td><td>Allow</td><td>Implementations requiring non-empty chain when sender is anchor</td></tr>
+        <tr><td>2</td><td><code>valid-1-hop</code> — one grant, unexpired, unrevoked; <code>grant: ready:claim</code></td><td>Allow</td><td>Implementations that miscount depth or skip leaf-grant signature check</td></tr>
+        <tr><td>3</td><td><code>valid-2-hop</code> — two grants; <code>grant_in: ready:claim|done at name-prefix:rd-</code></td><td>Allow</td><td>Implementations failing to intersect scope across two hops</td></tr>
+        <tr><td>4</td><td><code>expired-mid-chain</code> — hop-2 <code>until</code> &lt; CurrentTime by 1ns</td><td>Deny / <code>expired</code></td><td>Off-by-one on expiry boundary</td></tr>
+        <tr><td>5</td><td><code>revoked-mid-chain</code> — fresh revocation view names hop-2 child key</td><td>Deny / <code>revoked</code></td><td>Implementations that only revoke on chain-root, not mid-chain</td></tr>
+        <tr><td>6</td><td><code>depth-exceeded</code> — three-hop chain against depth limit 2</td><td>Deny / <code>depth_exceeded</code></td><td>Implementations allowing depth-3 by default</td></tr>
+        <tr><td>7</td><td><code>scope-narrowing</code> — hop-2 scope is subset of hop-1; request matches hop-2</td><td>Allow</td><td>Implementations that intersect wrong (union instead of intersection)</td></tr>
+        <tr><td>8</td><td><code>scope-widening-rejected</code> — hop-2 claims wider than hop-1</td><td>Deny / <code>scope_widening</code></td><td>Implementations taking child-scope at face value</td></tr>
+        <tr><td>9</td><td><code>store-read-error-fail-closed</code> — chain truncated; missing-sentinel for hop-2</td><td>Unresolvable / MissingMessageID set</td><td>Implementations that Deny (lose upgrade path) OR Allow (catastrophic)</td></tr>
+        <tr><td>10</td><td><code>stale-revocation-window</code> — view ObservedAt + MaxRevocationStaleness &lt; CurrentTime</td><td>Deny / <code>stale_revocation</code></td><td>Implementations ignoring revocation view staleness</td></tr>
+        <tr><td>11</td><td><code>reserved-op-floor</code> — convention declares <code>level: 0</code> on <code>delegation-grant</code></td><td>Deny / <code>reserved_op_floor</code></td><td>Implementations honoring convention-author overrides on reserved ops</td></tr>
+        <tr><td>12</td><td><code>await-fulfillment-ordering</code> — two <code>fulfills</code>-tagged messages with identical timestamps; lexicographically distinct IDs</td><td>Allow + deterministic winner</td><td>Implementations ordering on insertion/wall-time/store-iteration order</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="determinism-check">§5.2 Determinism check</h3>
+    <p>Each case is run <strong>three times</strong> with identical inputs. Results MUST be byte-equal. Non-determinism is a conformance failure independent of the case outcome.</p>
+
+    <h3 id="cross-implementer-differential-check">§5.3 Cross-implementer differential check</h3>
+    <p>When run against ≥2 implementations, the harness emits a differential report: for each case, the <code>(Decision, Reason, MissingMessageID)</code> triple from each implementation. Disagreement on any case is a conformance failure.</p>
+
+    <h3 id="fixture-data">§5.4 Fixture data</h3>
+    <p>Canonical fixture data lives in <code>cf-authority/trust/conformance/testdata/</code>:</p>
+
+    <pre><code>testdata/
+  keys/
+    root.pub, root.priv           # trust anchor keypair
+    intermediate.pub, intermediate.priv
+    sender.pub, sender.priv
+    rogue.pub, rogue.priv         # for widening/widening-reject tests
+  campfires/
+    rd-baron.id, other.id
+  chains/
+    1-anchor-self.cbor
+    2-valid-1-hop.cbor
+    3-valid-2-hop.cbor
+    4-expired-mid-chain.cbor
+    5-revoked-mid-chain.cbor
+    6-depth-exceeded.cbor
+    7-scope-narrowing.cbor
+    8-scope-widening.cbor
+    9-store-read-error.cbor
+    10-stale-revocation.cbor
+    11-reserved-op-floor.cbor
+    12-await-fulfillment.cbor
+  predicates/
+    p-level-0.json
+    p-grant-ready-claim.json
+    p-grant_in-ready-name-prefix.json
+    p-all_of-level-grant.json
+    p-await-chain_to.json
+  expected/
+    1.json, 2.json, ..., 12.json
+  tampered/               # bit-flipped variants for negative tests</code></pre>
+
+    <p><strong>Fixture format constraints (frozen at cf-authority 1.0):</strong></p>
+    <ul>
+      <li>All CBOR: deterministic per RFC 8949 §4.2.1 (see §4.4).</li>
+      <li>All timestamps: int64 nanoseconds-since-Unix-epoch UTC. Canonical <code>t0 = 2026-01-01T00:00:00Z = 1767225600000000000 ns</code>.</li>
+      <li>All keys: raw Ed25519 (32-byte public, 64-byte expanded private). No x509, no PKCS.</li>
+      <li>Predicate ASTs: JSON in fixture files, parsed to <code>PredicateAST</code> by the fixture loader.</li>
+      <li>The fixture generator at <code>conformance/gen/main.go</code> regenerates all fixtures from source-of-truth YAML. CI asserts byte-identical regeneration.</li>
+    </ul>
+
+    <hr class="doc-divider">
+
+    <!-- §6 -->
+    <h2 id="phase-8-ship-gates">§6 — Phase 8 Ship Gates</h2>
+    <p>Gate 1 (GateEvaluator conformance): all twelve cases pass on the default implementation; determinism re-run (3× byte-equal) verified; CI runs the harness on every PR touching <code>cf-authority/</code>, <code>pkg/convention/delegation/</code>, <code>pkg/protocol/await.go</code>, or fixture files.</p>
+
+    <p>Gate 4 (wire-format freeze): this spec document is published; <code>COMPATIBILITY.md</code> shipped; minor-compat CI workflow active. No PR may modify frozen surfaces after 0.30 tag without a major-bump declaration.</p>
+
+    <hr class="doc-divider">
+
+    <!-- §7 -->
+    <h2 id="open-follow-ups">§7 — Open Follow-ups (not on Phase 8 gate)</h2>
+    <ol>
+      <li><strong>Predicate-AST fuzzer extension</strong> — random <code>PredicateAST</code> trees (depth 1–3, all leaf kinds) exercised against two implementations; ships as <code>conformance/fuzz</code> target gated on <code>-tags fuzz</code>. ~120 LOC.</li>
+      <li><strong>Non-UTC timezone case</strong> — thirteenth case where <code>CurrentTime</code> carries non-UTC offset. Deferred pending operator decision on whether UTC-only is a spec constraint.</li>
+      <li><strong>CBOR tamper negative tests</strong> — enumerate negative cases consuming <code>testdata/tampered/</code>; current position is wire-layer's job (evaluator assumes pre-verified inputs).</li>
+      <li><strong>Reserved-op floor list freshness</strong> — case 11 fixture must update if OPEN-003 lands a different list. Cross-reference: OPEN-003.</li>
+    </ol>
+
+    <hr class="doc-divider">
+
+    <p><em>Generated: 2026-04-28. Specification status: FROZEN at cf-authority 1.0.</em><br>
+    <em>Source: 0.30-design.md §2, §2.2–§2.5.1, §7; gate-evaluator-conformance-harness.md.</em></p>
+
+    <p><a href="https://github.com/campfire-net/campfire/blob/main/docs/cf-authority-spec.md">Source on GitHub &rarr;</a></p>
+
+  </main>
+</div>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">campfire</div>
+      <ul class="footer-links">
+        <li><a href="/docs/">Spec</a></li>
+        <li><a href="/docs/getting-started.html">Get Started</a></li>
+        <li><a href="/docs/cli.html">CLI</a></li>
+        <li><a href="/releases/0.30/">cf 0.30</a></li>
+        <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
+      </ul>
+      <div class="footer-note">cf-authority 1.0 · frozen at cf 0.30 · 2026</div>
+    </div>
+  </div>
+</footer>
+
+<script src="/docs/version-switcher.js"></script>
+</body>
+</html>

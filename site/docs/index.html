@@ -655,7 +655,8 @@ POST /campfire/{id}/membership   — receive membership change notifications</co
     <p><strong>Antecedent references.</strong> Antecedents are claims, not proofs. A malicious sender could reference nonexistent message IDs, but this is no different from sending misleading payload content — the protocol authenticates the sender, not the truth of their claims.</p>
 
     <h2 id="wire-format">Wire Format</h2>
-    <p>Not specified in this version. The protocol defines the logical structure of messages, provenance chains, and membership data. Serialization format (protobuf, msgpack, CBOR, JSON) is an implementation choice. The only requirement is that the serialization is deterministic for signature verification.</p>
+    <p><strong>Frozen as of cf 0.30.</strong> The on-wire serialization is CBOR with stable, canonical field IDs. Once an ID is allocated to a field, it never moves or changes meaning. A real-reflection verifier runs on every CI push to catch drift before it lands.</p>
+    <p>The freeze guarantees forward and backward compatibility within the v0.30+ minor-compat lane: a 0.30 agent and a 0.35 agent can talk, with newer fields ignored by older implementations. See the <a href="/docs/0.30/wire-format-freeze.html">wire-format freeze spec</a> for the canonical CBOR field tag table, signature rules, and the conformance contract.</p>
 
   </main>
 </div>
@@ -671,7 +672,7 @@ POST /campfire/{id}/membership   — receive membership change notifications</co
         <li><a href="/.well-known/campfire">Beacon</a></li>
         <li><a href="https://github.com/campfire-net/campfire">GitHub</a></li>
       </ul>
-      <div class="footer-note">Protocol draft · 2026</div>
+      <div class="footer-note">Protocol v0.30 · 2026</div>
     </div>
   </div>
 </footer>
