@@ -9,7 +9,7 @@ package fs
 //   3. If already bucketed → release lock → return nil (idempotent).
 //   4. Handle mid-swap crash recovery states (§3.3 table).
 //   5. Create messages.new/ (0700).
-//   6. For each *.cbor in messages/: parse 19-nanos prefix → bucket → MkdirAll → copy bytes.
+//   6. For each *.cbor in messages/: parse NanosWidth-nanos prefix → bucket → MkdirAll → copy bytes.
 //   7. Verification (§3.6): count check + spot-check min(64, count) random files.
 //   8. rename(messages → messages.old), rename(messages.new → messages).
 //   9. Write messages/.layout-version hint.
@@ -198,7 +198,7 @@ func MigrateStore(campfireDir string, opts MigrateStoreOptions) error {
 		return fmt.Errorf("creating messages.new: %w", err)
 	}
 
-	// Step 4/5/6: For each *.cbor in messages/, parse 19-nanos prefix → bucket → copy.
+	// Step 4/5/6: For each *.cbor in messages/, parse NanosWidth-nanos prefix → bucket → copy.
 	for _, name := range flatFiles {
 		nanos, err := parseNanosPrefix(name)
 		if err != nil {
@@ -354,17 +354,17 @@ func listBucketDirs(messagesDir string) ([]string, error) {
 	return dirs, nil
 }
 
-// parseNanosPrefix extracts the 19-digit nanosecond timestamp from a leaf filename
-// of the form "<19-nanos>-<id>.cbor".
+// parseNanosPrefix extracts the NanosWidth-digit nanosecond timestamp from a leaf filename
+// of the form "<NanosWidth-nanos>-<id>.cbor".
 func parseNanosPrefix(name string) (int64, error) {
-	// Filename format: 0000000001234567890-<uuid>.cbor (19-digit nanos prefix).
+	// Filename format: 0000000001234567890-<uuid>.cbor (NanosWidth-digit nanos prefix).
 	if len(name) < 20 {
 		return 0, fmt.Errorf("filename too short: %q", name)
 	}
-	if name[19] != '-' {
-		return 0, fmt.Errorf("expected '-' at position 19 in filename %q", name)
+	if name[NanosWidth] != '-' {
+		return 0, fmt.Errorf("expected '-' at position %d in filename %q", NanosWidth, name)
 	}
-	nanos, err := strconv.ParseInt(name[:19], 10, 64)
+	nanos, err := strconv.ParseInt(name[:NanosWidth], 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("parsing nanos prefix in %q: %w", name, err)
 	}
@@ -439,7 +439,7 @@ func fsyncDir(dir string) error {
 
 // verify checks messages.new/ against messages/ (§3.6):
 // 1. Count check: same number of files.
-// 2. Spot-check: min(64, count) random files are byte-identical.
+// 2. Spot-check: min(CampfireIDHexLen, count) random files are byte-identical.
 func verify(messagesDir, messagesNew string, flatFiles []string, rng *rand.Rand) error {
 	// Count files in messages.new/ recursively.
 	var newFiles []string
@@ -463,11 +463,11 @@ func verify(messagesDir, messagesNew string, flatFiles []string, rng *rand.Rand)
 		}
 	}
 
-	// Spot-check: sample min(64, count) random files from flatFiles.
+	// Spot-check: sample min(CampfireIDHexLen, count) random files from flatFiles.
 	count := len(flatFiles)
 	sampleSize := count
-	if sampleSize > 64 {
-		sampleSize = 64
+	if sampleSize > CampfireIDHexLen {
+		sampleSize = CampfireIDHexLen
 	}
 
 	// Build sample indices.
@@ -727,7 +727,7 @@ func assertOtherStateUnchanged(campfireDir string, pre []otherStatEntry) error {
 	return nil
 }
 
-// nanosRE matches the 19-digit nanos prefix in a leaf filename.
+// nanosRE matches the NanosWidth-digit (19 digits) nanos prefix in a leaf filename.
 var nanosRE = regexp.MustCompile(`^\d{19}`)
 
 // IsMigrationError reports whether err is any of the sentinel migration errors.

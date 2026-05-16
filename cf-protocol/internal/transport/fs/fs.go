@@ -179,7 +179,7 @@ func migrateLockPath(campfireDir string) string {
 
 // WriteMessage writes a message to the campfire's messages directory using the
 // day-bucketed layout introduced in v0.31:
-//   messages/<YYYY-MM>/<DD>/<19-nanos>-<message-id>.cbor
+//   messages/<YYYY-MM>/<DD>/<NanosWidth-nanos>-<message-id>.cbor
 //
 // Before writing, a shared flock (LOCK_SH) is acquired on .migrate.lock so that
 // any concurrent migrate-store run (which holds LOCK_EX) will block all writers
@@ -216,7 +216,7 @@ func (t *Transport) WriteMessage(campfireID string, msg *message.Message) error 
 		return fmt.Errorf("creating bucket directory %s: %w", bucketDir, err)
 	}
 
-	filename := fmt.Sprintf("%019d-%s.cbor", now.UnixNano(), msg.ID)
+	filename := fmt.Sprintf("%0*d-%s.cbor", NanosWidth, now.UnixNano(), msg.ID)
 	path := filepath.Join(bucketDir, filename)
 	if err := atomicWriteCBOR(path, msg); err != nil {
 		return err
@@ -484,7 +484,7 @@ func (t *Transport) ListMessages(campfireID string) ([]message.Message, error) {
 	}
 
 	// Merge by lex-sort of leaf filename. Because both bucketed and flat entries
-	// use the same 19-nanos prefix on the leaf filename, lex-sort of leaf names
+	// use the same NanosWidth-nanos prefix on the leaf filename, lex-sort of leaf names
 	// is equivalent to lex-sort of the flat layout — same chronological order.
 	sort.Slice(leaves, func(i, j int) bool {
 		return leaves[i].name < leaves[j].name
@@ -535,7 +535,7 @@ func MigrateLockPath(campfireDir string) string {
 var randRead = func(b []byte) (int, error) { return rand.Read(b) }
 
 // timeNow is the clock function used by WriteMessage to determine the bucket
-// and the 19-nanos filename prefix. It is a package-level variable so tests
+// and the NanosWidth-nanos filename prefix. It is a package-level variable so tests
 // can inject a fixed or stepping clock without filesystem mocking (A6).
 var timeNow = time.Now
 
