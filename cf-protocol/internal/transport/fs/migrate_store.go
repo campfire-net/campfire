@@ -26,7 +26,6 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -726,9 +725,6 @@ func assertOtherStateUnchanged(campfireDir string, pre []otherStatEntry) error {
 	}
 	return nil
 }
-
-// nanosRE matches the NanosWidth-digit (19 digits) nanos prefix in a leaf filename.
-var nanosRE = regexp.MustCompile(`^\d{19}`)
 
 // IsMigrationError reports whether err is any of the sentinel migration errors.
 func IsMigrationError(err error) bool {

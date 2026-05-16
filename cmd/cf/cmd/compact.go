@@ -31,7 +31,6 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/cf-protocol/message"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
@@ -744,20 +743,6 @@ func computeCheckpointHash(msgs []store.MessageRecord) string {
 		h.Write([]byte(e))
 	}
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-// messageRecordFromWire converts a wire message.Message to a store.MessageRecord.
-// Used when message records are sourced from the fs transport rather than the local store.
-// Kept for potential use by future compact-from-transport path.
-func messageRecordFromWire(msg message.Message) store.MessageRecord {
-	return store.MessageRecord{
-		ID:          msg.ID,
-		Payload:     msg.Payload,
-		Tags:        msg.Tags,
-		Antecedents: msg.Antecedents,
-		Timestamp:   msg.Timestamp,
-		Signature:   msg.Signature,
-	}
 }
 
 func init() {
