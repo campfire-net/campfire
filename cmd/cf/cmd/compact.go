@@ -406,26 +406,9 @@ func execCompactPersistent(
 		return candidateMsgs[i].Timestamp < candidateMsgs[j].Timestamp
 	})
 
-	// Select messages to supersede.
-	var toSupersede []store.MessageRecord
-	if keepLast > 0 {
-		// Keep the last keepLast messages; supersede all older ones.
-		if len(candidateMsgs) <= keepLast {
-			return nil, fmt.Errorf("only %d non-compact messages exist; --keep-last %d would leave nothing to compact (R3)", len(candidateMsgs), keepLast)
-		}
-		toSupersede = candidateMsgs[:len(candidateMsgs)-keepLast]
-	} else {
-		// --before RFC3339: supersede all messages with Timestamp < cutoffNanos.
-		for _, msg := range candidateMsgs {
-			if msg.Timestamp < cutoffNanos {
-				toSupersede = append(toSupersede, msg)
-			}
-		}
-	}
-
-	// Refuse if supersedes would be empty (R3).
-	if len(toSupersede) == 0 {
-		return nil, fmt.Errorf("no messages selected for compaction (supersedes would be empty); refusing (R3)")
+	toSupersede, err := selectMessagesToSupersede(candidateMsgs, keepLast, cutoffNanos)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build the campfire:compact payload per design §2.5.
@@ -453,27 +436,8 @@ func execCompactPersistent(
 	}
 
 	// --- Durably write the campfire:compact event FIRST (R2: audit event before deletes) ---
-	compactPayload := store.CompactionPayload{
-		Supersedes:      supersededIDs,
-		Summary:         summaryBytes,
-		Retention:       retention,
-		CheckpointHash:  checkpointHash,
-		BytesSuperseded: bytesSuperseded,
-	}
-	payloadJSON, err := json.Marshal(compactPayload)
-	if err != nil {
-		return nil, fmt.Errorf("encoding compaction payload: %w", err)
-	}
-
-	client := protocol.New(s, agentID)
-	if _, err = client.Send(protocol.SendRequest{
-		CampfireID:  campfireID,
-		Payload:     payloadJSON,
-		Tags:        []string{campfire.TagCompact},
-		Antecedents: []string{lastSupersededID},
-		Instance:    "compact",
-	}); err != nil {
-		return nil, fmt.Errorf("sending compaction event: %w", err)
+	if err := writeCompactAuditEvent(campfireID, supersededIDs, summaryBytes, retention, checkpointHash, bytesSuperseded, lastSupersededID, agentID, s); err != nil {
+		return nil, err
 	}
 
 	// --- On-disk deletion (retention=discard only) ---
@@ -485,8 +449,6 @@ func execCompactPersistent(
 		}, nil
 	}
 
-	// Build an ID → fs path map by walking the bucketed layout on disk.
-	// We need the actual on-disk paths for the superseded message IDs.
 	campfireDir := m.TransportDir
 	tr := fs.ForDir(campfireDir)
 
@@ -497,14 +459,107 @@ func execCompactPersistent(
 	}
 	defer release()
 
-	// Walk the on-disk bucketed layout to build id→(bucket, leafname) mapping.
-	// Format: messages/YYYY-MM/DD/<19nanos>-<id>.cbor
 	messagesDir := filepath.Join(campfireDir, "messages")
-	type onDiskFile struct {
-		bucket string // full path to YYYY-MM/DD/ dir
-		path   string // full path to leaf .cbor file
+
+	// Build ID→file map by walking the on-disk bucketed layout once.
+	idToFile, err := buildBucketIndex(messagesDir)
+	if err != nil {
+		return nil, err
 	}
-	// Map from message ID → on-disk file info.
+
+	// Classify buckets and delete files.
+	fullyCoveredBuckets := classifyFullyCoveredBuckets(idToFile, supersededIDs)
+	bucketsRemoved, bytesDeleted := deleteSupersededFiles(supersededIDs, idToFile, fullyCoveredBuckets)
+
+	// Best-effort: prune empty parent month directories (§2.6).
+	// Pass the full fullyCoveredBuckets set (not just successfully removed ones)
+	// so we also check month dirs whose buckets were cleaned up via per-file deletes.
+	pruneEmptyMonthDirs(messagesDir, fullyCoveredBuckets)
+
+	return &persistentCompactResult{
+		supersededIDs:  supersededIDs,
+		checkpointHash: checkpointHash,
+		retention:      retention,
+		bytesDeleted:   bytesDeleted,
+		bucketsRemoved: bucketsRemoved,
+	}, nil
+}
+
+// selectMessagesToSupersede applies the keepLast or cutoffNanos selection policy
+// to the sorted candidate message list and returns the slice to supersede.
+// candidateMsgs must be sorted by timestamp ascending (total order).
+// Returns an error if the selection would produce an empty set (R3).
+func selectMessagesToSupersede(candidateMsgs []store.MessageRecord, keepLast int, cutoffNanos int64) ([]store.MessageRecord, error) {
+	var toSupersede []store.MessageRecord
+	if keepLast > 0 {
+		// Keep the last keepLast messages; supersede all older ones.
+		if len(candidateMsgs) <= keepLast {
+			return nil, fmt.Errorf("only %d non-compact messages exist; --keep-last %d would leave nothing to compact (R3)", len(candidateMsgs), keepLast)
+		}
+		toSupersede = candidateMsgs[:len(candidateMsgs)-keepLast]
+	} else {
+		// --before RFC3339: supersede all messages with Timestamp < cutoffNanos.
+		for _, msg := range candidateMsgs {
+			if msg.Timestamp < cutoffNanos {
+				toSupersede = append(toSupersede, msg)
+			}
+		}
+	}
+	if len(toSupersede) == 0 {
+		return nil, fmt.Errorf("no messages selected for compaction (supersedes would be empty); refusing (R3)")
+	}
+	return toSupersede, nil
+}
+
+// writeCompactAuditEvent marshals and sends the campfire:compact audit message.
+// This must be called BEFORE any on-disk deletion (R2: audit event before deletes).
+func writeCompactAuditEvent(
+	campfireID string,
+	supersededIDs []string,
+	summaryBytes []byte,
+	retention, checkpointHash string,
+	bytesSuperseded int64,
+	lastSupersededID string,
+	agentID *identity.Identity,
+	s store.Store,
+) error {
+	compactPayload := store.CompactionPayload{
+		Supersedes:      supersededIDs,
+		Summary:         summaryBytes,
+		Retention:       retention,
+		CheckpointHash:  checkpointHash,
+		BytesSuperseded: bytesSuperseded,
+	}
+	payloadJSON, err := json.Marshal(compactPayload)
+	if err != nil {
+		return fmt.Errorf("encoding compaction payload: %w", err)
+	}
+	client := protocol.New(s, agentID)
+	if _, err = client.Send(protocol.SendRequest{
+		CampfireID:  campfireID,
+		Payload:     payloadJSON,
+		Tags:        []string{campfire.TagCompact},
+		Antecedents: []string{lastSupersededID},
+		Instance:    "compact",
+	}); err != nil {
+		return fmt.Errorf("sending compaction event: %w", err)
+	}
+	return nil
+}
+
+// onDiskFile records the bucket directory and full path for a single on-disk message file.
+type onDiskFile struct {
+	bucket string // full path to YYYY-MM/DD/ dir
+	path   string // full path to leaf .cbor file
+}
+
+// buildBucketIndex walks the bucketed on-disk layout under messagesDir and returns
+// a map from message ID to its on-disk file location.
+//
+// Layout: messages/YYYY-MM/DD/<19nanos>-<id>.cbor
+// This is the single authoritative walk over the on-disk tree; classifyFullyCoveredBuckets
+// and deleteSupersededFiles both consume its output.
+func buildBucketIndex(messagesDir string) (map[string]onDiskFile, error) {
 	idToFile := make(map[string]onDiskFile)
 
 	yearMonthEntries, err := os.ReadDir(messagesDir)
@@ -515,8 +570,7 @@ func execCompactPersistent(
 		if !ymE.IsDir() {
 			continue
 		}
-		ymName := ymE.Name()
-		ymDir := filepath.Join(messagesDir, ymName)
+		ymDir := filepath.Join(messagesDir, ymE.Name())
 		ddEntries, err := os.ReadDir(ymDir)
 		if err != nil {
 			continue
@@ -525,8 +579,7 @@ func execCompactPersistent(
 			if !ddE.IsDir() {
 				continue
 			}
-			ddName := ddE.Name()
-			ddDir := filepath.Join(ymDir, ddName)
+			ddDir := filepath.Join(ymDir, ddE.Name())
 			leafEntries, err := os.ReadDir(ddDir)
 			if err != nil {
 				continue
@@ -550,18 +603,20 @@ func execCompactPersistent(
 			}
 		}
 	}
+	return idToFile, nil
+}
 
-	// Determine which buckets are fully covered by the supersede set.
-	// A bucket is fully covered if ALL its resident IDs are in toSupersede.
-	// For fully-covered buckets, use os.RemoveAll (R6).
-	// For partially-covered buckets, delete per-file.
+// classifyFullyCoveredBuckets returns the set of YYYY-MM/DD bucket directories
+// where every resident message ID is in supersededIDs.
+// A bucket with zero superseded residents is NOT included (empty-bucket guard).
+func classifyFullyCoveredBuckets(idToFile map[string]onDiskFile, supersededIDs []string) map[string]bool {
 	supersededSet := make(map[string]bool, len(supersededIDs))
 	for _, id := range supersededIDs {
 		supersededSet[id] = true
 	}
 
-	// Build a map: bucket → set of all IDs in that bucket.
-	bucketAllIDs := make(map[string]map[string]bool) // bucketDir → {msgID → true}
+	// Build bucket → resident IDs map.
+	bucketAllIDs := make(map[string]map[string]bool)
 	for msgID, fi := range idToFile {
 		if bucketAllIDs[fi.bucket] == nil {
 			bucketAllIDs[fi.bucket] = make(map[string]bool)
@@ -569,7 +624,6 @@ func execCompactPersistent(
 		bucketAllIDs[fi.bucket][msgID] = true
 	}
 
-	// Determine fully-covered buckets.
 	fullyCoveredBuckets := make(map[string]bool)
 	for bucket, idsInBucket := range bucketAllIDs {
 		allSuperseded := true
@@ -579,25 +633,31 @@ func execCompactPersistent(
 				break
 			}
 		}
-		if allSuperseded {
-			// Only remove whole bucket if at least one ID is being superseded
-			// (not just an empty bucket).
-			hasSome := false
-			for id := range idsInBucket {
-				if supersededSet[id] {
-					hasSome = true
-					break
-				}
-			}
-			if hasSome {
+		if !allSuperseded {
+			continue
+		}
+		// Only mark as fully covered when at least one ID is superseded
+		// (guards against empty buckets that happen to have no residents).
+		for id := range idsInBucket {
+			if supersededSet[id] {
 				fullyCoveredBuckets[bucket] = true
+				break
 			}
 		}
 	}
+	return fullyCoveredBuckets
+}
 
-	var bucketsRemoved int
-	var bytesDeleted int64
-
+// deleteSupersededFiles removes on-disk files for the superseded message IDs.
+// Fully-covered buckets are removed with os.RemoveAll (R6).
+// When RemoveAll fails, or for partially-covered buckets, individual files are
+// deleted best-effort.
+//
+// The successfullyRemovedBuckets tracking ensures the per-file loop is entered
+// for failed-RemoveAll buckets (campfireagent-6d27 regression fix).
+//
+// Returns (bucketsRemoved, bytesDeleted).
+func deleteSupersededFiles(supersededIDs []string, idToFile map[string]onDiskFile, fullyCoveredBuckets map[string]bool) (bucketsRemoved int, bytesDeleted int64) {
 	// Delete fully-covered buckets wholesale (R6).
 	// Track which buckets were SUCCESSFULLY removed so the per-file fallback
 	// below knows which ones still need individual file cleanup.
@@ -638,19 +698,7 @@ func execCompactPersistent(
 			log.Printf("compact: best-effort file removal failed for %s: %v", fi.path, err)
 		}
 	}
-
-	// Best-effort: prune empty parent month directories (§2.6).
-	// Pass the full fullyCoveredBuckets set (not just successfully removed ones)
-	// so we also check month dirs whose buckets were cleaned up via per-file deletes.
-	pruneEmptyMonthDirs(messagesDir, fullyCoveredBuckets)
-
-	return &persistentCompactResult{
-		supersededIDs:  supersededIDs,
-		checkpointHash: checkpointHash,
-		retention:      retention,
-		bytesDeleted:   bytesDeleted,
-		bucketsRemoved: bucketsRemoved,
-	}, nil
+	return bucketsRemoved, bytesDeleted
 }
 
 // pruneEmptyMonthDirs removes empty YYYY-MM parent directories after bucket deletions.
