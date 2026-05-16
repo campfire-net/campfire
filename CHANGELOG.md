@@ -87,6 +87,25 @@ small number of day buckets that compact can `os.RemoveAll`.
 - `cf health` (a bloat indicator that surfaces compact recommendations) and
   filesystem fast-wake for `Await` are deferred from this release.
 
+### Documentation correction (cf-authority adoption)
+
+`cf-conventions/cf-authority/README.md` previously referenced
+`trust.NewDefaultGateEvaluator(trustStore)` and
+`trust.NewDefaultProvenanceChecker` as the primary adoption surface. Neither
+symbol exists in v0.31 — they were aspirational. The README has been corrected
+to document the actual wiring:
+
+```go
+adapter := trust.NewConventionAdapter()
+dispatcher := convention.NewConventionDispatcher(store, logger)
+dispatcher.SetGateEvaluator(adapter)
+```
+
+Consumers on the v0.19 → v0.31 cutover should construct the adapter manually
+until the higher-level `Server.WithGateEvaluator` option ships (planned for a
+future 0.3x release). `ProvenanceCheckerV2` in v0.31 is the allow-all stub in
+`cf-convention`; a production implementation is on the cf-authority roadmap.
+
 ---
 
 ## v0.30.0 — Protocol freeze, layered architecture, and authority system (2026-04-30)

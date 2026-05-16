@@ -16,20 +16,46 @@ It is the sole resolver of the 10 D-class deal-breakers from
 
 ## Public Surface
 
-The primary entry point is `trust.NewDefaultGateEvaluator(trustStore)`.
+The L3 evaluator is `trust.DefaultGateEvaluator` — a pure, zero-value struct (no
+TrustStore dependency; D1 purity invariant). Consumers do not call it directly;
+they wire it into the L2 `ConventionDispatcher` through a thin adapter.
+
+The wiring pattern:
+
+```go
+adapter := trust.NewConventionAdapter()
+dispatcher := convention.NewConventionDispatcher(store, logger)
+dispatcher.SetGateEvaluator(adapter)
+```
 
 | Symbol | Description |
 |--------|-------------|
-| `trust.NewDefaultGateEvaluator` | Production `GateEvaluator` implementation |
-| `trust.NewDefaultProvenanceChecker` | Production `ProvenanceCheckerV2` implementation |
+| `trust.DefaultGateEvaluator` | Reference `GateEvaluator` (L3). Zero-value struct, pure function. |
+| `trust.NewConventionAdapter` | Returns `*ConventionAdapter` — satisfies `convention.GateEvaluator` (L2) by wrapping `DefaultGateEvaluator`. |
+| `trust.ConventionAdapter` | L3→L2 adapter type. |
 | `trust.GrantPayload` | CBOR-serializable grant payload (field 5 = `GranterPubKey`) |
 | `trust.Capability` | Scoped capability declaration |
 | `trust.PredicateAST` | Gate predicate tree (max depth 3; no `not:`) |
 | `trust.WhereMatcher` | Scope matcher for `grant_in` predicates |
 | `trust.DenyReason` | Deny classification (`DenyReservedOpFloor`, etc.) |
-| `trust.Decision` | `GateAllow` / `GateDeny` / `GateUnresolvable` |
+| `trust.Decision` | `Allow` / `Deny` / `Unresolvable` |
+
+`ProvenanceCheckerV2` lives in `cf-conventions/cf-convention`, not in this
+package. v0.31 ships only the stub `convention.NewAllowAllProvenanceChecker()`;
+a production implementation is on the cf-authority roadmap (see Planned below).
 
 Godoc: https://pkg.go.dev/github.com/campfire-net/campfire/cf-conventions/cf-authority/trust
+
+## Planned (not in v0.31)
+
+The following are referenced in source comments but **do not exist** as of
+v0.31.0. They are tracked for a later release; do not write code against them
+yet:
+
+| Symbol | Status | Notes |
+|--------|--------|-------|
+| `Server.WithGateEvaluator(eval)` option | Planned | `cf-convention/gate_evaluator.go` carries a "Stage 3 transition" comment; the higher-level functional-option surface will land in a future 0.3x release. Until then, use `ConventionDispatcher.SetGateEvaluator(adapter)` directly. |
+| Production `ProvenanceCheckerV2` | Planned | v0.31 ships only the allow-all stub in `cf-convention`. |
 
 ## Wire-Format Freeze
 
