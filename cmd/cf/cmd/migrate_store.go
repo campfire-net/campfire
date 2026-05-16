@@ -7,7 +7,7 @@ package cmd
 // docs/design/0.31-storage-scaling.md.
 //
 // Usage:
-//   cf migrate-store <campfire-id> [--cf-home <dir>] [--dry-run] [--keep-backup] [--finalize]
+//   cf migrate-store <campfire-id> [--cf-home <dir>] [--dry-run] [--keep-backup] [--finalize] [--force]
 //
 // Algorithm is implemented in cf-protocol/internal/transport/fs/migrate_store.go.
 
@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 	"github.com/spf13/cobra"
 )
@@ -48,13 +49,18 @@ messages.old/ is retained by default (audit trail). Run with --finalize to remov
 Flags:
   --dry-run      Print the migration plan without making any changes.
   --keep-backup  Retained for future use; messages.old/ is always kept by default.
-  --finalize     Remove messages.old/ (does not run migration).`,
+  --finalize     Remove messages.old/ (does not run migration).
+  --force        Bypass membership/role check. Use only for disaster recovery when
+                 the local store does not contain a membership record for this campfire
+                 (e.g. restoring from backup on a fresh machine). Without --force,
+                 the command requires "full" membership role (same as cf compact).`,
 	GroupID: groupAdvanced,
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		keepBackup, _ := cmd.Flags().GetBool("keep-backup")
 		finalize, _ := cmd.Flags().GetBool("finalize")
+		force, _ := cmd.Flags().GetBool("force")
 
 		campfireID := args[0]
 
@@ -64,6 +70,33 @@ Flags:
 		// the exact campfire-ID shape (64 lowercase-hex chars decoding to 32 bytes).
 		if !isValidCampfireID(campfireID) {
 			return fmt.Errorf("invalid campfire ID %q: must be 64 hex characters (Ed25519 public key)", campfireID)
+		}
+
+		// SECURITY (campfireagent-6a9): defense-in-depth membership check.
+		// Require "full" role membership before allowing any store mutation.
+		// Mirror the pattern used by `cf compact` (checkRoleCanSend).
+		// --force bypasses this check for disaster-recovery scenarios where the
+		// local store does not yet contain the membership record (e.g. restoring
+		// from backup on a fresh machine).
+		if !force {
+			_, s, err := requireAgentAndStore()
+			if err != nil {
+				return fmt.Errorf("loading identity/store for membership check: %w", err)
+			}
+			defer s.Close()
+
+			m, err := s.GetMembership(campfireID)
+			if err != nil {
+				return fmt.Errorf("querying membership: %w", err)
+			}
+			if m == nil {
+				return fmt.Errorf("not a member of campfire %s — refusing to migrate (use --force to override for disaster recovery)", campfireID[:min(12, len(campfireID))])
+			}
+			if err := checkRoleCanSend(m.Role, []string{campfire.TagCompact}); err != nil {
+				// Reuse TagCompact as the sentinel for "full role required" — same
+				// semantics as compact: only full members may mutate campfire state.
+				return fmt.Errorf("migrate-store requires full membership role: %w", err)
+			}
 		}
 
 		// Resolve transport base directory from --cf-home or environment.
@@ -128,5 +161,6 @@ func init() {
 	migrateStoreCmd.Flags().Bool("dry-run", false, "print migration plan without making any changes")
 	migrateStoreCmd.Flags().Bool("keep-backup", false, "retained for CLI symmetry; messages.old/ is always kept by default")
 	migrateStoreCmd.Flags().Bool("finalize", false, "remove messages.old/ (does not run migration)")
+	migrateStoreCmd.Flags().Bool("force", false, "bypass membership check (disaster recovery: use when local store lacks membership record)")
 	rootCmd.AddCommand(migrateStoreCmd)
 }
