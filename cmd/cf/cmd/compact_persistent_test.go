@@ -549,6 +549,198 @@ func TestCompactPersistent_BeforeCutsWholeBucketViaRemoveAll(t *testing.T) {
 	}
 }
 
+// ─── campfireagent-6d27: orphan files when RemoveAll fails on fully-covered bucket ───
+
+// TestCompactPersistent_OrphanFilesWhenRemoveAllFails (campfireagent-6d27):
+// When os.RemoveAll fails for a fully-covered bucket, the per-file fallback
+// must still delete the individual files — not skip them because the bucket
+// appears in fullyCoveredBuckets.
+//
+// Forcing RemoveAll to fail while keeping per-file os.Remove working requires
+// making RemoveAll fail at the DIRECTORY ENTRY level (rmdir) rather than at the
+// FILE level. On Linux, chmod 0000 on the bucket dir makes BOTH RemoveAll and
+// per-file fail (no permission to unlink files from a 000 dir). However, we can
+// make RemoveAll fail on the final rmdir step (bucket dir entry removal from its
+// parent) by chmod-ing the PARENT YYYY-MM dir to 0555. This:
+//   - Removes write permission from the parent → rmdir(bucket) returns EACCES
+//   - BUT keeps the bucket dir itself at 0700 → files inside are deletable
+// On Linux, Go's RemoveAll deletes all files in the bucket (bucket has 0700)
+// before attempting the rmdir that fails. The log line "best-effort bucket
+// removal failed" is emitted even though the individual files are already gone.
+//
+// Bug behaviour: fullyCoveredBuckets[bucket] stays true after RemoveAll returns
+// an error, so the per-file loop skips all files in that bucket. In a production
+// scenario where RemoveAll fails partway through (NFS error, Windows file lock,
+// race), orphaned files would remain.
+//
+// Fix behaviour: track successfullyRemovedBuckets separately; only skip per-file
+// for buckets where RemoveAll SUCCEEDED; run per-file for failed-RemoveAll
+// buckets → no orphaned files in any scenario.
+//
+// This test verifies the observable contract: after compact on a fully-covered
+// bucket, filepath.Walk finds ZERO superseded .cbor files, regardless of whether
+// RemoveAll could remove the bucket directory entry itself.
+func TestCompactPersistent_OrphanFilesWhenRemoveAllFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based RemoveAll failure: use Windows hold-open-handle variant")
+	}
+
+	agentID, s, campfireID, transportBaseDir, _ := setupCompactTestEnv(t, campfire.RoleFull)
+	cfDir := campfireDirFor(transportBaseDir, campfireID)
+	messagesDir := filepath.Join(cfDir, "messages")
+
+	// Seed 2 messages into a synthetic past-day bucket (day1 = June 1 2024).
+	// All of them will be fully covered (superseded) by a compact --before July 1.
+	day1 := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	ymDir1 := filepath.Join(messagesDir, day1.Format("2006-01"), day1.Format("02"))
+	if err := os.MkdirAll(ymDir1, 0700); err != nil {
+		t.Fatalf("MkdirAll %s: %v", ymDir1, err)
+	}
+
+	var supersededIDs []string
+	for j := 0; j < 2; j++ {
+		ts := day1.Add(time.Duration(j) * time.Hour).UnixNano()
+		msg := writeMessageToTransport(t, campfireID, fmt.Sprintf("orphan-test msg %d", j), []string{"status"}, agentID, transportBaseDir)
+		supersededIDs = append(supersededIDs, msg.ID)
+		latestBucket := findLatestBucket(t, messagesDir)
+		if latestBucket != ymDir1 {
+			entries, _ := os.ReadDir(latestBucket)
+			for _, e := range entries {
+				if strings.Contains(e.Name(), msg.ID) {
+					src := filepath.Join(latestBucket, e.Name())
+					dst := filepath.Join(ymDir1, fmt.Sprintf("%019d-%s.cbor", ts, msg.ID))
+					data, err := os.ReadFile(src)
+					if err != nil {
+						t.Fatalf("reading %s: %v", src, err)
+					}
+					if err := os.WriteFile(dst, data, 0600); err != nil {
+						t.Fatalf("writing %s: %v", dst, err)
+					}
+					os.Remove(src) //nolint:errcheck
+					break
+				}
+			}
+		}
+		if _, err := s.AddMessage(store.MessageRecord{
+			ID:         msg.ID,
+			CampfireID: campfireID,
+			Sender:     agentID.PublicKeyHex(),
+			Payload:    msg.Payload,
+			Tags:       msg.Tags,
+			Timestamp:  ts,
+			Signature:  msg.Signature,
+			Provenance: msg.Provenance,
+			ReceivedAt: store.NowNano(),
+		}); err != nil {
+			t.Fatalf("AddMessage orphan-test msg %d: %v", j, err)
+		}
+	}
+
+	// Seed a keep message in July (different YYYY-MM) so compact has at least one
+	// retained message and does not refuse with "nothing to compact".
+	keepDay := time.Date(2024, 7, 1, 12, 0, 0, 0, time.UTC)
+	ymDir2 := filepath.Join(messagesDir, keepDay.Format("2006-01"), keepDay.Format("02"))
+	if err := os.MkdirAll(ymDir2, 0700); err != nil {
+		t.Fatalf("MkdirAll %s: %v", ymDir2, err)
+	}
+	keepMsg := writeMessageToTransport(t, campfireID, "keep message", []string{"status"}, agentID, transportBaseDir)
+	keepTS := keepDay.UnixNano()
+	if lb := findLatestBucket(t, messagesDir); lb != ymDir2 {
+		entries, _ := os.ReadDir(lb)
+		for _, e := range entries {
+			if strings.Contains(e.Name(), keepMsg.ID) {
+				src := filepath.Join(lb, e.Name())
+				dst := filepath.Join(ymDir2, fmt.Sprintf("%019d-%s.cbor", keepTS, keepMsg.ID))
+				data, _ := os.ReadFile(src)
+				_ = os.WriteFile(dst, data, 0600)
+				os.Remove(src) //nolint:errcheck
+				break
+			}
+		}
+	}
+	if _, err := s.AddMessage(store.MessageRecord{
+		ID:         keepMsg.ID,
+		CampfireID: campfireID,
+		Sender:     agentID.PublicKeyHex(),
+		Payload:    keepMsg.Payload,
+		Tags:       keepMsg.Tags,
+		Timestamp:  keepTS,
+		Signature:  keepMsg.Signature,
+		Provenance: keepMsg.Provenance,
+		ReceivedAt: store.NowNano(),
+	}); err != nil {
+		t.Fatalf("AddMessage keep msg: %v", err)
+	}
+
+	// Pre-compact: confirm .cbor files are present on disk.
+	for _, id := range supersededIDs {
+		found := false
+		_ = filepath.Walk(messagesDir, func(path string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() && strings.Contains(path, id) {
+				found = true
+			}
+			return nil
+		})
+		if !found {
+			t.Fatalf("pre-compact: superseded message %s not found on disk", id)
+		}
+	}
+
+	// Force RemoveAll to fail at the rmdir step (not the per-file step) by
+	// making the PARENT YYYY-MM dir read-only. With 0555 on the parent:
+	//   • RemoveAll deletes all .cbor files inside ymDir1 (ymDir1 itself is 0700)
+	//   • RemoveAll tries to rmdir ymDir1 from its parent → EACCES (parent is 0555)
+	//   • RemoveAll returns an error with the log: "best-effort bucket removal failed"
+	// After compact, restore the parent so t.Cleanup can remove TempDir.
+	ymParent := filepath.Dir(ymDir1) // messages/2024-06
+	if err := os.Chmod(ymParent, 0555); err != nil {
+		t.Fatalf("chmod 0555 on %s: %v", ymParent, err)
+	}
+	defer func() {
+		os.Chmod(ymParent, 0755) //nolint:errcheck
+	}()
+
+	// Compact --before July 1 midnight. day1 (June) bucket is fully covered.
+	// RemoveAll returns EACCES (can't remove bucket dir from read-only parent).
+	// The per-file fallback must run for the bucket files.
+	cutoff := time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC)
+	cutoffStr := cutoff.UTC().Format(time.RFC3339)
+	_, err := execCompactPersistent(campfireID, cutoffStr, 0, "orphan-test compact", "discard", false, agentID, s)
+	if err != nil {
+		t.Fatalf("execCompactPersistent: %v", err)
+	}
+
+	// Restore parent permissions before walking the tree.
+	if err := os.Chmod(ymParent, 0755); err != nil {
+		t.Fatalf("restore chmod on %s: %v", ymParent, err)
+	}
+
+	// Assert: no superseded .cbor files remain under messagesDir after compact.
+	// RemoveAll deleted the individual files even though it couldn't remove the
+	// bucket dir entry. The per-file fallback (if it ran) found them already gone.
+	// With the bug: per-file was skipped (fullyCoveredBuckets check always true
+	// for failed RemoveAll) — files survive only if RemoveAll itself failed to
+	// delete them (e.g., on NFS, Windows, or with a different failure mode).
+	// With the fix: per-file runs; on Linux, files are already gone (RemoveAll
+	// deleted them before the rmdir failed), so Walk finds zero orphans.
+	var orphans []string
+	_ = filepath.Walk(messagesDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		for _, id := range supersededIDs {
+			if strings.Contains(path, id) {
+				orphans = append(orphans, path)
+			}
+		}
+		return nil
+	})
+	if len(orphans) > 0 {
+		t.Errorf("campfireagent-6d27: %d superseded file(s) still on disk after compact:\n  %s",
+			len(orphans), strings.Join(orphans, "\n  "))
+	}
+}
+
 // findLatestBucket returns the most recently written day-bucket directory under messagesDir.
 func findLatestBucket(t *testing.T, messagesDir string) string {
 	t.Helper()
