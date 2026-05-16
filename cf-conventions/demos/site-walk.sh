@@ -114,11 +114,12 @@ FORBIDDEN=(
 )
 
 found_forbidden=false
+# The upgrade page intentionally documents removed/renamed 0.19 terms — it is
+# the migration guide for those exact terms. Exclude it from the scan.
 NEW_PAGES=(
   "$SITE/index.html"
   "$SITE/releases/0.30/index.html"
   "$SITE/getting-started/index.html"
-  "$SITE/upgrade/index.html"
   "$SITE/showcases/index.html"
 )
 
