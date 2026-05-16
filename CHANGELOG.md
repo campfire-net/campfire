@@ -1,5 +1,94 @@
 # Changelog
 
+## v0.31.0 — fs storage scaling: bucketed messages + persistent-campfire compact (2026-05-16)
+
+Fixes the latency wall named consumers hit when a single campfire accumulates
+tens of thousands of messages in a flat `messages/` directory (ext4 directory
+operations degrade past ~10k entries). Reported by `freeso-experiment` after
+24h soak runs: ~20k flat CBOR files → 8–10s round-trip on every
+`cf <cf-id> <op>` call, with server-side work <100ms.
+
+**Wire format unchanged.** CBOR field IDs remain frozen at v0.30. Public API
+(`Client.Send`, `Client.Read`, `Client.Subscribe`, `Client.Await`) unchanged
+in shape and semantics.
+
+### What v0.31 ships
+
+- **Bucketed on-disk message storage** in `cf-protocol/internal/transport/fs/`
+  (`campfireagent-4fa`): `WriteMessage` writes to
+  `messages/<YYYY-MM>/<DD>/<19-nanos>-<message-id>.cbor`. `ListMessages`
+  walks the bucketed layout (and dual-reads the legacy flat layout for one
+  transitional release). `LOCK_SH` per write coexists with the migration
+  tool's `LOCK_EX`. See `docs/design/0.31-storage-scaling.md` §1 + §3.4.
+
+- **`cf migrate-store <campfire-id>` CLI** (`campfireagent-54c`): one-shot
+  live-safe migration from flat v0.19/v0.30 layout to bucketed v0.31 layout.
+  Lockfile-coordinated, two-rename atomic swap, byte-identical copy with
+  count + spot-check verification, 5-state crash recovery. `members/`,
+  `push-subscribers/`, `campfire.cbor` explicitly untouched. See §3.
+
+- **`cf compact <campfire-id> --before <RFC3339> | --keep-last <N>`** for
+  persistent campfires (`campfireagent-7d3a`): operator-driven compaction
+  that emits the existing signed `campfire:compact` event (no new event
+  type) and removes superseded `.cbor` files under `retention=discard`.
+  Whole-bucket `os.RemoveAll` for fully-covered day buckets makes
+  `--before <day-midnight>` O(buckets) instead of O(messages). Audit event
+  is itself never compacted (behavioral invariant; no special flag). See §2.
+
+### Migration guide (for v0.19.x → v0.31)
+
+1. Build/install the v0.31 `cf` binary.
+2. Per campfire dir on disk:
+   ```
+   cf migrate-store <campfire-id>
+   ```
+   - Idempotent (re-runs are no-ops once layout is bucketed).
+   - `--dry-run` prints the plan without mutating.
+   - Default keeps `messages.old/` as a backup until you run `--finalize`.
+3. (Recommended for long-running campfires) trim history:
+   ```
+   cf compact <campfire-id> --keep-last 1000
+   ```
+   The `campfire:compact` event becomes the signed, append-only audit
+   record of what was superseded.
+
+### Security fix bundled (campfireagent-3d0, CRITICAL)
+
+`msg.ID` is now validated as an RFC 4122 UUID at both the fs transport
+(`WriteMessage`) and the protocol layer (`forwardMessage` ingress). Prior
+behavior accepted arbitrary `msg.ID` strings and constructed file paths via
+`filepath.Join` — a signed remote message with `ID="../../tmp/x"` could
+write CBOR outside the campfire's bucket directory. This was a pre-existing
+flaw in the flat layout; v0.31 closes it as part of the fs-transport
+overhaul. `cf migrate-store <arg>` argument is similarly validated.
+
+### Durability
+
+`cf migrate-store` now `Sync`s every copied file, fsyncs the staged
+`messages.new/` bucket dirs, and fsyncs the campfire directory after the
+atomic-swap rename so the new layout survives a power loss between copy and
+swap.
+
+### Verified end-to-end
+
+`scripts/demo-0.31-storage-scaling.sh` generates 50,000 messages, runs
+`cf migrate-store`, validates 100/100 byte-identical CBOR samples
+(`messages.old/` vs bucketed), runs `cf compact --keep-last 1000`, and
+measures p50 latency at each stage. On HDD-class storage: pre-compact
+8.7s p50 (matches freeso's reported pain), post-compact 2.2s p50 (4x
+improvement, hard-deadline pass). The latency win is bucketing + compact
+together; freeso's pattern of sustained 1Hz writes will concentrate in a
+small number of day buckets that compact can `os.RemoveAll`.
+
+### Forward-going
+
+- The dual-read flat-layout branch in `ListMessages` is transitional;
+  scheduled for removal in v0.32 once all known stores have migrated.
+- `cf health` (a bloat indicator that surfaces compact recommendations) and
+  filesystem fast-wake for `Await` are deferred from this release.
+
+---
+
 ## v0.30.0 — Protocol freeze, layered architecture, and authority system (2026-04-30)
 
 This is the largest release since v0.16. It restructures campfire into a
