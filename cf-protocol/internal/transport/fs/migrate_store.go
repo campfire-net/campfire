@@ -476,7 +476,7 @@ func verify(messagesDir, messagesNew string, flatFiles []string, rng *rand.Rand)
 		indices[i] = i
 	}
 	if rng != nil {
-		rand.Shuffle(len(indices), func(i, j int) { indices[i], indices[j] = indices[j], indices[i] })
+		rng.Shuffle(len(indices), func(i, j int) { indices[i], indices[j] = indices[j], indices[i] })
 	} else {
 		// Use a fresh random source.
 		r := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0)) //nolint:gosec
