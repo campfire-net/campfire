@@ -500,6 +500,25 @@ func (t *Transport) Remove(campfireID string) error {
 	return os.RemoveAll(t.CampfireDir(campfireID))
 }
 
+// LockExclusive acquires LOCK_EX on the migration lockfile for campfireDir.
+// This blocks all concurrent LOCK_SH holders (i.e. WriteMessage callers) until
+// the caller releases the lock. Use this when performing bulk on-disk deletes
+// (e.g. cf compact --before / --keep-last with retention=discard) so that no
+// new messages can be written to the buckets being removed while deletion is in
+// progress.
+//
+// The caller MUST call the returned release function when done.
+// MigrateLockPath is exported for use by callers that need the path for testing.
+func (t *Transport) LockExclusive(campfireDir string) (release func(), err error) {
+	return acquireMigrateLockExclusive(migrateLockPath(campfireDir))
+}
+
+// MigrateLockPath returns the path of the migration lockfile for the given campfire directory.
+// Exported for testing (e.g. to verify LOCK_EX contention with LOCK_SH holders).
+func MigrateLockPath(campfireDir string) string {
+	return migrateLockPath(campfireDir)
+}
+
 // randRead is the function used to fill random bytes for temp file names.
 // It is a package-level variable so tests can inject a failing reader to
 // exercise the nanosecond-timestamp fallback path.
