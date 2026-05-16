@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -632,31 +633,27 @@ func TestNoCompactPerformedTagAnywhere(t *testing.T) {
 	}
 }
 
-// findRepoRoot walks up from the test file's location to find the go.mod root.
-// It walks up from the current working directory (package dir in Go tests).
+// findRepoRoot returns the campfire repo root by walking up from this test
+// file's known location (derived via runtime.Caller, immune to cwd changes
+// from sibling tests using t.Chdir).
 func findRepoRoot(t *testing.T) string {
 	t.Helper()
-	// Go tests set cwd to the package directory. Walk up until go.mod.
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
 	}
-	// Walk up at most 10 levels to avoid infinite loops.
+	dir := filepath.Dir(thisFile)
 	for i := 0; i < 10; i++ {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			break // filesystem root
+			break
 		}
 		dir = parent
 	}
-	// Fallback: try common known path.
-	if _, err := os.Stat("/home/baron/projects/campfire/go.mod"); err == nil {
-		return "/home/baron/projects/campfire"
-	}
-	t.Fatal("could not find repo root (go.mod not found from cwd or known fallback)")
+	t.Fatal("could not find repo root (go.mod not found by walking up from test file)")
 	return ""
 }
 
