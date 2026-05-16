@@ -3,13 +3,42 @@ package message
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"regexp"
 	"sync/atomic"
 	"time"
 
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/internal/encoding"
 	"github.com/google/uuid"
 )
+
+// messageIDRegex matches an RFC 4122 UUID — the canonical message.ID format
+// produced by NewMessage (see uuid.New().String()). 8-4-4-4-12 lowercase or
+// uppercase hex characters separated by hyphens.
+//
+// Validation is strict and defense-in-depth: the filesystem transport joins
+// msg.ID into the on-disk filename, so any unconstrained value enables path
+// traversal (an attacker-supplied ID like "../../etc/passwd" escapes the
+// bucket directory via filepath.Join's cleaning). Restricting IDs to UUIDs
+// makes traversal lexically impossible.
+var messageIDRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// ErrInvalidMessageID is returned by ValidateID and by transport writers when
+// a message ID does not match the canonical UUID format. Callers receiving
+// this error MUST reject the message — never fall back to a sanitized ID.
+var ErrInvalidMessageID = errors.New("invalid message ID: must be UUID format")
+
+// ValidateID reports whether id is a valid message ID (RFC 4122 UUID format).
+// Returns ErrInvalidMessageID on mismatch. Use this at every ingress point
+// that will eventually feed msg.ID into a filesystem path, an SQL query, or
+// any other context where unconstrained input is dangerous.
+func ValidateID(id string) error {
+	if !messageIDRegex.MatchString(id) {
+		return fmt.Errorf("%w: got %q", ErrInvalidMessageID, id)
+	}
+	return nil
+}
 
 // lastTimestamp is the last nanosecond timestamp returned by monotonicNano.
 // Protected by CAS so concurrent callers never receive the same value.

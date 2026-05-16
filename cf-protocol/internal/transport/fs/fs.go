@@ -189,6 +189,16 @@ func migrateLockPath(campfireDir string) string {
 // After writing, the message file is copied synchronously to all push subscribers' inbox dirs.
 // Push subscriber inboxes are NOT bucketed (§1.6 explicit non-scope).
 func (t *Transport) WriteMessage(campfireID string, msg *message.Message) error {
+	// SECURITY (campfireagent-3d0): validate msg.ID before constructing the
+	// on-disk filename. An unvalidated ID enables path traversal —
+	// filepath.Join cleans "../../../etc/pwned" out of the bucket dir, so any
+	// signed message with a crafted ID could write CBOR to arbitrary paths.
+	// The UUID regex restriction makes traversal lexically impossible (no /,
+	// no ., no null bytes, no anything but [0-9a-fA-F-]).
+	if err := message.ValidateID(msg.ID); err != nil {
+		return err
+	}
+
 	campfireDir := t.CampfireDir(campfireID)
 
 	// Acquire LOCK_SH on the migration lockfile. This blocks if migrate-store

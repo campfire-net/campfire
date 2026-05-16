@@ -58,6 +58,14 @@ Flags:
 
 		campfireID := args[0]
 
+		// SECURITY (campfireagent-8b2): validate the CLI argument before joining
+		// it into a filesystem path. Without this check, `cf migrate-store ../../foo`
+		// escapes baseDir via filepath.Join cleaning. isValidCampfireID enforces
+		// the exact campfire-ID shape (64 lowercase-hex chars decoding to 32 bytes).
+		if !isValidCampfireID(campfireID) {
+			return fmt.Errorf("invalid campfire ID %q: must be 64 hex characters (Ed25519 public key)", campfireID)
+		}
+
 		// Resolve transport base directory from --cf-home or environment.
 		baseDir := fs.DefaultBaseDir()
 		campfireDir := filepath.Join(baseDir, campfireID)

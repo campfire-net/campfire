@@ -359,6 +359,15 @@ func (c *Client) forwardMessage(campfireID string, src *Message) (*Message, erro
 		return nil, fmt.Errorf("identity required to forward messages")
 	}
 
+	// SECURITY (campfireagent-3d0): defense-in-depth at the protocol ingress.
+	// forwardMessage preserves src.ID verbatim and feeds it into fs.WriteMessage
+	// (which also validates), but we reject early here so that a malformed ID
+	// never reaches local store mirroring, membership lookups, or transport
+	// resolution. Any path-traversal attempt is fast-failed at protocol entry.
+	if err := message.ValidateID(src.ID); err != nil {
+		return nil, fmt.Errorf("forwarding message with invalid ID: %w", err)
+	}
+
 	m, err := c.store.GetMembership(campfireID)
 	if err != nil {
 		return nil, fmt.Errorf("querying membership: %w", err)
