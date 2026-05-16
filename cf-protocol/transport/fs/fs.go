@@ -37,6 +37,8 @@ var (
 	IsMigrationError = fs.IsMigrationError
 
 	// MigrateLockPath returns the path of the migration lockfile for the given
-	// campfire directory. Used by callers that need to verify LOCK_EX behavior.
+	// campfire directory. Used by callers (e.g. cf compact, cf migrate-store)
+	// that need to acquire or verify the LOCK_EX lock independently of the
+	// transport.
 	MigrateLockPath = fs.MigrateLockPath
 )
