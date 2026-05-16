@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,6 +52,79 @@ const (
 	// Processing stops and the seed directory is rejected when this limit is reached.
 	MaxSeedAggregateSizeBytes = 10 * 1024 * 1024 // 10 MiB
 )
+
+// v0.31 bucket layout regexes — mirror fs.Transport.ListMessages dual-read logic.
+var (
+	seedYearMonthRE = regexp.MustCompile(`^\d{4}-\d{2}$`)
+	seedDayRE       = regexp.MustCompile(`^\d{2}$`)
+)
+
+// collectCBORLeaves returns the full paths of all *.cbor files in a messages/ directory,
+// handling both the legacy flat layout (*.cbor at top level) and the v0.31 bucketed
+// layout (YYYY-MM/DD/*.cbor). The two layouts may coexist during migration (dual-read).
+//
+// Results are sorted by leaf filename (lex order = chronological order).
+// The count limit applies to the total number of leaf files found.
+func collectCBORLeaves(messagesDir string) ([]string, error) {
+	entries, err := os.ReadDir(messagesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading messages directory %s: %w", messagesDir, err)
+	}
+
+	type leaf struct {
+		name string // bare filename for sorting
+		path string // full path
+	}
+	var leaves []leaf
+
+	for _, e := range entries {
+		name := e.Name()
+
+		if e.IsDir() && seedYearMonthRE.MatchString(name) {
+			// v0.31 bucketed layout: descend into YYYY-MM/DD/ subdirs.
+			ymDir := filepath.Join(messagesDir, name)
+			ddEntries, err := os.ReadDir(ymDir)
+			if err != nil {
+				continue // tolerate disappearing dirs
+			}
+			sort.Slice(ddEntries, func(i, j int) bool { return ddEntries[i].Name() < ddEntries[j].Name() })
+			for _, ddE := range ddEntries {
+				if !ddE.IsDir() || !seedDayRE.MatchString(ddE.Name()) {
+					continue
+				}
+				ddDir := filepath.Join(ymDir, ddE.Name())
+				cborEntries, err := os.ReadDir(ddDir)
+				if err != nil {
+					continue
+				}
+				sort.Slice(cborEntries, func(i, j int) bool { return cborEntries[i].Name() < cborEntries[j].Name() })
+				for _, ce := range cborEntries {
+					if strings.HasSuffix(ce.Name(), ".cbor") {
+						leaves = append(leaves, leaf{name: ce.Name(), path: filepath.Join(ddDir, ce.Name())})
+					}
+				}
+			}
+			continue
+		}
+
+		// Legacy flat layout: *.cbor files directly under messages/.
+		if !e.IsDir() && strings.HasSuffix(name, ".cbor") {
+			leaves = append(leaves, leaf{name: name, path: filepath.Join(messagesDir, name)})
+		}
+	}
+
+	// Merge by lex-sort of leaf filename (= chronological order for nanos-prefixed names).
+	sort.Slice(leaves, func(i, j int) bool { return leaves[i].name < leaves[j].name })
+
+	paths := make([]string, len(leaves))
+	for i, l := range leaves {
+		paths[i] = l.path
+	}
+	return paths, nil
+}
 
 // SeedBeacon describes a seed campfire source.
 // It is stored as a CBOR or JSON file in a seeds directory.
@@ -350,19 +425,18 @@ func verifySeedBeaconSignatures(campfireID string, campfireDir string) error {
 	}
 
 	messagesDir := filepath.Join(campfireDir, "messages")
-	entries, err := os.ReadDir(messagesDir)
+	// v0.31: collect from both flat and bucketed layouts.
+	paths, err := collectCBORLeaves(messagesDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("seed beacon campfire_id set but messages directory is absent: signature verification failed")
-		}
 		return fmt.Errorf("reading seed campfire messages at %s: %w", messagesDir, err)
 	}
+	if paths == nil {
+		// ENOENT on messages/ — same as an empty directory for verification purposes.
+		return fmt.Errorf("seed beacon campfire_id set but messages directory is absent: signature verification failed")
+	}
 
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) != ".cbor" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(messagesDir, e.Name()))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -397,23 +471,20 @@ func verifySeedBeaconSignatures(campfireID string, campfireDir string) error {
 //   - Rejects the directory when aggregate bytes read exceed MaxSeedAggregateSizeBytes.
 func readFilesystemConventionMessages(campfireDir string, expectedPub ed25519.PublicKey) ([]ConventionMessage, error) {
 	messagesDir := filepath.Join(campfireDir, "messages")
-	entries, err := os.ReadDir(messagesDir)
+
+	// v0.31: collect from both flat and bucketed layouts via dual-read helper.
+	paths, err := collectCBORLeaves(messagesDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("reading seed campfire messages at %s: %w", messagesDir, err)
 	}
-
-	// Count only .cbor files toward the file-count limit.
-	cborCount := 0
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) == ".cbor" {
-			cborCount++
-		}
+	if paths == nil {
+		// ENOENT on messages/ — same as no messages.
+		return nil, nil
 	}
-	if cborCount > MaxSeedFileCount {
-		return nil, fmt.Errorf("seed directory %s contains %d files, exceeding the limit of %d", messagesDir, cborCount, MaxSeedFileCount)
+
+	// File-count limit applies to total leaf files across both layouts.
+	if len(paths) > MaxSeedFileCount {
+		return nil, fmt.Errorf("seed directory %s contains %d files, exceeding the limit of %d", messagesDir, len(paths), MaxSeedFileCount)
 	}
 
 	expectedPubHex := hex.EncodeToString(expectedPub)
@@ -422,13 +493,9 @@ func readFilesystemConventionMessages(campfireDir string, expectedPub ed25519.Pu
 		result        []ConventionMessage
 		aggregateSize int64
 	)
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) != ".cbor" {
-			continue
-		}
-
-		// Per-file size check using DirEntry.Info() to avoid a stat syscall.
-		info, err := e.Info()
+	for _, path := range paths {
+		// Per-file size check via os.Stat (DirEntry is no longer available here).
+		info, err := os.Stat(path)
 		if err != nil {
 			continue // skip files we can't stat
 		}
@@ -441,7 +508,7 @@ func readFilesystemConventionMessages(campfireDir string, expectedPub ed25519.Pu
 			return nil, fmt.Errorf("seed directory %s exceeds aggregate size limit of %d bytes", messagesDir, MaxSeedAggregateSizeBytes)
 		}
 
-		data, err := os.ReadFile(filepath.Join(messagesDir, e.Name()))
+		data, err := os.ReadFile(path)
 		if err != nil {
 			continue // skip unreadable files
 		}
@@ -459,14 +526,15 @@ func readFilesystemConventionMessages(campfireDir string, expectedPub ed25519.Pu
 		// must be signed by the key declared in the beacon's campfire_id.
 		// Reject messages with missing, invalid, or mismatched signatures — they
 		// could indicate tampering or accidental corruption.
+		leafName := filepath.Base(path)
 		if len(msg.Sender) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("seed message %q has missing or malformed sender key (campfire_id mismatch)", e.Name())
+			return nil, fmt.Errorf("seed message %q has missing or malformed sender key (campfire_id mismatch)", leafName)
 		}
 		if hex.EncodeToString(msg.Sender) != expectedPubHex {
-			return nil, fmt.Errorf("seed message %q sender key does not match beacon campfire_id (got %x, want %s)", e.Name(), msg.Sender, expectedPubHex)
+			return nil, fmt.Errorf("seed message %q sender key does not match beacon campfire_id (got %x, want %s)", leafName, msg.Sender, expectedPubHex)
 		}
 		if !msg.VerifySignature() {
-			return nil, fmt.Errorf("seed message %q has invalid Ed25519 signature", e.Name())
+			return nil, fmt.Errorf("seed message %q has invalid Ed25519 signature", leafName)
 		}
 
 		result = append(result, ConventionMessage{
