@@ -283,32 +283,22 @@ func TestInitCreatesSeedCampfire(t *testing.T) {
 		t.Fatal("expected at least one campfire dir in transport, got none")
 	}
 
-	// Check the first campfire dir for messages
-	firstCampfireDir := filepath.Join(transportDir, campfireDirs[0].Name())
-	messagesDir := filepath.Join(firstCampfireDir, "messages")
-	msgFiles, err := os.ReadDir(messagesDir)
+	// Check the first campfire dir for messages via the transport API.
+	// Using ListMessages (not raw ReadDir) to support v0.31 bucketed layout.
+	firstCampfireID := campfireDirs[0].Name()
+	tr := fs.New(transportDir)
+	msgs, err := tr.ListMessages(firstCampfireID)
 	if err != nil {
-		t.Fatalf("reading messages dir in self-campfire: %v", err)
+		t.Fatalf("ListMessages in self-campfire: %v", err)
 	}
-	if len(msgFiles) == 0 {
+	if len(msgs) == 0 {
 		t.Fatal("expected at least one message in self-campfire, got none")
 	}
 
 	// Verify one of the messages is an identity convention declaration.
 	// The self-campfire is typed by identity convention genesis messages (ymp design).
 	var foundIdentityDecl bool
-	for _, mf := range msgFiles {
-		if filepath.Ext(mf.Name()) != ".cbor" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(messagesDir, mf.Name()))
-		if err != nil {
-			continue
-		}
-		var msg message.Message
-		if err := cfencoding.Unmarshal(data, &msg); err != nil {
-			continue
-		}
+	for _, msg := range msgs {
 		if !hasConventionOperationTag(msg) {
 			continue
 		}
@@ -378,26 +368,16 @@ func TestCreateFilesystem_SeedsPromoteDeclaration(t *testing.T) {
 		t.Fatal("no campfire dirs in transport after cf create")
 	}
 
-	// Check each campfire dir for the promote declaration
+	// Check each campfire dir for the promote declaration via transport API.
+	// Using ListMessages (not raw ReadDir) to support v0.31 bucketed layout.
+	tr := fs.New(transportDir)
 	var foundPromote bool
 	for _, cd := range campfireDirs {
-		messagesDir := filepath.Join(transportDir, cd.Name(), "messages")
-		msgFiles, err := os.ReadDir(messagesDir)
+		msgs, err := tr.ListMessages(cd.Name())
 		if err != nil {
 			continue
 		}
-		for _, mf := range msgFiles {
-			if filepath.Ext(mf.Name()) != ".cbor" {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(messagesDir, mf.Name()))
-			if err != nil {
-				continue
-			}
-			var msg message.Message
-			if err := cfencoding.Unmarshal(data, &msg); err != nil {
-				continue
-			}
+		for _, msg := range msgs {
 			if !hasConventionOperationTag(msg) {
 				continue
 			}

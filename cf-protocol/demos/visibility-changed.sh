@@ -225,23 +225,21 @@ func main() {
 	}
 	fmt.Println("emission: ok")
 
-	messagesDir := filepath.Join(transportDir, campfireID, "messages")
-	entries, _ := os.ReadDir(messagesDir)
+	msgs, err := tr.ListMessages(campfireID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ListMessages:", err)
+		os.Exit(1)
+	}
 	var found *message.Message
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) != ".cbor" {
-			continue
-		}
-		data, _ := os.ReadFile(filepath.Join(messagesDir, e.Name()))
-		var msg message.Message
-		if err := cfencoding.Unmarshal(data, &msg); err != nil {
-			continue
-		}
-		for _, tag := range msg.Tags {
+	for i := range msgs {
+		for _, tag := range msgs[i].Tags {
 			if tag == cfcampfire.TagVisibilityChanged {
-				found = &msg
+				found = &msgs[i]
 				break
 			}
+		}
+		if found != nil {
+			break
 		}
 	}
 

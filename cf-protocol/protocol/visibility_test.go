@@ -112,27 +112,17 @@ func setupVisibilityTestEnv(t *testing.T) (
 
 // readVisibilityChangedMessages reads all campfire:visibility-changed messages
 // from the transport directory for the given campfire.
+// Uses the fs.Transport.ListMessages API to support both flat and v0.31 bucketed layouts.
 func readVisibilityChangedMessages(t *testing.T, transportDir, campfireID string) []message.Message {
 	t.Helper()
-	messagesDir := filepath.Join(transportDir, campfireID, "messages")
-	entries, err := os.ReadDir(messagesDir)
+	tr := cfstransport.New(transportDir)
+	all, err := tr.ListMessages(campfireID)
 	if err != nil {
-		t.Fatalf("reading messages dir: %v", err)
+		t.Fatalf("reading messages for campfire %s: %v", campfireID, err)
 	}
 
 	var result []message.Message
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) != ".cbor" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(messagesDir, e.Name()))
-		if err != nil {
-			t.Fatalf("reading message file %s: %v", e.Name(), err)
-		}
-		var msg message.Message
-		if err := cfencoding.Unmarshal(data, &msg); err != nil {
-			t.Fatalf("decoding message %s: %v", e.Name(), err)
-		}
+	for _, msg := range all {
 		for _, tag := range msg.Tags {
 			if tag == campfire.TagVisibilityChanged {
 				result = append(result, msg)

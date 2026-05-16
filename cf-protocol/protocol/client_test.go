@@ -378,12 +378,13 @@ func TestSendFilesystem_MultipleMessages(t *testing.T) {
 		seen[msg.ID] = true
 	}
 
-	messagesDir := filepath.Join(transportDir, campfireID, "messages")
-	entries, err := os.ReadDir(messagesDir)
+	// Use transport API (not raw ReadDir) to support v0.31 bucketed layout.
+	tr := fs.New(transportDir)
+	msgs, err := tr.ListMessages(campfireID)
 	if err != nil {
-		t.Fatalf("reading messages dir: %v", err)
+		t.Fatalf("ListMessages: %v", err)
 	}
-	if len(entries) != 5 {
-		t.Errorf("expected 5 message files, got %d", len(entries))
+	if len(msgs) != 5 {
+		t.Errorf("expected 5 messages, got %d", len(msgs))
 	}
 }
