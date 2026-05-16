@@ -824,6 +824,101 @@ func TestVerifySpotCheck(t *testing.T) {
 	}
 }
 
+// TestVerifyUsesInjectedRNG is a regression test for the bug where verify()
+// called the global rand.Shuffle instead of rng.Shuffle when rng != nil.
+//
+// Strategy: with N=100 files and sampleSize=64, only 64 of 100 indices are
+// checked. We compute the expected shuffle manually using the same seed (42,0),
+// corrupt the file that the deterministic shuffle puts at index 0 (always in
+// the sample), and assert that verify() detects the corruption reproducibly —
+// i.e. the same seed always produces the same outcome. If verify() uses the
+// global rand.Shuffle instead of rng.Shuffle, the shuffled order is random and
+// the test fails non-deterministically (or always if the global puts the
+// corrupt index outside the sample on any given run).
+func TestVerifyUsesInjectedRNG(t *testing.T) {
+	const N = 100 // > 64 so only a 64-file subset is spot-checked
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	pub, priv, _ := ed25519.GenerateKey(cryptorand.Reader)
+	signer := message.MustNewEd25519Signer(priv, pub)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var flatFiles []string
+	// maps flatFiles index → (dstPath so we can corrupt later)
+	type entry struct {
+		name    string
+		dstPath string
+	}
+	entries := make([]entry, N)
+
+	for i := 0; i < N; i++ {
+		msg, err := message.NewMessage(signer, []byte{byte(i % 256)}, nil, nil)
+		if err != nil {
+			t.Fatalf("NewMessage[%d]: %v", i, err)
+		}
+		data, err := cfencoding.Marshal(msg)
+		if err != nil {
+			t.Fatalf("Marshal[%d]: %v", i, err)
+		}
+		nanos := base.Add(time.Duration(i) * time.Minute).UnixNano()
+		name := fmt.Sprintf("%019d-%s.cbor", nanos, msg.ID)
+		flatFiles = append(flatFiles, name)
+
+		_ = os.WriteFile(filepath.Join(srcDir, name), data, 0600)
+
+		ts := time.Unix(0, nanos).UTC()
+		ym, d := bucketFor(ts)
+		bucketDst := filepath.Join(dstDir, ym, d)
+		_ = os.MkdirAll(bucketDst, 0700)
+		dstPath := filepath.Join(bucketDst, name)
+		_ = os.WriteFile(dstPath, data, 0600)
+
+		entries[i] = entry{name: name, dstPath: dstPath}
+	}
+
+	// Compute the expected deterministic shuffle with seed (42, 0).
+	// This mirrors exactly what verify() should do when rng != nil.
+	indices := make([]int, N)
+	for i := range indices {
+		indices[i] = i
+	}
+	mrand.New(mrand.NewPCG(42, 0)).Shuffle(len(indices), func(i, j int) {
+		indices[i], indices[j] = indices[j], indices[i]
+	})
+	// indices[0] is always in the 64-element sample. Corrupt that file.
+	corruptIdx := indices[0]
+	_ = os.WriteFile(entries[corruptIdx].dstPath, []byte("corrupted"), 0600)
+
+	// Run 1 — injected rng with seed (42, 0) must detect the corruption.
+	r1 := mrand.New(mrand.NewPCG(42, 0))
+	err1 := verify(srcDir, dstDir, flatFiles, r1)
+	if err1 == nil {
+		t.Fatal("run1: expected MigrationByteMismatchError (corrupt file in sample), got nil — verify() likely used global rand.Shuffle instead of injected rng")
+	}
+	var bme1 *MigrationByteMismatchError
+	if !errors.As(err1, &bme1) {
+		t.Fatalf("run1: expected MigrationByteMismatchError, got %T: %v", err1, err1)
+	}
+
+	// Run 2 — same seed must produce the same error (reproducibility).
+	r2 := mrand.New(mrand.NewPCG(42, 0))
+	err2 := verify(srcDir, dstDir, flatFiles, r2)
+	if err2 == nil {
+		t.Fatal("run2: expected MigrationByteMismatchError with same seed, got nil — not reproducible; verify() likely used global rand.Shuffle")
+	}
+	var bme2 *MigrationByteMismatchError
+	if !errors.As(err2, &bme2) {
+		t.Fatalf("run2: expected MigrationByteMismatchError, got %T: %v", err2, err2)
+	}
+
+	// Both runs must agree on the same corrupt file.
+	if bme1.DstPath != bme2.DstPath {
+		t.Errorf("runs disagree: run1 corrupt=%s, run2 corrupt=%s — not reproducible", bme1.DstPath, bme2.DstPath)
+	}
+}
+
 // TestParseNanosPrefix verifies the filename parser.
 func TestParseNanosPrefix(t *testing.T) {
 	tests := []struct {
