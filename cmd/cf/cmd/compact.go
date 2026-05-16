@@ -599,24 +599,30 @@ func execCompactPersistent(
 	var bytesDeleted int64
 
 	// Delete fully-covered buckets wholesale (R6).
+	// Track which buckets were SUCCESSFULLY removed so the per-file fallback
+	// below knows which ones still need individual file cleanup.
+	successfullyRemovedBuckets := make(map[string]bool, len(fullyCoveredBuckets))
 	for bucket := range fullyCoveredBuckets {
 		if err := os.RemoveAll(bucket); err != nil {
 			log.Printf("compact: best-effort bucket removal failed for %s: %v", bucket, err)
-			// Continue; per-file deletes below will handle remaining files.
+			// Do NOT mark as successfully removed; per-file deletes below will
+			// handle remaining files in this bucket.
 		} else {
+			successfullyRemovedBuckets[bucket] = true
 			bucketsRemoved++
 		}
 	}
 
 	// Delete individual files in partially-covered buckets (best-effort).
+	// Also handles files in fully-covered buckets where RemoveAll failed (campfireagent-6d27).
 	for _, id := range supersededIDs {
 		fi, found := idToFile[id]
 		if !found {
 			// File not found on disk — may have been deleted already or never written here.
 			continue
 		}
-		if fullyCoveredBuckets[fi.bucket] {
-			// Already removed via RemoveAll.
+		if successfullyRemovedBuckets[fi.bucket] {
+			// Bucket was fully removed via RemoveAll — individual files are gone.
 			continue
 		}
 		info, err := os.Stat(fi.path)
@@ -634,6 +640,8 @@ func execCompactPersistent(
 	}
 
 	// Best-effort: prune empty parent month directories (§2.6).
+	// Pass the full fullyCoveredBuckets set (not just successfully removed ones)
+	// so we also check month dirs whose buckets were cleaned up via per-file deletes.
 	pruneEmptyMonthDirs(messagesDir, fullyCoveredBuckets)
 
 	return &persistentCompactResult{
