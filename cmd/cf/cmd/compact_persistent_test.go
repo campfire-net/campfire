@@ -8,8 +8,10 @@ package cmd
 // Design reference: campfireagent docs/design/0.31-storage-scaling.md §2
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -553,33 +555,37 @@ func TestCompactPersistent_BeforeCutsWholeBucketViaRemoveAll(t *testing.T) {
 
 // TestCompactPersistent_OrphanFilesWhenRemoveAllFails (campfireagent-6d27):
 // When os.RemoveAll fails for a fully-covered bucket, the per-file fallback
-// must still delete the individual files — not skip them because the bucket
-// appears in fullyCoveredBuckets.
+// must still be ENTERED for that bucket — not skipped because the bucket
+// appears in fullyCoveredBuckets (the pre-fix check).
 //
-// Forcing RemoveAll to fail while keeping per-file os.Remove working requires
-// making RemoveAll fail at the DIRECTORY ENTRY level (rmdir) rather than at the
-// FILE level. On Linux, chmod 0000 on the bucket dir makes BOTH RemoveAll and
-// per-file fail (no permission to unlink files from a 000 dir). However, we can
-// make RemoveAll fail on the final rmdir step (bucket dir entry removal from its
-// parent) by chmod-ing the PARENT YYYY-MM dir to 0555. This:
-//   - Removes write permission from the parent → rmdir(bucket) returns EACCES
-//   - BUT keeps the bucket dir itself at 0700 → files inside are deletable
-// On Linux, Go's RemoveAll deletes all files in the bucket (bucket has 0700)
-// before attempting the rmdir that fails. The log line "best-effort bucket
-// removal failed" is emitted even though the individual files are already gone.
+// Failure mode: chmod 0500 on the BUCKET dir itself.
+//   - 0500 (r-x------): read+exec for owner, no write.
+//   - os.RemoveAll opens the dir (r permitted), reads entries (x permitted),
+//     then calls unlinkat(dirfd, file) — EACCES, because unlink needs write on
+//     the containing directory. RemoveAll returns an error. Files survive.
+//   - filepath.Walk can still see the files (r+x sufficient for Walk).
+//   - os.Remove(file) in the per-file fallback also fails (same EACCES) — this
+//     is expected and logged as "best-effort file removal failed".
 //
-// Bug behaviour: fullyCoveredBuckets[bucket] stays true after RemoveAll returns
-// an error, so the per-file loop skips all files in that bucket. In a production
-// scenario where RemoveAll fails partway through (NFS error, Windows file lock,
-// race), orphaned files would remain.
+// Verification strategy: capture log output and assert that "best-effort file
+// removal failed" is logged for each superseded file. This log line is emitted
+// ONLY when the per-file fallback is entered and executes os.Remove for the file.
 //
-// Fix behaviour: track successfullyRemovedBuckets separately; only skip per-file
-// for buckets where RemoveAll SUCCEEDED; run per-file for failed-RemoveAll
-// buckets → no orphaned files in any scenario.
+// With the bug (pre-fix): per-file loop checks fullyCoveredBuckets[bucket] == true
+// for failed-RemoveAll buckets → skips those files entirely. No "best-effort file
+// removal failed" log for them. Test FAILS (missing expected log lines).
 //
-// This test verifies the observable contract: after compact on a fully-covered
-// bucket, filepath.Walk finds ZERO superseded .cbor files, regardless of whether
-// RemoveAll could remove the bucket directory entry itself.
+// With the fix: per-file loop checks successfullyRemovedBuckets[bucket] instead →
+// only skips files from buckets RemoveAll actually removed. For failed-RemoveAll
+// buckets, per-file IS entered → os.Remove is called → EACCES is logged. Test PASSES.
+//
+// Secondary assertion: files still exist on disk after compact (confirming RemoveAll
+// failed to delete them — the failure mode was genuine).
+//
+// Verification that test fails on reverted code: manually revert the fix in compact.go
+// (change successfullyRemovedBuckets → fullyCoveredBuckets in the per-file guard),
+// run this test, observe FAIL: "expected log line not found for superseded ID <id>".
+// Restore the fix, run again → PASS.
 func TestCompactPersistent_OrphanFilesWhenRemoveAllFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod-based RemoveAll failure: use Windows hold-open-handle variant")
@@ -686,23 +692,27 @@ func TestCompactPersistent_OrphanFilesWhenRemoveAllFails(t *testing.T) {
 		}
 	}
 
-	// Force RemoveAll to fail at the rmdir step (not the per-file step) by
-	// making the PARENT YYYY-MM dir read-only. With 0555 on the parent:
-	//   • RemoveAll deletes all .cbor files inside ymDir1 (ymDir1 itself is 0700)
-	//   • RemoveAll tries to rmdir ymDir1 from its parent → EACCES (parent is 0555)
-	//   • RemoveAll returns an error with the log: "best-effort bucket removal failed"
-	// After compact, restore the parent so t.Cleanup can remove TempDir.
-	ymParent := filepath.Dir(ymDir1) // messages/2024-06
-	if err := os.Chmod(ymParent, 0555); err != nil {
-		t.Fatalf("chmod 0555 on %s: %v", ymParent, err)
+	// Capture log output during compact so we can verify per-file fallback was entered.
+	var logBuf bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(origWriter)
+
+	// Force RemoveAll to fail BEFORE removing any files by making the BUCKET dir
+	// itself read-only. chmod 0500 on ymDir1:
+	//   • read+exec (r-x): os.RemoveAll can open the dir and read its entries.
+	//   • no write: unlinkat(dirfd, file) returns EACCES — files survive.
+	// After compact, restore bucket to 0700 so t.TempDir cleanup can proceed.
+	if err := os.Chmod(ymDir1, 0500); err != nil {
+		t.Fatalf("chmod 0500 on %s: %v", ymDir1, err)
 	}
 	defer func() {
-		os.Chmod(ymParent, 0755) //nolint:errcheck
+		os.Chmod(ymDir1, 0700) //nolint:errcheck
 	}()
 
 	// Compact --before July 1 midnight. day1 (June) bucket is fully covered.
-	// RemoveAll returns EACCES (can't remove bucket dir from read-only parent).
-	// The per-file fallback must run for the bucket files.
+	// RemoveAll returns EACCES (unlinkat fails — no write on bucket dir).
+	// The per-file fallback must be entered for files in this bucket.
 	cutoff := time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC)
 	cutoffStr := cutoff.UTC().Format(time.RFC3339)
 	_, err := execCompactPersistent(campfireID, cutoffStr, 0, "orphan-test compact", "discard", false, agentID, s)
@@ -710,34 +720,45 @@ func TestCompactPersistent_OrphanFilesWhenRemoveAllFails(t *testing.T) {
 		t.Fatalf("execCompactPersistent: %v", err)
 	}
 
-	// Restore parent permissions before walking the tree.
-	if err := os.Chmod(ymParent, 0755); err != nil {
-		t.Fatalf("restore chmod on %s: %v", ymParent, err)
+	// Restore log output and read what compact emitted.
+	log.SetOutput(origWriter)
+	logOutput := logBuf.String()
+
+	// Assert 1: RemoveAll genuinely failed — the bucket-removal log line is present.
+	if !strings.Contains(logOutput, "best-effort bucket removal failed") {
+		t.Errorf("campfireagent-6d27: expected 'best-effort bucket removal failed' in log; got:\n%s", logOutput)
 	}
 
-	// Assert: no superseded .cbor files remain under messagesDir after compact.
-	// RemoveAll deleted the individual files even though it couldn't remove the
-	// bucket dir entry. The per-file fallback (if it ran) found them already gone.
-	// With the bug: per-file was skipped (fullyCoveredBuckets check always true
-	// for failed RemoveAll) — files survive only if RemoveAll itself failed to
-	// delete them (e.g., on NFS, Windows, or with a different failure mode).
-	// With the fix: per-file runs; on Linux, files are already gone (RemoveAll
-	// deleted them before the rmdir failed), so Walk finds zero orphans.
-	var orphans []string
-	_ = filepath.Walk(messagesDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
+	// Assert 2: Per-file fallback was entered for each superseded file.
+	// compact.go logs "best-effort file removal failed for <path>" when os.Remove
+	// is called and fails (EACCES — bucket is 0500, unlink blocked).
+	// With the bug (pre-fix): per-file is SKIPPED for fullyCoveredBuckets → this
+	// log line never appears → test FAILS.
+	// With the fix: per-file is entered → os.Remove attempted → EACCES logged →
+	// test PASSES.
+	for _, id := range supersededIDs {
+		if !strings.Contains(logOutput, id) {
+			t.Errorf("campfireagent-6d27: per-file fallback not entered for superseded ID %s\n"+
+				"Expected to see this ID in a 'best-effort file removal failed' log line.\n"+
+				"Full log output:\n%s", id, logOutput)
 		}
-		for _, id := range supersededIDs {
-			if strings.Contains(path, id) {
-				orphans = append(orphans, path)
+	}
+
+	// Assert 3: files still exist on disk (confirms RemoveAll failed before deleting them).
+	// Restore permissions so Walk can read the bucket dir.
+	os.Chmod(ymDir1, 0700) //nolint:errcheck
+	for _, id := range supersededIDs {
+		found := false
+		_ = filepath.Walk(messagesDir, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr == nil && !info.IsDir() && strings.Contains(path, id) {
+				found = true
 			}
+			return nil
+		})
+		if !found {
+			t.Errorf("campfireagent-6d27: superseded file for ID %s not found on disk — "+
+				"RemoveAll must have deleted it (0500 should have blocked unlinkat)", id)
 		}
-		return nil
-	})
-	if len(orphans) > 0 {
-		t.Errorf("campfireagent-6d27: %d superseded file(s) still on disk after compact:\n  %s",
-			len(orphans), strings.Join(orphans, "\n  "))
 	}
 }
 
