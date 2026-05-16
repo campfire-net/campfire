@@ -30,8 +30,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
+
+// isInvalidArg reports whether err wraps a syscall EINVAL — used to treat
+// directory fsync as best-effort on filesystems that reject it.
+func isInvalidArg(err error) bool {
+	return errors.Is(err, syscall.EINVAL)
+}
 
 // MigrationInconsistentLayoutError is returned when messages/ contains a mix
 // of flat *.cbor files and bucketed YYYY-MM/ directories (corrupt mid-state).
@@ -212,6 +219,22 @@ func MigrateStore(campfireDir string, opts MigrateStoreOptions) error {
 		}
 	}
 
+	// DURABILITY (campfireagent-526): fsync the messages.new tree before
+	// verification. copyFileBytes fsyncs each file; this fsyncs every bucket
+	// directory plus the top-level messages.new so directory-entry updates
+	// (file creation) reach disk before we proceed.
+	if err := filepath.Walk(messagesNew, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return fsyncDir(path)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("fsyncing messages.new tree: %w", err)
+	}
+
 	// Failpoint: called after copy, before verify (used by M5/M6 tests to tamper with messages.new/).
 	if opts.failpointBeforeVerify != nil {
 		opts.failpointBeforeVerify()
@@ -235,6 +258,14 @@ func MigrateStore(campfireDir string, opts MigrateStoreOptions) error {
 
 	if err := os.Rename(messagesNew, messagesDir); err != nil {
 		return fmt.Errorf("renaming messages.new → messages: %w", err)
+	}
+
+	// DURABILITY (campfireagent-526): fsync the campfire directory so the two
+	// renames (messages → messages.old, messages.new → messages) are durable.
+	// Without this, the new directory entries can live only in the page cache
+	// and a power loss leaves an inconsistent layout on recovery.
+	if err := fsyncDir(campfireDir); err != nil {
+		return fmt.Errorf("fsyncing campfire dir after swap: %w", err)
 	}
 
 	// Step 8: Write layout-version hint.
@@ -343,6 +374,13 @@ func parseNanosPrefix(name string) (int64, error) {
 // copyFileBytes copies src to dst byte-for-byte. Creates dst's parent directories.
 // Distinct from copyFile (which handles inbox dedup): this copy is idempotent via
 // O_CREATE|O_WRONLY|O_TRUNC (always overwrites partial writes).
+//
+// DURABILITY (campfireagent-526): fsyncs the destination file before close.
+// Without the explicit Sync, the kernel may buffer the write in the page cache
+// and a power loss between copy and the atomic rename will pass verify()
+// (which reads through the page cache) but leave a torn or zero-length file
+// on disk after recovery. Parent-directory fsyncs are issued separately by the
+// migration driver after all copies complete and after the atomic-swap renames.
 func copyFileBytes(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -360,9 +398,41 @@ func copyFileBytes(src, dst string) error {
 		os.Remove(dst)
 		return fmt.Errorf("copying bytes: %w", err)
 	}
+	// fsync before close: forces bytes from the page cache to the storage device
+	// so the data survives power loss. This is the load-bearing durability call.
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return fmt.Errorf("fsyncing destination: %w", err)
+	}
 	if err := out.Close(); err != nil {
 		os.Remove(dst)
 		return fmt.Errorf("closing destination: %w", err)
+	}
+	return nil
+}
+
+// fsyncDir fsyncs the given directory. On Linux this forces directory-entry
+// updates (file creation, renames) to the storage device, so a subsequent
+// power loss cannot leave the directory listing in an inconsistent state.
+//
+// On non-Linux platforms where directory fsync is a no-op or returns EINVAL
+// (notably some BSDs and Windows), the call is best-effort: we attempt the
+// sync, log nothing, and swallow EINVAL-style errors. Any genuine I/O error
+// is still surfaced to the caller.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("opening directory for fsync: %w", err)
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		// Some filesystems return EINVAL on directory fsync — treat as
+		// best-effort on those platforms. Other errors surface up.
+		if isInvalidArg(err) {
+			return nil
+		}
+		return fmt.Errorf("fsyncing directory %s: %w", dir, err)
 	}
 	return nil
 }
