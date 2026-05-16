@@ -6,24 +6,49 @@ package cmd
 // a JSON payload describing which messages are superseded. Only "full" role members
 // can send campfire:* system messages.
 //
-// Usage:
-//   cf compact <campfire-id>              compact all messages (up to the most recent)
-//   cf compact <campfire-id> --before <msg-id>  compact messages before the given message
+// Usage (existing — swarm/persistent, message-ID --before):
+//   cf compact <campfire-id>                           compact all messages
+//   cf compact <campfire-id> --before <msg-id>         compact before given message ID
+//
+// Usage (v0.31 — persistent campfires only, timestamp/count-based):
+//   cf compact <campfire-id> --before <RFC3339-ts>     remove messages strictly before ts
+//   cf compact <campfire-id> --keep-last <N>           retain only the last N messages
+//   cf compact <campfire-id> --before <ts> --dry-run   print plan without mutating
+//
+// Design: campfire-agent docs/design/0.31-storage-scaling.md §2
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
-	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/cf-protocol/message"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/spf13/cobra"
 )
+
+// rfc3339RE detects an RFC3339 timestamp by its distinctive format:
+// starts with a 4-digit year followed by a dash.
+// This distinguishes it from a message ID (hex string starting with a letter or digit
+// but never in YYYY- format).
+var rfc3339RE = regexp.MustCompile(`^\d{4}-`)
+
+// isRFC3339 reports whether s looks like an RFC3339 timestamp (not a message ID).
+func isRFC3339(s string) bool {
+	return rfc3339RE.MatchString(s)
+}
 
 var compactCmd = &cobra.Command{
 	Use:   "compact <campfire-id>",
@@ -37,12 +62,28 @@ The compaction event is written as a regular campfire message with:
 
 Requires "full" membership role. Messages are never deleted — compaction is append-only.
 After compaction, cf read excludes superseded messages by default. Use cf read --all to
-see all messages including compacted ones.`,
+see all messages including compacted ones.
+
+For persistent campfires (filesystem transport), v0.31 adds two new selection modes:
+
+  --before <RFC3339-ts>   Remove messages with timestamp strictly before the given time.
+                          Must not be a future timestamp. Triggers retention=discard.
+
+  --keep-last <N>         Retain only the last N messages; remove all older ones.
+                          N=0 is refused (foot-gun prevention). Triggers retention=discard.
+
+  --dry-run               Print the compaction plan without modifying any state.
+
+When neither --before RFC3339 nor --keep-last is provided, the legacy behavior applies:
+--before is treated as a message-ID prefix, and retention defaults to 'archive'.`,
 	Args: cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		compactBefore, _ := cmd.Flags().GetString("before")
 		compactSummary, _ := cmd.Flags().GetString("summary")
 		compactRetain, _ := cmd.Flags().GetString("retention")
+		keepLast, _ := cmd.Flags().GetInt("keep-last")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+
 		agentID, s, err := requireAgentAndStore()
 		if err != nil {
 			return err
@@ -62,6 +103,60 @@ see all messages including compacted ones.`,
 			}
 		}
 
+		// Determine whether this is a persistent compact (new v0.31 path) or the
+		// legacy compact path (existing swarm/message-ID behavior).
+		// Persistent compact is triggered by:
+		//   (a) --before with an RFC3339 timestamp, OR
+		//   (b) --keep-last > 0
+		isPersistentMode := (compactBefore != "" && isRFC3339(compactBefore)) || keepLast > 0
+
+		if isPersistentMode {
+			// --- v0.31 persistent-campfire compact path ---
+			if compactRetain != "archive" && compactRetain != "discard" && compactRetain != "" {
+				return fmt.Errorf("--retention must be 'archive' or 'discard', got %q", compactRetain)
+			}
+			if compactRetain == "" {
+				compactRetain = "discard" // default for persistent compact
+			}
+
+			if keepLast > 0 && compactBefore != "" {
+				return fmt.Errorf("--before and --keep-last are mutually exclusive")
+			}
+
+			result, err := execCompactPersistent(campfireID, compactBefore, keepLast, compactSummary, compactRetain, dryRun, agentID, s)
+			if err != nil {
+				return err
+			}
+
+			if dryRun {
+				fmt.Printf("[dry-run] Would compact %d messages (retention: %s)\n", len(result.supersededIDs), result.retention)
+				fmt.Printf("[dry-run] Checkpoint hash: %s\n", result.checkpointHash)
+				return nil
+			}
+
+			if jsonOutput {
+				out := map[string]interface{}{
+					"campfire_id":     campfireID,
+					"superseded":      result.supersededIDs,
+					"retention":       result.retention,
+					"checkpoint_hash": result.checkpointHash,
+					"message_count":   len(result.supersededIDs),
+					"bytes_deleted":   result.bytesDeleted,
+					"buckets_removed": result.bucketsRemoved,
+				}
+				b, _ := json.MarshalIndent(out, "", "  ")
+				fmt.Println(string(b))
+			} else {
+				fmt.Printf("Compacted %d messages (retention: %s)\n", len(result.supersededIDs), result.retention)
+				fmt.Printf("Checkpoint hash: %s\n", result.checkpointHash)
+				if result.bucketsRemoved > 0 {
+					fmt.Printf("Removed %d whole-day bucket(s).\n", result.bucketsRemoved)
+				}
+			}
+			return nil
+		}
+
+		// --- Legacy compact path (existing behavior, unchanged) ---
 		if compactRetain != "archive" && compactRetain != "discard" {
 			return fmt.Errorf("--retention must be 'archive' or 'discard', got %q", compactRetain)
 		}
@@ -95,6 +190,15 @@ type compactResult struct {
 	supersededIDs  []string
 	checkpointHash string
 	retention      string
+}
+
+// persistentCompactResult holds the outcome of a persistent compaction operation.
+type persistentCompactResult struct {
+	supersededIDs  []string
+	checkpointHash string
+	retention      string
+	bytesDeleted   int64
+	bucketsRemoved int
 }
 
 // execCompact is the core compaction logic, shared between the cobra command and tests.
@@ -223,6 +327,346 @@ func execCompact(campfireID, beforeMsgID, summary, retention string, agentID *id
 	}, nil
 }
 
+// execCompactPersistent implements the v0.31 persistent-campfire compact path.
+//
+// It selects messages to supersede using either a RFC3339 --before timestamp or a
+// --keep-last count, writes the campfire:compact audit event (NOT a new event type),
+// and, when retention=discard, deletes on-disk files for superseded messages.
+//
+// Whole-day bucket deletion: when all files in a YYYY-MM/DD/ bucket are superseded,
+// os.RemoveAll is used on the whole directory (R6). Partially-covered buckets get
+// per-file deletes. The compact event itself lands in its own day bucket like any
+// other message and is never listed in supersedes (R2, invariant by construction).
+//
+// Concurrency: LOCK_EX is acquired on <campfire-dir>/.migrate.lock before any
+// filesystem deletion begins. WriteMessage holds LOCK_SH per call; it blocks
+// until LOCK_EX is released (design §3.2).
+//
+// Parameters:
+//   - beforeTS:   RFC3339 string (exclusive upper bound on message timestamp); empty if keepLast>0
+//   - keepLast:   retain only the last N messages; 0 means "use beforeTS"
+//   - summary:    human/agent readable description (may be empty)
+//   - retention:  "discard" (delete on-disk files) or "archive" (keep files, log-only)
+//   - dryRun:     if true, compute plan but do not mutate any state
+func execCompactPersistent(
+	campfireID, beforeTS string,
+	keepLast int,
+	summary, retention string,
+	dryRun bool,
+	agentID *identity.Identity,
+	s store.Store,
+) (*persistentCompactResult, error) {
+	m, err := s.GetMembership(campfireID)
+	if err != nil {
+		return nil, fmt.Errorf("querying membership: %w", err)
+	}
+	if m == nil {
+		return nil, fmt.Errorf("not a member of campfire %s", campfireID[:min(12, len(campfireID))])
+	}
+
+	// Persistent compact requires a filesystem transport.
+	if m.TransportDir == "" {
+		return nil, fmt.Errorf("campfire %s has no local filesystem transport; --before RFC3339 / --keep-last require a filesystem campfire", campfireID[:min(12, len(campfireID))])
+	}
+
+	// Only "full" role members can compact.
+	if err := checkRoleCanSend(m.Role, []string{campfire.TagCompact}); err != nil {
+		return nil, err
+	}
+
+	// Parse --before RFC3339 timestamp if provided.
+	var cutoffNanos int64
+	if beforeTS != "" {
+		ts, err := time.Parse(time.RFC3339, beforeTS)
+		if err != nil {
+			return nil, fmt.Errorf("parsing --before timestamp %q: %w", beforeTS, err)
+		}
+		if ts.After(time.Now()) {
+			return nil, fmt.Errorf("--before timestamp %q is in the future; refusing to compact (foot-gun prevention)", beforeTS)
+		}
+		cutoffNanos = ts.UnixNano()
+	}
+
+	// Collect all messages from the store (uncompacted view).
+	allMsgs, err := s.ListMessages(campfireID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("listing messages: %w", err)
+	}
+
+	// Filter out existing compaction events — they are never superseded (R2).
+	var candidateMsgs []store.MessageRecord
+	for _, msg := range allMsgs {
+		if !isCompactionMsg(msg) {
+			candidateMsgs = append(candidateMsgs, msg)
+		}
+	}
+
+	// Sort candidates by timestamp ascending (total order).
+	sort.Slice(candidateMsgs, func(i, j int) bool {
+		return candidateMsgs[i].Timestamp < candidateMsgs[j].Timestamp
+	})
+
+	// Select messages to supersede.
+	var toSupersede []store.MessageRecord
+	if keepLast > 0 {
+		// Keep the last keepLast messages; supersede all older ones.
+		if len(candidateMsgs) <= keepLast {
+			return nil, fmt.Errorf("only %d non-compact messages exist; --keep-last %d would leave nothing to compact (R3)", len(candidateMsgs), keepLast)
+		}
+		toSupersede = candidateMsgs[:len(candidateMsgs)-keepLast]
+	} else {
+		// --before RFC3339: supersede all messages with Timestamp < cutoffNanos.
+		for _, msg := range candidateMsgs {
+			if msg.Timestamp < cutoffNanos {
+				toSupersede = append(toSupersede, msg)
+			}
+		}
+	}
+
+	// Refuse if supersedes would be empty (R3).
+	if len(toSupersede) == 0 {
+		return nil, fmt.Errorf("no messages selected for compaction (supersedes would be empty); refusing (R3)")
+	}
+
+	// Build the campfire:compact payload per design §2.5.
+	supersededIDs := make([]string, len(toSupersede))
+	var bytesSuperseded int64
+	for i, msg := range toSupersede {
+		supersededIDs[i] = msg.ID
+		bytesSuperseded += int64(len(msg.Payload))
+	}
+
+	checkpointHash := computeCheckpointHash(toSupersede)
+	lastSupersededID := toSupersede[len(toSupersede)-1].ID
+
+	summaryBytes := []byte(summary)
+	if len(summaryBytes) == 0 {
+		summaryBytes = []byte(fmt.Sprintf("compacted %d messages (retention=%s)", len(toSupersede), retention))
+	}
+
+	if dryRun {
+		return &persistentCompactResult{
+			supersededIDs:  supersededIDs,
+			checkpointHash: checkpointHash,
+			retention:      retention,
+		}, nil
+	}
+
+	// --- Durably write the campfire:compact event FIRST (R2: audit event before deletes) ---
+	compactPayload := store.CompactionPayload{
+		Supersedes:      supersededIDs,
+		Summary:         summaryBytes,
+		Retention:       retention,
+		CheckpointHash:  checkpointHash,
+		BytesSuperseded: bytesSuperseded,
+	}
+	payloadJSON, err := json.Marshal(compactPayload)
+	if err != nil {
+		return nil, fmt.Errorf("encoding compaction payload: %w", err)
+	}
+
+	client := protocol.New(s, agentID)
+	if _, err = client.Send(protocol.SendRequest{
+		CampfireID:  campfireID,
+		Payload:     payloadJSON,
+		Tags:        []string{campfire.TagCompact},
+		Antecedents: []string{lastSupersededID},
+		Instance:    "compact",
+	}); err != nil {
+		return nil, fmt.Errorf("sending compaction event: %w", err)
+	}
+
+	// --- On-disk deletion (retention=discard only) ---
+	if retention != "discard" {
+		return &persistentCompactResult{
+			supersededIDs:  supersededIDs,
+			checkpointHash: checkpointHash,
+			retention:      retention,
+		}, nil
+	}
+
+	// Build an ID → fs path map by walking the bucketed layout on disk.
+	// We need the actual on-disk paths for the superseded message IDs.
+	campfireDir := m.TransportDir
+	tr := fs.ForDir(campfireDir)
+
+	// Acquire LOCK_EX before any deletion (design §3.2, R6 concurrency).
+	release, err := tr.LockExclusive(campfireDir)
+	if err != nil {
+		return nil, fmt.Errorf("acquiring exclusive lock for deletion: %w", err)
+	}
+	defer release()
+
+	// Walk the on-disk bucketed layout to build id→(bucket, leafname) mapping.
+	// Format: messages/YYYY-MM/DD/<19nanos>-<id>.cbor
+	messagesDir := filepath.Join(campfireDir, "messages")
+	type onDiskFile struct {
+		bucket string // full path to YYYY-MM/DD/ dir
+		path   string // full path to leaf .cbor file
+	}
+	// Map from message ID → on-disk file info.
+	idToFile := make(map[string]onDiskFile)
+
+	yearMonthEntries, err := os.ReadDir(messagesDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("reading messages directory: %w", err)
+	}
+	for _, ymE := range yearMonthEntries {
+		if !ymE.IsDir() {
+			continue
+		}
+		ymName := ymE.Name()
+		ymDir := filepath.Join(messagesDir, ymName)
+		ddEntries, err := os.ReadDir(ymDir)
+		if err != nil {
+			continue
+		}
+		for _, ddE := range ddEntries {
+			if !ddE.IsDir() {
+				continue
+			}
+			ddName := ddE.Name()
+			ddDir := filepath.Join(ymDir, ddName)
+			leafEntries, err := os.ReadDir(ddDir)
+			if err != nil {
+				continue
+			}
+			for _, leafE := range leafEntries {
+				leaf := leafE.Name()
+				if !strings.HasSuffix(leaf, ".cbor") {
+					continue
+				}
+				// Leaf format: <19nanos>-<id>.cbor
+				// Extract message ID: everything after the first '-'.
+				dashIdx := strings.Index(leaf, "-")
+				if dashIdx < 0 || dashIdx == len(leaf)-1 {
+					continue
+				}
+				msgID := strings.TrimSuffix(leaf[dashIdx+1:], ".cbor")
+				idToFile[msgID] = onDiskFile{
+					bucket: ddDir,
+					path:   filepath.Join(ddDir, leaf),
+				}
+			}
+		}
+	}
+
+	// Determine which buckets are fully covered by the supersede set.
+	// A bucket is fully covered if ALL its resident IDs are in toSupersede.
+	// For fully-covered buckets, use os.RemoveAll (R6).
+	// For partially-covered buckets, delete per-file.
+	supersededSet := make(map[string]bool, len(supersededIDs))
+	for _, id := range supersededIDs {
+		supersededSet[id] = true
+	}
+
+	// Build a map: bucket → set of all IDs in that bucket.
+	bucketAllIDs := make(map[string]map[string]bool) // bucketDir → {msgID → true}
+	for msgID, fi := range idToFile {
+		if bucketAllIDs[fi.bucket] == nil {
+			bucketAllIDs[fi.bucket] = make(map[string]bool)
+		}
+		bucketAllIDs[fi.bucket][msgID] = true
+	}
+
+	// Determine fully-covered buckets.
+	fullyCoveredBuckets := make(map[string]bool)
+	for bucket, idsInBucket := range bucketAllIDs {
+		allSuperseded := true
+		for id := range idsInBucket {
+			if !supersededSet[id] {
+				allSuperseded = false
+				break
+			}
+		}
+		if allSuperseded {
+			// Only remove whole bucket if at least one ID is being superseded
+			// (not just an empty bucket).
+			hasSome := false
+			for id := range idsInBucket {
+				if supersededSet[id] {
+					hasSome = true
+					break
+				}
+			}
+			if hasSome {
+				fullyCoveredBuckets[bucket] = true
+			}
+		}
+	}
+
+	var bucketsRemoved int
+	var bytesDeleted int64
+
+	// Delete fully-covered buckets wholesale (R6).
+	for bucket := range fullyCoveredBuckets {
+		if err := os.RemoveAll(bucket); err != nil {
+			log.Printf("compact: best-effort bucket removal failed for %s: %v", bucket, err)
+			// Continue; per-file deletes below will handle remaining files.
+		} else {
+			bucketsRemoved++
+		}
+	}
+
+	// Delete individual files in partially-covered buckets (best-effort).
+	for _, id := range supersededIDs {
+		fi, found := idToFile[id]
+		if !found {
+			// File not found on disk — may have been deleted already or never written here.
+			continue
+		}
+		if fullyCoveredBuckets[fi.bucket] {
+			// Already removed via RemoveAll.
+			continue
+		}
+		info, err := os.Stat(fi.path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // Already gone.
+			}
+			log.Printf("compact: stat %s: %v", fi.path, err)
+			continue
+		}
+		bytesDeleted += info.Size()
+		if err := os.Remove(fi.path); err != nil && !os.IsNotExist(err) {
+			log.Printf("compact: best-effort file removal failed for %s: %v", fi.path, err)
+		}
+	}
+
+	// Best-effort: prune empty parent month directories (§2.6).
+	pruneEmptyMonthDirs(messagesDir, fullyCoveredBuckets)
+
+	return &persistentCompactResult{
+		supersededIDs:  supersededIDs,
+		checkpointHash: checkpointHash,
+		retention:      retention,
+		bytesDeleted:   bytesDeleted,
+		bucketsRemoved: bucketsRemoved,
+	}, nil
+}
+
+// pruneEmptyMonthDirs removes empty YYYY-MM parent directories after bucket deletions.
+// This is a best-effort operation; errors are silently ignored.
+func pruneEmptyMonthDirs(messagesDir string, removedBuckets map[string]bool) {
+	// Collect unique YYYY-MM parent dirs of removed buckets.
+	checked := make(map[string]bool)
+	for bucket := range removedBuckets {
+		ymDir := filepath.Dir(bucket) // YYYY-MM dir
+		if checked[ymDir] {
+			continue
+		}
+		checked[ymDir] = true
+
+		entries, err := os.ReadDir(ymDir)
+		if err != nil {
+			continue // Best-effort.
+		}
+		if len(entries) == 0 {
+			os.Remove(ymDir) //nolint:errcheck // best-effort
+		}
+	}
+}
+
 // isCompactionMsg returns true if the message has the campfire:compact tag.
 // Used to exclude existing compaction events from the set of messages to supersede.
 // Uses HasTag (exact element match) rather than strings.Contains to avoid false
@@ -246,9 +690,25 @@ func computeCheckpointHash(msgs []store.MessageRecord) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// messageRecordFromWire converts a wire message.Message to a store.MessageRecord.
+// Used when message records are sourced from the fs transport rather than the local store.
+// Kept for potential use by future compact-from-transport path.
+func messageRecordFromWire(msg message.Message) store.MessageRecord {
+	return store.MessageRecord{
+		ID:          msg.ID,
+		Payload:     msg.Payload,
+		Tags:        msg.Tags,
+		Antecedents: msg.Antecedents,
+		Timestamp:   msg.Timestamp,
+		Signature:   msg.Signature,
+	}
+}
+
 func init() {
-	compactCmd.Flags().String("before", "", "compact messages before the given message ID prefix")
+	compactCmd.Flags().String("before", "", "compact messages before the given message ID prefix (legacy) or RFC3339 timestamp (persistent campfires)")
 	compactCmd.Flags().String("summary", "", "human-readable summary of compacted content")
-	compactCmd.Flags().String("retention", "archive", "retention policy: 'archive' or 'discard'")
+	compactCmd.Flags().String("retention", "", "retention policy: 'archive' (default for legacy) or 'discard' (default for persistent)")
+	compactCmd.Flags().Int("keep-last", 0, "retain only the last N messages; remove all older ones (persistent campfires only)")
+	compactCmd.Flags().Bool("dry-run", false, "print compaction plan without modifying state (persistent campfires only)")
 	rootCmd.AddCommand(compactCmd)
 }
