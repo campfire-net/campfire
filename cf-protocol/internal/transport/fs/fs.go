@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -163,17 +164,56 @@ func (t *Transport) RemoveMember(campfireID string, memberPubKey []byte) error {
 	return nil
 }
 
-// WriteMessage writes a message to the campfire's messages directory.
+// bucketFor returns the (yearMonth, day) bucket components for a given time in UTC.
+// yearMonth is "YYYY-MM" and day is "DD" — both zero-padded and lex-sortable.
+// This is the v0.31 bucket key per design §1.3.
+func bucketFor(t time.Time) (yearMonth, day string) {
+	u := t.UTC()
+	return u.Format("2006-01"), u.Format("02")
+}
+
+// migrateLockPath returns the path of the migration lockfile for a campfire directory.
+func migrateLockPath(campfireDir string) string {
+	return filepath.Join(campfireDir, ".migrate.lock")
+}
+
+// WriteMessage writes a message to the campfire's messages directory using the
+// day-bucketed layout introduced in v0.31:
+//   messages/<YYYY-MM>/<DD>/<19-nanos>-<message-id>.cbor
+//
+// Before writing, a shared flock (LOCK_SH) is acquired on .migrate.lock so that
+// any concurrent migrate-store run (which holds LOCK_EX) will block all writers
+// until the atomic swap completes. Multiple concurrent writers can all hold
+// LOCK_SH simultaneously — there is no writer-writer contention.
+//
 // After writing, the message file is copied synchronously to all push subscribers' inbox dirs.
+// Push subscriber inboxes are NOT bucketed (§1.6 explicit non-scope).
 func (t *Transport) WriteMessage(campfireID string, msg *message.Message) error {
-	dir := filepath.Join(t.CampfireDir(campfireID), "messages")
-	filename := fmt.Sprintf("%019d-%s.cbor", time.Now().UnixNano(), msg.ID)
-	path := filepath.Join(dir, filename)
+	campfireDir := t.CampfireDir(campfireID)
+
+	// Acquire LOCK_SH on the migration lockfile. This blocks if migrate-store
+	// holds LOCK_EX during the atomic swap window; it is a no-op otherwise.
+	release, err := acquireMigrateLockShared(migrateLockPath(campfireDir))
+	if err != nil {
+		return fmt.Errorf("acquiring migration lock: %w", err)
+	}
+	defer release()
+
+	now := timeNow()
+	yearMonth, day := bucketFor(now)
+	bucketDir := filepath.Join(campfireDir, "messages", yearMonth, day)
+	if err := os.MkdirAll(bucketDir, 0700); err != nil {
+		return fmt.Errorf("creating bucket directory %s: %w", bucketDir, err)
+	}
+
+	filename := fmt.Sprintf("%019d-%s.cbor", now.UnixNano(), msg.ID)
+	path := filepath.Join(bucketDir, filename)
 	if err := atomicWriteCBOR(path, msg); err != nil {
 		return err
 	}
 
 	// Push delivery: copy the message file to each subscriber's inbox dir.
+	// The inbox receives the flat filename (no bucket path) — inboxes are not bucketed.
 	subs, err := t.ListPushSubscribers(campfireID)
 	if err != nil {
 		// Non-fatal: log and continue.
@@ -333,34 +373,122 @@ func hexNibble(c byte) (byte, error) {
 	return 0, fmt.Errorf("invalid hex character %q", c)
 }
 
-// ListMessages reads all messages from the campfire's messages directory, sorted by filename.
+// yearMonthRE matches YYYY-MM directory names (v0.31 bucketed layout month dirs).
+var yearMonthRE = regexp.MustCompile(`^\d{4}-\d{2}$`)
+
+// dayRE matches DD directory names (v0.31 bucketed layout day dirs).
+var dayRE = regexp.MustCompile(`^\d{2}$`)
+
+// ListMessages reads all messages from the campfire's messages directory.
+//
+// v0.31 dual-read: reads both the bucketed layout (YYYY-MM/DD/*.cbor) and any
+// legacy flat *.cbor files at the top of messages/. Results are merged by
+// lex-sort of the leaf filename (which equals lex-sort of the 19-nanos prefix,
+// which equals chronological order). This dual-read is transitional and will
+// be removed in v0.32.
+//
+// Directory entries that match neither the bucket pattern nor "*.cbor" are
+// silently ignored for forward-compatibility (A7).
+//
+// Returns (nil, nil) if the messages directory does not exist (e.g. during the
+// atomic swap window in migrate-store or for a brand-new campfire).
 func (t *Transport) ListMessages(campfireID string) ([]message.Message, error) {
 	dir := filepath.Join(t.CampfireDir(campfireID), "messages")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// ENOENT: no messages directory — brand new campfire or mid-swap.
+			// Return (nil, nil) same as today (A4, M8).
 			return nil, nil
 		}
 		return nil, fmt.Errorf("listing messages: %w", err)
 	}
 
-	// Sort by name (timestamp prefix gives chronological order)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
+	// leafFiles maps leaf filename → full path, used for deduplication and
+	// lex-sort merge. We populate it from both the bucketed and flat layouts.
+	type leafEntry struct {
+		name string // leaf filename e.g. "0000000001234567890-<id>.cbor"
+		path string // full path on disk
+	}
+	var leaves []leafEntry
+
+	for _, e := range entries {
+		name := e.Name()
+
+		if e.IsDir() && yearMonthRE.MatchString(name) {
+			// Bucketed layout: YYYY-MM directory. Descend into DD subdirs.
+			ymDir := filepath.Join(dir, name)
+			ddEntries, err := os.ReadDir(ymDir)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue // Disappeared between ReadDir calls — tolerate.
+				}
+				return nil, fmt.Errorf("listing month dir %s: %w", ymDir, err)
+			}
+			// Sort DD entries lex (already lex from ReadDir, but make it explicit).
+			sort.Slice(ddEntries, func(i, j int) bool {
+				return ddEntries[i].Name() < ddEntries[j].Name()
+			})
+			for _, ddE := range ddEntries {
+				ddName := ddE.Name()
+				if !ddE.IsDir() || !dayRE.MatchString(ddName) {
+					// Silently ignore non-matching entries (A7).
+					continue
+				}
+				ddDir := filepath.Join(ymDir, ddName)
+				cborEntries, err := os.ReadDir(ddDir)
+				if err != nil {
+					if os.IsNotExist(err) {
+						continue
+					}
+					return nil, fmt.Errorf("listing day dir %s: %w", ddDir, err)
+				}
+				sort.Slice(cborEntries, func(i, j int) bool {
+					return cborEntries[i].Name() < cborEntries[j].Name()
+				})
+				for _, ce := range cborEntries {
+					if !strings.HasSuffix(ce.Name(), ".cbor") {
+						continue // A7: silently ignore non-.cbor entries.
+					}
+					leaves = append(leaves, leafEntry{
+						name: ce.Name(),
+						path: filepath.Join(ddDir, ce.Name()),
+					})
+				}
+			}
+			continue
+		}
+
+		// Flat legacy layout: *.cbor files directly under messages/.
+		// Dual-read step 2 per §3.4.
+		if !e.IsDir() && strings.HasSuffix(name, ".cbor") {
+			leaves = append(leaves, leafEntry{
+				name: name,
+				path: filepath.Join(dir, name),
+			})
+			continue
+		}
+
+		// Silently ignore everything else (A7: forward-compat with sidecar files,
+		// unknown dirs, etc.).
+	}
+
+	// Merge by lex-sort of leaf filename. Because both bucketed and flat entries
+	// use the same 19-nanos prefix on the leaf filename, lex-sort of leaf names
+	// is equivalent to lex-sort of the flat layout — same chronological order.
+	sort.Slice(leaves, func(i, j int) bool {
+		return leaves[i].name < leaves[j].name
 	})
 
 	var msgs []message.Message
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".cbor") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+	for _, lf := range leaves {
+		data, err := os.ReadFile(lf.path)
 		if err != nil {
-			continue
+			continue // File disappeared mid-walk — tolerate.
 		}
 		var msg message.Message
 		if err := cfencoding.Unmarshal(data, &msg); err != nil {
-			continue
+			continue // Corrupt file — skip (same behaviour as before).
 		}
 		msgs = append(msgs, msg)
 	}
@@ -376,6 +504,11 @@ func (t *Transport) Remove(campfireID string) error {
 // It is a package-level variable so tests can inject a failing reader to
 // exercise the nanosecond-timestamp fallback path.
 var randRead = func(b []byte) (int, error) { return rand.Read(b) }
+
+// timeNow is the clock function used by WriteMessage to determine the bucket
+// and the 19-nanos filename prefix. It is a package-level variable so tests
+// can inject a fixed or stepping clock without filesystem mocking (A6).
+var timeNow = time.Now
 
 // atomicWriteCBOR writes CBOR data atomically using temp file + rename.
 func atomicWriteCBOR(path string, v interface{}) error {
