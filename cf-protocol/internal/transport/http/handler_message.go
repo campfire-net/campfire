@@ -656,7 +656,7 @@ func deliverMessage(endpoint, campfireID string, msg *message.Message, id *ident
 	}
 	signRequest(req, id, body)
 
-	resp, err := httpClient.Do(req)
+	resp, err := getHTTPClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("posting to %s: %w", url, err)
 	}
