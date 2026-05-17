@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -101,5 +102,34 @@ func TestMigrateStore_AcceptsValidCampfireID(t *testing.T) {
 	// Confirm the error path was "directory not found" not "invalid ID".
 	if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "no such") {
 		t.Logf("note: error was %q (acceptable, but not the expected 'not found' shape)", err)
+	}
+}
+
+// TestMigrateStore_WindowsWarning verifies that on Windows, the migrate-store
+// command emits a warning about degraded-mode locking to stderr.
+// On non-Windows platforms, this test is skipped (the warning is not expected).
+func TestMigrateStore_WindowsWarning(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skipf("skipping Windows-specific test on %s", runtime.GOOS)
+	}
+
+	baseDir := t.TempDir()
+	t.Setenv("CF_TRANSPORT_DIR", baseDir)
+	t.Setenv("CF_HOME", t.TempDir())
+
+	// Capture stderr from the command.
+	stderrBuf := &bytes.Buffer{}
+	migrateStoreCmd.SetErr(stderrBuf)
+	migrateStoreCmd.SetOut(&bytes.Buffer{})
+
+	// Use a valid campfire ID format (won't find the directory, but that's ok —
+	// the warning should print before the directory check).
+	validID := strings.Repeat("a1", 32)
+	_ = migrateStoreCmd.RunE(migrateStoreCmd, []string{validID})
+
+	stderr := stderrBuf.String()
+	requiredText := "WARNING: cf migrate-store on Windows. Migration lock is a no-op on this platform."
+	if !strings.Contains(stderr, requiredText) {
+		t.Errorf("Windows warning not found in stderr.\nExpected substring: %q\nGot stderr: %q", requiredText, stderr)
 	}
 }

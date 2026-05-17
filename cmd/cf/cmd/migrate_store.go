@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
@@ -31,10 +32,12 @@ var migrateStoreCmd = &cobra.Command{
 
 The migration is safe to run against a live campfire: it acquires an
 exclusive flock on .migrate.lock, which blocks concurrent WriteMessage
-calls until the atomic swap completes.
+calls until the atomic swap completes. On Windows, migration lock is a no-op;
+see docs/design/0.31-storage-scaling.md §3.2 for details on degraded-mode
+concurrent writes.
 
 Migration steps (design §3.3):
-  1. Acquire LOCK_EX on .migrate.lock.
+  1. Acquire LOCK_EX on .migrate.lock (no-op on Windows).
   2. Detect layout (directory-shape is authoritative; .layout-version is a hint).
   3. If already bucketed → exit 0 (idempotent).
   4. Recover from any prior crash state (see design §3.3 table).
@@ -57,6 +60,15 @@ Flags:
 	GroupID: groupAdvanced,
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// WINDOWS MIGRATION LOCK DEGRADATION (campfireagent-22d)
+		// On Windows, the migration lock is a no-op (see lock_windows.go).
+		// Concurrent writes during migration may corrupt the store.
+		if runtime.GOOS == "windows" {
+			fmt.Fprintln(os.Stderr, "WARNING: cf migrate-store on Windows. Migration lock is a no-op on this platform.")
+			fmt.Fprintln(os.Stderr, "Stop all cf processes that may write to this campfire before continuing. Concurrent")
+			fmt.Fprintln(os.Stderr, "writes during migration may corrupt the store. See docs/install.md for details.")
+		}
+
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		keepBackup, _ := cmd.Flags().GetBool("keep-backup")
 		finalize, _ := cmd.Flags().GetBool("finalize")
