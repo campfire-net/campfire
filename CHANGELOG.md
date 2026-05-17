@@ -1,5 +1,75 @@
 # Changelog
 
+## v0.31.1 — storage-scaling sweep cleanup + race-clean test suite (2026-05-17)
+
+Patch release. Closes 7 sweep findings filed against v0.31.0 storage-scaling
+work plus 3 pre-existing data races surfaced by the integration gate's
+`go test ./... -race` run. Wire format unchanged, public API unchanged.
+
+### Bug fixes
+
+- **`verify()` rng injection** (`campfireagent-01f`, #586): The migration
+  spot-check at `fs/migrate_store.go:479` called the global `rand.Shuffle`
+  instead of the injected `*rand.Rand` when `rng != nil`. Seeded
+  reproducibility was silently broken. Tests now assert sampled indices
+  match a known-seed deterministic shuffle.
+
+- **`cf migrate-store` membership check** (`campfireagent-6a9`, #587,
+  security MEDIUM): `migrateStoreCmd` performed no `store.GetMembership`
+  check before mutating on-disk layout. Mirrors the `checkRoleCanSend`
+  pattern from `cf compact`. New `--force` flag for disaster-recovery
+  bypass.
+
+- **Compact orphan-files durability** (`campfireagent-6d27`, #588): When
+  `os.RemoveAll` failed for a fully-covered bucket, the per-file fallback
+  skipped that bucket, leaving superseded `.cbor` files on disk
+  indefinitely. Now tracks `successfullyRemovedBuckets` separately;
+  per-file deletes run for any failed RemoveAll. Matters on Windows/NFS
+  where RemoveAll can abort before touching individual files.
+
+### Windows
+
+- **`cf migrate-store` startup warning on Windows** (`campfireagent-22d`,
+  #592 + #593): The migration lock is a documented no-op on Windows
+  (`lock_windows.go`). `cf migrate-store` now prints a stderr warning
+  on Windows so operators know to stop other cf processes first. See
+  `docs/design/0.31-storage-scaling.md` Appendix C. LockFileEx deferred
+  pending a named Windows consumer.
+
+### Refactoring (no behavior change)
+
+- **`execCompactPersistent` split** (`campfireagent-016`, #590): 300-LOC
+  god function in `cmd/cf/cmd/compact.go` decomposed into 5 named helpers
+  (`selectMessagesToSupersede`, `writeCompactAuditEvent`, `buildBucketIndex`,
+  `classifyFullyCoveredBuckets`, `deleteSupersededFiles`). Single
+  authoritative bucket walk. `successfullyRemovedBuckets` semantics
+  preserved byte-identically.
+
+- **Named constants** (`campfireagent-95965`, #589): magic numbers `19`
+  (nanos timestamp width) and `64` (Ed25519 hex chars) replaced with
+  `NanosWidth` / `CampfireIDHexLen` in `cf-protocol/internal/transport/fs/`.
+
+- **Dead-code removal** (`campfireagent-96a`, #591): unused `nanosRE`
+  (regexp) in `fs/migrate_store.go` and `messageRecordFromWire` in
+  `cmd/cf/cmd/compact.go`.
+
+### Test-suite race fixes (`campfireagent-3f1e`, #594)
+
+The v0.31.0 release shipped with three pre-existing data races (confirmed
+at baseline `93640a1d`, before any v0.31 work) that the integration gate's
+`-race` run surfaced. Fixed together — all three are test-helper issues
+that block `-race`-mode CI:
+
+- `pkg/ratelimit.mockBalanceChecker.err` — `sync.Mutex` + `setErr()`
+- `pkg/metering.newForgeServer` — `eventCollector{Mutex; events}` type
+  replaces the `&[]UsageEvent` pattern
+- `cf-protocol/internal/transport/http.{httpClient, pollTransport}` —
+  `sync.RWMutex` + `getHTTPClient()`/`getPollTransport()` hot-path getters;
+  prevents racing `OverrideHTTPClientForTest` against in-flight
+  `forwardMessage` goroutines from prior tests
+
+`go test ./... -count=1 -race` now green on all 63 packages.
+
 ## v0.31.0 — fs storage scaling: bucketed messages + persistent-campfire compact (2026-05-16)
 
 Fixes the latency wall named consumers hit when a single campfire accumulates
