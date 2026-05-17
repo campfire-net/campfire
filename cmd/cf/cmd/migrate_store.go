@@ -64,9 +64,10 @@ Flags:
 		// On Windows, the migration lock is a no-op (see lock_windows.go).
 		// Concurrent writes during migration may corrupt the store.
 		if runtime.GOOS == "windows" {
-			fmt.Fprintln(os.Stderr, "WARNING: cf migrate-store on Windows. Migration lock is a no-op on this platform.")
-			fmt.Fprintln(os.Stderr, "Stop all cf processes that may write to this campfire before continuing. Concurrent")
-			fmt.Fprintln(os.Stderr, "writes during migration may corrupt the store. See docs/install.md for details.")
+			errOut := cmd.ErrOrStderr()
+			fmt.Fprintln(errOut, "WARNING: cf migrate-store on Windows. Migration lock is a no-op on this platform.")
+			fmt.Fprintln(errOut, "Stop all cf processes that may write to this campfire before continuing. Concurrent")
+			fmt.Fprintln(errOut, "writes during migration may corrupt the store. See docs/design/0.31-storage-scaling.md §3.2 for details.")
 		}
 
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
