@@ -3,6 +3,7 @@ package ratelimit_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -507,21 +508,30 @@ func TestRateLimitWindowExpiryWithFakeClock(t *testing.T) {
 // mockBalanceChecker is a BalanceChecker that returns a configurable balance
 // and records how many times Balance() was called.
 type mockBalanceChecker struct {
-	balance  int64        // returned balance (atomic for safe concurrent reads in tests)
+	balance   int64        // returned balance (atomic for safe concurrent reads in tests)
 	callCount atomic.Int64 // number of Balance() calls
-	err      error        // if non-nil, returned instead of balance
+	errMu     sync.Mutex   // guards err — read by background refresh goroutine, written by tests
+	err       error        // if non-nil, returned instead of balance
 }
 
 func (m *mockBalanceChecker) Balance(_ context.Context, _ string) (int64, error) {
 	m.callCount.Add(1)
-	if m.err != nil {
-		return 0, m.err
+	m.errMu.Lock()
+	err := m.err
+	m.errMu.Unlock()
+	if err != nil {
+		return 0, err
 	}
 	return atomic.LoadInt64(&m.balance), nil
 }
 
 func (m *mockBalanceChecker) setBalance(v int64) { atomic.StoreInt64(&m.balance, v) }
 func (m *mockBalanceChecker) calls() int64       { return m.callCount.Load() }
+func (m *mockBalanceChecker) setErr(e error) {
+	m.errMu.Lock()
+	m.err = e
+	m.errMu.Unlock()
+}
 
 // TestBalanceCheckBlocksWriteAtZero verifies that AddMessage returns
 // ErrMonthlyCapExceeded (HTTP 402) when the cached balance is zero.
@@ -651,7 +661,7 @@ func TestBalanceRefreshErrorKeepsStaleCacheFailOpen(t *testing.T) {
 	}
 
 	// Now make the checker fail.
-	checker.err = errors.New("forge unavailable")
+	checker.setErr(errors.New("forge unavailable"))
 	checker.setBalance(0) // would block if cache were updated
 
 	// Wait for background refresh to fire and fail (cache becomes stale).

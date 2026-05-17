@@ -33,15 +33,36 @@ var randRead = rand.Read
 // window between endpoint validation at admission and actual connection use.
 // OverrideHTTPClientForTest replaces this client in tests so that loopback
 // test servers (which the SSRF-safe transport blocks by design) are reachable.
-var httpClient = &http.Client{
-	Timeout:   30 * time.Second,
-	Transport: newSSRFSafeTransport(),
+// httpClientMu guards both httpClient and pollTransport, which the Test*ForTest
+// helpers mutate while concurrent goroutines (e.g. delivery workers) may still
+// be reading them.
+var (
+	httpClientMu  sync.RWMutex
+	httpClient    = &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: newSSRFSafeTransport(),
+	}
+	pollTransport http.RoundTripper = newSSRFSafeTransport()
+)
+
+func getHTTPClient() *http.Client {
+	httpClientMu.RLock()
+	defer httpClientMu.RUnlock()
+	return httpClient
+}
+
+func getPollTransport() http.RoundTripper {
+	httpClientMu.RLock()
+	defer httpClientMu.RUnlock()
+	return pollTransport
 }
 
 // OverrideHTTPClientForTest replaces the package-level HTTP client.
 // Call from TestMain when tests use loopback servers.
 func OverrideHTTPClientForTest(c *http.Client) {
+	httpClientMu.Lock()
 	httpClient = c
+	httpClientMu.Unlock()
 }
 
 // RestoreSSRFSafeHTTPClientForTest reinstalls the SSRF-safe transport on httpClient.
@@ -51,20 +72,20 @@ func OverrideHTTPClientForTest(c *http.Client) {
 // for the duration of an SSRF-specific test, then call OverrideHTTPClientForTest to
 // restore the test client in t.Cleanup).
 func RestoreSSRFSafeHTTPClientForTest() {
+	httpClientMu.Lock()
 	httpClient = &http.Client{
 		Timeout:   30 * time.Second,
 		Transport: newSSRFSafeTransport(),
 	}
+	httpClientMu.Unlock()
 }
-
-// pollTransport is the http.RoundTripper used by Poll(). It defaults to an
-// SSRF-safe transport and can be overridden in tests via OverridePollTransportForTest.
-var pollTransport http.RoundTripper = newSSRFSafeTransport()
 
 // OverridePollTransportForTest replaces the transport used by Poll() so that
 // test servers on loopback (127.0.0.1) are reachable. Call from TestMain.
 func OverridePollTransportForTest(t http.RoundTripper) {
+	httpClientMu.Lock()
 	pollTransport = t
+	httpClientMu.Unlock()
 }
 
 // Deliver POSTs a CBOR-encoded message to a peer endpoint.
@@ -82,7 +103,7 @@ func Deliver(endpoint string, campfireID string, msg *message.Message, id *ident
 	}
 	signRequest(req, id, body)
 
-	resp, err := httpClient.Do(req)
+	resp, err := getHTTPClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("posting to %s: %w", url, err)
 	}
@@ -105,7 +126,7 @@ func Sync(endpoint string, campfireID string, since int64, id *identity.Identity
 	// GET has no body; sign empty bytes
 	signRequest(req, id, []byte{})
 
-	resp, err := httpClient.Do(req)
+	resp, err := getHTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("getting from %s: %w", url, err)
 	}
@@ -192,7 +213,7 @@ func NotifyMembership(endpoint string, campfireID string, event MembershipEvent,
 	req.Header.Set("Content-Type", "application/json")
 	signRequest(req, id, body)
 
-	resp, err := httpClient.Do(req)
+	resp, err := getHTTPClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("posting to %s: %w", url, err)
 	}
@@ -274,7 +295,7 @@ func Join(peerEndpoint, campfireID string, id *identity.Identity, myEndpoint str
 	req.Header.Set("Content-Type", "application/json")
 	signRequest(req, id, bodyBytes)
 
-	resp, err := httpClient.Do(req)
+	resp, err := getHTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("posting to %s: %w", url, err)
 	}
@@ -371,7 +392,7 @@ func SendRekeyPhase1(endpoint, oldCampfireID string, req RekeyRequest, id *ident
 	httpReq.Header.Set("Content-Type", "application/json")
 	signRequest(httpReq, id, bodyBytes)
 
-	resp, err := httpClient.Do(httpReq)
+	resp, err := getHTTPClient().Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("posting to %s: %w", url, err)
 	}
@@ -406,7 +427,7 @@ func SendRekey(endpoint, oldCampfireID string, req RekeyRequest, id *identity.Id
 	httpReq.Header.Set("Content-Type", "application/json")
 	signRequest(httpReq, id, bodyBytes)
 
-	resp, err := httpClient.Do(httpReq)
+	resp, err := getHTTPClient().Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("posting to %s: %w", url, err)
 	}
@@ -454,7 +475,7 @@ func SendSignRound(endpoint, campfireID, sessionID string, round int, signerIDs 
 	httpReq.Header.Set("Content-Type", "application/json")
 	signRequest(httpReq, id, bodyBytes)
 
-	resp, err := httpClient.Do(httpReq)
+	resp, err := getHTTPClient().Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("posting to %s: %w", url, err)
 	}
@@ -509,7 +530,7 @@ func Poll(endpoint, campfireID string, cursor int64, timeoutSecs int, id *identi
 	// pollTransport can be overridden in tests via OverridePollTransportForTest.
 	pollClient := &http.Client{
 		Timeout:   time.Duration(timeoutSecs+5) * time.Second,
-		Transport: pollTransport,
+		Transport: getPollTransport(),
 	}
 	resp, err := pollClient.Do(req)
 	if err != nil {

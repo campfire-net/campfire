@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +14,28 @@ import (
 	"github.com/campfire-net/campfire/pkg/forge"
 	"github.com/campfire-net/campfire/pkg/metering"
 )
+
+// eventCollector is a thread-safe accumulator for ingest events. The httptest
+// handler goroutine appends; the test goroutine snapshots. Both must lock —
+// the previous &slice pattern raced under -race.
+type eventCollector struct {
+	mu     sync.Mutex
+	events []forge.UsageEvent
+}
+
+func (c *eventCollector) append(ev forge.UsageEvent) {
+	c.mu.Lock()
+	c.events = append(c.events, ev)
+	c.mu.Unlock()
+}
+
+func (c *eventCollector) snapshot() []forge.UsageEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]forge.UsageEvent, len(c.events))
+	copy(out, c.events)
+	return out
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -74,7 +97,7 @@ func (m *mockBalanceChecker) Balance(_ context.Context, accountID string) (int64
 }
 
 // newForgeServer starts a test HTTP server that records ingest calls.
-func newForgeServer(t *testing.T, events *[]forge.UsageEvent) *httptest.Server {
+func newForgeServer(t *testing.T, events *eventCollector) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/usage/ingest" {
@@ -88,7 +111,7 @@ func newForgeServer(t *testing.T, events *[]forge.UsageEvent) *httptest.Server {
 			http.Error(w, "bad request", 400)
 			return
 		}
-		*events = append(*events, ev)
+		events.append(ev)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprint(w, `{"status":"created"}`)
@@ -130,8 +153,8 @@ func TestEmitStorageUsage_GbDayMath(t *testing.T) {
 	oneGiB := int64(1073741824)
 	wantGbDay := 1.0 / 24.0
 
-	var events []forge.UsageEvent
-	srv := newForgeServer(t, &events)
+	events := &eventCollector{}
+	srv := newForgeServer(t, events)
 	defer srv.Close()
 
 	emitter, cleanup := newEmitter(t, srv)
@@ -156,10 +179,10 @@ func TestEmitStorageUsage_GbDayMath(t *testing.T) {
 	// Wait for the emitter to flush (batch timeout ≤ 1s with no delays).
 	time.Sleep(1200 * time.Millisecond)
 
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	if len(events.snapshot()) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events.snapshot()))
 	}
-	ev := events[0]
+	ev := events.snapshot()[0]
 	if ev.AccountID != "acct-001" {
 		t.Errorf("AccountID: want acct-001, got %s", ev.AccountID)
 	}
@@ -180,8 +203,8 @@ func TestEmitStorageUsage_HalfGiB(t *testing.T) {
 	halfGiB := int64(1073741824 / 2)
 	wantGbDay := (float64(halfGiB) / 1073741824.0) * (1.0 / 24.0)
 
-	var events []forge.UsageEvent
-	srv := newForgeServer(t, &events)
+	events := &eventCollector{}
+	srv := newForgeServer(t, events)
 	defer srv.Close()
 
 	emitter, cleanup := newEmitter(t, srv)
@@ -197,20 +220,20 @@ func TestEmitStorageUsage_HalfGiB(t *testing.T) {
 	}
 	time.Sleep(1200 * time.Millisecond)
 
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	if len(events.snapshot()) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events.snapshot()))
 	}
 	const eps = 1e-12
-	if diff := events[0].Quantity - wantGbDay; diff < -eps || diff > eps {
-		t.Errorf("Quantity: want %v, got %v", wantGbDay, events[0].Quantity)
+	if diff := events.snapshot()[0].Quantity - wantGbDay; diff < -eps || diff > eps {
+		t.Errorf("Quantity: want %v, got %v", wantGbDay, events.snapshot()[0].Quantity)
 	}
 }
 
 // TestEmitStorageUsage_IdempotencyKeyFormat checks that the idempotency key is
 // campfireID + ":" + "2006-01-02T15" (UTC hour).
 func TestEmitStorageUsage_IdempotencyKeyFormat(t *testing.T) {
-	var events []forge.UsageEvent
-	srv := newForgeServer(t, &events)
+	events := &eventCollector{}
+	srv := newForgeServer(t, events)
 	defer srv.Close()
 
 	emitter, cleanup := newEmitter(t, srv)
@@ -230,24 +253,24 @@ func TestEmitStorageUsage_IdempotencyKeyFormat(t *testing.T) {
 
 	after := time.Now().UTC().Format("2006-01-02T15")
 
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	if len(events.snapshot()) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events.snapshot()))
 	}
 	wantKey := "cf-idem:" + before
 	// before and after should be identical unless we crossed an hour boundary.
 	if before != after {
 		t.Skipf("hour boundary during test run: before=%s after=%s", before, after)
 	}
-	if events[0].IdempotencyKey != wantKey {
-		t.Errorf("IdempotencyKey: want %q, got %q", wantKey, events[0].IdempotencyKey)
+	if events.snapshot()[0].IdempotencyKey != wantKey {
+		t.Errorf("IdempotencyKey: want %q, got %q", wantKey, events.snapshot()[0].IdempotencyKey)
 	}
 }
 
 // TestEmitStorageUsage_SkipsMissingAccount verifies campfires with no account
 // mapping produce no events.
 func TestEmitStorageUsage_SkipsMissingAccount(t *testing.T) {
-	var events []forge.UsageEvent
-	srv := newForgeServer(t, &events)
+	events := &eventCollector{}
+	srv := newForgeServer(t, events)
 	defer srv.Close()
 
 	emitter, cleanup := newEmitter(t, srv)
@@ -263,16 +286,16 @@ func TestEmitStorageUsage_SkipsMissingAccount(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for missing account, got %d", len(events))
+	if len(events.snapshot()) != 0 {
+		t.Errorf("expected 0 events for missing account, got %d", len(events.snapshot()))
 	}
 }
 
 // TestEmitStorageUsage_SkipsZeroBytes verifies counters with BytesStored=0
 // produce no events.
 func TestEmitStorageUsage_SkipsZeroBytes(t *testing.T) {
-	var events []forge.UsageEvent
-	srv := newForgeServer(t, &events)
+	events := &eventCollector{}
+	srv := newForgeServer(t, events)
 	defer srv.Close()
 
 	emitter, cleanup := newEmitter(t, srv)
@@ -288,8 +311,8 @@ func TestEmitStorageUsage_SkipsZeroBytes(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for zero bytes, got %d", len(events))
+	if len(events.snapshot()) != 0 {
+		t.Errorf("expected 0 events for zero bytes, got %d", len(events.snapshot()))
 	}
 }
 
@@ -300,8 +323,8 @@ func TestEmitStorageUsage_SkipsZeroBytes(t *testing.T) {
 // TestEmitPeerEndpointUsage_Basic verifies a campfire with 3 peer endpoints
 // emits a "peer-endpoint-day" event with Quantity=3.
 func TestEmitPeerEndpointUsage_Basic(t *testing.T) {
-	var events []forge.UsageEvent
-	srv := newForgeServer(t, &events)
+	events := &eventCollector{}
+	srv := newForgeServer(t, events)
 	defer srv.Close()
 
 	emitter, cleanup := newEmitter(t, srv)
@@ -317,10 +340,10 @@ func TestEmitPeerEndpointUsage_Basic(t *testing.T) {
 	}
 	time.Sleep(1200 * time.Millisecond)
 
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	if len(events.snapshot()) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events.snapshot()))
 	}
-	ev := events[0]
+	ev := events.snapshot()[0]
 	if ev.UnitType != "peer-endpoint-day" {
 		t.Errorf("UnitType: want peer-endpoint-day, got %s", ev.UnitType)
 	}
@@ -334,8 +357,8 @@ func TestEmitPeerEndpointUsage_Basic(t *testing.T) {
 
 // TestEmitPeerEndpointUsage_IdempotencyKeyFormat checks the daily key format.
 func TestEmitPeerEndpointUsage_IdempotencyKeyFormat(t *testing.T) {
-	var events []forge.UsageEvent
-	srv := newForgeServer(t, &events)
+	events := &eventCollector{}
+	srv := newForgeServer(t, events)
 	defer srv.Close()
 
 	emitter, cleanup := newEmitter(t, srv)
@@ -353,12 +376,12 @@ func TestEmitPeerEndpointUsage_IdempotencyKeyFormat(t *testing.T) {
 	}
 	time.Sleep(1200 * time.Millisecond)
 
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	if len(events.snapshot()) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events.snapshot()))
 	}
 	wantKey := "cf-key:" + dateStr
-	if events[0].IdempotencyKey != wantKey {
-		t.Errorf("IdempotencyKey: want %q, got %q", wantKey, events[0].IdempotencyKey)
+	if events.snapshot()[0].IdempotencyKey != wantKey {
+		t.Errorf("IdempotencyKey: want %q, got %q", wantKey, events.snapshot()[0].IdempotencyKey)
 	}
 }
 
