@@ -9,6 +9,27 @@ legion+cf bakeoff bottleneck report.
 
 ### Bug fixes
 
+- **Convention servers now dispatch over p2p-http relays** (`campfire-d80`): a
+  convention server (`convention.Server.Serve` → `protocol.Client.Subscribe`)
+  silently never invoked its handlers for relay-backed (p2p-http) campfires —
+  filesystem campfires worked, relays didn't. Root cause: the only code that
+  synced *all* transports lived in the **CLI** package (`cmd/cf/cmd` `StoreSyncer`),
+  while `protocol.Client`'s built-in fallback synced **filesystem only**. SDK
+  consumers use `protocol.Init` with no injected syncer, so their `Subscribe`
+  poll loop never pulled relay messages into the store and the handler never
+  fired — undermining the SDK-first "Distribution" promise (`protocol.Client` is
+  meant to be the primary surface; the CLI a thin wrapper).
+
+  The per-transport sync is now a single implementation in the protocol package
+  (`protocol.SyncCampfire` / `SyncFilesystem` / `SyncHTTPPeers`), shared by the
+  Client's Subscribe path and the CLI (whose `StoreSyncer` is now a thin shim) —
+  no second copy to drift. `Subscribe` with no injected syncer syncs every
+  transport, so SDK convention servers dispatch over relays out of the box. The
+  Read/Await sync-before-query default stays filesystem-only so the hosted relay
+  (which serves its own authoritative store and never uses `Subscribe`) does not
+  HTTP-pull from peers on a read; making the relay opt out of read-sync via
+  `SkipSync` to unify the Read path too is tracked as a follow-up.
+
 - **Incremental filesystem sync** (`campfireagent-e58`, `campfireagent-b1e`):
   every `cf read` / `cf await` / subscribe poll (and every `rd create`, which
   reads internally) ran sync-before-query, which re-read, re-verified (Ed25519),

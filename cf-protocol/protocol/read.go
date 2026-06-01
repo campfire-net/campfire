@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/campfire-net/campfire/cf-protocol/internal/store"
 	"github.com/campfire-net/campfire/cf-protocol/internal/transport"
@@ -268,68 +267,17 @@ func (c *Client) syncIfFilesystem(campfireID string) error {
 
 	tt := transport.ResolveType(*m)
 	if tt != transport.TypeFilesystem {
-		// GitHub and HTTP campfires don't use filesystem sync.
+		// GitHub and HTTP campfires don't use filesystem sync. This is the Read /
+		// Await sync-before-query default; it stays filesystem-only so the hosted
+		// relay (which reads its own authoritative store and does NOT use Subscribe)
+		// never HTTP-pulls from peers on a read. SDK p2p-http sync happens in the
+		// Subscribe path via syncForSubscribe (campfire-d80).
 		return nil
 	}
 
-	fsTransport := fs.ForDir(m.TransportDir)
-
-	// Check that the campfire transport directory exists before listing.
-	// ListMessages returns nil/nil for a missing directory (resilient design for
-	// one-shot reads), but for sync we must distinguish "no new messages" from
-	// "transport directory has been removed". A missing directory is a terminal
-	// error for subscriptions (the transport is gone; there is nothing to sync).
-	campfireDir := fsTransport.CampfireDir(campfireID)
-	if _, statErr := os.Stat(campfireDir); os.IsNotExist(statErr) {
-		return fmt.Errorf("campfire transport directory removed: %s", campfireDir)
-	}
-
-	// Incremental sync (campfireagent-b1e, mirroring campfireagent-e58 in the cmd
-	// StoreSyncer path): import only messages written after the last imported leaf
-	// instead of re-reading and re-verifying the entire history on every read. The
-	// cursor is keyed on the on-disk leaf filename and is distinct from the
-	// timestamp-keyed read (subscription-delivery) cursor.
-	cursor, err := c.store.GetFSSyncCursor(campfireID)
-	if err != nil {
-		return fmt.Errorf("reading fs sync cursor: %w", err)
-	}
-
-	fsMessages, err := fsTransport.ListMessagesSince(campfireID, fs.LookbackCursor(cursor, fsSyncLookback))
-	if err != nil {
-		return fmt.Errorf("listing filesystem messages: %w", err)
-	}
-
-	// Advance the cursor only across fully-processed leaves, in chronological
-	// order. A transient AddMessage failure halts advancement so the message is
-	// retried next sync; permanent signature/provenance rejections advance past
-	// (re-reading an invalid file can never succeed).
-	advanceTo := cursor
-	for i := range fsMessages {
-		fsMsg := fsMessages[i].Message
-		// Verify message signature before storing (security: workspace-h0t).
-		if !fsMsg.VerifySignature() {
-			advanceTo = fsMessages[i].Leaf
-			continue
-		}
-		// Reject messages with invalid or missing provenance hops.
-		// VerifyProvenance checks non-empty Provenance and valid hop signatures.
-		if !fsMsg.VerifyProvenance() {
-			advanceTo = fsMessages[i].Leaf
-			continue
-		}
-		if _, addErr := c.store.AddMessage(store.MessageRecordFromMessage(campfireID, &fsMsg, store.NowNano())); addErr != nil {
-			break // leave cursor before this message so it is retried
-		}
-		advanceTo = fsMessages[i].Leaf
-	}
-
-	if advanceTo > cursor {
-		if err := c.store.SetFSSyncCursor(campfireID, advanceTo); err != nil {
-			return fmt.Errorf("advancing fs sync cursor: %w", err)
-		}
-	}
-
-	return nil
+	// Delegate to the canonical filesystem sync (sync.go) — one implementation
+	// shared by the Client, the Subscribe path, and the cf CLI shims.
+	return SyncFilesystem(c.store, campfireID, m.TransportDir)
 }
 
 // fsSyncLookback is the incremental-sync clock-skew lookback window for the
