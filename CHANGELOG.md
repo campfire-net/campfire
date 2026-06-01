@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.31.2 — incremental filesystem sync (2026-05-30)
+
+Patch release. Eliminates the per-operation full-history rescan in the
+filesystem-transport sync path and the per-poll stale-transport log spam. Wire
+format unchanged, public API unchanged. Addresses PART A of the mallcop-pro
+legion+cf bakeoff bottleneck report.
+
+### Bug fixes
+
+- **Incremental filesystem sync** (`campfireagent-e58`, `campfireagent-b1e`):
+  every `cf read` / `cf await` / subscribe poll (and every `rd create`, which
+  reads internally) ran sync-before-query, which re-read, re-verified (Ed25519),
+  and re-inserted the campfire's **entire** on-disk message history on **every**
+  call — O(total messages) per operation. On a multi-thousand-message campfire
+  (e.g. an rd workspace) this cost ~4 s steady-state per call and cratered the
+  bakeoff pass rate (report A3).
+
+  Both filesystem-sync paths — `syncFromFilesystem` (CLI / `rd`, via
+  `StoreSyncer`) and `syncIfFilesystem` (SDK consumers using `protocol.Client`
+  with no syncer) — now keep a per-campfire **leaf-filename sync cursor**
+  (`fs_sync_cursors` table, distinct from the timestamp-keyed read cursor) and
+  import only messages written after it. Steady-state cost is O(new messages).
+  A new `Transport.ListMessagesSince` filters at the directory-listing level so
+  old message files are never opened. Demo
+  (`scripts/demo-incremental-fs-sync.sh`) measures 16 000 messages: full rescan
+  2796 ms vs incremental 63 ms — 44× faster, on the same binary and data.
+
+  A small **lookback window** (`Transport.LookbackCursor`, default 2 s, tunable
+  via `CF_FS_SYNC_LOOKBACK_MS`; `0` = strict cursor) rewinds the cursor each
+  poll so a backward clock step cannot permanently hide a message just under the
+  cursor. Re-reads inside the window are idempotent (`INSERT OR IGNORE`) and
+  negligible for time-spread workloads.
+
+- **`cf gc` — local store garbage collection** (`campfireagent-4b9`, report A1):
+  the filesystem store accumulated campfire directories and rows indefinitely
+  (the report observed 2,971 dirs / 1.6 GB in 5 days from abandoned swarm/bakeoff
+  engagement campfires). New `cf gc` purges dead filesystem campfires — empty (no
+  messages) or idle (newest message older than `--older-than`, default 24h). It
+  is **dry-run by default** (reports candidates, changes nothing) and requires
+  `--yes` to delete. It never touches the home (identity) campfire, recently-joined
+  campfires, or non-filesystem transports, and is a local-only operation (removes
+  this machine's transport directory + store rows via the new
+  `store.PurgeCampfire`; it does not disband for other members). `--json` for
+  programmatic use. Note: `cf gc` is store hygiene, **not** the read-latency fix —
+  the slow rd-workspace campfire holds live messages and is never gc'd; the
+  incremental-sync change above is what fixes latency.
+
+- **Stale-transport log deduplication** (`campfireagent-60e`, report A2): a
+  removed filesystem transport directory whose messages are still served from
+  the local store logged `campfire: sync(…): … — serving from local store` on
+  **every** read/await poll. A long-running poller (e.g. the rd dispatcher
+  reading `/ready` every 2 s) drowned operator logs. The non-fatal sync warning
+  is now deduplicated per (campfire, error) per process, so a permanent
+  condition logs once. Serve-from-local-store and subscribe-termination
+  semantics are unchanged.
+
 ## v0.31.1 — storage-scaling sweep cleanup + race-clean test suite (2026-05-17)
 
 Patch release. Closes 7 sweep findings filed against v0.31.0 storage-scaling

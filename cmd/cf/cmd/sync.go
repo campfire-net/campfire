@@ -5,13 +5,28 @@ import (
 	"os"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport"
-	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
+	"github.com/campfire-net/campfire/pkg/identity"
 )
+
+// fsSyncLookback is how far the incremental filesystem sync rewinds its leaf
+// cursor on each poll, to tolerate a backward clock step between message writes
+// without re-scanning the entire history. Re-reads inside this window are
+// idempotent (INSERT OR IGNORE).
+//
+// The default (2s) comfortably covers typical NTP step corrections. Its only
+// cost is re-reading messages whose leaf timestamp falls within the window of
+// the newest message — negligible for time-spread workloads (e.g. an rd
+// workspace: ~0 messages in any 2s window), larger only for dense bursts.
+// Operators can tune or disable it via CF_FS_SYNC_LOOKBACK_MS (0 = strict
+// cursor, exact under a monotonic clock). It is a var so tests can override it
+// directly without real-time sleeps. The env parsing lives in the fs package
+// (fs.SyncLookbackFromEnv) so the cmd and protocol sync paths share one source.
+var fsSyncLookback = fs.SyncLookbackFromEnv()
 
 // followIntervalForTransport returns the poll interval for --follow based on transport type.
 // GitHub transport was removed in v0.30.0; all remaining transports use 2s.
@@ -56,7 +71,6 @@ func syncCampfire(cfID string, m *store.Membership, agentID *identity.Identity, 
 	return nil
 }
 
-
 // syncFromFilesystem reads messages from the filesystem transport into the local store.
 // Only messages with valid Ed25519 signatures are stored; invalid messages are silently
 // skipped to prevent injection of unsigned content via shared filesystem directories.
@@ -77,20 +91,57 @@ func syncFromFilesystem(cfID string, transportDir string, s store.Store) error {
 		return fmt.Errorf("campfire transport directory removed: %s", campfireDir)
 	}
 
-	fsMessages, err := fsTransport.ListMessages(cfID)
+	// Incremental sync (campfireagent-e58): import only messages written after the
+	// last imported leaf. Without this, every Read/Await/Subscribe poll re-reads
+	// and re-verifies the campfire's entire on-disk history — O(total messages) per
+	// op, which on a multi-thousand-message campfire (e.g. an rd workspace) costs
+	// seconds per call. The cursor is keyed on the on-disk leaf filename, distinct
+	// from the timestamp-keyed read (subscription-delivery) cursor.
+	cursor, err := s.GetFSSyncCursor(cfID)
+	if err != nil {
+		return fmt.Errorf("reading fs sync cursor for %s: %w", cfID, err)
+	}
+
+	// Rewind the read bound by a small window so a backward clock step cannot
+	// permanently hide a message just under the cursor. Re-reads inside the window
+	// are idempotent and cheap; the stored cursor still advances to the true max.
+	fsMessages, err := fsTransport.ListMessagesSince(cfID, fs.LookbackCursor(cursor, fsSyncLookback))
 	if err != nil {
 		return fmt.Errorf("reading filesystem transport %q: %w", transportDir, err)
 	}
-	for _, fsMsg := range fsMessages {
+
+	// Advance the cursor only across leaves we fully processed, in chronological
+	// order. A transient AddMessage failure (e.g. DB error) halts advancement at
+	// the prior leaf so the message is retried on the next sync rather than
+	// silently skipped. Signature/provenance rejections are permanent, so the
+	// cursor still advances past them — re-reading an invalid file can never
+	// succeed, and not advancing would re-scan it on every future sync.
+	advanceTo := cursor
+	for i := range fsMessages {
+		fsMsg := fsMessages[i].Message
 		// workspace-h0t: verify message signature before storing.
 		if !fsMsg.VerifySignature() {
+			advanceTo = fsMessages[i].Leaf
 			continue
 		}
 		// Reject messages with invalid or missing provenance hops.
 		if !fsMsg.VerifyProvenance() {
+			advanceTo = fsMessages[i].Leaf
 			continue
 		}
-		s.AddMessage(store.MessageRecordFromMessage(cfID, &fsMsg, store.NowNano())) //nolint:errcheck
+		if _, err := s.AddMessage(store.MessageRecordFromMessage(cfID, &fsMsg, store.NowNano())); err != nil {
+			// Stop advancing: leave the cursor before this message so it is retried.
+			break
+		}
+		advanceTo = fsMessages[i].Leaf
+	}
+
+	// Persist the cursor only when it moves forward, to avoid a redundant write on
+	// a no-op sync. advanceTo is monotonic because fsMessages is in lex order.
+	if advanceTo > cursor {
+		if err := s.SetFSSyncCursor(cfID, advanceTo); err != nil {
+			return fmt.Errorf("advancing fs sync cursor for %s: %w", cfID, err)
+		}
 	}
 	return nil
 }

@@ -15,13 +15,16 @@ package protocol_test
 //     locally-cached message and does not panic or return an error to the caller.
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/pkg/identity"
 )
 
 // TestSyncIfFilesystem_ReadContinuesOnTransportFailure verifies that Read()
@@ -215,5 +218,64 @@ func TestSyncIfFilesystem_JoinThenReadAfterTransportRemoval(t *testing.T) {
 	// The joiner synced the creator's message during Join, so it should be cached.
 	if len(result.Messages) == 0 {
 		t.Error("expected synced message after Join, got none")
+	}
+}
+
+// TestSyncIfFilesystem_WarningDedupedAcrossReads verifies that the non-fatal
+// "serving from local store" sync warning is logged at most once per process for
+// a permanently-removed transport directory, rather than on every Read.
+//
+// Before the fix (campfireagent-60e) a long-running poller (e.g. the rd
+// dispatcher reading /ready every 2s) emitted this line on every poll, drowning
+// the operator log. The read still serves from the local store either way; only
+// the logging frequency changed.
+func TestSyncIfFilesystem_WarningDedupedAcrossReads(t *testing.T) {
+	creator := newJoinClient(t)
+	base := t.TempDir()
+	beaconDir := t.TempDir()
+	createResult, err := creator.Create(protocol.CreateRequest{
+		Transport:    &protocol.FilesystemTransport{Dir: base},
+		JoinProtocol: "open",
+		BeaconDir:    beaconDir,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	campfireID := createResult.CampfireID
+
+	if _, err := creator.Send(protocol.SendRequest{
+		CampfireID: campfireID,
+		Payload:    []byte("hello"),
+		Tags:       []string{"test"},
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	// Populate the local store, then remove the transport dir.
+	if _, err := creator.Read(protocol.ReadRequest{CampfireID: campfireID}); err != nil {
+		t.Fatalf("warmup Read: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(base, campfireID)); err != nil {
+		t.Fatalf("removing transport dir: %v", err)
+	}
+
+	// Capture standard logger output (read.go uses log.Printf).
+	var buf bytes.Buffer
+	origOut := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() { log.SetOutput(origOut); log.SetFlags(origFlags) }()
+
+	const reads = 5
+	for i := 0; i < reads; i++ {
+		if _, err := creator.Read(protocol.ReadRequest{CampfireID: campfireID}); err != nil {
+			t.Fatalf("Read %d after transport removal: %v — must stay non-fatal", i, err)
+		}
+	}
+
+	got := strings.Count(buf.String(), "serving from local store")
+	if got != 1 {
+		t.Errorf("'serving from local store' logged %d times across %d reads, want exactly 1\nlog:\n%s",
+			got, reads, buf.String())
 	}
 }

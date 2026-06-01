@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 
 // Transport manages the filesystem transport for campfires.
 type Transport struct {
-	BaseDir    string // $CF_TRANSPORT_DIR, default /tmp/campfire
+	BaseDir string // $CF_TRANSPORT_DIR, default /tmp/campfire
 	rootDir string // if set, CampfireDir returns this directly (path-rooted mode)
 }
 
@@ -179,7 +180,8 @@ func migrateLockPath(campfireDir string) string {
 
 // WriteMessage writes a message to the campfire's messages directory using the
 // day-bucketed layout introduced in v0.31:
-//   messages/<YYYY-MM>/<DD>/<NanosWidth-nanos>-<message-id>.cbor
+//
+//	messages/<YYYY-MM>/<DD>/<NanosWidth-nanos>-<message-id>.cbor
 //
 // Before writing, a shared flock (LOCK_SH) is acquired on .migrate.lock so that
 // any concurrent migrate-store run (which holds LOCK_EX) will block all writers
@@ -403,6 +405,138 @@ var dayRE = regexp.MustCompile(`^\d{2}$`)
 // Returns (nil, nil) if the messages directory does not exist (e.g. during the
 // atomic swap window in migrate-store or for a brand-new campfire).
 func (t *Transport) ListMessages(campfireID string) ([]message.Message, error) {
+	leaves, err := t.collectLeaves(campfireID)
+	if err != nil {
+		return nil, err
+	}
+	lms := readLeaves(leaves)
+	if len(lms) == 0 {
+		// Preserve the historical nil-slice contract for empty/missing dirs
+		// (callers and tests distinguish nil from an empty non-nil slice).
+		return nil, nil
+	}
+	msgs := make([]message.Message, len(lms))
+	for i := range lms {
+		msgs[i] = lms[i].Message
+	}
+	return msgs, nil
+}
+
+// LeafMessage pairs a decoded message with its on-disk leaf filename. The leaf
+// carries the fixed-width nanos prefix that defines chronological order and is
+// the value persisted as the incremental-sync cursor.
+type LeafMessage struct {
+	Leaf    string
+	Message message.Message
+}
+
+// ListMessagesSince returns the messages whose leaf filename sorts strictly after
+// afterLeaf, in chronological order, each paired with its leaf filename. Because
+// leaf filenames carry a fixed-width zero-padded nanosecond prefix, lex order
+// equals chronological order, so a leaf cursor with strict ">" comparison selects
+// exactly the messages written after the cursor — no re-reads, no skips.
+//
+// Pass afterLeaf == "" to read the full history (first sync).
+//
+// Critically, only the surviving (post-cursor) files are read from disk and
+// unmarshalled — old messages are dropped at the directory-listing level before
+// any file is opened. This is the difference between O(total messages) and
+// O(new messages) per sync.
+func (t *Transport) ListMessagesSince(campfireID, afterLeaf string) ([]LeafMessage, error) {
+	leaves, err := t.collectLeaves(campfireID)
+	if err != nil {
+		return nil, err
+	}
+	// Drop leaves at or before the cursor before any file is read.
+	filtered := leaves[:0:0]
+	for _, lf := range leaves {
+		if lf.name > afterLeaf {
+			filtered = append(filtered, lf)
+		}
+	}
+	return readLeaves(filtered), nil
+}
+
+// LookbackCursor returns a synthetic leaf bound that is `lookback` earlier than
+// the given cursor leaf, for use as the afterLeaf argument to ListMessagesSince.
+//
+// The bare leaf cursor with strict ">" is exact under a monotonic clock, but a
+// backward clock step (e.g. an NTP correction) between two writes can produce a
+// new message whose nanos prefix sorts below the cursor — which a strict cursor
+// would skip permanently. Rewinding the cursor by a small lookback window makes
+// the sync re-examine recent messages so such a message is still imported.
+// Re-imports are idempotent (INSERT OR IGNORE by message ID), so the only cost
+// is reading the few messages inside the window — far cheaper than the full
+// history, preserving the O(new) property.
+//
+// The returned bound has no "-<id>" suffix, so a real leaf sharing its nanos
+// prefix still sorts strictly after it (longer string, same prefix). Returns ""
+// unchanged (first sync reads the full history).
+func LookbackCursor(leaf string, lookback time.Duration) string {
+	if leaf == "" || lookback <= 0 {
+		// Non-positive lookback is a no-op: return the exact leaf for strict
+		// cursor semantics (used by tests; production passes a positive window).
+		return leaf
+	}
+	nanos, err := parseNanosPrefix(leaf)
+	if err != nil {
+		// Unparseable cursor: fall back to the exact leaf (no rewind).
+		return leaf
+	}
+	bound := nanos - lookback.Nanoseconds()
+	if bound < 0 {
+		bound = 0
+	}
+	return fmt.Sprintf("%0*d", NanosWidth, bound)
+}
+
+// DefaultSyncLookback is the default incremental-sync lookback window (see
+// LookbackCursor). It comfortably covers typical NTP step corrections.
+const DefaultSyncLookback = 2 * time.Second
+
+// SyncLookbackFromEnv returns the incremental-sync lookback window, read from
+// CF_FS_SYNC_LOOKBACK_MS (non-negative integer milliseconds; 0 = strict cursor),
+// defaulting to DefaultSyncLookback. This is the single source of truth shared by
+// both filesystem-sync call paths (cmd StoreSyncer and protocol syncIfFilesystem).
+func SyncLookbackFromEnv() time.Duration {
+	if v := os.Getenv("CF_FS_SYNC_LOOKBACK_MS"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms >= 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return DefaultSyncLookback
+}
+
+// leafEntry is a single on-disk message file: its leaf filename (which carries
+// the chronological nanos prefix) and its full path.
+type leafEntry struct {
+	name string // leaf filename e.g. "0000000001234567890-<id>.cbor"
+	path string // full path on disk
+}
+
+// readLeaves reads and unmarshals each leaf in order, skipping files that
+// disappear mid-walk or fail to decode. Returns one LeafMessage per successfully
+// decoded file, preserving chronological order.
+func readLeaves(leaves []leafEntry) []LeafMessage {
+	var out []LeafMessage
+	for _, lf := range leaves {
+		data, err := os.ReadFile(lf.path)
+		if err != nil {
+			continue // File disappeared mid-walk — tolerate.
+		}
+		var msg message.Message
+		if err := cfencoding.Unmarshal(data, &msg); err != nil {
+			continue // Corrupt file — skip (same behaviour as before).
+		}
+		out = append(out, LeafMessage{Leaf: lf.name, Message: msg})
+	}
+	return out
+}
+
+// collectLeaves walks the bucketed + flat message layouts for a campfire and
+// returns all leaf entries sorted in chronological (lex) order. Directory
+// listings are cheap metadata reads; no message file is opened here.
+func (t *Transport) collectLeaves(campfireID string) ([]leafEntry, error) {
 	dir := filepath.Join(t.CampfireDir(campfireID), "messages")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -414,12 +548,6 @@ func (t *Transport) ListMessages(campfireID string) ([]message.Message, error) {
 		return nil, fmt.Errorf("listing messages: %w", err)
 	}
 
-	// leafFiles maps leaf filename → full path, used for deduplication and
-	// lex-sort merge. We populate it from both the bucketed and flat layouts.
-	type leafEntry struct {
-		name string // leaf filename e.g. "0000000001234567890-<id>.cbor"
-		path string // full path on disk
-	}
 	var leaves []leafEntry
 
 	for _, e := range entries {
@@ -490,19 +618,7 @@ func (t *Transport) ListMessages(campfireID string) ([]message.Message, error) {
 		return leaves[i].name < leaves[j].name
 	})
 
-	var msgs []message.Message
-	for _, lf := range leaves {
-		data, err := os.ReadFile(lf.path)
-		if err != nil {
-			continue // File disappeared mid-walk — tolerate.
-		}
-		var msg message.Message
-		if err := cfencoding.Unmarshal(data, &msg); err != nil {
-			continue // Corrupt file — skip (same behaviour as before).
-		}
-		msgs = append(msgs, msg)
-	}
-	return msgs, nil
+	return leaves, nil
 }
 
 // Remove removes the entire transport directory for a campfire.

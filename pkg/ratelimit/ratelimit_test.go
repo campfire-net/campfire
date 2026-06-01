@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/message"
-	"github.com/campfire-net/campfire/pkg/ratelimit"
 	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/pkg/ratelimit"
 )
 
 // --- Fake store ---
@@ -32,15 +32,15 @@ func (f *fakeStore) AddMessage(m store.MessageRecord) (bool, error) {
 
 // Remaining store.Store methods — all no-ops for testing.
 
-func (f *fakeStore) AddMembership(m store.Membership) error                { return nil }
-func (f *fakeStore) UpdateMembershipRole(campfireID, role string) error    { return nil }
-func (f *fakeStore) RemoveMembership(campfireID string) error              { return nil }
+func (f *fakeStore) AddMembership(m store.Membership) error             { return nil }
+func (f *fakeStore) UpdateMembershipRole(campfireID, role string) error { return nil }
+func (f *fakeStore) RemoveMembership(campfireID string) error           { return nil }
 func (f *fakeStore) GetMembership(campfireID string) (*store.Membership, error) {
 	return nil, nil
 }
 func (f *fakeStore) ListMemberships() ([]store.Membership, error) { return nil, nil }
 
-func (f *fakeStore) HasMessage(id string) (bool, error)               { return false, nil }
+func (f *fakeStore) HasMessage(id string) (bool, error)                 { return false, nil }
 func (f *fakeStore) GetMessage(id string) (*store.MessageRecord, error) { return nil, nil }
 func (f *fakeStore) GetMessageByPrefix(prefix string) (*store.MessageRecord, error) {
 	return nil, nil
@@ -57,10 +57,13 @@ func (f *fakeStore) ListReferencingMessages(messageID string) ([]store.MessageRe
 func (f *fakeStore) ListCompactionEvents(campfireID string) ([]store.MessageRecord, error) {
 	return nil, nil
 }
-func (f *fakeStore) GetReadCursor(campfireID string) (int64, error)          { return 0, nil }
-func (f *fakeStore) SetReadCursor(campfireID string, timestamp int64) error  { return nil }
+func (f *fakeStore) GetReadCursor(campfireID string) (int64, error)         { return 0, nil }
+func (f *fakeStore) SetReadCursor(campfireID string, timestamp int64) error { return nil }
+func (f *fakeStore) GetFSSyncCursor(campfireID string) (string, error)      { return "", nil }
+func (f *fakeStore) SetFSSyncCursor(campfireID, leaf string) error          { return nil }
+func (f *fakeStore) PurgeCampfire(campfireID string) error                  { return nil }
 
-func (f *fakeStore) UpsertPeerEndpoint(e store.PeerEndpoint) error  { return nil }
+func (f *fakeStore) UpsertPeerEndpoint(e store.PeerEndpoint) error            { return nil }
 func (f *fakeStore) DeletePeerEndpoint(campfireID, memberPubkey string) error { return nil }
 func (f *fakeStore) ListPeerEndpoints(campfireID string) ([]store.PeerEndpoint, error) {
 	return nil, nil
@@ -83,15 +86,15 @@ func (f *fakeStore) UpdateCampfireID(oldID, newID string) error { return nil }
 func (f *fakeStore) Close() error                               { return nil }
 
 // InviteStore stubs — required by store.Store interface, not exercised by rate limit tests.
-func (f *fakeStore) CreateInvite(inv store.InviteRecord) error                     { return nil }
+func (f *fakeStore) CreateInvite(inv store.InviteRecord) error { return nil }
 func (f *fakeStore) ValidateInvite(campfireID, inviteCode string) (*store.InviteRecord, error) {
 	return nil, nil
 }
-func (f *fakeStore) RevokeInvite(campfireID, inviteCode string) error              { return nil }
-func (f *fakeStore) ListInvites(campfireID string) ([]store.InviteRecord, error)   { return nil, nil }
-func (f *fakeStore) LookupInvite(inviteCode string) (*store.InviteRecord, error)   { return nil, nil }
-func (f *fakeStore) HasAnyInvites(campfireID string) (bool, error)                 { return false, nil }
-func (f *fakeStore) IncrementInviteUse(inviteCode string) error                    { return nil }
+func (f *fakeStore) RevokeInvite(campfireID, inviteCode string) error            { return nil }
+func (f *fakeStore) ListInvites(campfireID string) ([]store.InviteRecord, error) { return nil, nil }
+func (f *fakeStore) LookupInvite(inviteCode string) (*store.InviteRecord, error) { return nil, nil }
+func (f *fakeStore) HasAnyInvites(campfireID string) (bool, error)               { return false, nil }
+func (f *fakeStore) IncrementInviteUse(inviteCode string) error                  { return nil }
 func (f *fakeStore) ValidateAndUseInvite(campfireID, inviteCode string) (*store.InviteRecord, error) {
 	return nil, nil
 }
@@ -134,12 +137,12 @@ func (f *fakeStore) SetProjectionMetadata(campfireID, viewName string, meta stor
 
 func makeRecord(campfireID string, payloadSize int) store.MessageRecord {
 	return store.MessageRecord{
-		ID:         "test-msg",
-		CampfireID: campfireID,
-		Payload:    make([]byte, payloadSize),
-		Tags:       []string{},
+		ID:          "test-msg",
+		CampfireID:  campfireID,
+		Payload:     make([]byte, payloadSize),
+		Tags:        []string{},
 		Antecedents: []string{},
-		Provenance: []message.ProvenanceHop{},
+		Provenance:  []message.ProvenanceHop{},
 	}
 }
 
@@ -451,7 +454,6 @@ func TestInnerStoreErrorPropagated(t *testing.T) {
 // TestWrapperImplementsStore verifies the compile-time assertion that *Wrapper
 // satisfies store.Store (the decorator contract).
 var _ store.Store = (*ratelimit.Wrapper)(nil)
-
 
 // TestRateLimitWindowExpiryWithFakeClock verifies that old timestamps are evicted
 // when the clock advances past the 1-minute window boundary. Uses an injectable

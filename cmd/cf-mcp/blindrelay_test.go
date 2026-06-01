@@ -18,11 +18,11 @@ import (
 	"time"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	"github.com/campfire-net/campfire/cf-protocol/store"
+	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
+	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
-	"github.com/campfire-net/campfire/cf-protocol/store"
-	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
-	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 )
 
 // ---------------------------------------------------------------------------
@@ -253,9 +253,9 @@ func (f *fakeStoreForRateLimit) AddMessage(m store.MessageRecord) (bool, error) 
 	f.calls++
 	return f.err == nil, f.err
 }
-func (f *fakeStoreForRateLimit) AddMembership(m store.Membership) error                { return nil }
-func (f *fakeStoreForRateLimit) UpdateMembershipRole(campfireID, role string) error    { return nil }
-func (f *fakeStoreForRateLimit) RemoveMembership(campfireID string) error              { return nil }
+func (f *fakeStoreForRateLimit) AddMembership(m store.Membership) error             { return nil }
+func (f *fakeStoreForRateLimit) UpdateMembershipRole(campfireID, role string) error { return nil }
+func (f *fakeStoreForRateLimit) RemoveMembership(campfireID string) error           { return nil }
 func (f *fakeStoreForRateLimit) GetMembership(campfireID string) (*store.Membership, error) {
 	return nil, nil
 }
@@ -279,10 +279,13 @@ func (f *fakeStoreForRateLimit) ListReferencingMessages(messageID string) ([]sto
 func (f *fakeStoreForRateLimit) ListCompactionEvents(campfireID string) ([]store.MessageRecord, error) {
 	return nil, nil
 }
-func (f *fakeStoreForRateLimit) GetReadCursor(campfireID string) (int64, error)         { return 0, nil }
-func (f *fakeStoreForRateLimit) SetReadCursor(campfireID string, ts int64) error        { return nil }
-func (f *fakeStoreForRateLimit) UpsertPeerEndpoint(e store.PeerEndpoint) error          { return nil }
-func (f *fakeStoreForRateLimit) DeletePeerEndpoint(campfireID, pk string) error         { return nil }
+func (f *fakeStoreForRateLimit) GetReadCursor(campfireID string) (int64, error)    { return 0, nil }
+func (f *fakeStoreForRateLimit) SetReadCursor(campfireID string, ts int64) error   { return nil }
+func (f *fakeStoreForRateLimit) GetFSSyncCursor(campfireID string) (string, error) { return "", nil }
+func (f *fakeStoreForRateLimit) SetFSSyncCursor(campfireID, leaf string) error     { return nil }
+func (f *fakeStoreForRateLimit) PurgeCampfire(campfireID string) error             { return nil }
+func (f *fakeStoreForRateLimit) UpsertPeerEndpoint(e store.PeerEndpoint) error     { return nil }
+func (f *fakeStoreForRateLimit) DeletePeerEndpoint(campfireID, pk string) error    { return nil }
 func (f *fakeStoreForRateLimit) ListPeerEndpoints(campfireID string) ([]store.PeerEndpoint, error) {
 	return nil, nil
 }
@@ -305,15 +308,19 @@ func (f *fakeStoreForRateLimit) CreateInvite(inv store.InviteRecord) error  { re
 func (f *fakeStoreForRateLimit) ValidateInvite(campfireID, inviteCode string) (*store.InviteRecord, error) {
 	return nil, nil
 }
-func (f *fakeStoreForRateLimit) RevokeInvite(campfireID, inviteCode string) error            { return nil }
-func (f *fakeStoreForRateLimit) ListInvites(campfireID string) ([]store.InviteRecord, error)  { return nil, nil }
-func (f *fakeStoreForRateLimit) LookupInvite(inviteCode string) (*store.InviteRecord, error) { return nil, nil }
-func (f *fakeStoreForRateLimit) HasAnyInvites(campfireID string) (bool, error)               { return false, nil }
-func (f *fakeStoreForRateLimit) IncrementInviteUse(inviteCode string) error { return nil }
+func (f *fakeStoreForRateLimit) RevokeInvite(campfireID, inviteCode string) error { return nil }
+func (f *fakeStoreForRateLimit) ListInvites(campfireID string) ([]store.InviteRecord, error) {
+	return nil, nil
+}
+func (f *fakeStoreForRateLimit) LookupInvite(inviteCode string) (*store.InviteRecord, error) {
+	return nil, nil
+}
+func (f *fakeStoreForRateLimit) HasAnyInvites(campfireID string) (bool, error) { return false, nil }
+func (f *fakeStoreForRateLimit) IncrementInviteUse(inviteCode string) error    { return nil }
 func (f *fakeStoreForRateLimit) ValidateAndUseInvite(campfireID, inviteCode string) (*store.InviteRecord, error) {
 	return nil, nil
 }
-func (f *fakeStoreForRateLimit) UpsertEpochSecret(secret store.EpochSecret) error            { return nil }
+func (f *fakeStoreForRateLimit) UpsertEpochSecret(secret store.EpochSecret) error { return nil }
 func (f *fakeStoreForRateLimit) GetEpochSecret(campfireID string, epoch uint64) (*store.EpochSecret, error) {
 	return nil, nil
 }
