@@ -105,7 +105,7 @@ func (ts *TableStore) nsPKFilter() string {
 	if ts.namespace == "" {
 		return ""
 	}
-	lo := encodeKey(ts.namespace+"|") // e.g. "abc123x7c"
+	lo := encodeKey(ts.namespace + "|") // e.g. "abc123x7c"
 	// Increment the last char to get the exclusive upper bound.
 	hi := lo[:len(lo)-1] + string(lo[len(lo)-1]+1)
 	return fmt.Sprintf("PartitionKey ge '%s' and PartitionKey lt '%s'", lo, hi)
@@ -240,6 +240,51 @@ func (ts *TableStore) UpdateMembershipRole(campfireID, role string) error {
 // RemoveMembership deletes a campfire membership.
 func (ts *TableStore) RemoveMembership(campfireID string) error {
 	return deleteEntity(context.Background(), ts.memberships, ts.pk(campfireID), "membership")
+}
+
+// PurgeCampfire deletes all local state for a campfire across every table. Used
+// by the `cf gc` local-maintenance command; the hosted server does not invoke
+// it, but the method is implemented for interface completeness and correctness.
+func (ts *TableStore) PurgeCampfire(campfireID string) error {
+	ctx := context.Background()
+	pk := ts.pk(campfireID)
+	for _, tbl := range []*aztables.Client{
+		ts.messages, ts.peers, ts.thresholds, ts.pending,
+		ts.epochs, ts.filters, ts.projections, ts.memberships, ts.cursors,
+	} {
+		if err := ts.deletePartition(ctx, tbl, pk); err != nil {
+			return fmt.Errorf("aztable: PurgeCampfire: %w", err)
+		}
+	}
+	ts.mu.Lock()
+	delete(ts.supersededCache, campfireID)
+	ts.mu.Unlock()
+	return nil
+}
+
+// deletePartition deletes every entity in the given table whose PartitionKey
+// equals pk. Tables with no entities for pk are a no-op.
+func (ts *TableStore) deletePartition(ctx context.Context, tbl *aztables.Client, pk string) error {
+	pager := tbl.NewListEntitiesPager(&aztables.ListEntitiesOptions{
+		Filter: strPtr(fmt.Sprintf("PartitionKey eq '%s'", pk)),
+	})
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("listing partition: %w", err)
+		}
+		for _, raw := range page.Entities {
+			var m map[string]any
+			if err := unmarshalEntity(raw, &m); err != nil {
+				return err
+			}
+			rk, _ := m["RowKey"].(string)
+			if err := deleteEntity(ctx, tbl, pk, rk); err != nil {
+				return fmt.Errorf("deleting entity: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // GetMembership retrieves a single membership by campfire ID.
@@ -690,6 +735,35 @@ func (ts *TableStore) SetReadCursor(campfireID string, timestamp int64) error {
 		"RowKey":       "cursor",
 		"CampfireID":   campfireID,
 		"LastReadAt":   strconv.FormatInt(timestamp, 10),
+	}
+	return upsertEntity(context.Background(), ts.cursors, entity)
+}
+
+// GetFSSyncCursor returns the last filesystem-transport leaf imported for a
+// campfire. Returns "" if absent. The hosted server is push-based and does not
+// run a filesystem syncer, but the method is implemented for interface
+// completeness and correctness should a filesystem syncer ever be attached.
+func (ts *TableStore) GetFSSyncCursor(campfireID string) (string, error) {
+	raw, err := getEntity(context.Background(), ts.cursors, ts.pk(campfireID), "fs_sync_cursor")
+	if err != nil {
+		return "", fmt.Errorf("aztable: GetFSSyncCursor: %w", err)
+	}
+	if raw == nil {
+		return "", nil
+	}
+	if s, ok := raw["LastLeaf"].(string); ok {
+		return s, nil
+	}
+	return "", nil
+}
+
+// SetFSSyncCursor records the last filesystem-transport leaf imported for a campfire.
+func (ts *TableStore) SetFSSyncCursor(campfireID, leaf string) error {
+	entity := map[string]any{
+		"PartitionKey": ts.pk(campfireID),
+		"RowKey":       "fs_sync_cursor",
+		"CampfireID":   campfireID,
+		"LastLeaf":     leaf,
 	}
 	return upsertEntity(context.Background(), ts.cursors, entity)
 }

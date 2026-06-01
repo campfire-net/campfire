@@ -59,11 +59,11 @@ type cachedView struct {
 // AddMessage intercepts each inserted message and, for on-write Class 1 views,
 // evaluates the predicate and inserts matching entries.
 type ProjectionMiddleware struct {
-	base    store.Store
+	base     store.Store
 	maxViews int
 
-	mu         sync.Mutex
-	viewCache  map[string][]cachedView // campfireID → classified views
+	mu        sync.Mutex
+	viewCache map[string][]cachedView // campfireID → classified views
 }
 
 // New creates a ProjectionMiddleware wrapping base.
@@ -588,6 +588,9 @@ func (m *ProjectionMiddleware) UpdateMembershipRole(campfireID, role string) err
 func (m *ProjectionMiddleware) RemoveMembership(campfireID string) error {
 	return m.base.RemoveMembership(campfireID)
 }
+func (m *ProjectionMiddleware) PurgeCampfire(campfireID string) error {
+	return m.base.PurgeCampfire(campfireID)
+}
 func (m *ProjectionMiddleware) GetMembership(campfireID string) (*store.Membership, error) {
 	return m.base.GetMembership(campfireID)
 }
@@ -620,6 +623,12 @@ func (m *ProjectionMiddleware) GetReadCursor(campfireID string) (int64, error) {
 }
 func (m *ProjectionMiddleware) SetReadCursor(campfireID string, timestamp int64) error {
 	return m.base.SetReadCursor(campfireID, timestamp)
+}
+func (m *ProjectionMiddleware) GetFSSyncCursor(campfireID string) (string, error) {
+	return m.base.GetFSSyncCursor(campfireID)
+}
+func (m *ProjectionMiddleware) SetFSSyncCursor(campfireID, leaf string) error {
+	return m.base.SetFSSyncCursor(campfireID, leaf)
 }
 func (m *ProjectionMiddleware) UpsertPeerEndpoint(e store.PeerEndpoint) error {
 	return m.base.UpsertPeerEndpoint(e)

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/campfire-net/campfire/cf-protocol/internal/store"
 	"github.com/campfire-net/campfire/cf-protocol/internal/transport"
@@ -142,7 +141,12 @@ func (c *Client) Read(req ReadRequest) (*ReadResult, error) {
 	// Sync-before-query for filesystem and GitHub transport campfires.
 	if !req.SkipSync {
 		if err := c.syncViaInterface(req.CampfireID); err != nil {
-			log.Printf("campfire: sync(%s): %v — serving from local store", req.CampfireID, err)
+			// Non-fatal: the local store still serves whatever it already has.
+			// Deduplicate so a permanent condition (e.g. a removed transport dir)
+			// is logged once per process, not on every read (campfireagent-60e).
+			if c.shouldLogSyncWarn(req.CampfireID, err.Error()) {
+				log.Printf("campfire: sync(%s): %v — serving from local store", req.CampfireID, err)
+			}
 		}
 	}
 
@@ -263,42 +267,23 @@ func (c *Client) syncIfFilesystem(campfireID string) error {
 
 	tt := transport.ResolveType(*m)
 	if tt != transport.TypeFilesystem {
-		// GitHub and HTTP campfires don't use filesystem sync.
+		// GitHub and HTTP campfires don't use filesystem sync. This is the Read /
+		// Await sync-before-query default; it stays filesystem-only so the hosted
+		// relay (which reads its own authoritative store and does NOT use Subscribe)
+		// never HTTP-pulls from peers on a read. SDK p2p-http sync happens in the
+		// Subscribe path via syncForSubscribe (campfire-d80).
 		return nil
 	}
 
-	fsTransport := fs.ForDir(m.TransportDir)
-
-	// Check that the campfire transport directory exists before listing.
-	// ListMessages returns nil/nil for a missing directory (resilient design for
-	// one-shot reads), but for sync we must distinguish "no new messages" from
-	// "transport directory has been removed". A missing directory is a terminal
-	// error for subscriptions (the transport is gone; there is nothing to sync).
-	campfireDir := fsTransport.CampfireDir(campfireID)
-	if _, statErr := os.Stat(campfireDir); os.IsNotExist(statErr) {
-		return fmt.Errorf("campfire transport directory removed: %s", campfireDir)
-	}
-
-	fsMessages, err := fsTransport.ListMessages(campfireID)
-	if err != nil {
-		return fmt.Errorf("listing filesystem messages: %w", err)
-	}
-
-	for _, fsMsg := range fsMessages {
-		// Verify message signature before storing (security: workspace-h0t).
-		if !fsMsg.VerifySignature() {
-			continue
-		}
-		// Reject messages with invalid or missing provenance hops.
-		// VerifyProvenance checks non-empty Provenance and valid hop signatures.
-		if !fsMsg.VerifyProvenance() {
-			continue
-		}
-		c.store.AddMessage(store.MessageRecordFromMessage(campfireID, &fsMsg, store.NowNano())) //nolint:errcheck
-	}
-
-	return nil
+	// Delegate to the canonical filesystem sync (sync.go) — one implementation
+	// shared by the Client, the Subscribe path, and the cf CLI shims.
+	return SyncFilesystem(c.store, campfireID, m.TransportDir)
 }
+
+// fsSyncLookback is the incremental-sync clock-skew lookback window for the
+// protocol-package syncIfFilesystem path. Shares the env source of truth with
+// the cmd StoreSyncer path (fs.SyncLookbackFromEnv). A var so tests can override.
+var fsSyncLookback = fs.SyncLookbackFromEnv()
 
 // readFromHTTPPeers reads messages directly from the relay — no local copy.
 // The relay is the source of truth for p2p-http campfires. Returns messages

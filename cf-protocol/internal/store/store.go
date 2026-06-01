@@ -63,6 +63,17 @@ CREATE TABLE IF NOT EXISTS read_cursors (
     FOREIGN KEY (campfire_id) REFERENCES campfire_memberships(campfire_id)
 );
 
+-- Filesystem sync cursor: the leaf filename of the last message imported from a
+-- filesystem-transport campfire directory. Distinct from read_cursors (which is
+-- the subscription-delivery cursor keyed on message timestamp). This cursor is
+-- keyed on the on-disk leaf name so incremental sync can skip messages already
+-- imported without re-reading and re-verifying the entire history on every op.
+CREATE TABLE IF NOT EXISTS fs_sync_cursors (
+    campfire_id    TEXT PRIMARY KEY,
+    last_leaf      TEXT NOT NULL,
+    FOREIGN KEY (campfire_id) REFERENCES campfire_memberships(campfire_id)
+);
+
 CREATE TABLE IF NOT EXISTS filters (
     campfire_id    TEXT NOT NULL,
     direction      TEXT NOT NULL,
@@ -119,6 +130,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at  INTEGER NOT NULL
 );
 `
+
 // migration describes a single schema migration step.
 type migration struct {
 	version     int
@@ -251,7 +263,6 @@ func runMigrations(db *sql.DB) error {
 	return nil
 }
 
-
 // PeerRole constants define the peer endpoint role namespace.
 //
 // This is a separate namespace from the campfire membership role (defined in
@@ -332,11 +343,11 @@ type Membership struct {
 // EpochSecret holds the root secret and derived CEK for a specific (campfire, epoch) pair.
 // Stored in campfire_epoch_secrets for dual-epoch grace period support (spec §3.5).
 type EpochSecret struct {
-	CampfireID  string
-	Epoch       uint64
-	RootSecret  []byte
-	CEK         []byte
-	CreatedAt   int64
+	CampfireID string
+	Epoch      uint64
+	RootSecret []byte
+	CEK        []byte
+	CreatedAt  int64
 }
 
 // inferTransportType applies the legacy heuristic to determine a transport type
@@ -516,6 +527,56 @@ func (s *SQLiteStore) RemoveMembership(campfireID string) error {
 	if err != nil {
 		return fmt.Errorf("removing membership: %w", err)
 	}
+	return nil
+}
+
+// PurgeCampfire deletes ALL local state for a campfire in a single transaction:
+// messages, cursors, filters, peers, threshold shares, epoch secrets, invites,
+// projections, and the membership itself. Unlike RemoveMembership (which leaves
+// orphaned message rows) and Leave/Disband (protocol operations), this is a
+// local garbage-collection primitive used by `cf gc` to reclaim space from dead
+// campfires. It does NOT touch the filesystem transport directory — the caller
+// removes that separately.
+func (s *SQLiteStore) PurgeCampfire(campfireID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	// Delete messages first so the membership row (referenced by the messages FK)
+	// can be removed without violating the constraint when FK enforcement is on.
+	if _, err := tx.Exec(`DELETE FROM messages WHERE campfire_id = ?`, campfireID); err != nil {
+		return fmt.Errorf("deleting messages: %w", err)
+	}
+	for _, table := range []string{
+		"read_cursors",
+		"fs_sync_cursors",
+		"filters",
+		"peer_endpoints",
+		"threshold_shares",
+		"pending_threshold_shares",
+		"campfire_epoch_secrets",
+		"campfire_invites",
+		"projection_entries",
+		"projection_metadata",
+	} {
+		if _, err := tx.Exec(fmt.Sprintf("DELETE FROM %s WHERE campfire_id = ?", table), campfireID); err != nil {
+			return fmt.Errorf("deleting %s: %w", table, err)
+		}
+	}
+	// Membership last (FK target).
+	if _, err := tx.Exec(`DELETE FROM campfire_memberships WHERE campfire_id = ?`, campfireID); err != nil {
+		return fmt.Errorf("deleting membership: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing purge: %w", err)
+	}
+
+	// Drop any cached superseded-ID artifact for this campfire.
+	s.supersededMu.Lock()
+	delete(s.supersededCache, campfireID)
+	s.supersededMu.Unlock()
 	return nil
 }
 
@@ -1196,6 +1257,37 @@ func (s *SQLiteStore) SetReadCursor(campfireID string, timestamp int64) error {
 	)
 	if err != nil {
 		return fmt.Errorf("setting read cursor: %w", err)
+	}
+	return nil
+}
+
+// GetFSSyncCursor returns the leaf filename of the last message imported from the
+// filesystem transport for a campfire. Returns "" if no cursor exists yet (the
+// first sync reads the full history; subsequent syncs read only newer leaves).
+func (s *SQLiteStore) GetFSSyncCursor(campfireID string) (string, error) {
+	var leaf string
+	err := s.db.QueryRow(`SELECT last_leaf FROM fs_sync_cursors WHERE campfire_id = ?`, campfireID).Scan(&leaf)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("querying fs sync cursor: %w", err)
+	}
+	return leaf, nil
+}
+
+// SetFSSyncCursor records the leaf filename of the last message imported from the
+// filesystem transport for a campfire. Callers advance this only to leaves that
+// were fully processed (imported or deterministically rejected), never past a
+// message that failed a transient store error.
+func (s *SQLiteStore) SetFSSyncCursor(campfireID, leaf string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO fs_sync_cursors (campfire_id, last_leaf) VALUES (?, ?)
+		 ON CONFLICT(campfire_id) DO UPDATE SET last_leaf = ?`,
+		campfireID, leaf, leaf,
+	)
+	if err != nil {
+		return fmt.Errorf("setting fs sync cursor: %w", err)
 	}
 	return nil
 }

@@ -1143,9 +1143,9 @@ func TestAddPushSubscriber_DirectoryPermissions(t *testing.T) {
 // TestBucketFor verifies the bucketFor helper produces zero-padded lex-sortable strings.
 func TestBucketFor(t *testing.T) {
 	cases := []struct {
-		t        time.Time
-		wantYM   string
-		wantDay  string
+		t       time.Time
+		wantYM  string
+		wantDay string
 	}{
 		{time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), "2026-01", "01"},
 		{time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC), "2026-12", "31"},
@@ -1791,4 +1791,167 @@ func newBenchCampfire(b *testing.B) *campfire.Campfire {
 		b.Fatalf("campfire.New(): %v", err)
 	}
 	return cf
+}
+
+// TestListMessagesSince_Incremental verifies the cursor-based read returns only
+// messages written after the cursor leaf, and that the returned leaves are the
+// exact set of files that would be read from disk — proving incremental sync is
+// O(new messages), not O(total). This is the fs-side regression test for the
+// campfireagent-e58 bottleneck (4s rd-create caused by full re-sync per op).
+func TestListMessagesSince_Incremental(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	cfID := cf.PublicKeyHex()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+
+	write := func() string {
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), []byte("x"), nil, nil)
+		if err != nil {
+			t.Fatalf("NewMessage(): %v", err)
+		}
+		if err := tr.WriteMessage(cfID, msg); err != nil {
+			t.Fatalf("WriteMessage(): %v", err)
+		}
+		time.Sleep(time.Millisecond) // unique nanos prefix
+		return msg.ID
+	}
+
+	// Write 3 messages, then full read (cursor "").
+	id0, id1, id2 := write(), write(), write()
+	full, err := tr.ListMessagesSince(cfID, "")
+	if err != nil {
+		t.Fatalf("ListMessagesSince(\"\"): %v", err)
+	}
+	if len(full) != 3 {
+		t.Fatalf("full read returned %d, want 3", len(full))
+	}
+	if full[0].Message.ID != id0 || full[2].Message.ID != id2 {
+		t.Fatalf("full read order wrong: %q..%q", full[0].Message.ID, full[2].Message.ID)
+	}
+	// Leaves must be sorted and non-empty.
+	if !(full[0].Leaf < full[1].Leaf && full[1].Leaf < full[2].Leaf) {
+		t.Fatalf("leaves not strictly increasing: %v", []string{full[0].Leaf, full[1].Leaf, full[2].Leaf})
+	}
+
+	// Cursor = leaf of the 2nd message. Reading since it must return ONLY the 3rd.
+	cursor := full[1].Leaf
+	since, err := tr.ListMessagesSince(cfID, cursor)
+	if err != nil {
+		t.Fatalf("ListMessagesSince(cursor): %v", err)
+	}
+	if len(since) != 1 {
+		t.Fatalf("incremental read returned %d, want 1 (only messages after cursor)", len(since))
+	}
+	if since[0].Message.ID != id2 {
+		t.Fatalf("incremental read returned %q, want %q", since[0].Message.ID, id2)
+	}
+	_ = id1
+
+	// Cursor at the latest leaf → no new messages.
+	noop, err := tr.ListMessagesSince(cfID, full[2].Leaf)
+	if err != nil {
+		t.Fatalf("ListMessagesSince(latest): %v", err)
+	}
+	if len(noop) != 0 {
+		t.Fatalf("read past latest returned %d, want 0", len(noop))
+	}
+
+	// Write 2 more; reading since the old latest returns exactly those 2.
+	id3, id4 := write(), write()
+	tail, err := tr.ListMessagesSince(cfID, full[2].Leaf)
+	if err != nil {
+		t.Fatalf("ListMessagesSince(after-2-more): %v", err)
+	}
+	if len(tail) != 2 {
+		t.Fatalf("tail read returned %d, want 2", len(tail))
+	}
+	if tail[0].Message.ID != id3 || tail[1].Message.ID != id4 {
+		t.Fatalf("tail read ids = %q,%q want %q,%q", tail[0].Message.ID, tail[1].Message.ID, id3, id4)
+	}
+}
+
+// TestLookbackCursor_RecoversBackwardClockStep verifies that the incremental
+// sync cursor's lookback window recovers a message written with a nanos prefix
+// below the cursor — the case a strict (no-lookback) cursor would skip forever.
+// This guards the campfireagent-e58 incremental sync against clock skew.
+func TestLookbackCursor_RecoversBackwardClockStep(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init(): %v", err)
+	}
+	cfID := cf.PublicKeyHex()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+
+	origNow := timeNow
+	defer func() { timeNow = origNow }()
+
+	writeAt := func(clock time.Time) string {
+		timeNow = func() time.Time { return clock }
+		msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), []byte("x"), nil, nil)
+		if err != nil {
+			t.Fatalf("NewMessage(): %v", err)
+		}
+		if err := tr.WriteMessage(cfID, msg); err != nil {
+			t.Fatalf("WriteMessage(): %v", err)
+		}
+		return msg.ID
+	}
+
+	// Message A at a base time; it becomes the cursor.
+	base := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	writeAt(base)
+	full, err := tr.ListMessagesSince(cfID, "")
+	if err != nil {
+		t.Fatalf("initial list: %v", err)
+	}
+	if len(full) != 1 {
+		t.Fatalf("initial list returned %d, want 1", len(full))
+	}
+	cursor := full[0].Leaf
+
+	// Clock steps back 1s (within the 2s lookback): message B has a leaf < cursor.
+	idB := writeAt(base.Add(-1 * time.Second))
+
+	// A strict cursor (no lookback) would miss B entirely.
+	strict, err := tr.ListMessagesSince(cfID, cursor)
+	if err != nil {
+		t.Fatalf("strict list: %v", err)
+	}
+	if len(strict) != 0 {
+		t.Fatalf("strict cursor unexpectedly returned %d messages (test premise wrong)", len(strict))
+	}
+
+	// With a 2s lookback, B is recovered.
+	bound := LookbackCursor(cursor, 2*time.Second)
+	recovered, err := tr.ListMessagesSince(cfID, bound)
+	if err != nil {
+		t.Fatalf("lookback list: %v", err)
+	}
+	foundB := false
+	for _, lm := range recovered {
+		if lm.Message.ID == idB {
+			foundB = true
+		}
+	}
+	if !foundB {
+		t.Fatalf("lookback failed to recover backward-clock message %q (got %d messages)", idB, len(recovered))
+	}
+}
+
+// TestLookbackCursor_EmptyAndFloor verifies the helper's boundary behaviour.
+func TestLookbackCursor_EmptyAndFloor(t *testing.T) {
+	if got := LookbackCursor("", time.Second); got != "" {
+		t.Errorf("LookbackCursor(\"\") = %q, want \"\"", got)
+	}
+	// A tiny nanos prefix minus a large lookback floors at zero, never negative.
+	leaf := fmt.Sprintf("%0*d-abc.cbor", NanosWidth, int64(5))
+	got := LookbackCursor(leaf, time.Hour)
+	want := fmt.Sprintf("%0*d", NanosWidth, int64(0))
+	if got != want {
+		t.Errorf("LookbackCursor floor = %q, want %q", got, want)
+	}
 }

@@ -139,7 +139,11 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 	if err := c.syncViaInterface(req.CampfireID); err != nil {
 		// campfire-agent-zyq: Non-fatal -- the store may have messages from a
 		// previous sync -- but log it so operators can diagnose transport problems.
-		fmt.Fprintf(os.Stderr, "protocol.Client.Await: initial sync error (campfire=%s): %v\n", req.CampfireID, err)
+		// Deduplicated per (campfire, error) so a permanent condition is not
+		// re-logged on every poll (campfireagent-60e).
+		if c.shouldLogSyncWarn(req.CampfireID, err.Error()) {
+			fmt.Fprintf(os.Stderr, "protocol.Client.Await: initial sync error (campfire=%s): %v\n", req.CampfireID, err)
+		}
 	}
 	if rec, err := c.findFulfillment(req.CampfireID, req.TargetMsgID); err != nil {
 		return nil, fmt.Errorf("protocol.Client.Await: initial fulfillment check: %w", err)
@@ -168,7 +172,11 @@ func (c *Client) Await(ctx context.Context, req AwaitRequest) (*Message, error) 
 		if err := c.syncViaInterface(req.CampfireID); err != nil {
 			// campfire-agent-zyq: Non-fatal -- keep polling -- but log so operators
 			// can see repeated transport failures without attaching a debugger.
-			fmt.Fprintf(os.Stderr, "protocol.Client.Await: poll sync error (campfire=%s): %v\n", req.CampfireID, err)
+			// Deduplicated per (campfire, error) so a permanent condition (e.g. a
+			// removed transport dir) is not re-logged every poll (campfireagent-60e).
+			if c.shouldLogSyncWarn(req.CampfireID, err.Error()) {
+				fmt.Fprintf(os.Stderr, "protocol.Client.Await: poll sync error (campfire=%s): %v\n", req.CampfireID, err)
+			}
 		}
 		if rec, err := c.findFulfillment(req.CampfireID, req.TargetMsgID); err != nil {
 			return nil, fmt.Errorf("protocol.Client.Await: fulfillment check: %w", err)

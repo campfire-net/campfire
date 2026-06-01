@@ -14,6 +14,11 @@ type MembershipStore interface {
 	RemoveMembership(campfireID string) error
 	GetMembership(campfireID string) (*Membership, error)
 	ListMemberships() ([]Membership, error)
+	// PurgeCampfire deletes all local state for a campfire (messages, cursors,
+	// projections, peers, key material, and the membership) — the local
+	// garbage-collection primitive behind `cf gc`. Does not touch the transport
+	// directory; the caller removes that.
+	PurgeCampfire(campfireID string) error
 }
 
 // MessageStore manages campfire messages and read cursors.
@@ -29,6 +34,11 @@ type MessageStore interface {
 	ListCompactionEvents(campfireID string) ([]MessageRecord, error)
 	GetReadCursor(campfireID string) (int64, error)
 	SetReadCursor(campfireID string, timestamp int64) error
+	// GetFSSyncCursor / SetFSSyncCursor track the last filesystem-transport leaf
+	// filename imported for a campfire, enabling incremental sync. Distinct from
+	// the timestamp-keyed read cursor above.
+	GetFSSyncCursor(campfireID string) (string, error)
+	SetFSSyncCursor(campfireID, leaf string) error
 }
 
 // PeerStore manages peer endpoint records.
@@ -77,7 +87,7 @@ type InviteRecord struct {
 	CreatedBy  string // pubkey of the agent who created the invite
 	CreatedAt  int64  // unix nanoseconds
 	Revoked    bool
-	MaxUses    int    // 0 = unlimited
+	MaxUses    int // 0 = unlimited
 	UseCount   int
 	Label      string
 }

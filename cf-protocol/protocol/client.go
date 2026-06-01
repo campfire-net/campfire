@@ -113,6 +113,25 @@ type Client struct {
 	// Initialized lazily via membershipLock(). A sync.Map is used so that the
 	// per-campfire mutex can be created without holding a global lock.
 	membershipMu sync.Map
+
+	// loggedSyncWarns deduplicates non-fatal sync-before-query warnings so a
+	// permanent condition (e.g. a removed filesystem transport directory whose
+	// messages are still served from the local store) is logged once per
+	// (campfire, error) per process instead of on every Read/Await poll. Keyed by
+	// "<campfireID>\x00<error string>"; presence means already logged. Without this
+	// a long-running poller (e.g. the rd dispatcher) emits the same
+	// "serving from local store" line every poll interval (campfireagent-60e).
+	loggedSyncWarns sync.Map
+}
+
+// shouldLogSyncWarn reports whether a sync warning for the given campfire and
+// error string has not yet been logged this process, recording it as logged.
+// The first occurrence returns true (log it); identical repeats return false
+// (suppress). Distinct error strings for the same campfire each log once, so a
+// changed failure mode is still surfaced.
+func (c *Client) shouldLogSyncWarn(campfireID, errMsg string) bool {
+	_, alreadyLogged := c.loggedSyncWarns.LoadOrStore(campfireID+"\x00"+errMsg, struct{}{})
+	return !alreadyLogged
 }
 
 // membershipLock returns the per-campfire mutex for campfireID, creating it if
