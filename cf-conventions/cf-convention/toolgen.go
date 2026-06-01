@@ -200,6 +200,7 @@ func listOperations(ctx context.Context, s StoreReader, campfireID, campfireKey,
 		decl      *Declaration
 		messageID string
 		timestamp int64
+		sender    string
 	}
 	var all []opEntry
 	for _, msg := range opMsgs {
@@ -208,7 +209,7 @@ func listOperations(ctx context.Context, s StoreReader, campfireID, campfireKey,
 			continue // skip malformed
 		}
 		decl.MessageID = msg.ID
-		all = append(all, opEntry{decl: decl, messageID: msg.ID, timestamp: msg.Timestamp})
+		all = append(all, opEntry{decl: decl, messageID: msg.ID, timestamp: msg.Timestamp, sender: msg.Sender})
 	}
 
 	// Build supersede winner map: for each target, find the superseding entry with
@@ -217,6 +218,16 @@ func listOperations(ctx context.Context, s StoreReader, campfireID, campfireKey,
 	winnerByTarget := make(map[string]opEntry) // target msgID -> winning entry
 	for _, e := range all {
 		if e.decl.Supersedes == "" {
+			continue
+		}
+		// Authorization (campfire-f5c): a declaration may only supersede a target
+		// signed by the same identity (self-upgrade) or, in online mode, by the
+		// campfire key (owner override). This mirrors the revoke authorization rule
+		// above and prevents any writer from replacing another signer's declaration
+		// via a crafted Supersedes link. An unauthorized superseder does not
+		// supersede the target; it falls through to the (also-gated) version-dedup
+		// pass below, where it cannot win the slot of a different signer.
+		if !precedenceAuthorized(e.sender, opSenderByMsgID[e.decl.Supersedes], campfireKey) {
 			continue
 		}
 		prev, exists := winnerByTarget[e.decl.Supersedes]
@@ -289,21 +300,51 @@ func listOperations(ctx context.Context, s StoreReader, campfireID, campfireKey,
 	// string comparison within the segment. When versions are equal, the entry
 	// with the higher message timestamp wins; ties are broken by message ID
 	// for determinism.
+	//
+	// Authorization (campfire-f5c): each (convention, operation) slot is owned, on a
+	// trust-on-first-use basis, by the signer of its earliest-timestamp declaration.
+	// Only that signer (self-upgrade) or, in online mode, the campfire key (owner
+	// override) may occupy the slot. An unauthorized writer cannot displace the slot
+	// owner regardless of how high a version number it posts — its declaration is
+	// dropped from resolution (it remains in the event log for audit). Without this
+	// gate any writer could hijack an operation by posting (conv, op)@HUGE_VERSION.
 	type convOpKey struct{ convention, operation string }
 	type winner struct {
 		decl      *Declaration
 		timestamp int64
 	}
+
+	// Per-message timestamp lookup (avoids an O(n) scan per declaration).
+	tsByMsgID := make(map[string]int64, len(all))
+	for _, e := range all {
+		tsByMsgID[e.messageID] = e.timestamp
+	}
+
+	// Determine the trust-on-first-use owner signer for each slot: the signer of
+	// the earliest-timestamp declaration (ties broken by message ID for determinism).
+	slotOwner := make(map[convOpKey]string)
+	slotOwnerTS := make(map[convOpKey]int64)
+	slotOwnerMsgID := make(map[convOpKey]string)
+	for _, d := range decls {
+		key := convOpKey{d.Convention, d.Operation}
+		ts := tsByMsgID[d.MessageID]
+		cur, exists := slotOwnerTS[key]
+		if !exists || ts < cur || (ts == cur && d.MessageID < slotOwnerMsgID[key]) {
+			slotOwner[key] = opSenderByMsgID[d.MessageID]
+			slotOwnerTS[key] = ts
+			slotOwnerMsgID[key] = d.MessageID
+		}
+	}
+
 	byConvOp := make(map[convOpKey]winner, len(decls))
 	for _, d := range decls {
 		key := convOpKey{d.Convention, d.Operation}
-		// Find the corresponding timestamp for this declaration.
-		var ts int64
-		for _, e := range all {
-			if e.messageID == d.MessageID {
-				ts = e.timestamp
-				break
-			}
+		ts := tsByMsgID[d.MessageID]
+		// The slot owner (earliest declaration) always occupies its own slot.
+		// Any later contender must be authorized to take precedence over it.
+		if d.MessageID != slotOwnerMsgID[key] &&
+			!precedenceAuthorized(opSenderByMsgID[d.MessageID], slotOwner[key], campfireKey) {
+			continue
 		}
 		prev, exists := byConvOp[key]
 		if !exists {
@@ -328,6 +369,27 @@ func listOperations(ctx context.Context, s StoreReader, campfireID, campfireKey,
 		}
 	}
 	return deduped, nil
+}
+
+// precedenceAuthorized reports whether a declaration signed by candidateSigner is
+// permitted to take precedence over a declaration owned by ownerSigner.
+//
+//   - Self-upgrade: candidateSigner == ownerSigner is always allowed.
+//   - Owner override: in online mode (campfireKey non-empty), the campfire key may
+//     take precedence over any signer.
+//   - An empty candidateSigner is never authorized.
+//
+// This mirrors the revoke authorization rule in listOperations and is the single
+// gate guarding both declaration-precedence paths (Supersedes and version-dedup).
+// See campfire-f5c.
+func precedenceAuthorized(candidateSigner, ownerSigner, campfireKey string) bool {
+	if candidateSigner == "" {
+		return false
+	}
+	if campfireKey != "" && candidateSigner == campfireKey {
+		return true // owner override (online mode)
+	}
+	return ownerSigner != "" && candidateSigner == ownerSigner
 }
 
 // compareVersions compares two dot-separated version strings numerically.
