@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/campfire-net/campfire/cf-protocol/store"
@@ -277,7 +278,92 @@ func listOperations(ctx context.Context, s StoreReader, campfireID, campfireKey,
 		}
 		decls = append(decls, e.decl)
 	}
-	return decls, nil
+
+	// Dedup by (convention, operation): when multiple declarations share the same
+	// (convention, operation) tuple without an explicit Supersedes link, keep only
+	// the one with the highest version. This handles the case where an operator
+	// reinstalls a convention at a new version without setting Supersedes (campfire-03e).
+	//
+	// Version comparison is lexicographic on dot-separated numeric segments
+	// (e.g. "0.1" < "0.2" < "0.10" < "1.0"). Non-numeric segments fall back to
+	// string comparison within the segment. When versions are equal, the entry
+	// with the higher message timestamp wins; ties are broken by message ID
+	// for determinism.
+	type convOpKey struct{ convention, operation string }
+	type winner struct {
+		decl      *Declaration
+		timestamp int64
+	}
+	byConvOp := make(map[convOpKey]winner, len(decls))
+	for _, d := range decls {
+		key := convOpKey{d.Convention, d.Operation}
+		// Find the corresponding timestamp for this declaration.
+		var ts int64
+		for _, e := range all {
+			if e.messageID == d.MessageID {
+				ts = e.timestamp
+				break
+			}
+		}
+		prev, exists := byConvOp[key]
+		if !exists {
+			byConvOp[key] = winner{d, ts}
+			continue
+		}
+		cmp := compareVersions(d.Version, prev.decl.Version)
+		if cmp > 0 || (cmp == 0 && ts > prev.timestamp) ||
+			(cmp == 0 && ts == prev.timestamp && d.MessageID > prev.decl.MessageID) {
+			byConvOp[key] = winner{d, ts}
+		}
+	}
+	// Reconstruct decls in original order, keeping only the winners.
+	var deduped []*Declaration
+	for _, d := range decls {
+		key := convOpKey{d.Convention, d.Operation}
+		if w, ok := byConvOp[key]; ok && w.decl.MessageID == d.MessageID {
+			deduped = append(deduped, d)
+			// Consume the winner entry so it only appears once even if MessageID
+			// collides (shouldn't happen in practice, but defensive).
+			delete(byConvOp, key)
+		}
+	}
+	return deduped, nil
+}
+
+// compareVersions compares two dot-separated version strings numerically.
+// Returns -1, 0, or 1.
+// Examples: "0.1" < "0.2", "0.9" < "0.10", "1.0" > "0.9".
+func compareVersions(a, b string) int {
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+	// Pad to equal length.
+	for len(aParts) < len(bParts) {
+		aParts = append(aParts, "0")
+	}
+	for len(bParts) < len(aParts) {
+		bParts = append(bParts, "0")
+	}
+	for i := range aParts {
+		an, aerr := strconv.Atoi(aParts[i])
+		bn, berr := strconv.Atoi(bParts[i])
+		if aerr == nil && berr == nil {
+			if an < bn {
+				return -1
+			}
+			if an > bn {
+				return 1
+			}
+			continue
+		}
+		// Non-numeric: string compare.
+		if aParts[i] < bParts[i] {
+			return -1
+		}
+		if aParts[i] > bParts[i] {
+			return 1
+		}
+	}
+	return 0
 }
 
 // buildInputSchema constructs a JSON Schema object for the declaration's args.
