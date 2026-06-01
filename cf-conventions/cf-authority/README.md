@@ -40,22 +40,19 @@ dispatcher.SetGateEvaluator(adapter)
 | `trust.DenyReason` | Deny classification (`DenyReservedOpFloor`, etc.) |
 | `trust.Decision` | `Allow` / `Deny` / `Unresolvable` |
 
-`ProvenanceCheckerV2` lives in `cf-conventions/cf-convention`, not in this
-package. v0.31 ships only the stub `convention.NewAllowAllProvenanceChecker()`;
-a production implementation is on the cf-authority roadmap (see Planned below).
+The `ProvenanceCheckerV2` interface lives in `cf-conventions/cf-convention`, not
+in this package. Alongside the L2 stub `convention.NewAllowAllProvenanceChecker()`,
+a production implementation now ships at `cf-conventions/cf-authority/provenance`
+(`provenance.NewChecker`), backed by a `pkg/provenance` attestation store.
 
 Godoc: https://pkg.go.dev/github.com/campfire-net/campfire/cf-conventions/cf-authority/trust
 
-## Planned (not in v0.31)
-
-The following are referenced in source comments but **do not exist** as of
-v0.31.0. They are tracked for a later release; do not write code against them
-yet:
+## Roadmap status
 
 | Symbol | Status | Notes |
 |--------|--------|-------|
-| `Server.WithGateEvaluator(eval)` option | Planned | `cf-convention/gate_evaluator.go` carries a "Stage 3 transition" comment; the higher-level functional-option surface will land in a future 0.3x release. Until then, use `ConventionDispatcher.SetGateEvaluator(adapter)` directly. |
-| Production `ProvenanceCheckerV2` | Planned | v0.31 ships only the allow-all stub in `cf-convention`. |
+| `Server.WithGateEvaluator(eval)` option | **Shipped** | `convention.Server` now accepts a `GateEvaluator`, evaluated before each handler dispatch (fail-closed) — the solo/in-process counterpart to `ConventionDispatcher.SetGateEvaluator`. Pass `trust.NewConventionAdapter()` for real L3 gating. |
+| Production `ProvenanceCheckerV2` | **Shipped** | `cf-conventions/cf-authority/provenance.NewChecker` wraps a `pkg/provenance` attestation store; fails closed (Anonymous) on a nil source. The L2 allow-all stub remains for tests. |
 
 ## Wire-Format Freeze
 
