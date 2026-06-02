@@ -1,27 +1,67 @@
 # Changelog
 
-## Unreleased
+## v0.32.0 — multi-consumer SDK surface + convention precedence authorization (2026-06-02)
 
-Multi-consumer SDK surface additions from the `ready` consumer-coupling review
-(`campfireagent-196`). Both are pure API additions — no wire-format change, no
-new CBOR fields — and jointly unblock `ready` enforcement (rd kill / scope /
-sessions), which consumes published versions.
+Minor release. Hardens convention declaration precedence and adds the
+multi-consumer SDK/CLI surface from the `ready` consumer-coupling review
+(`campfireagent-196`). All changes are additive — no wire-format change, no new
+CBOR fields.
+
+### Security
+
+- **Convention declaration precedence is now authorized** (`campfire-f5c`):
+  `listOperations` chose the winning declaration for a `(convention, operation)`
+  with no signer check on two paths — the `Supersedes` path and the version-dedup
+  path. Because `convention:operation` is not a reserved `campfire:` tag, any
+  writer could hijack an operation by posting a crafted supersede or a
+  higher-versioned declaration, silently redirecting CLI dispatch, help, and
+  `convention.Server` arg/tag resolution. Both paths are now gated like the
+  revoke rule: self-upgrade (same signer) always; campfire-key owner-override
+  online; empty sender never. Existing same-signer campfires are unaffected.
 
 ### Features
 
 - **`convention.Server.WithGateEvaluator(eval)`** (`campfireagent-ede`): the
   convention server now accepts an L3 `GateEvaluator`, evaluated before each
   handler dispatch and failing closed on Deny/Unresolvable (a `convention:error`
-  fulfillment is sent). This is the solo/in-process counterpart to
-  `ConventionDispatcher.SetGateEvaluator`, which previously required a full
-  `DispatchStore` — so SDK servers (rd, dontguess, social) can enforce real
-  cf-authority gating without standing one up. Defaults to allow-all.
+  fulfillment is sent). The solo/in-process counterpart to
+  `ConventionDispatcher.SetGateEvaluator`, which required a full `DispatchStore` —
+  so SDK servers (rd, dontguess, social) can enforce real cf-authority gating
+  without standing one up. Defaults to allow-all.
 
 - **Production `ProvenanceCheckerV2`** (`campfireagent-6dd`): new
   `cf-conventions/cf-authority/provenance.NewChecker(src)` resolves a sender's
   operator provenance level (0–3) from a `pkg/provenance` attestation store,
   replacing the allow-all stub for `min_operator_level` gating. Fails closed
   (Anonymous) when the source is nil. Serves rd, dontguess, and social.
+
+- **`cf convention install` accepts multi-op declaration files** (`campfire-aa5`):
+  authoring files shaped `{convention, version, operations:[{operation, …}, …]}`
+  are expanded into one declaration per operation, with file-level
+  `convention`/`version` injected into any op that omits them (ops may override).
+  Previously each file had to be a single flat op, forcing a `jq`-split-per-op
+  workaround. All declarations are validated up front: if any op is invalid, the
+  whole file installs nothing (no partial-install). `promote`/`adopt`/`lint`
+  inherit the same expansion via `readDeclarationsFromPath`.
+
+- **Relay-aware `protocol.Client.Create`** (`campfireagent-bec`): setting
+  `P2PHTTPTransport.RelayEndpoint` on a `CreateRequest` creates the campfire on
+  that HTTP relay — `Create` registers it, records the p2p-http membership and
+  the relay as a peer endpoint, and publishes a local beacon pointing at the
+  relay. The relay-issued beacon/invite surface on new
+  `CreateResult.RelayEndpoint`/`RelayBeacon`. The shared `Client.RegisterOnRelay`
+  is used by both `Create` and the `cf` CLI (no drift); no running
+  `cfhttp.Transport` is required for the relay path.
+
+- **Offline buffer→commit: `protocol.Client.BuildPending` / `FlushPending`**
+  (`campfireagent-8002`): `BuildPending(SendRequest)` builds and signs a message
+  with no transport I/O and returns its stable, forgery-proof ID, buffering it in
+  a new local `pending_messages` table. `FlushPending(campfireID)` adds the
+  provenance hop and delivers each buffered message via the same path as `Send`,
+  idempotent on the stable ID. Replaces hand-rolled signing for offline-buffering
+  consumers (rd, the reach, freeso). Backed by an additive SQLite table and an
+  optional `store.PendingMessageStore` capability; stores without it (the hosted
+  always-online store) return a clear error.
 
 ## v0.31.2 — incremental filesystem sync (2026-05-30)
 

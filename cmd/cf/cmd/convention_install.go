@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
-	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/spf13/cobra"
 )
 
@@ -30,8 +31,14 @@ var conventionInstallCmd = &cobra.Command{
   cf convention install <campfire-id> <dir/>           install all .json files in directory
   cf convention install <campfire-id> --from <source>  copy all declarations from source campfire
 
+Declaration files may be single-op (a flat object with a top-level "operation")
+or multi-op (an authoring file shaped {convention, version, operations:[...]}).
+Multi-op files are expanded into one declaration per operation; the file-level
+convention/version are applied to any op that omits them.
+
 Safety:
-  - Lint runs automatically; installation is refused if lint fails.
+  - Lint runs automatically; ALL declarations (every op in a multi-op file) are
+    validated before any are posted — an invalid op installs nothing.
   - Duplicate detection: same convention+operation+version is skipped.
   - The caller must be a member of the target campfire.`,
 	RunE: runConventionInstall,
@@ -118,6 +125,16 @@ func runConventionInstall(_ *cobra.Command, args []string) error {
 		}
 	}
 
+	// Atomic validation gate (campfire-aa5): lint + parse every source before
+	// posting any. A multi-op file expands to several declarations; without this
+	// gate a malformed op midway through would leave the earlier ops already
+	// posted — an inconsistent convention surface. Validating up front means a bad
+	// file posts zero messages. (A mid-batch transport failure remains idempotently
+	// recoverable: re-running skips already-posted ops via duplicate detection.)
+	if err := validateDeclSources(sources, agentID); err != nil {
+		return err
+	}
+
 	client := protocol.New(s, agentID)
 	var results []installResult
 	allOK := true
@@ -157,6 +174,36 @@ func runConventionInstall(_ *cobra.Command, args []string) error {
 
 	if !allOK {
 		return fmt.Errorf("one or more declarations failed to install")
+	}
+	return nil
+}
+
+// validateDeclSources lints and parses every source without posting anything,
+// returning a combined error if any source is invalid. This is the atomic
+// validation gate for multi-op installs (campfire-aa5): all-or-nothing on
+// validity, so a malformed op never leaves a partially-installed convention.
+// Duplicate detection is intentionally NOT checked here — duplicates are a skip,
+// not an error, and are handled per-source during posting.
+func validateDeclSources(sources []declSource, agentID *identity.Identity) error {
+	var failures []string
+	for _, src := range sources {
+		if lintResult := convention.Lint(src.payload); len(lintResult.Errors) > 0 {
+			failures = append(failures, fmt.Sprintf("%s: lint failed: %s", src.name, lintResult.Errors[0].Message))
+			continue
+		}
+		if _, _, err := convention.Parse(
+			[]string{convention.ConventionOperationTag},
+			src.payload,
+			agentID.PublicKeyHex(),
+			agentID.PublicKeyHex(),
+			convention.DefaultDeniedTagPrefixes,
+		); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: parse failed: %s", src.name, err))
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("declaration validation failed (%d of %d invalid); nothing was installed:\n  %s",
+			len(failures), len(sources), strings.Join(failures, "\n  "))
 	}
 	return nil
 }
