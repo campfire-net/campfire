@@ -1313,30 +1313,21 @@ Store-only categories pass through `LocalStorage` to the embedded `store.Store` 
 
 In hosted `cf-mcp` (Azure Functions), there is **no filesystem**. Azure Table Storage (`pkg/store/aztable`) is the sole authoritative store for all categories. `CloudStorage` is a faithful passthrough over the aztable store — every method forwards unchanged. A nil membership from the cloud store is an authoritative "not a member"; there is no filesystem to fall back to.
 
-Both `LocalStorage` and `CloudStorage` satisfy the same `pkg/storage.Storage` interface. Call sites are backend-agnostic: they call `Storage.MembershipExists` and the implementation decides whether a nil means "authoritative miss" (cloud) or "consult the filesystem" (local).
+Both `LocalStorage` and `CloudStorage` satisfy the same `pkg/storage.Storage` interface. Call sites are backend-agnostic: they call `Storage.GetMembership` and the implementation decides whether a nil means "authoritative miss" (cloud) or "consult the filesystem first" (local).
 
 ### Storage interface summary
 
 ```go
-// pkg/storage.Storage embeds store.Store and adds two methods:
+// pkg/storage.Storage embeds store.Store and adds one method:
 type Storage interface {
     store.Store
-    Backend() Backend          // "local" or "cloud" — diagnostics only, not branching
-    MembershipExists(campfireID string) (bool, error)
+    Backend() Backend // "local" or "cloud" — diagnostics only, not branching
 }
 ```
 
-`MembershipExists` is the single call site that diverges between local and cloud. All other store operations pass through identically.
+`GetMembership` is the operation that diverges between local and cloud. All other store operations pass through identically. To test membership existence, call `GetMembership(id) != nil`.
 
-**Do not branch on `Backend()` in application code.** Backend is for diagnostics and deployment assertions. Call `MembershipExists` instead.
-
-### Factory
-
-`storage.Open(Config)` selects the backend from `Config.ConnectionString`:
-- Non-empty `ConnectionString` → `CloudStorage` (global non-namespaced aztable store)
-- Empty → `LocalStorage` (SQLite at `Config.LocalPath`)
-
-`Open` is for callers that need a single **global** store. Hosted `cf-mcp` uses it for the global p2p-http routing store. It does NOT subsume the per-session namespaced store factory: `cmd/cf-mcp` wraps each session's `aztable.NewNamespacedTableStore` directly via `storage.NewCloudStorage` to preserve per-session namespace isolation. Using `Open` for the per-session store would collapse every session into one namespace.
+**Do not branch on `Backend()` in application code.** Backend is for diagnostics and deployment assertions only.
 
 ### Transport base directory resolution
 

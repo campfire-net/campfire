@@ -8,15 +8,15 @@ import (
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 )
 
-// LocalStorage is the single-machine backend. The design intent — now realized
-// (campfireagent-3fc) — is that the filesystem transport directory is the
-// SOURCE OF TRUTH and the embedded SQLite store is a rebuildable cache.
+// LocalStorage is the single-machine backend. The filesystem transport
+// directory is the SOURCE OF TRUTH and the embedded SQLite store is a
+// rebuildable cache.
 //
 // LocalStorage embeds store.Store so every store operation forwards to SQLite
-// unchanged. The fs-truth-over-cache behavior is confined to GetMembership (and
-// MembershipExists, which delegates to it): on a SQLite cache miss, GetMembership
-// reconstructs the membership from the filesystem transport directory and writes
-// it back into the cache, so the next read is warm.
+// unchanged. The fs-truth-over-cache behavior is confined to GetMembership:
+// on a SQLite cache miss, GetMembership reconstructs the membership from the
+// filesystem transport directory and writes it back into the cache, so the
+// next read is warm.
 //
 // SCOPE OF THE FS FALLBACK: memberships ONLY. Memberships are the single
 // store category with a filesystem source (members/<pk>.cbor + campfire.cbor).
@@ -195,13 +195,3 @@ func (l *LocalStorage) rehydrateMembershipFromFS(campfireID string) (*store.Memb
 	}, nil
 }
 
-// MembershipExists answers the membership-existence question. It delegates to
-// GetMembership, so it inherits the filesystem-rehydrate fallback: a SQLite
-// cache miss that the filesystem can satisfy becomes a true "is a member".
-func (l *LocalStorage) MembershipExists(campfireID string) (bool, error) {
-	m, err := l.GetMembership(campfireID)
-	if err != nil {
-		return false, err
-	}
-	return m != nil, nil
-}

@@ -700,10 +700,6 @@ type Storage interface {
     // Use for diagnostics and deployment assertions only —
     // NOT for branching persistence behavior at call sites.
     Backend() Backend // "local" | "cloud"
-
-    // MembershipExists answers the membership-existence question.
-    // The semantics differ by backend (see below).
-    MembershipExists(campfireID string) (bool, error)
 }
 ```
 
@@ -715,7 +711,7 @@ type Storage interface {
 
 **Membership rehydrate (fs-fallback):** On a `GetMembership` cache miss, if a self pubkey is configured, `LocalStorage` reads the `campfire.cbor` state and `members/<selfPubkeyHex>.cbor` file from the filesystem transport directory, reconstructs the membership (role, transport dir, join protocol, threshold, encryption flag), writes it back into the SQLite cache, and returns it. A miss where the filesystem also has no state is authoritative.
 
-`MembershipExists` delegates to `GetMembership` and inherits the fs-fallback: a SQLite miss that the filesystem satisfies becomes `true`.
+`GetMembership` is the primary membership gate. Call `GetMembership(id) != nil` to test membership existence — the fs-fallback is transparent.
 
 ```go
 // Wrap an existing SQLite store.Store.
@@ -731,33 +727,19 @@ Without `WithSelfPubkeyHex`, `GetMembership` is a pure SQLite passthrough (canno
 
 `CloudStorage` is a faithful passthrough over an Azure Table Storage `store.Store` (expected to be an `aztable.TableStore`). aztable is the **authoritative source of truth** — there is no filesystem. Every method forwards unchanged.
 
-`MembershipExists` returns `false` on a nil membership without consulting any filesystem, because there is no filesystem in the cloud deployment.
+A nil return from `GetMembership` is an authoritative "not a member" — there is no filesystem to fall back to in the cloud deployment.
 
 ```go
 // Wrap an already-constructed store.Store (e.g. an aztable.NamespacedTableStore).
 cs := storage.NewCloudStorage(st)
 ```
 
-### Factory — storage.Open
-
-```go
-s, err := storage.Open(storage.Config{
-    ConnectionString: os.Getenv("AZURE_STORAGE_CONNECTION_STRING"),
-    LocalPath:        "/path/to/store.db",
-})
-```
-
-`Open` selects: non-empty `ConnectionString` → `CloudStorage` over a **global** (non-namespaced) `aztable.TableStore`; empty → `LocalStorage` over SQLite at `LocalPath`.
-
-**Do not use `Open` for per-session hosted stores.** `cmd/cf-mcp` wraps each session's `aztable.NewNamespacedTableStore` directly via `NewCloudStorage` to preserve per-session namespace isolation. Routing through `Open` would collapse every session into one namespace. The per-session namespacing is the mechanism that gives each MCP session its own isolated campfire state within the shared Azure Storage tables.
-
-### Wrapping vs. opening
+### Wrapping
 
 | Situation | Constructor to use |
 |-----------|-------------------|
 | You hold a SQLite `store.Store` and want local semantics | `NewLocalStorage(st, opts...)` |
 | You hold an aztable `store.Store` (global or namespaced) and want cloud semantics | `NewCloudStorage(st)` |
-| You want the factory to select local-vs-cloud for you (global store only) | `Open(Config{...})` |
 
 ---
 

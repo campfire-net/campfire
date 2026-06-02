@@ -1272,15 +1272,23 @@ type autoProvisionResult struct {
 // Returns a non-nil *jsonRPCResponse pointer on error (ready to return to caller).
 func (s *server) autoProvisionCampfire(id interface{}, campfireID string, agentID *identity.Identity) (*autoProvisionResult, *jsonRPCResponse) {
 	// Resolve the store: prefer the already-open session store, otherwise open one.
+	// When opening a bare store (s.st == nil), wrap it in LocalStorage so that
+	// GetMembership consults the filesystem transport directory on a SQLite miss —
+	// matching the rehydrate behavior of the session path (openLocalSessionStore).
+	// Without the wrap, an on-disk pre-admitted campfire is missed here and
+	// re-provisioned instead of returned as "exists" (BUG-1 / campfireagent-ffe).
 	st := s.st
 	if st == nil {
-		var openErr error
-		st, openErr = store.Open(s.storePath())
+		rawStore, openErr := store.Open(s.storePath())
 		if openErr != nil {
 			resp := errResponse(id, -32000, fmt.Sprintf("opening store: %v", openErr))
 			return nil, &resp
 		}
-		defer st.Close()
+		defer rawStore.Close()
+		st = storage.NewLocalStorage(rawStore,
+			storage.WithSelfPubkeyHex(agentID.PublicKeyHex()),
+			storage.WithTransportBaseDir(s.cfHome),
+		)
 	}
 
 	// Idempotency: if the campfire already exists in the store, return existing state.
@@ -5036,14 +5044,13 @@ func main() {
 					// data backend. Each session gets its own namespace within the
 					// shared Azure Storage tables, equivalent to SQLite isolation.
 					//
-					// CRITICAL: wrap the PER-SESSION NAMESPACED store, never
-					// storage.Open() — Open() builds a GLOBAL aztable.NewTableStore
-					// and would collapse every session into one namespace. We adopt
-					// the Storage interface by wrapping the already-namespaced store
-					// in CloudStorage (a faithful passthrough — aztable stays the
-					// authoritative source of truth, namespacing preserved). This
-					// gives MCP membership gates the uniform Storage surface without
-					// regressing per-session isolation.
+					// CRITICAL: wrap the PER-SESSION NAMESPACED store directly via
+					// NewCloudStorage — do NOT use aztable.NewTableStore (the global,
+					// non-namespaced store) which would collapse every session into
+					// one namespace. CloudStorage is a faithful passthrough — aztable
+					// stays the authoritative source of truth, namespacing preserved.
+					// This gives MCP membership gates the uniform Storage surface
+					// without regressing per-session isolation.
 					connStr := azConnStr // capture for closure
 					sm.storeFactory = func(internalID string) (store.Store, error) {
 						namespaced, err := aztable.NewNamespacedTableStore(connStr, internalID)
