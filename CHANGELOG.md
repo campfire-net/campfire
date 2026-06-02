@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **`cf convention install` accepts multi-op declaration files** (`campfire-aa5`):
+  authoring files shaped `{convention, version, operations:[{operation, …}, …]}`
+  are now expanded into one declaration per operation, with file-level
+  `convention`/`version` injected into any op that omits them (ops may override).
+  Previously each file had to be a single flat op, forcing a `jq`-split-per-op
+  workaround. All declarations are validated up front: if any op is invalid, the
+  whole file installs nothing (no partial-install). `promote`/`adopt`/`lint`
+  inherit the same expansion via `readDeclarationsFromPath`.
+
 ## v0.31.2 — incremental filesystem sync (2026-05-30)
 
 Patch release. Eliminates the per-operation full-history rescan in the
