@@ -300,15 +300,35 @@ func TestBridgeDedup(t *testing.T) {
 		t.Fatalf("source.Send: %v", err)
 	}
 
-	// Wait for bridge to process, then check count hasn't spiraled.
-	time.Sleep(2 * time.Second)
+	// Wait for the message to be bridged, then confirm it was bridged exactly
+	// once. A fixed sleep before the assertion is flaky (campfire-6e6): under load
+	// the bridge's poll + sync + forward can exceed the window, yielding a spurious
+	// "got 0". Instead poll (with a deadline) until the first forward lands, then
+	// settle briefly to confirm dedup prevented a loop-back spiral.
+	deadline := time.After(10 * time.Second)
+	for {
+		mu.Lock()
+		c := bridgedCount
+		mu.Unlock()
+		if c >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for bridged message")
+		default:
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// Settle: allow any erroneous loop-back forward to occur (dedup must prevent
+	// the forwarded message from looping back dest→source), then assert the
+	// message was bridged exactly once (source→dest).
+	time.Sleep(1 * time.Second)
 
 	mu.Lock()
 	count := bridgedCount
 	mu.Unlock()
-
-	// The message should be bridged exactly once (source→dest).
-	// Dedup prevents the forwarded message from looping back dest→source.
 	if count != 1 {
 		t.Errorf("expected 1 bridged message (dedup), got %d", count)
 	}
