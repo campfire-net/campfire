@@ -51,9 +51,18 @@ var joinCmd = &cobra.Command{
 				return fmt.Errorf("parsing URI: %w", parseErr)
 			}
 			if parsed.Kind == naming.URIKindBeacon {
-				existingMembership, _ := s.GetMembership(parsed.CampfireID)
-				if existingMembership != nil {
-					return fmt.Errorf("already a member of campfire %s", parsed.CampfireID[:shortIDLen])
+				// Guard: check disk first, only reject via store when NOT on disk.
+				// With a rehydrating LocalStorage store, calling GetMembership on a
+				// pre-admitted member (whose member file exists on disk) causes
+				// rehydration to write the membership into SQLite as a side effect —
+				// a subsequent AddMembership in joinFilesystem then hits a UNIQUE
+				// constraint. By checking disk first and skipping GetMembership for
+				// on-disk members, we preserve the original idempotent reconciliation
+				// semantics. Mirrors cf-mcp handleJoin (lines 1808–1835).
+				if !isMemberOnDisk(parsed.CampfireID, agentID.PublicKeyHex()) {
+					if existingMembership, _ := s.GetMembership(parsed.CampfireID); existingMembership != nil {
+						return fmt.Errorf("already a member of campfire %s", parsed.CampfireID[:shortIDLen])
+					}
 				}
 				return joinFromBeacon(parsed, agentID, s, joinListen, joinTLSCert, joinTLSKey)
 			}
@@ -64,10 +73,18 @@ var joinCmd = &cobra.Command{
 			return err
 		}
 
-		// Check if already a member
-		existingMembership, _ := s.GetMembership(campfireID)
-		if existingMembership != nil {
-			return fmt.Errorf("already a member of campfire %s", campfireID[:shortIDLen])
+		// Guard: check disk first, only reject via store when NOT on disk.
+		// With a rehydrating LocalStorage store, calling GetMembership on a
+		// pre-admitted member (whose member file exists on disk) causes rehydration
+		// to write the membership into SQLite as a side effect — a subsequent
+		// AddMembership in joinFilesystem then hits a UNIQUE constraint. By checking
+		// disk first and skipping GetMembership for on-disk members, we preserve the
+		// original idempotent reconciliation semantics. Mirrors cf-mcp handleJoin
+		// (lines 1808–1835).
+		if !isMemberOnDisk(campfireID, agentID.PublicKeyHex()) {
+			if existingMembership, _ := s.GetMembership(campfireID); existingMembership != nil {
+				return fmt.Errorf("already a member of campfire %s", campfireID[:shortIDLen])
+			}
 		}
 
 		// Route based on --via flag (p2p-http), or filesystem (default).
@@ -155,6 +172,25 @@ func resolveFSTransportDir(campfireID string) string {
 		}
 	}
 	return filepath.Join(fs.DefaultBaseDir(), campfireID)
+}
+
+// isMemberOnDisk reports whether pubkeyHex appears as a member file in the
+// filesystem transport for campfireID. Used to guard the "already a member"
+// rejection at join entry points: with a rehydrating store, GetMembership may
+// return non-nil for a pre-admitted member who hasn't locally joined yet —
+// such members must fall through to the idempotent joinFilesystem path.
+func isMemberOnDisk(campfireID, pubkeyHex string) bool {
+	tr := fs.ForDir(resolveFSTransportDir(campfireID))
+	members, err := tr.ListMembers(campfireID)
+	if err != nil {
+		return false
+	}
+	for _, m := range members {
+		if fmt.Sprintf("%x", m.PublicKey) == pubkeyHex {
+			return true
+		}
+	}
+	return false
 }
 
 func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store) error {
