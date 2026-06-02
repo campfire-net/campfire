@@ -229,6 +229,83 @@ func TestResolveStorageRoot_NearestConfigWins(t *testing.T) {
 	}
 }
 
+// TestResolveStorageRoot_TraversalRejected verifies that a .cf/config.toml with a
+// storage_root that traverses above the home directory is REJECTED, falling through
+// to the default (not returning the escaping path). This is the S4-equivalent check
+// for storage_root: a value like "../../../../etc" must not let an attacker redirect
+// campfire data outside the user's home tree.
+func TestResolveStorageRoot_TraversalRejected(t *testing.T) {
+	tmp := t.TempDir()
+	fakeHome := filepath.Join(tmp, "home")
+	projectDir := filepath.Join(fakeHome, "work", "project")
+	if err := os.MkdirAll(projectDir, 0700); err != nil {
+		t.Fatalf("creating project dir: %v", err)
+	}
+
+	// Write a config whose storage_root uses relative traversal to escape home.
+	// filepath.Dir of the cfgPath is projectDir/.cf/ — so "../../../../etc" resolves
+	// to /tmp/.../home/work/project/.cf/../../../../etc → /tmp/.../etc (outside home).
+	cfDir := filepath.Join(projectDir, ".cf")
+	if err := os.MkdirAll(cfDir, 0700); err != nil {
+		t.Fatalf("creating .cf dir: %v", err)
+	}
+	cfgContent := "[transport]\nstorage_root = \"../../../../etc\"\n"
+	cfgPath := filepath.Join(cfDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0600); err != nil {
+		t.Fatalf("writing config.toml: %v", err)
+	}
+
+	t.Setenv("CF_HOME", "")
+	t.Setenv("CF_TRANSPORT_DIR", "")
+	t.Setenv("HOME", fakeHome)
+
+	got := ResolveStorageRoot(projectDir)
+	// The traversal storage_root must be rejected. The walk should fall through
+	// to the compiled-in default: fakeHome/.campfire.
+	want := filepath.Join(fakeHome, ".campfire")
+	if got == want {
+		// Good — traversal was rejected and we got the safe default.
+		return
+	}
+	// If the returned path is outside home, that is the exploit — fail loudly.
+	homePrefix := fakeHome + string(os.PathSeparator)
+	if !strings.HasPrefix(got, homePrefix) && got != fakeHome {
+		t.Errorf("SECURITY: storage_root traversal NOT rejected — got %q (outside home %q)", got, fakeHome)
+	}
+	// Path is inside home but not the expected default — still wrong.
+	t.Errorf("storage_root traversal not rejected: got %q, want %q (default)", got, want)
+}
+
+// TestResolveStorageRoot_AbsoluteOutsideHomeAllowed verifies that an absolute
+// storage_root pointing outside home is accepted (legitimate operator use-case:
+// /data/campfires on a server). config.go allows absolute identity.file paths
+// that don't contain ".."; storage_root follows the same policy — absolute paths
+// are allowed as-is, only relative traversal is forbidden.
+func TestResolveStorageRoot_AbsoluteOutsideHomeAllowed(t *testing.T) {
+	tmp := t.TempDir()
+	fakeHome := filepath.Join(tmp, "home")
+	projectDir := filepath.Join(fakeHome, "work", "project")
+	if err := os.MkdirAll(projectDir, 0700); err != nil {
+		t.Fatalf("creating project dir: %v", err)
+	}
+
+	// An absolute path that's legitimately outside home (e.g. shared storage).
+	outsideRoot := filepath.Join(tmp, "shared-campfire-data")
+	if err := os.MkdirAll(outsideRoot, 0700); err != nil {
+		t.Fatalf("creating outside root: %v", err)
+	}
+	writeConfigTOML(t, projectDir, outsideRoot)
+
+	t.Setenv("CF_HOME", "")
+	t.Setenv("CF_TRANSPORT_DIR", "")
+	t.Setenv("HOME", fakeHome)
+
+	got := ResolveStorageRoot(projectDir)
+	if got != outsideRoot {
+		t.Errorf("absolute storage_root outside home should be accepted: got %q, want %q", got, outsideRoot)
+	}
+}
+
 // TestResolveStorageRoot_StopsAtHome verifies the tree-walk does not escape
 // the user's home directory (avoids picking up configs from system-level dirs).
 func TestResolveStorageRoot_StopsAtHome(t *testing.T) {

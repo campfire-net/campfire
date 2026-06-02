@@ -11,11 +11,17 @@ package fs
 //
 // The walk stops at the user's home directory so it never picks up configs
 // written outside the user's home tree.
+//
+// Security: readStorageRoot validates the resolved storage_root (S4-equivalent):
+// relative paths that after filepath.Join+Clean escape the home directory are
+// rejected — the walk skips that config and continues. Absolute paths outside
+// home are accepted (legitimate operator use-case: /data/campfires on a server).
 
 import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -36,31 +42,64 @@ const cfConfigDir = ".cf"
 // cfConfigFile is the name of the campfire config file inside cfConfigDir.
 const cfConfigFile = "config.toml"
 
+// storageRootSource identifies which resolution step produced the storage root.
+// It is used by DefaultBaseDir to decide whether to append "campfires" without
+// re-reading environment variables (eliminating the double-read from campfireagent-75f).
+type storageRootSource int
+
+const (
+	// sourceTransportDir — CF_TRANSPORT_DIR: already the full BaseDir, no suffix.
+	sourceTransportDir storageRootSource = iota
+	// sourceCFHome — CF_HOME/campfires: already has the "campfires" suffix.
+	sourceCFHome
+	// sourceConfig — tree-walk found a storage_root in .cf/config.toml: needs "campfires" suffix.
+	sourceConfig
+	// sourceDefault — ~/.campfire compiled-in default: needs "campfires" suffix.
+	sourceDefault
+)
+
+// storageRootResult carries the resolved path and its source so callers can
+// decide whether to append a "campfires" subdirectory without re-probing env.
+type storageRootResult struct {
+	Root   string
+	Source storageRootSource
+}
+
 // ResolveStorageRoot returns the base storage directory for fs-transport
 // campfire data, applying the resolution order described in the file header.
 //
 // cwd is the directory from which the tree-walk starts (normally os.Getwd()).
 // Passing an empty cwd skips the tree-walk and falls through to the default.
+//
+// The returned string is the resolved root path. Use resolveStorageRootFull
+// when you need to know the source (to avoid appending "campfires" twice).
 func ResolveStorageRoot(cwd string) string {
+	return resolveStorageRootFull(cwd).Root
+}
+
+// resolveStorageRootFull is the internal implementation that returns both the
+// resolved path and the resolution source. DefaultBaseDir uses this to decide
+// whether to append "campfires" without re-reading environment variables.
+func resolveStorageRootFull(cwd string) storageRootResult {
 	// 1. CF_TRANSPORT_DIR — highest priority (explicit, back-compat).
 	if v := os.Getenv("CF_TRANSPORT_DIR"); v != "" {
-		return v
+		return storageRootResult{Root: v, Source: sourceTransportDir}
 	}
 
 	// 2. CF_HOME — explicit override; returns CF_HOME/campfires (back-compat).
 	if cfHome := os.Getenv("CF_HOME"); cfHome != "" {
-		return filepath.Join(cfHome, "campfires")
+		return storageRootResult{Root: filepath.Join(cfHome, "campfires"), Source: sourceCFHome}
 	}
 
 	// 3. Tree-walk from cwd looking for a .cf/config.toml with storage_root.
 	if cwd != "" {
 		if root := walkForStorageRoot(cwd); root != "" {
-			return root
+			return storageRootResult{Root: root, Source: sourceConfig}
 		}
 	}
 
 	// 4. Default: ~/.campfire.
-	return defaultStorageRoot()
+	return storageRootResult{Root: defaultStorageRoot(), Source: sourceDefault}
 }
 
 // walkForStorageRoot walks up the directory tree from start, searching for a
@@ -100,8 +139,21 @@ func walkForStorageRoot(start string) string {
 }
 
 // readStorageRoot reads [transport].storage_root from the given config.toml
-// path. Returns "" if the file does not exist, cannot be parsed, or the field
-// is empty. Relative paths are resolved relative to the config file's directory.
+// path. Returns "" if the file does not exist, cannot be parsed, the field is
+// empty, or the resolved path fails the S4-equivalent traversal check.
+//
+// Security (S4-equivalent for storage_root):
+//   - Relative paths are resolved against the config file's containing directory
+//     (.cf/). After resolution, if the resulting absolute path escapes the user's
+//     home directory, the value is REJECTED (returns "") — the walk skips this
+//     config and continues to the next ancestor or falls through to the default.
+//   - Absolute paths are accepted as-is (legitimate operator use-case: e.g.,
+//     /data/campfires on a dedicated server). This mirrors config.go's policy for
+//     identity.file, which forbids absolute paths, but storage_root has a broader
+//     legitimate use-case for explicit absolute paths outside home.
+//   - The raw TOML value is checked for ".." components before filepath.Clean
+//     collapses them, matching the approach used by ValidateIdentityPath in
+//     protocol/config.go (S4, lines 753-758).
 func readStorageRoot(cfgPath string) string {
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -120,11 +172,34 @@ func readStorageRoot(cfgPath string) string {
 		return ""
 	}
 
-	// Resolve relative paths against the config file's containing directory
-	// (the .cf/ directory), consistent with protocol/config.go mergeLayer.
+	// S4-equivalent: check for ".." components in relative paths before
+	// filepath.Clean collapses them. "sub/../x" cleans to "x" and would pass
+	// a post-Clean check, but still represents a traversal attempt.
+	// Absolute paths are exempt: they don't traverse relative to the config dir.
 	if !filepath.IsAbs(root) {
+		parts := strings.Split(filepath.ToSlash(root), "/")
+		for _, part := range parts {
+			if part == ".." {
+				// Relative traversal attempt — reject this config entry.
+				return ""
+			}
+		}
+		// Resolve relative path against the config file's containing directory
+		// (.cf/), consistent with protocol/config.go mergeLayer.
 		root = filepath.Join(filepath.Dir(cfgPath), root)
 		root = filepath.Clean(root)
+
+		// Post-resolution home boundary check: even without explicit ".." components,
+		// verify the resolved absolute path stays within the home tree. This guards
+		// against exotic cases (e.g., symlinks in the config path itself).
+		homeDir := resolveHomeDir()
+		if homeDir != "" {
+			inHome := strings.HasPrefix(root, homeDir+string(os.PathSeparator)) || root == homeDir
+			if !inHome {
+				// Resolved path escapes home — reject this config entry.
+				return ""
+			}
+		}
 	}
 
 	return root

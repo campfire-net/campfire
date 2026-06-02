@@ -37,27 +37,24 @@ type Transport struct {
 // the transport resolves its root from the project's .cf/config.toml, allowing
 // jailed automata to point storage_root at a persona's data directory without
 // setting any process-wide environment variables.
+//
+// The suffix decision ("campfires" appended or not) is made from the resolution
+// source returned by resolveStorageRootFull — environment variables are NOT
+// re-read here (campfireagent-75f double-read fix).
 func DefaultBaseDir() string {
 	cwd, _ := os.Getwd()
-	root := ResolveStorageRoot(cwd)
-	// ResolveStorageRoot returns one of:
-	//   - CF_TRANSPORT_DIR (already the full BaseDir — no campfires/ suffix needed)
-	//   - CF_HOME/campfires (already has campfires/ suffix)
-	//   - storage_root from config (bare root — append campfires/)
-	//   - ~/.campfire (bare root — append campfires/)
-	//
-	// Distinguish: CF_TRANSPORT_DIR returns the dir verbatim (no suffix added).
-	// CF_HOME path already ends in "campfires". Storage_root and ~/.campfire do not.
-	if env := os.Getenv("CF_TRANSPORT_DIR"); env != "" {
-		// CF_TRANSPORT_DIR is the BaseDir as-is (existing semantics).
-		return root
+	result := resolveStorageRootFull(cwd)
+	switch result.Source {
+	case sourceTransportDir:
+		// CF_TRANSPORT_DIR is the BaseDir as-is (existing semantics — no suffix).
+		return result.Root
+	case sourceCFHome:
+		// CF_HOME path already ends in "campfires" — returned directly.
+		return result.Root
+	default:
+		// sourceConfig or sourceDefault: storage_root or ~/.campfire — append "campfires".
+		return filepath.Join(result.Root, "campfires")
 	}
-	if cfHome := os.Getenv("CF_HOME"); cfHome != "" {
-		// CF_HOME path already ends in campfires — returned directly by ResolveStorageRoot.
-		return root
-	}
-	// storage_root or ~/.campfire: append "campfires" to form the BaseDir.
-	return filepath.Join(root, "campfires")
 }
 
 // New creates a Transport with the given base directory.
