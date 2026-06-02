@@ -18,3 +18,5 @@ dist/
 
 # Demo sweep runtime logs (per-run, accumulate across sweeps)
 scripts/demo-sweep-logs/
+.campfire/
+.ready/
