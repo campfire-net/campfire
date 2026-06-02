@@ -1,6 +1,23 @@
 # Changelog
 
-## v0.31.2 — incremental filesystem sync (2026-05-30)
+## Unreleased
+
+### Features
+
+- **Offline buffer→commit: `protocol.Client.BuildPending` / `FlushPending`**
+  (`campfireagent-8002`): `BuildPending(SendRequest)` builds and signs a message
+  with **no transport I/O** and returns its stable, forgery-proof ID (minted
+  inside the signed envelope — the caller never chooses it), buffering it in a
+  new local `pending_messages` table. `FlushPending(campfireID)` later adds the
+  provenance hop and delivers each buffered message via the same path as `Send`,
+  in build order, removing it once delivered. Delivery is idempotent on the
+  stable ID (a re-flush after a crash between transport write and buffer removal
+  creates no duplicate). Previously offline-buffering consumers (rd, the reach,
+  freeso) hand-rolled `message.NewMessage` + `AddHop` + transport writes against
+  the internal, frozen wire format. Backed by an additive SQLite table and an
+  optional `store.PendingMessageStore` capability — no wire-format change; stores
+  that don't support buffering (the hosted always-online store) return a clear
+  error.
 
 Patch release. Eliminates the per-operation full-history rescan in the
 filesystem-transport sync path and the per-poll stale-transport log spam. Wire

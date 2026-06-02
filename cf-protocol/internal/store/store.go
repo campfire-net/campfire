@@ -123,6 +123,20 @@ CREATE TABLE IF NOT EXISTS campfire_invites (
     PRIMARY KEY (campfire_id, invite_code)
 );
 
+-- Pending (built-but-not-yet-delivered) messages for offline buffering
+-- (campfireagent-8002). BuildPending stores the wire-encoded, envelope-signed
+-- message blob here with its stable ID; FlushPending adds the provenance hop,
+-- delivers to the transport, and removes the row. The blob carries no provenance
+-- hop yet — that is added at flush from current local membership state.
+CREATE TABLE IF NOT EXISTS pending_messages (
+    id            TEXT    PRIMARY KEY,
+    campfire_id   TEXT    NOT NULL,
+    msg_blob      BLOB    NOT NULL,
+    state_dir     TEXT    NOT NULL DEFAULT '',
+    role_override TEXT    NOT NULL DEFAULT '',
+    built_at      INTEGER NOT NULL
+);
+
 -- Migration tracking: one row per applied migration, in order.
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version     INTEGER PRIMARY KEY,
@@ -477,6 +491,52 @@ func Open(path string) (Store, error) {
 // Close closes the database.
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+// AddPendingMessage buffers a built-but-undelivered message (campfireagent-8002).
+// Inserting an existing ID is a no-op, so re-building the same message (e.g. after
+// a crash) does not duplicate the pending row.
+func (s *SQLiteStore) AddPendingMessage(p PendingMessage) error {
+	_, err := s.db.Exec(
+		`INSERT INTO pending_messages (id, campfire_id, msg_blob, state_dir, role_override, built_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO NOTHING`,
+		p.ID, p.CampfireID, p.Blob, p.StateDir, p.RoleOverride, p.BuiltAt,
+	)
+	if err != nil {
+		return fmt.Errorf("adding pending message: %w", err)
+	}
+	return nil
+}
+
+// ListPendingMessages returns buffered messages for campfireID in build order.
+func (s *SQLiteStore) ListPendingMessages(campfireID string) ([]PendingMessage, error) {
+	rows, err := s.db.Query(
+		`SELECT id, campfire_id, msg_blob, state_dir, role_override, built_at
+		 FROM pending_messages WHERE campfire_id = ? ORDER BY built_at, id`,
+		campfireID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending messages: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingMessage
+	for rows.Next() {
+		var p PendingMessage
+		if err := rows.Scan(&p.ID, &p.CampfireID, &p.Blob, &p.StateDir, &p.RoleOverride, &p.BuiltAt); err != nil {
+			return nil, fmt.Errorf("scanning pending message: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// DeletePendingMessage removes a buffered message by ID (no error if absent).
+func (s *SQLiteStore) DeletePendingMessage(id string) error {
+	if _, err := s.db.Exec(`DELETE FROM pending_messages WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("deleting pending message: %w", err)
+	}
+	return nil
 }
 
 // AddMembership records that this agent is a member of a campfire.

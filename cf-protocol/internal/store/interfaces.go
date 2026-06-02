@@ -174,3 +174,30 @@ type Store interface {
 	UpdateCampfireID(oldID, newID string) error
 	Close() error
 }
+
+// PendingMessage is a built-but-not-yet-delivered message buffered for offline
+// send (campfireagent-8002). Blob is the wire-encoded, envelope-signed message
+// (no provenance hop yet); StateDir and RoleOverride carry the send context the
+// flush needs to add the hop and deliver.
+type PendingMessage struct {
+	ID           string
+	CampfireID   string
+	Blob         []byte
+	StateDir     string
+	RoleOverride string
+	BuiltAt      int64
+}
+
+// PendingMessageStore is an optional capability for stores that support offline
+// buffering of built messages. SQLiteStore implements it; the always-online
+// hosted store (aztable) does not, so protocol.Client.BuildPending/FlushPending
+// type-assert this interface and return a clear error when it is absent.
+type PendingMessageStore interface {
+	// AddPendingMessage buffers a built message. Inserting an existing ID is a
+	// no-op (idempotent), so a re-built message does not duplicate.
+	AddPendingMessage(p PendingMessage) error
+	// ListPendingMessages returns buffered messages for campfireID in build order.
+	ListPendingMessages(campfireID string) ([]PendingMessage, error)
+	// DeletePendingMessage removes a buffered message by ID (no error if absent).
+	DeletePendingMessage(id string) error
+}

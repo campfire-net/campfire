@@ -579,6 +579,35 @@ func (m *ProjectionMiddleware) insertOrUpsert(campfireID, viewName, messageID, e
 // ProjectionMiddleware implements store.Store by delegating all methods to base
 // except AddMessage (intercepted above).
 
+// AddPendingMessage forwards to base when it supports offline buffering
+// (campfireagent-8002). Returns an error when the underlying store does not
+// implement PendingMessageStore, mirroring the capability check in protocol.
+func (m *ProjectionMiddleware) AddPendingMessage(p store.PendingMessage) error {
+	ps, ok := m.base.(store.PendingMessageStore)
+	if !ok {
+		return fmt.Errorf("underlying store does not support pending messages")
+	}
+	return ps.AddPendingMessage(p)
+}
+
+// ListPendingMessages forwards to base when it supports offline buffering.
+func (m *ProjectionMiddleware) ListPendingMessages(campfireID string) ([]store.PendingMessage, error) {
+	ps, ok := m.base.(store.PendingMessageStore)
+	if !ok {
+		return nil, fmt.Errorf("underlying store does not support pending messages")
+	}
+	return ps.ListPendingMessages(campfireID)
+}
+
+// DeletePendingMessage forwards to base when it supports offline buffering.
+func (m *ProjectionMiddleware) DeletePendingMessage(id string) error {
+	ps, ok := m.base.(store.PendingMessageStore)
+	if !ok {
+		return fmt.Errorf("underlying store does not support pending messages")
+	}
+	return ps.DeletePendingMessage(id)
+}
+
 func (m *ProjectionMiddleware) AddMembership(mem store.Membership) error {
 	return m.base.AddMembership(mem)
 }

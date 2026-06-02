@@ -296,6 +296,24 @@ func (c *Client) Send(req SendRequest) (*message.Message, error) {
 		return nil, err
 	}
 
+	// Build (and sign) the message envelope here so the construction is shared by
+	// Send and the offline buffer→flush path. The provenance hop is added later,
+	// during delivery, from current campfire state.
+	signer := c.identity.NewSigner()
+	msg, err := message.NewMessage(signer, req.Payload, req.Tags, req.Antecedents)
+	if err != nil {
+		return nil, fmt.Errorf("creating message: %w", err)
+	}
+	msg.Instance = req.Instance
+
+	return c.deliver(req, m, msg)
+}
+
+// deliver adds the provenance hop to an already-built message, writes it to the
+// campfire's transport, and mirrors it to the local store, dispatching by
+// transport type. It is shared by Send (a freshly-built message) and
+// FlushPending (a buffered message replayed with its original stable ID).
+func (c *Client) deliver(req SendRequest, m *store.Membership, msg *message.Message) (*message.Message, error) {
 	switch transport.ResolveType(*m) {
 	case transport.TypeGitHub:
 		// GitHub transport was removed in v0.30.0. Campfires with this transport
@@ -304,14 +322,14 @@ func (c *Client) Send(req SendRequest) (*message.Message, error) {
 		return nil, fmt.Errorf("GitHub transport is no longer supported (removed in v0.30.0); " +
 			"migrate this campfire to a filesystem or p2p-http transport")
 	case transport.TypePeerHTTP:
-		return c.sendP2PHTTP(req, m)
+		return c.sendP2PHTTP(req, m, msg)
 	default:
-		return c.sendFilesystem(req, m)
+		return c.sendFilesystem(req, m, msg)
 	}
 }
 
 // sendFilesystem delivers req via the local filesystem transport.
-func (c *Client) sendFilesystem(req SendRequest, m *store.Membership) (*message.Message, error) {
+func (c *Client) sendFilesystem(req SendRequest, m *store.Membership, msg *message.Message) (*message.Message, error) {
 	tr := fs.ForDir(m.TransportDir)
 
 	// Verify sender is a member in the transport directory.
@@ -322,13 +340,6 @@ func (c *Client) sendFilesystem(req SendRequest, m *store.Membership) (*message.
 	if !isMember(members, c.identity.PublicKeyHex()) {
 		return nil, fmt.Errorf("not recognized as a member in the transport directory")
 	}
-
-	signer := c.identity.NewSigner()
-	msg, err := message.NewMessage(signer, req.Payload, req.Tags, req.Antecedents)
-	if err != nil {
-		return nil, fmt.Errorf("creating message: %w", err)
-	}
-	msg.Instance = req.Instance
 
 	state, err := tr.ReadState(req.CampfireID)
 	if err != nil {
@@ -525,7 +536,7 @@ func membershipHashFromPeers(peers []store.PeerEndpoint) []byte {
 // sendP2PHTTP delivers req via the P2P HTTP transport.
 // For threshold<=1: signs provenance hop with the campfire key.
 // For threshold>1: runs FROST signing rounds with co-signers.
-func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Message, error) {
+func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership, msg *message.Message) (*message.Message, error) {
 	// Read campfire state. Two layouts are supported:
 	//   - Standard P2P HTTP: state lives at <TransportDir>/<campfireID>.cbor
 	//     (flat file layout, used when TransportDir is a filesystem path).
@@ -566,13 +577,6 @@ func (c *Client) sendP2PHTTP(req SendRequest, m *store.Membership) (*message.Mes
 			return nil, fmt.Errorf("decoding campfire state: %w", err)
 		}
 	}
-
-	signer := c.identity.NewSigner()
-	msg, err := message.NewMessage(signer, req.Payload, req.Tags, req.Antecedents)
-	if err != nil {
-		return nil, fmt.Errorf("creating message: %w", err)
-	}
-	msg.Instance = req.Instance
 
 	peers, err := c.store.ListPeerEndpoints(req.CampfireID)
 	if err != nil {
