@@ -87,11 +87,21 @@ type Config struct {
 
 // Open selects and constructs the backend per cfg, returning a ready Storage.
 //
-// Selection logic (subsumes cmd/cf-mcp/main.go's AZURE_STORAGE_CONNECTION_STRING
-// gate): a non-empty cfg.ConnectionString selects CloudStorage over a real
-// aztable TableStore; otherwise LocalStorage over a real SQLite store at
-// cfg.LocalPath. Both branches open real store implementations — there is no
-// in-memory or mock path here.
+// Selection logic: a non-empty cfg.ConnectionString selects CloudStorage over a
+// real GLOBAL aztable TableStore (aztable.NewTableStore); otherwise LocalStorage
+// over a real SQLite store at cfg.LocalPath. Both branches open real store
+// implementations — there is no in-memory or mock path here.
+//
+// SCOPE: Open mirrors only the AZURE_STORAGE_CONNECTION_STRING vs. local SQLite
+// selection for callers that want a single GLOBAL store (e.g. cmd/cf, or the
+// transport router's cross-instance global store). It does NOT subsume
+// cmd/cf-mcp's PER-SESSION namespaced store factory
+// (aztable.NewNamespacedTableStore), which isolates each session into its own
+// namespace within the shared tables. Open's cloud branch uses the GLOBAL
+// (non-namespaced) store; routing it through the session factory would collapse
+// every session into one namespace. The session factory therefore wraps its
+// already-namespaced store directly via NewCloudStorage (see cmd/cf-mcp/main.go),
+// NOT via Open.
 func Open(cfg Config) (Storage, error) {
 	if cfg.ConnectionString != "" {
 		return openCloud(cfg.ConnectionString)

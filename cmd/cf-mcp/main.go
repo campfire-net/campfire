@@ -47,6 +47,7 @@ import (
 	"github.com/campfire-net/campfire/cf-protocol/message"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
+	"github.com/campfire-net/campfire/pkg/storage"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
@@ -1819,9 +1820,18 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 		}
 	}
 
-	existingMembership, _ := st.GetMembership(campfireID)
-	if existingMembership != nil {
-		return errResponse(id, -32000, "already a member of this campfire")
+	// Reject only a genuine prior store membership that did NOT come from the
+	// on-disk member set. With a LocalStorage-wrapped store (local mode),
+	// st.GetMembership rehydrates a cold cache from the filesystem, so for an
+	// on-disk member it now returns non-nil where it previously returned nil. We
+	// must preserve the original reconciliation semantics: an on-disk member
+	// (alreadyOnDisk) falls through to the re-admit (idempotent) branch below
+	// rather than being rejected — only a member already recorded in the store
+	// for a campfire they are NOT on disk for is "already a member".
+	if !alreadyOnDisk {
+		if existingMembership, _ := st.GetMembership(campfireID); existingMembership != nil {
+			return errResponse(id, -32000, "already a member of this campfire")
+		}
 	}
 
 	now := time.Now().UnixNano()
@@ -5025,9 +5035,22 @@ func main() {
 					// Wire per-session namespaced aztable store as the campfire
 					// data backend. Each session gets its own namespace within the
 					// shared Azure Storage tables, equivalent to SQLite isolation.
+					//
+					// CRITICAL: wrap the PER-SESSION NAMESPACED store, never
+					// storage.Open() — Open() builds a GLOBAL aztable.NewTableStore
+					// and would collapse every session into one namespace. We adopt
+					// the Storage interface by wrapping the already-namespaced store
+					// in CloudStorage (a faithful passthrough — aztable stays the
+					// authoritative source of truth, namespacing preserved). This
+					// gives MCP membership gates the uniform Storage surface without
+					// regressing per-session isolation.
 					connStr := azConnStr // capture for closure
 					sm.storeFactory = func(internalID string) (store.Store, error) {
-						return aztable.NewNamespacedTableStore(connStr, internalID)
+						namespaced, err := aztable.NewNamespacedTableStore(connStr, internalID)
+						if err != nil {
+							return nil, err
+						}
+						return storage.NewCloudStorage(namespaced), nil
 					}
 				}
 			}

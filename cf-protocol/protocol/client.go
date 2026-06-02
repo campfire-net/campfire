@@ -332,11 +332,22 @@ func (c *Client) deliver(req SendRequest, m *store.Membership, msg *message.Mess
 func (c *Client) sendFilesystem(req SendRequest, m *store.Membership, msg *message.Message) (*message.Message, error) {
 	tr := fs.ForDir(m.TransportDir)
 
-	// Verify sender is a member in the transport directory.
+	// Read the member set — needed both to construct the provenance hop
+	// (MembershipHash + member count below) AND to verify the sender is still a
+	// member on disk.
 	members, err := tr.ListMembers(req.CampfireID)
 	if err != nil {
 		return nil, fmt.Errorf("listing members: %w", err)
 	}
+
+	// Filesystem membership re-check. This is NOT redundant with the store gate in
+	// Send (c.store.GetMembership): the store gate answers from the LOCAL cache,
+	// which can be stale-positive when membership was revoked on disk by ANOTHER
+	// client (eviction). Eviction removes the member file from the transport
+	// directory but cannot reach into the evicted member's own local store, so the
+	// cache still reports "member". The filesystem is the source of truth for
+	// revocation, so this gate must consult it directly — removing it would let an
+	// evicted member keep sending (regression: TestEvict/EvictThenSendRejected).
 	if !isMember(members, c.identity.PublicKeyHex()) {
 		return nil, fmt.Errorf("not recognized as a member in the transport directory")
 	}

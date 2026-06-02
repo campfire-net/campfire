@@ -14,7 +14,9 @@ import (
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
 	"github.com/campfire-net/campfire/cf-conventions/cf-convention"
+	"github.com/campfire-net/campfire/pkg/identity"
 	"github.com/campfire-net/campfire/pkg/ratelimit"
+	"github.com/campfire-net/campfire/pkg/storage"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
@@ -23,6 +25,36 @@ import (
 
 // idleTimeout is the duration after which an inactive session closes its store.
 const idleTimeout = 10 * time.Minute
+
+// openLocalSessionStore opens the per-session SQLite store under cfHome and
+// wraps it in a storage.LocalStorage so that membership reads consult the
+// filesystem transport directory (rooted at cfHome — the same base used by the
+// per-session fs.New(cfHome) transport) as the source of truth, rehydrating a
+// cold SQLite cache instead of treating a cache miss as "not a member". This is
+// the local (non-hosted) branch; the hosted branch wraps the namespaced aztable
+// store in CloudStorage at the storeFactory (see main.go).
+//
+// The session identity at cfHome/identity.json supplies the self-pubkey the
+// fs-rehydrate fallback needs to pick "me" out of the on-disk member set. The
+// identity may not exist yet on a fresh session (campfire_init generates it
+// lazily); in that case the wrapper degrades to pure SQLite passthrough — no
+// regression, since there is nothing on disk to rehydrate either.
+func openLocalSessionStore(cfHome string) (store.Store, error) {
+	rawStore, err := store.Open(store.StorePath(cfHome))
+	if err != nil {
+		return nil, err
+	}
+	idPath := filepath.Join(cfHome, "identity.json")
+	if id, idErr := identity.Load(idPath); idErr == nil {
+		return storage.NewLocalStorage(rawStore,
+			storage.WithSelfPubkeyHex(id.PublicKeyHex()),
+			storage.WithTransportBaseDir(cfHome),
+		), nil
+	}
+	return storage.NewLocalStorage(rawStore,
+		storage.WithTransportBaseDir(cfHome),
+	), nil
+}
 
 // defaultMaxSessions is the maximum number of concurrent active sessions
 // when no override is provided to NewSessionManager.
@@ -891,13 +923,14 @@ func (m *SessionManager) getOrCreate(token string) (*Session, error) {
 		}
 	}
 
-	// Open the backing store: use storeFactory (aztable) when configured,
-	// otherwise fall back to local SQLite.
+	// Open the backing store: use storeFactory (CloudStorage-wrapped namespaced
+	// aztable) when configured, otherwise fall back to a LocalStorage-wrapped
+	// local SQLite store (fs-rehydrate on a cold membership cache).
 	var rawStore store.Store
 	if m.storeFactory != nil {
 		rawStore, err = m.storeFactory(internalID)
 	} else {
-		rawStore, err = store.Open(store.StorePath(cfHome))
+		rawStore, err = openLocalSessionStore(cfHome)
 	}
 	if err != nil {
 		return nil, err
@@ -1061,7 +1094,7 @@ func (m *SessionManager) getOrCreateOperator(token string) (*Session, error) {
 	if m.storeFactory != nil {
 		rawStore, err = m.storeFactory(internalID)
 	} else {
-		rawStore, err = store.Open(store.StorePath(cfHome))
+		rawStore, err = openLocalSessionStore(cfHome)
 	}
 	if err != nil {
 		return nil, err

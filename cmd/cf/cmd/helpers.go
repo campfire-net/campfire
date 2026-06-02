@@ -8,6 +8,7 @@ import (
 
 	cfidentity "github.com/campfire-net/campfire/cf-conventions/cf-identity"
 	"github.com/campfire-net/campfire/pkg/identity"
+	"github.com/campfire-net/campfire/pkg/storage"
 	"github.com/campfire-net/campfire/cf-protocol/protocol"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 )
@@ -21,17 +22,41 @@ func loadIdentity() (*identity.Identity, error) {
 	return identity.Load(IdentityPath())
 }
 
-// openStore opens the campfire store at the default path.
+// wrapLocalStore wraps a raw SQLite store in a storage.LocalStorage so that
+// membership reads consult the filesystem transport directory as the source of
+// truth (rehydrating a cold SQLite cache) instead of treating a cache miss as
+// "not a member". When pubkeyHex is non-empty, the fs-rehydrate fallback is
+// enabled (it needs to know which on-disk member record is "me"); otherwise the
+// wrapper degrades to pure SQLite passthrough. The transport base dir is left
+// to fs.DefaultBaseDir() resolution (CF_TRANSPORT_DIR / CF_HOME / config /
+// ~/.campfire), matching how every other filesystem-transport read resolves it.
+func wrapLocalStore(s store.Store, pubkeyHex string) store.Store {
+	if pubkeyHex == "" {
+		return storage.NewLocalStorage(s)
+	}
+	return storage.NewLocalStorage(s, storage.WithSelfPubkeyHex(pubkeyHex))
+}
+
+// openStore opens the campfire store at the default path, wrapped so membership
+// reads fall back to the filesystem transport on a cold cache. The identity is
+// loaded best-effort to enable the fs-rehydrate fallback; admin/read commands
+// that have no identity still work (passthrough).
 // The caller is responsible for calling s.Close() (typically via defer).
 func openStore() (store.Store, error) {
 	s, err := store.Open(store.StorePath(CFHome()))
 	if err != nil {
 		return nil, fmt.Errorf("opening store: %w", err)
 	}
-	return s, nil
+	pubkeyHex := ""
+	if agentID, idErr := identity.Load(IdentityPath()); idErr == nil {
+		pubkeyHex = agentID.PublicKeyHex()
+	}
+	return wrapLocalStore(s, pubkeyHex), nil
 }
 
-// requireAgentAndStore loads the agent identity and opens the campfire store.
+// requireAgentAndStore loads the agent identity and opens the campfire store,
+// wrapped so membership reads fall back to the filesystem transport on a cold
+// cache (the identity supplies the self-pubkey the fs-rehydrate fallback needs).
 // The caller is responsible for calling s.Close() (typically via defer).
 func requireAgentAndStore() (*identity.Identity, store.Store, error) {
 	agentID, err := identity.Load(IdentityPath())
@@ -42,7 +67,7 @@ func requireAgentAndStore() (*identity.Identity, store.Store, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening store: %w", err)
 	}
-	return agentID, s, nil
+	return agentID, wrapLocalStore(s, agentID.PublicKeyHex()), nil
 }
 
 // printAutoJoinWarnings prints auto-join warnings from an InitResult to stderr.
