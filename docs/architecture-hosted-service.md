@@ -232,6 +232,57 @@ The honest answer: the hosted service is trusted infrastructure. You trust the o
 5. Metering: hourly goroutine reads message counts, POSTs usage events to Marketplace API
 6. If agent exceeds free tier: `ErrMonthlyCapExceeded` → HTTP 402 with x402 PaymentChallenge
 
+## Storage Authority in the Hosted Service
+
+### Azure Table Storage is the source of truth
+
+Hosted `cf-mcp` runs in Azure Functions (stateless, multiple instances). There is **no filesystem** — Azure Table Storage (`stcampfirebpjpsl`) is the sole authoritative store for all categories: memberships, messages, read cursors, peer endpoints, threshold shares, epoch secrets, invites, and pending messages.
+
+The service wraps this through `pkg/storage.CloudStorage`, a faithful passthrough that adds the `Storage` interface (`Backend()` + `MembershipExists`) without altering any aztable behavior. `MembershipExists` answers authoritatively from aztable — a nil membership means "not a member"; there is no filesystem to consult.
+
+### Per-session namespaced store
+
+Each MCP session gets its own namespace within the shared Azure Storage tables, equivalent to SQLite isolation in the local model. `cmd/cf-mcp` constructs this via:
+
+```go
+// Per-session: wrap the namespaced store as CloudStorage.
+// DO NOT use storage.Open() here — that builds a global non-namespaced store
+// and would collapse every session into one namespace.
+namespaced, err := aztable.NewNamespacedTableStore(connStr, internalID)
+sm.storeFactory = func(internalID string) (store.Store, error) {
+    namespaced, err := aztable.NewNamespacedTableStore(connStr, internalID)
+    if err != nil {
+        return nil, err
+    }
+    return storage.NewCloudStorage(namespaced), nil
+}
+```
+
+A separate global (non-namespaced) `aztable.TableStore` is wired to the transport router for cross-instance p2p-http campfire discovery. These are two distinct aztable handles with different scopes — not the same store.
+
+### CF_HOME is override-only in the hosted process
+
+The Azure Functions environment does not set `CF_HOME`. `fs.DefaultBaseDir()` resolution order is:
+
+1. `$CF_TRANSPORT_DIR` — not set in hosted
+2. `$CF_HOME` — not set in hosted
+3. Tree-walk `.cf/config.toml` `storage_root` — not applicable (no project directory)
+4. `~/.campfire/campfires` — compiled-in default (unused in hosted: no filesystem writes)
+
+The hosted service does not write campfire data to the filesystem at all. The default resolution falls through to `~/.campfire` but the code path that would use it is never reached because `AZURE_STORAGE_CONNECTION_STRING` is set and all campfire state goes to aztable.
+
+When `CF_HOME` is set (e.g., in a jailed local automaton), it outranks the tree-walk config. See the protocol-spec Storage Authority section for the known limitation this creates for jail-based identity redirection.
+
+### The eviction-revocation dual gate (local mode only)
+
+In the local filesystem transport, `sendFilesystem` checks membership against the filesystem transport directory even after the store gate in `Send` already verified it via `Storage.MembershipExists`. This dual gate is intentional:
+
+- The store gate answers from the **SQLite cache**, which can be stale-positive after another client evicts a member. Eviction removes `members/<pk>.cbor` from the transport directory but cannot reach into the evicted member's own SQLite store.
+- The filesystem is the source of truth for eviction. `sendFilesystem` re-checks it directly.
+- If this gate were removed, an evicted member could continue sending until their SQLite cache was invalidated by an explicit sync. The regression test is `TestEvict/EvictThenSendRejected`.
+
+This gate does NOT apply in hosted mode — there is no filesystem to re-check, and the `CloudStorage.MembershipExists` call is authoritative.
+
 ## Deployment Pipeline
 
 ```

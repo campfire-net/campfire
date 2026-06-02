@@ -684,6 +684,83 @@ display_name = "My Agent"
 
 ---
 
+## pkg/storage.Storage — persistence abstraction
+
+`pkg/storage.Storage` is the persistence interface that all campfire protocol call sites consume. It wraps `store.Store` (the raw SQLite or Azure Table Storage layer) and adds two backend-specific methods.
+
+### Interface
+
+```go
+// Storage embeds store.Store so every existing store operation is available
+// unchanged. Call sites import this interface, not store.Store directly.
+type Storage interface {
+    store.Store
+
+    // Backend reports which implementation is active.
+    // Use for diagnostics and deployment assertions only —
+    // NOT for branching persistence behavior at call sites.
+    Backend() Backend // "local" | "cloud"
+
+    // MembershipExists answers the membership-existence question.
+    // The semantics differ by backend (see below).
+    MembershipExists(campfireID string) (bool, error)
+}
+```
+
+`store.Store`-only categories — `threshold_shares`, `pending_threshold_shares`, `campfire_epoch_secrets`, `campfire_invites`, `peer_endpoints`, `read_cursors`, `pending_messages` — have no filesystem source and pass through both backends unchanged.
+
+### LocalStorage (single-machine / dev)
+
+`LocalStorage` wraps a SQLite `store.Store`. The filesystem transport directory is the **source of truth**; SQLite is a rebuildable cache.
+
+**Membership rehydrate (fs-fallback):** On a `GetMembership` cache miss, if a self pubkey is configured, `LocalStorage` reads the `campfire.cbor` state and `members/<selfPubkeyHex>.cbor` file from the filesystem transport directory, reconstructs the membership (role, transport dir, join protocol, threshold, encryption flag), writes it back into the SQLite cache, and returns it. A miss where the filesystem also has no state is authoritative.
+
+`MembershipExists` delegates to `GetMembership` and inherits the fs-fallback: a SQLite miss that the filesystem satisfies becomes `true`.
+
+```go
+// Wrap an existing SQLite store.Store.
+ls := storage.NewLocalStorage(st,
+    storage.WithSelfPubkeyHex(pubkeyHex), // enables fs rehydrate
+    storage.WithTransportBaseDir(dir),     // override transport root (optional)
+)
+```
+
+Without `WithSelfPubkeyHex`, `GetMembership` is a pure SQLite passthrough (cannot identify which on-disk member is "me").
+
+### CloudStorage (hosted / Azure)
+
+`CloudStorage` is a faithful passthrough over an Azure Table Storage `store.Store` (expected to be an `aztable.TableStore`). aztable is the **authoritative source of truth** — there is no filesystem. Every method forwards unchanged.
+
+`MembershipExists` returns `false` on a nil membership without consulting any filesystem, because there is no filesystem in the cloud deployment.
+
+```go
+// Wrap an already-constructed store.Store (e.g. an aztable.NamespacedTableStore).
+cs := storage.NewCloudStorage(st)
+```
+
+### Factory — storage.Open
+
+```go
+s, err := storage.Open(storage.Config{
+    ConnectionString: os.Getenv("AZURE_STORAGE_CONNECTION_STRING"),
+    LocalPath:        "/path/to/store.db",
+})
+```
+
+`Open` selects: non-empty `ConnectionString` → `CloudStorage` over a **global** (non-namespaced) `aztable.TableStore`; empty → `LocalStorage` over SQLite at `LocalPath`.
+
+**Do not use `Open` for per-session hosted stores.** `cmd/cf-mcp` wraps each session's `aztable.NewNamespacedTableStore` directly via `NewCloudStorage` to preserve per-session namespace isolation. Routing through `Open` would collapse every session into one namespace. The per-session namespacing is the mechanism that gives each MCP session its own isolated campfire state within the shared Azure Storage tables.
+
+### Wrapping vs. opening
+
+| Situation | Constructor to use |
+|-----------|-------------------|
+| You hold a SQLite `store.Store` and want local semantics | `NewLocalStorage(st, opts...)` |
+| You hold an aztable `store.Store` (global or namespaced) and want cloud semantics | `NewCloudStorage(st)` |
+| You want the factory to select local-vs-cloud for you (global store only) | `Open(Config{...})` |
+
+---
+
 ## Integration hierarchy
 
 | Building... | Use | Why |

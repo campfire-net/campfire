@@ -1277,6 +1277,80 @@ Both conditions are required. A message that carries `"fulfills"` but does not r
 
 **Timeout.** An `Await` with a specified timeout exits with `ErrAwaitTimeout` when the deadline expires before a fulfillment appears. An `Await` with no timeout (zero value) blocks until fulfilled or context-cancelled. Negative timeout values are rejected at call time.
 
+## Storage Authority Model
+
+The campfire implementation distinguishes two persistence roles that share the same Go interface (`pkg/storage.Storage`) but have different source-of-truth semantics depending on deployment mode.
+
+### Local deployment (filesystem = source of truth)
+
+In a local deployment (`cf` CLI, single-machine agents), the filesystem transport directory is the **source of truth**. The layout under the transport base directory is:
+
+```
+<base>/<campfire-id>/
+  campfire.cbor          — campfire state (join protocol, threshold, encryption flag, …)
+  members/<pubkey>.cbor  — one file per member
+  messages/<n>.cbor      — message files (append-only)
+```
+
+The SQLite database is a **rebuildable index** (cache) over the filesystem. It is never the final word on membership.
+
+**Index-vs-truth boundary by table category:**
+
+| Category | Source of truth | Notes |
+|----------|----------------|-------|
+| `memberships` | **Filesystem** (`members/<pk>.cbor` + `campfire.cbor`) | SQLite is a warm cache; `LocalStorage.GetMembership` rehydrates on a cache miss |
+| `messages` | **Filesystem** (message files) | SyncFilesystem writes them into the cache; query layer reads SQLite |
+| `projections`, `fs_sync_cursors` | **Filesystem** (derived) | Rebuilt from the message log on sync |
+| `threshold_shares`, `campfire_epoch_secrets` | **Store-only** | No filesystem source — a nil from SQLite is authoritative |
+| `campfire_invites`, `peer_endpoints` | **Store-only** | Same — authoritative nil |
+| `read_cursors`, `pending_messages` | **Store-only** | Same — authoritative nil |
+
+Store-only categories pass through `LocalStorage` to the embedded `store.Store` unchanged because there is no filesystem fallback to consult.
+
+**Eviction / revocation gate (dual gate).** `sendFilesystem` re-checks membership against the filesystem transport directory even though the store gate in `Send` already verified it. This is intentional and MUST NOT be removed. The store gate answers from the local SQLite cache, which can be **stale-positive** after another client evicts a member: eviction removes the `members/<pk>.cbor` file from the transport directory but cannot reach into the evicted member's own local SQLite store. Because the filesystem is the source of truth for revocation, `sendFilesystem` consults it directly — skipping this gate would allow an evicted member to keep sending (regression: `TestEvict/EvictThenSendRejected`). The "local cache may be stale-positive after eviction, and rehydrate fires only on a miss" property is WHY the dual gate exists.
+
+### Hosted deployment (Azure Table Storage = source of truth)
+
+In hosted `cf-mcp` (Azure Functions), there is **no filesystem**. Azure Table Storage (`pkg/store/aztable`) is the sole authoritative store for all categories. `CloudStorage` is a faithful passthrough over the aztable store — every method forwards unchanged. A nil membership from the cloud store is an authoritative "not a member"; there is no filesystem to fall back to.
+
+Both `LocalStorage` and `CloudStorage` satisfy the same `pkg/storage.Storage` interface. Call sites are backend-agnostic: they call `Storage.MembershipExists` and the implementation decides whether a nil means "authoritative miss" (cloud) or "consult the filesystem" (local).
+
+### Storage interface summary
+
+```go
+// pkg/storage.Storage embeds store.Store and adds two methods:
+type Storage interface {
+    store.Store
+    Backend() Backend          // "local" or "cloud" — diagnostics only, not branching
+    MembershipExists(campfireID string) (bool, error)
+}
+```
+
+`MembershipExists` is the single call site that diverges between local and cloud. All other store operations pass through identically.
+
+**Do not branch on `Backend()` in application code.** Backend is for diagnostics and deployment assertions. Call `MembershipExists` instead.
+
+### Factory
+
+`storage.Open(Config)` selects the backend from `Config.ConnectionString`:
+- Non-empty `ConnectionString` → `CloudStorage` (global non-namespaced aztable store)
+- Empty → `LocalStorage` (SQLite at `Config.LocalPath`)
+
+`Open` is for callers that need a single **global** store. Hosted `cf-mcp` uses it for the global p2p-http routing store. It does NOT subsume the per-session namespaced store factory: `cmd/cf-mcp` wraps each session's `aztable.NewNamespacedTableStore` directly via `storage.NewCloudStorage` to preserve per-session namespace isolation. Using `Open` for the per-session store would collapse every session into one namespace.
+
+### Transport base directory resolution
+
+`fs.DefaultBaseDir()` resolves the filesystem transport root in priority order:
+
+1. **`$CF_TRANSPORT_DIR`** — explicit override; used as the base directory as-is (back-compat, highest priority)
+2. **`$CF_HOME`** — explicit override; returns `$CF_HOME/campfires` (back-compat)
+3. **Tree-walk from CWD** — searches ancestor directories for `.cf/config.toml` with `[transport].storage_root`; returns `storage_root/campfires`
+4. **`~/.campfire/campfires`** — compiled-in default
+
+The tree-walk reads `.cf/config.toml` at each ancestor directory up to (and including) the user's home directory. Security: relative `storage_root` values with `..` components are rejected; resolved paths that escape the home tree are also rejected. Absolute paths outside home are accepted (legitimate server use-case).
+
+**Known limitation — CF_HOME outranks the tree-walk config.** When `$CF_HOME` is set in the environment, it outranks any `.cf/config.toml` `storage_root`. A jailed automaton that still exports `CF_HOME` cannot redirect the storage root via config alone — it must run without `CF_HOME` set in its environment. This is why a full fix for jailed identity redirection (campfireagent-2724) requires a jail-side change to unset `CF_HOME` rather than a protocol-side change.
+
 ## Wire Format
 
 Not specified in this version. The protocol defines the logical structure of messages, provenance chains, and membership data. Serialization format (protobuf, msgpack, CBOR, JSON) is an implementation choice. The only requirement is that the serialization is deterministic for signature verification.
