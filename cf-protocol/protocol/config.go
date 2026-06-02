@@ -71,10 +71,11 @@ type rawStoreConfig struct {
 }
 
 type rawTransportConfig struct {
-	Type     string `toml:"type"`
-	Endpoint string `toml:"endpoint"`
-	Dir      string `toml:"dir"`
-	Relay    string `toml:"relay"`
+	Type        string `toml:"type"`
+	Endpoint    string `toml:"endpoint"`
+	Dir         string `toml:"dir"`
+	Relay       string `toml:"relay"`
+	StorageRoot string `toml:"storage_root"`
 }
 
 type rawNamingConfig struct {
@@ -141,11 +142,16 @@ type TransportConfig struct {
 	Type string
 	// Endpoint is the HTTP transport endpoint.
 	Endpoint string
-	// Dir is the FS transport directory.
+	// Dir is the FS transport directory for a specific campfire (path-rooted).
 	Dir string
 	// Relay is the default relay URL used when --relay flag is omitted from cf create.
 	// When non-empty, cf create passes this URL as the relay for the new campfire.
 	Relay string
+	// StorageRoot is the base directory under which all campfire subdirectories are stored.
+	// When set, the fs transport uses <storage_root>/campfires as its base directory.
+	// This is the jail-safe alternative to CF_HOME: a .cf/config.toml in the project tree
+	// can point storage_root at a persona's data dir without setting a process-wide env var.
+	StorageRoot string
 }
 
 // NamingConfig holds naming-related configuration.
@@ -538,6 +544,14 @@ func mergeLayer(dst *Config, raw *rawConfig, path string, isGlobal bool) ([]stri
 		contributed = append(contributed, "transport.relay")
 	}
 
+	// transport.storage_root — scalar: deepest wins (non-empty overrides).
+	// Resolved relative to the config file's directory so a project .cf/config.toml
+	// can use a relative path (e.g. "../bot-data") without requiring an absolute path.
+	if raw.Transport.StorageRoot != "" {
+		dst.Transport.StorageRoot = resolveRelativePath(raw.Transport.StorageRoot, filepath.Dir(path))
+		contributed = append(contributed, "transport.storage_root")
+	}
+
 	// naming.root — global-only scalar.
 	if isGlobal && raw.Naming.Root != "" {
 		dst.Naming.Root = raw.Naming.Root
@@ -717,6 +731,8 @@ func ApplyConfigField(dst, src *Config, field string) {
 		dst.Transport.Dir = src.Transport.Dir
 	case "transport.relay":
 		dst.Transport.Relay = src.Transport.Relay
+	case "transport.storage_root":
+		dst.Transport.StorageRoot = src.Transport.StorageRoot
 	case "naming.root":
 		dst.Naming.Root = src.Naming.Root
 	case "naming.seeds":

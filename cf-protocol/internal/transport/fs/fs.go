@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -26,20 +25,39 @@ type Transport struct {
 }
 
 // DefaultBaseDir returns the default transport base directory.
-// Priority: $CF_TRANSPORT_DIR > $CF_HOME/campfires > ~/.campfire/campfires.
-// The old default (/tmp/campfire) was ephemeral and caused split-brain:
-// store.db survived container restarts but transport files did not.
+//
+// Resolution order (campfireagent-3f0):
+//  1. $CF_TRANSPORT_DIR — explicit override (back-compat, highest priority).
+//  2. $CF_HOME — explicit override; returns CF_HOME/campfires (back-compat).
+//  3. Tree-walk from CWD for a .cf/config.toml with transport.storage_root;
+//     returns storage_root/campfires.
+//  4. ~/.campfire/campfires — compiled-in default.
+//
+// CF_HOME is now override-only: when neither CF_TRANSPORT_DIR nor CF_HOME is set,
+// the transport resolves its root from the project's .cf/config.toml, allowing
+// jailed automata to point storage_root at a persona's data directory without
+// setting any process-wide environment variables.
 func DefaultBaseDir() string {
+	cwd, _ := os.Getwd()
+	root := ResolveStorageRoot(cwd)
+	// ResolveStorageRoot returns one of:
+	//   - CF_TRANSPORT_DIR (already the full BaseDir — no campfires/ suffix needed)
+	//   - CF_HOME/campfires (already has campfires/ suffix)
+	//   - storage_root from config (bare root — append campfires/)
+	//   - ~/.campfire (bare root — append campfires/)
+	//
+	// Distinguish: CF_TRANSPORT_DIR returns the dir verbatim (no suffix added).
+	// CF_HOME path already ends in "campfires". Storage_root and ~/.campfire do not.
 	if env := os.Getenv("CF_TRANSPORT_DIR"); env != "" {
-		return env
+		// CF_TRANSPORT_DIR is the BaseDir as-is (existing semantics).
+		return root
 	}
 	if cfHome := os.Getenv("CF_HOME"); cfHome != "" {
-		return filepath.Join(cfHome, "campfires")
+		// CF_HOME path already ends in campfires — returned directly by ResolveStorageRoot.
+		return root
 	}
-	if u, err := user.Current(); err == nil && u.HomeDir != "" {
-		return filepath.Join(u.HomeDir, ".campfire", "campfires")
-	}
-	return "/tmp/campfire"
+	// storage_root or ~/.campfire: append "campfires" to form the BaseDir.
+	return filepath.Join(root, "campfires")
 }
 
 // New creates a Transport with the given base directory.
