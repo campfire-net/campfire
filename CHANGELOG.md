@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+Multi-consumer SDK surface additions from the `ready` consumer-coupling review
+(`campfireagent-196`). Both are pure API additions — no wire-format change, no
+new CBOR fields — and jointly unblock `ready` enforcement (rd kill / scope /
+sessions), which consumes published versions.
+
+### Features
+
+- **`convention.Server.WithGateEvaluator(eval)`** (`campfireagent-ede`): the
+  convention server now accepts an L3 `GateEvaluator`, evaluated before each
+  handler dispatch and failing closed on Deny/Unresolvable (a `convention:error`
+  fulfillment is sent). This is the solo/in-process counterpart to
+  `ConventionDispatcher.SetGateEvaluator`, which previously required a full
+  `DispatchStore` — so SDK servers (rd, dontguess, social) can enforce real
+  cf-authority gating without standing one up. Defaults to allow-all.
+
+- **Production `ProvenanceCheckerV2`** (`campfireagent-6dd`): new
+  `cf-conventions/cf-authority/provenance.NewChecker(src)` resolves a sender's
+  operator provenance level (0–3) from a `pkg/provenance` attestation store,
+  replacing the allow-all stub for `min_operator_level` gating. Fails closed
+  (Anonymous) when the source is nil. Serves rd, dontguess, and social.
+
 ## v0.31.2 — incremental filesystem sync (2026-05-30)
 
 Patch release. Eliminates the per-operation full-history rescan in the

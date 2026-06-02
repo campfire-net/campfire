@@ -2,6 +2,8 @@ package convention
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -59,6 +61,7 @@ type HandlerFunc func(ctx context.Context, req *Request) (*Response, error)
 //	    return &convention.Response{Payload: map[string]any{"ok": true}}, nil
 //	})
 //	srv.Serve(ctx, campfireID)
+//
 // Server intentionally does not access the underlying store or identity
 // directly. All operations go through protocol.Client's public API
 // (Send, Subscribe) — Store and Identity are unexported on Client (SDK 0.12).
@@ -83,6 +86,11 @@ type Server struct {
 	// Defaults to NoopIdentityResolver{} when not set.
 	resolver IdentityResolver
 
+	// gateEvaluator performs L3 delegation-chain authorization before handler
+	// dispatch, mirroring ConventionDispatcher.SetGateEvaluator for solo/in-process
+	// servers that have no DispatchStore. Defaults to AllowAllGateEvaluator{}.
+	gateEvaluator GateEvaluator
+
 	// ready is closed by Serve when the subscription goroutine has been
 	// started and the server is ready to receive messages. Callers that
 	// need to ensure the server is polling before sending messages can
@@ -96,13 +104,14 @@ type Server struct {
 // All message operations use client.
 func NewServer(client *protocol.Client, decl *Declaration) *Server {
 	return &Server{
-		client:       client,
-		decl:         decl,
-		handlers:     make(map[string]HandlerFunc),
-		pollInterval: 2 * time.Second,
-		errFn:        func(err error) {},
-		resolver:     NoopIdentityResolver{},
-		ready:        make(chan struct{}),
+		client:        client,
+		decl:          decl,
+		handlers:      make(map[string]HandlerFunc),
+		pollInterval:  2 * time.Second,
+		errFn:         func(err error) {},
+		resolver:      NoopIdentityResolver{},
+		gateEvaluator: AllowAllGateEvaluator{},
+		ready:         make(chan struct{}),
 	}
 }
 
@@ -151,6 +160,27 @@ func (s *Server) WithErrorHandler(fn func(err error)) *Server {
 // See Operator Provenance Convention v0.1 §8.
 func (s *Server) WithProvenance(checker ProvenanceChecker) *Server {
 	s.provenance = checker
+	return s
+}
+
+// WithGateEvaluator attaches a GateEvaluator to the Server, enabling L3
+// delegation-chain authorization before each operation is dispatched to its
+// handler. This is the convention.Server counterpart to
+// ConventionDispatcher.SetGateEvaluator — it lets solo/in-process servers (rd,
+// dontguess, social) enforce real cf-authority gating without standing up a full
+// DispatchStore. Pass trust.NewConventionAdapter() to enable real gating.
+//
+// The gate is evaluated after the operator-provenance gate and before the
+// handler runs. A non-Allow decision (Deny or Unresolvable) blocks dispatch and
+// sends a "convention:error" fulfillment, failing closed per the GateEvaluator
+// contract §4.2.
+//
+// Defaults to AllowAllGateEvaluator{} when not set; passing nil resets to it.
+func (s *Server) WithGateEvaluator(eval GateEvaluator) *Server {
+	if eval == nil {
+		eval = AllowAllGateEvaluator{}
+	}
+	s.gateEvaluator = eval
 	return s
 }
 
@@ -246,6 +276,42 @@ func (s *Server) dispatch(ctx context.Context, campfireID string, msg protocol.M
 			}
 			return
 		}
+	}
+
+	// L3 gate evaluation (campfireagent-ede): authorize the operation against the
+	// delegation chain before invoking the handler. Mirrors the dispatcher gate
+	// path (see ConventionDispatcher.dispatch). A non-Allow decision (Deny or
+	// Unresolvable) fails closed per the GateEvaluator contract §4.2. The sender
+	// key is decoded best-effort; a zero key still lets the evaluator apply
+	// non-sender policy (owner ceiling, blanket deny, etc.).
+	eval := s.gateEvaluator
+	if eval == nil {
+		eval = AllowAllGateEvaluator{}
+	}
+	var senderKey ed25519.PublicKey
+	if len(msg.Sender) == 64 {
+		if raw, decErr := hex.DecodeString(msg.Sender); decErr == nil && len(raw) == ed25519.PublicKeySize {
+			senderKey = ed25519.PublicKey(raw)
+		}
+	}
+	gateResult := eval.Evaluate(ctx, EvaluateRequest{
+		Request: GateOpRequest{
+			Convention: s.decl.Convention,
+			Operation:  s.decl.Operation,
+			CampfireID: campfireID,
+			Tags:       msg.Tags,
+			Sender:     senderKey,
+		},
+		CurrentTime: time.Now(),
+	})
+	if gateResult.Decision != GateAllow {
+		err := fmt.Errorf("gate denied operation %q: decision=%d reason=%q",
+			s.decl.Convention+":"+s.decl.Operation, gateResult.Decision, gateResult.Reason)
+		s.errFn(fmt.Errorf("convention server: gate (msg %s): %w", msg.ID, err))
+		if sendErr := s.sendErrorResponse(campfireID, msg.ID, err); sendErr != nil {
+			s.errFn(fmt.Errorf("convention server: send gate error (msg %s): %w", msg.ID, sendErr))
+		}
+		return
 	}
 
 	// Parse payload into args map.
