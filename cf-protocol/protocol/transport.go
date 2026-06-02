@@ -27,11 +27,16 @@ func (FilesystemTransport) TransportType() string { return "filesystem" }
 // Required when calling Join. Example: "http://127.0.0.1:9001".
 // Dir is the directory to store P2P HTTP campfire state CBOR files.
 // Optional: if empty, a temp directory is used.
+// RelayEndpoint, when set on Create, registers the new campfire on that HTTP
+// relay (POST /campfire/create) instead of self-hosting: Create records the
+// p2p-http membership and the relay as a peer endpoint, and the relay issues the
+// beacon and invite. A running Transport is not required for the relay path.
 type P2PHTTPTransport struct {
-	Transport    *cfhttp.Transport
-	MyEndpoint   string
-	PeerEndpoint string
-	Dir          string
+	Transport     *cfhttp.Transport
+	MyEndpoint    string
+	PeerEndpoint  string
+	Dir           string
+	RelayEndpoint string
 }
 
 // TransportType returns "p2p-http".

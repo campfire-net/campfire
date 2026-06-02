@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Relay-aware `protocol.Client.Create`** (`campfireagent-bec`): setting
+  `P2PHTTPTransport.RelayEndpoint` on a `CreateRequest` now creates the campfire
+  on that HTTP relay — `Create` registers it, records the p2p-http membership and
+  the relay as a peer endpoint, and publishes a local beacon pointing at the
+  relay. The relay issues the authoritative beacon/invite, surfaced on the new
+  `CreateResult.RelayEndpoint`/`RelayBeacon` fields. Previously SDK consumers
+  (rd, the reach, freeso, cf-hosting) had to hand-wire `cfhttp.RegisterOnRelay` +
+  admission + peer-upsert. The relay registration is a single shared
+  implementation (`Client.RegisterOnRelay`) used by both `Create` and the `cf`
+  CLI, so the two cannot drift. No running `cfhttp.Transport` is required for the
+  relay path (the creator is a relay client, not a host).
+
 ## v0.31.2 — incremental filesystem sync (2026-05-30)
 
 Patch release. Eliminates the per-operation full-history rescan in the

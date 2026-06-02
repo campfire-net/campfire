@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/cf-protocol/internal/campfire"
 	cfencoding "github.com/campfire-net/campfire/cf-protocol/internal/encoding"
 	"github.com/campfire-net/campfire/cf-protocol/internal/store"
 	"github.com/campfire-net/campfire/cf-protocol/internal/threshold"
 	"github.com/campfire-net/campfire/cf-protocol/internal/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/cf-protocol/internal/transport/http"
+	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/google/uuid"
 )
 
@@ -60,7 +60,17 @@ type CreateResult struct {
 
 	// InviteCode is the default invite code generated for this campfire.
 	// Always set — callers should share it with agents they want to admit.
+	// On the relay path it is the relay-issued invite (may be empty for open
+	// campfires or older relays).
 	InviteCode string
+
+	// RelayEndpoint is set when the campfire was created on an HTTP relay
+	// (P2PHTTPTransport.RelayEndpoint). Empty for self-hosted/filesystem campfires.
+	RelayEndpoint string
+
+	// RelayBeacon is the relay-issued portable beacon string ("beacon:…") for a
+	// relay-created campfire. Empty otherwise, or when the relay does not issue one.
+	RelayBeacon string
 }
 
 // Create generates a new campfire keypair, initializes the transport, admits
@@ -107,9 +117,15 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 		transportType = "filesystem"
 		transportDir, err = c.createFilesystemCampfire(cf, &t)
 	case *P2PHTTPTransport:
+		if t.RelayEndpoint != "" {
+			return c.createOnRelay(cf, t, req)
+		}
 		transportType = "p2p-http"
 		transportDir, err = c.createP2PHTTPCampfire(cf, t)
 	case P2PHTTPTransport:
+		if t.RelayEndpoint != "" {
+			return c.createOnRelay(cf, &t, req)
+		}
 		transportType = "p2p-http"
 		transportDir, err = c.createP2PHTTPCampfire(cf, &t)
 	case *GitHubTransport, GitHubTransport:
@@ -182,6 +198,54 @@ func (c *Client) Create(req CreateRequest) (*CreateResult, error) {
 		Beacon:     b,
 		BeaconPath: beaconPath,
 		InviteCode: inviteCode,
+	}, nil
+}
+
+// createOnRelay handles Create for a P2PHTTPTransport carrying a RelayEndpoint.
+// It registers the campfire on the relay (relay POST + local state + p2p-http
+// membership + relay peer endpoint, via RegisterOnRelay) and publishes a local
+// beacon pointing at the relay endpoint so the campfire is shareable. The relay
+// issues the authoritative beacon and invite, which are returned on CreateResult.
+//
+// This path does its own admission and issuance, so it returns directly rather
+// than falling through to Create's generic AddMembership / local beacon / local
+// invite tail (which would otherwise double-issue).
+func (c *Client) createOnRelay(cf *campfire.Campfire, t *P2PHTTPTransport, req CreateRequest) (*CreateResult, error) {
+	reg, err := c.RegisterOnRelay(cf, t.RelayEndpoint, t.Dir, req.Description)
+	if err != nil {
+		return nil, err
+	}
+
+	// Publish a local beacon whose transport config names the relay endpoint —
+	// a local cache of the relay address (so `cf share` works), not a competing
+	// source of truth.
+	beaconDir := req.BeaconDir
+	if beaconDir == "" {
+		beaconDir = beacon.DefaultBeaconDir()
+	}
+	b, err := beacon.New(
+		cf.PublicKey, cf.PrivateKey,
+		cf.JoinProtocol,
+		cf.ReceptionRequirements,
+		beacon.TransportConfig{Protocol: "p2p-http", Config: map[string]string{"endpoint": reg.Endpoint}},
+		req.Description,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating relay beacon: %w", err)
+	}
+	if err := beacon.Publish(beaconDir, b); err != nil {
+		return nil, fmt.Errorf("publishing relay beacon: %w", err)
+	}
+	beaconPath := filepath.Join(beaconDir, fmt.Sprintf("%x.beacon", cf.PublicKey))
+
+	return &CreateResult{
+		CampfireID:    cf.PublicKeyHex(),
+		BeaconID:      cf.PublicKeyHex(),
+		Beacon:        b,
+		BeaconPath:    beaconPath,
+		InviteCode:    reg.InviteCode,
+		RelayEndpoint: reg.Endpoint,
+		RelayBeacon:   reg.Beacon,
 	}, nil
 }
 
@@ -290,7 +354,6 @@ func (c *Client) createP2PHTTPCampfire(cf *campfire.Campfire, t *P2PHTTPTranspor
 
 	return stateDir, nil
 }
-
 
 // initThresholdDKG runs an in-process DKG for a new threshold campfire.
 // The creator is assigned participant ID 1 and its share is stored in the local
