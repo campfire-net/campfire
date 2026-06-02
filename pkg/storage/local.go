@@ -118,9 +118,17 @@ func (l *LocalStorage) GetMembership(campfireID string) (*store.Membership, erro
 		return nil, nil
 	}
 
-	// Warm the cache so the next call hits SQLite directly. Idempotent: a second
-	// rehydrate would simply re-write the same row (AddMembership upserts).
+	// Warm the cache so the next call hits SQLite directly. AddMembership is a
+	// plain INSERT against the campfire_id primary key, NOT an upsert — two
+	// concurrent rehydrates of the same campfire (e.g. parallel Send/Read/Members
+	// gates) both miss, both reconstruct, and both INSERT. The loser of that race
+	// gets a UNIQUE-constraint error. That is a benign warm-race: the winner has
+	// already written the identical row, so re-read and return it rather than
+	// failing a legitimate membership query.
 	if err := l.Store.AddMembership(*rehydrated); err != nil {
+		if cached, reErr := l.Store.GetMembership(campfireID); reErr == nil && cached != nil {
+			return cached, nil
+		}
 		return nil, fmt.Errorf("storage: warming membership cache: %w", err)
 	}
 	return rehydrated, nil

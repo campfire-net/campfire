@@ -3,6 +3,7 @@ package storage_test
 import (
 	"encoding/hex"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
@@ -133,6 +134,77 @@ func TestLocalStorageGetMembershipRehydratesFromFilesystem(t *testing.T) {
 		t.Fatalf("GetEpochSecret: %v", err)
 	} else if sec != nil {
 		t.Fatalf("GetEpochSecret returned a record for an empty store — spurious fs fallback")
+	}
+}
+
+// TestLocalStorageGetMembershipConcurrentRehydrateNoRace is the regression test
+// for the warm-cache INSERT race (S2 security review, campfireagent-913). When
+// many gates (parallel Send/Read/Members in cf-mcp) hit a cold cache at once,
+// they all miss, all rehydrate, and all try to AddMembership the same row.
+// AddMembership is a plain INSERT against a primary key, so all but one lose a
+// UNIQUE-constraint race. The fix treats that as a benign warm-race (re-read the
+// winner's row). This test asserts every concurrent caller succeeds with the
+// correct record — none gets a spurious "warming membership cache" failure.
+//
+// Ground-source: real fs transport + real SQLite store + real goroutines.
+func TestLocalStorageGetMembershipConcurrentRehydrateNoRace(t *testing.T) {
+	transportRoot := t.TempDir()
+
+	selfPub := make([]byte, 32)
+	for i := range selfPub {
+		selfPub[i] = byte(i + 7)
+	}
+	selfHex := hex.EncodeToString(selfPub)
+
+	tr := fs.New(transportRoot)
+	cfState := &campfire.CampfireState{PublicKey: selfPub, JoinProtocol: "open", Threshold: 1}
+	c := cfState.ToCampfire(nil)
+	campfireID := c.PublicKeyHex()
+	if err := tr.Init(c); err != nil {
+		t.Fatalf("transport.Init: %v", err)
+	}
+	if err := tr.WriteMember(campfireID, campfire.MemberRecord{
+		PublicKey: selfPub, JoinedAt: 4242, Role: campfire.RoleFull,
+	}); err != nil {
+		t.Fatalf("transport.WriteMember: %v", err)
+	}
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+
+	ls := storage.NewLocalStorage(st,
+		storage.WithSelfPubkeyHex(selfHex),
+		storage.WithTransportBaseDir(transportRoot),
+	)
+
+	const goroutines = 12
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+	recs := make([]*store.Membership, goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start // maximize contention: all fire together on a cold cache
+			recs[idx], errs[idx] = ls.GetMembership(campfireID)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i := 0; i < goroutines; i++ {
+		if errs[i] != nil {
+			t.Errorf("goroutine %d: GetMembership errored (warm-race not handled): %v", i, errs[i])
+		}
+		if recs[i] == nil {
+			t.Errorf("goroutine %d: GetMembership = nil, want rehydrated record", i)
+		} else if recs[i].Role != campfire.RoleFull {
+			t.Errorf("goroutine %d: Role = %q, want %q", i, recs[i].Role, campfire.RoleFull)
+		}
 	}
 }
 
