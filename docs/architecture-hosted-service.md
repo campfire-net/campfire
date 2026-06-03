@@ -265,13 +265,13 @@ A separate global (non-namespaced) `aztable.TableStore` is wired to the transpor
 The Azure Functions environment does not set `CF_HOME`. `fs.DefaultBaseDir()` resolution order is:
 
 1. `$CF_TRANSPORT_DIR` — not set in hosted
-2. `$CF_HOME` — not set in hosted
-3. Tree-walk `.cf/config.toml` `storage_root` — not applicable (no project directory)
+2. Tree-walk `.cf/config.toml` `storage_root` — not applicable (no project directory)
+3. `$CF_HOME` — not set in hosted
 4. `~/.campfire/campfires` — compiled-in default (unused in hosted: no filesystem writes)
 
 The hosted service does not write campfire data to the filesystem at all. The default resolution falls through to `~/.campfire` but the code path that would use it is never reached because `AZURE_STORAGE_CONNECTION_STRING` is set and all campfire state goes to aztable.
 
-When `CF_HOME` is set (e.g., in a jailed local automaton), it outranks the tree-walk config. See the protocol-spec Storage Authority section for the known limitation this creates for jail-based identity redirection.
+A deliberately-placed `.cf/config.toml` `storage_root` outranks the ambient `$CF_HOME` (v0.33.1). A jailed local automaton that sets `CF_HOME` reflexively can therefore redirect storage to a shared/persona campfire directory by placing a config file, without unsetting `CF_HOME`. `$CF_TRANSPORT_DIR` remains the hard override above both. See the protocol-spec Storage Authority section for the precedence rationale.
 
 ### The eviction-revocation dual gate (local mode only)
 

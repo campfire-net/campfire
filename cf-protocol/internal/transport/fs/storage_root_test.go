@@ -36,17 +36,21 @@ func writeConfigTOML(t *testing.T, dir, storageRoot string) string {
 	return cfgPath
 }
 
-// TestResolveStorageRoot_CFHOMEOverrides verifies that when CF_HOME is set,
-// ResolveStorageRoot returns CF_HOME/campfires regardless of any .cf/config.toml.
-func TestResolveStorageRoot_CFHOMEOverrides(t *testing.T) {
+// TestResolveStorageRoot_ConfigOverridesCFHOME verifies the v0.33.1 precedence
+// flip: a deliberately-placed .cf/config.toml storage_root OUTRANKS an ambient
+// CF_HOME. This is what lets a process that sets CF_HOME reflexively (e.g. a
+// legion jail) redirect storage to a shared/persona dir by dropping a config
+// file, without unsetting CF_HOME at every call site (campfireagent-bfe).
+// CF_TRANSPORT_DIR remains the hard override above both (covered separately).
+func TestResolveStorageRoot_ConfigOverridesCFHOME(t *testing.T) {
 	tmp := t.TempDir()
 	cfHome := filepath.Join(tmp, "cf-home")
 	if err := os.MkdirAll(cfHome, 0700); err != nil {
 		t.Fatalf("creating cf-home: %v", err)
 	}
 
-	// Also create a project dir with a .cf/config.toml naming a different root —
-	// it must NOT win when CF_HOME is set.
+	// A project dir with a .cf/config.toml naming a different root — this MUST
+	// win over CF_HOME now that a deliberate config outranks the ambient env.
 	projectDir := filepath.Join(tmp, "project")
 	otherRoot := filepath.Join(tmp, "other-root")
 	if err := os.MkdirAll(projectDir, 0700); err != nil {
@@ -59,9 +63,9 @@ func TestResolveStorageRoot_CFHOMEOverrides(t *testing.T) {
 	t.Setenv("CF_TRANSPORT_DIR", "")
 
 	got := ResolveStorageRoot(projectDir)
-	want := filepath.Join(cfHome, "campfires")
+	want := otherRoot
 	if got != want {
-		t.Errorf("ResolveStorageRoot with CF_HOME set: got %q, want %q", got, want)
+		t.Errorf("config storage_root must override CF_HOME: got %q, want %q (CF_HOME was %q)", got, want, cfHome)
 	}
 }
 

@@ -1333,14 +1333,14 @@ type Storage interface {
 
 `fs.DefaultBaseDir()` resolves the filesystem transport root in priority order:
 
-1. **`$CF_TRANSPORT_DIR`** — explicit override; used as the base directory as-is (back-compat, highest priority)
-2. **`$CF_HOME`** — explicit override; returns `$CF_HOME/campfires` (back-compat)
-3. **Tree-walk from CWD** — searches ancestor directories for `.cf/config.toml` with `[transport].storage_root`; returns `storage_root/campfires`
+1. **`$CF_TRANSPORT_DIR`** — explicit "force this exact dir" override; used as the base directory as-is (highest priority)
+2. **Tree-walk from CWD** — searches ancestor directories for `.cf/config.toml` with `[transport].storage_root`; returns `storage_root/campfires`. A deliberately-placed config **outranks** the ambient `$CF_HOME` default (see below).
+3. **`$CF_HOME`** — legacy ambient default; returns `$CF_HOME/campfires` (back-compat). Consulted only when no config `storage_root` was found, so existing `CF_HOME`-only consumers are unaffected.
 4. **`~/.campfire/campfires`** — compiled-in default
 
 The tree-walk reads `.cf/config.toml` at each ancestor directory up to (and including) the user's home directory. Security: relative `storage_root` values with `..` components are rejected; resolved paths that escape the home tree are also rejected. Absolute paths outside home are accepted (legitimate server use-case).
 
-**Known limitation — CF_HOME outranks the tree-walk config.** When `$CF_HOME` is set in the environment, it outranks any `.cf/config.toml` `storage_root`. A jailed automaton that still exports `CF_HOME` cannot redirect the storage root via config alone — it must run without `CF_HOME` set in its environment. This is why a full fix for jailed identity redirection (campfireagent-2724) requires a jail-side change to unset `CF_HOME` rather than a protocol-side change.
+**Precedence rationale (v0.33.1).** A deliberately-placed, repo-local `.cf/config.toml` `storage_root` outranks the ambient `$CF_HOME` env var — the way `.git`/`.editorconfig`/`direnv` beat inherited ambient state. `$CF_TRANSPORT_DIR` remains the hard override above both for callers that must force a location regardless of config. This lets a process that sets `$CF_HOME` reflexively (e.g. a legion jail) redirect storage to a shared/persona campfire directory by *placing a config file*, without having to unset `CF_HOME` at every call site. (Earlier `v0.33.0` shipped the reverse order — `CF_HOME` above config — which made the redirect unreachable for any consumer that sets `CF_HOME`; `v0.33.1` corrects it.)
 
 ## Wire Format
 

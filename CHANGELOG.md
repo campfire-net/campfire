@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.33.1 — storage-root precedence: config outranks CF_HOME (2026-06-03)
+
+Patch. Corrects the `fs.DefaultBaseDir()` resolution order shipped in v0.33.0.
+
+### Fixed
+
+- **A deliberately-placed `.cf/config.toml` `[transport].storage_root` now
+  outranks the ambient `$CF_HOME`** (new order: `$CF_TRANSPORT_DIR` > config
+  `storage_root` > `$CF_HOME` > `~/.campfire`). v0.33.0 shipped `CF_HOME` above
+  config, which made the config-driven redirect **unreachable for any consumer
+  that sets `CF_HOME`** — including legion, which sets it at every SDK client and
+  subprocess. The redirect (e.g. a jailed automaton pointing storage at a shared
+  persona campfire directory) now works by *placing a config file*, without
+  having to unset `CF_HOME` at every call site. `$CF_TRANSPORT_DIR` remains the
+  hard override above both.
+  - Safe by construction: `storage_root` is a v0.33.0 key, so no pre-existing
+    deployment has one. Consumers that set only `CF_HOME` (no config) resolve
+    exactly as before — `CF_HOME` is still consulted when no config is found.
+
 ## v0.33.0 — storage authority subsystem + tree-walk locator (2026-06-03)
 
 Minor release. Resolves the storage-authority defect where the per-`CF_HOME`

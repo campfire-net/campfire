@@ -4,9 +4,12 @@ package fs
 // fs transport (campfireagent-3f0).
 //
 // Resolution order (highest priority first):
-//  1. $CF_TRANSPORT_DIR — explicit override (back-compat)
-//  2. $CF_HOME — explicit override, returns CF_HOME/campfires (back-compat)
-//  3. Walk up from cwd looking for .cf/config.toml with transport.storage_root
+//  1. $CF_TRANSPORT_DIR — explicit "force this exact dir" override
+//  2. Walk up from cwd for a .cf/config.toml with transport.storage_root —
+//     a deliberate, repo-local declaration OUTRANKS the ambient CF_HOME default,
+//     so a process can redirect storage by placing a config file without having
+//     to unset CF_HOME (the legion-jail / persona-dir case, campfireagent-bfe)
+//  3. $CF_HOME — legacy ambient default, returns CF_HOME/campfires (back-compat)
 //  4. ~/.campfire — compiled-in default
 //
 // The walk stops at the user's home directory so it never picks up configs
@@ -81,21 +84,28 @@ func ResolveStorageRoot(cwd string) string {
 // resolved path and the resolution source. DefaultBaseDir uses this to decide
 // whether to append "campfires" without re-reading environment variables.
 func resolveStorageRootFull(cwd string) storageRootResult {
-	// 1. CF_TRANSPORT_DIR — highest priority (explicit, back-compat).
+	// 1. CF_TRANSPORT_DIR — highest priority, the explicit "force this exact dir" override.
 	if v := os.Getenv("CF_TRANSPORT_DIR"); v != "" {
 		return storageRootResult{Root: v, Source: sourceTransportDir}
 	}
 
-	// 2. CF_HOME — explicit override; returns CF_HOME/campfires (back-compat).
-	if cfHome := os.Getenv("CF_HOME"); cfHome != "" {
-		return storageRootResult{Root: filepath.Join(cfHome, "campfires"), Source: sourceCFHome}
-	}
-
-	// 3. Tree-walk from cwd looking for a .cf/config.toml with storage_root.
+	// 2. Tree-walk from cwd for a deliberate .cf/config.toml storage_root. A
+	// repo-local, intentionally-placed config OUTRANKS the ambient CF_HOME
+	// default: it lets a process redirect storage (e.g. a legion jail pointing at
+	// a persona's shared campfire dir) by dropping a config file, without having
+	// to unset CF_HOME at every call site. CF_TRANSPORT_DIR above still wins for
+	// anyone who needs to force the location regardless of config.
 	if cwd != "" {
 		if root := walkForStorageRoot(cwd); root != "" {
 			return storageRootResult{Root: root, Source: sourceConfig}
 		}
+	}
+
+	// 3. CF_HOME — legacy ambient default; returns CF_HOME/campfires (back-compat).
+	// Only consulted when no deliberate config storage_root was found, so existing
+	// CF_HOME-only consumers are unaffected.
+	if cfHome := os.Getenv("CF_HOME"); cfHome != "" {
+		return storageRootResult{Root: filepath.Join(cfHome, "campfires"), Source: sourceCFHome}
 	}
 
 	// 4. Default: ~/.campfire.
