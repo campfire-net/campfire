@@ -554,8 +554,20 @@ func (s *SQLiteStore) AddMembership(m Membership) error {
 	if m.Encrypted {
 		encrypted = 1
 	}
+	// Idempotent by campfire_id (the primary key). Adding a membership that
+	// already exists is a no-op, not an error — re-joining an on-disk member,
+	// a rehydrate warming an already-warm cache, and admission.AdmitMember
+	// re-admitting a member all legitimately call this twice for the same
+	// campfire. A plain INSERT made those paths fail with a UNIQUE-constraint
+	// error (dontguess-042; the v0.33.0 join-idempotency regression).
+	//
+	// OR IGNORE (keep the existing row), NOT OR REPLACE: a re-add may carry a
+	// partial record (e.g. a rehydrate that does not reconstruct campfire_priv_key),
+	// and REPLACE would clobber the existing key material. Role/state changes do
+	// not flow through AddMembership — they use UpdateMembershipRole and
+	// ApplyMembershipCommitAtomically (which deliberately uses INSERT OR REPLACE).
 	_, err := s.db.Exec(
-		`INSERT INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, encrypted, campfire_priv_key)
+		`INSERT OR IGNORE INTO campfire_memberships (campfire_id, transport_dir, join_protocol, role, joined_at, threshold, description, creator_pubkey, transport_type, encrypted, campfire_priv_key)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.CampfireID, m.TransportDir, m.JoinProtocol, m.Role, m.JoinedAt, threshold, m.Description, m.CreatorPubkey, tt, encrypted, m.CampfirePrivKey,
 	)

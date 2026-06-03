@@ -2657,6 +2657,53 @@ func TestUpdateCampfireID_ConcurrentSafe(t *testing.T) {
 
 // --- workspace-9ga: explicit transport_type field ---
 
+// TestAddMembership_Idempotent is the regression test for dontguess-042 — the
+// v0.33.0 join-idempotency regression. AddMembership is keyed by campfire_id
+// (the primary key); adding the same campfire twice must be a no-op, NOT a
+// UNIQUE-constraint error. Re-joining an on-disk member, a rehydrate warming an
+// already-warm cache, and admission.AdmitMember re-admitting all call this twice
+// for the same campfire. It also verifies OR IGNORE does not clobber: a partial
+// re-add (no private key) must NOT erase the campfire_priv_key from the first add.
+func TestAddMembership_Idempotent(t *testing.T) {
+	s := testStore(t)
+
+	// First add carries key material (e.g. a creator / full record).
+	if err := s.AddMembership(Membership{
+		CampfireID:      "rejoin-test",
+		TransportDir:    "/tmp/campfire/rejoin-test",
+		JoinProtocol:    "open",
+		Role:            "full",
+		JoinedAt:        1000,
+		CampfirePrivKey: "secret-key-material",
+	}); err != nil {
+		t.Fatalf("first AddMembership: %v", err)
+	}
+
+	// Re-add the SAME campfire (re-join / rehydrate / re-admit), this time as a
+	// PARTIAL record with no private key. Must be idempotent — no error.
+	if err := s.AddMembership(Membership{
+		CampfireID:   "rejoin-test",
+		TransportDir: "/tmp/campfire/rejoin-test",
+		JoinProtocol: "open",
+		Role:         "full",
+		JoinedAt:     1000,
+	}); err != nil {
+		t.Fatalf("re-add must be idempotent (dontguess-042), got UNIQUE-constraint or other error: %v", err)
+	}
+
+	// The existing row's key material must be preserved (OR IGNORE, not OR REPLACE).
+	m, err := s.GetMembership("rejoin-test")
+	if err != nil {
+		t.Fatalf("GetMembership: %v", err)
+	}
+	if m == nil {
+		t.Fatal("membership missing after idempotent re-add")
+	}
+	if m.CampfirePrivKey != "secret-key-material" {
+		t.Errorf("re-add clobbered campfire_priv_key: got %q, want it preserved", m.CampfirePrivKey)
+	}
+}
+
 // TestAddMembership_TransportTypeInferred verifies that AddMembership populates
 // the transport_type field from TransportDir when TransportType is empty.
 func TestAddMembership_TransportTypeInferred(t *testing.T) {

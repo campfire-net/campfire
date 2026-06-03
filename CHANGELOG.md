@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.33.2 — fix join-idempotency regression: AddMembership is idempotent (2026-06-03)
+
+Patch. Fixes a v0.33.0 regression reported by the dontguess consumer
+(`dontguess-042`): re-joining a campfire whose membership is already on disk
+failed with a `UNIQUE constraint failed: campfire_memberships.campfire_id`
+error instead of being idempotent.
+
+### Fixed
+
+- **`SQLiteStore.AddMembership` is now idempotent** (`INSERT OR IGNORE` keyed on
+  the `campfire_id` primary key). It was a plain `INSERT`, so the second add of
+  the same campfire — which happens on a re-join, a rehydrate warming an
+  already-warm cache, or `admission.AdmitMember` re-admitting an on-disk member —
+  failed with a UNIQUE-constraint error. v0.33.0's first-join e2e passed (cold
+  cache → single insert), so the re-join path shipped untested. `OR IGNORE`
+  (not `OR REPLACE`) preserves an existing row's `campfire_priv_key` when a
+  partial record re-adds; role/state changes still flow through
+  `UpdateMembershipRole` / `ApplyMembershipCommitAtomically`. The Azure Table
+  Storage backend already upserted, so the hosted service never regressed —
+  this was SQLite-only (local / CLI consumers such as dontguess).
+
 ## v0.33.1 — storage-root precedence: config outranks CF_HOME (2026-06-03)
 
 Patch. Corrects the `fs.DefaultBaseDir()` resolution order shipped in v0.33.0.
