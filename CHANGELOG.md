@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.33.0 — storage authority subsystem + tree-walk locator (2026-06-03)
+
+Minor release. Resolves the storage-authority defect where the per-`CF_HOME`
+SQLite store — a cache locally, the sole source of truth when hosted — was
+consulted as authoritative everywhere, so a fresh `CF_HOME` embedding answered
+"not a member" against an empty cache even when the filesystem said otherwise
+(`campfireagent-bfe`, surfaced via `automata-island/automataisland-2724`).
+Additive — no wire-format change, no new CBOR fields.
+
+### Features
+
+- **`pkg/storage.Storage` repository wrapper** (`campfireagent-944a`): a single
+  interface (embeds `store.Store`, adds `Backend()`) with two backends behind
+  it. `LocalStorage` treats the filesystem transport directory as the source of
+  truth and the SQLite store as a rebuildable cache; `CloudStorage` is a faithful
+  passthrough over Azure Table Storage (authoritative when hosted — aztable is
+  unchanged). Call sites stop assuming the store is authoritative.
+- **Filesystem-truth membership rehydrate** (`campfireagent-3fc`):
+  `LocalStorage.GetMembership` reconstructs a full membership record (Role +
+  TransportDir) from `members/<pk>.cbor` on a SQLite cache miss and warms the
+  cache. Scope is memberships only — store-only categories (threshold/epoch
+  secrets, invites, peer endpoints, cursors, pending messages) have no filesystem
+  source and remain authoritative.
+- **Tree-walk `.cf/config.toml` storage-root locator** (`campfireagent-3f0`): the
+  filesystem transport resolves its storage root by walking up from the working
+  directory for a `[transport].storage_root`, defaulting to `~/.campfire`.
+  Resolution order: `CF_TRANSPORT_DIR` > `CF_HOME` > tree-walk config >
+  `~/.campfire`. **`CF_HOME` is demoted to an override** — a process that does not
+  set it resolves storage from config. (Known limitation: a process that still
+  exports `CF_HOME` ignores the config storage-root; embeddings that need
+  config-driven storage must run `CF_HOME`-unset.)
+
+### Fixes
+
+- **`cf join` / MCP join no longer reject pre-admitted members** (`campfireagent-fd69`):
+  join paths now check the on-disk member set before consulting the rehydrating
+  store, so a member admitted by another identity (member file on disk, cold
+  local cache) can join idempotently instead of erroring "already a member".
+- **`storage_root` path-traversal hardening** (`campfireagent-75f`): the
+  tree-walked config now applies the same traversal/boundary checks as the
+  identity-path validation — a relative `storage_root` escaping the home boundary
+  is rejected.
+- **Membership warm-cache write race** (`campfireagent-913`): concurrent
+  rehydrates of the same campfire no longer fail the loser of the `AddMembership`
+  INSERT race; a lost warm-race re-reads the winner's row.
+- **`autoProvisionCampfire` cold-path** (`campfireagent-ffe`): the bare-store
+  branch now wraps in `LocalStorage` so a pre-existing on-disk campfire is not
+  re-provisioned on a cold SQLite cache.
+
+### Security
+
+- The membership rehydrate trust model was reviewed and confirmed sound:
+  filesystem write access to `members/<pk>.cbor` already implies campfire
+  authority (the campfire private key lives in `campfire.cbor` in the same
+  `0700` directory), so rehydrate grants nothing the filesystem ACL did not
+  already confer. No invite bypass, no role escalation.
+
+### Notes
+
+- The `sendFilesystem` dual membership gate is **retained by design**: it is the
+  eviction-revocation enforcement point (the local cache is stale-positive after
+  an evict, and rehydrate only fires on a cache miss). Documented in
+  `docs/architecture-hosted-service.md` — do not collapse it.
+
 ## v0.32.0 — multi-consumer SDK surface + convention precedence authorization (2026-06-02)
 
 Minor release. Hardens convention declaration precedence and adds the
