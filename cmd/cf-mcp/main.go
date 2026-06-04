@@ -1999,6 +1999,18 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 	}
 
 	// Post-join: discover convention:operation declarations and register as tools.
+	//
+	// Declarations live in MESSAGES. On a fresh CF_HOME the session store has
+	// none until synced from the filesystem transport — without this sync, the
+	// scan below finds zero declarations and registers zero tools even though
+	// the join succeeded (campfireagent-b991: a rehydrated-membership join
+	// surfaced none of the campfire's convention surface; the CLI join path
+	// already syncs post-join via syncCampfire). syncFSVerified checks the
+	// signature and provenance hops of every message before storing. HTTP mode
+	// skips: messages arrive via push and are verified at ingestion.
+	if s.httpTransport == nil {
+		syncFSVerified(st, transport, campfireID)
+	}
 	if s.conventionTools == nil {
 		s.conventionTools = newConventionToolMap()
 	}

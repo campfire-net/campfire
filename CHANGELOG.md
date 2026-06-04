@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.33.2 — idempotent re-join + convention tools register on local join (2026-06-04)
+
+Patch. Two v0.33.0 regressions, both surfaced by consumers.
+
+### Fixed
+
+- **Re-join is idempotent again** (`campfireagent-b4b` / `dontguess-042`): the
+  on-disk-member join path called `admission.AdmitMember` unconditionally;
+  `AddMembership` is a strict INSERT, so re-joining a campfire the identity
+  already belongs to failed with `UNIQUE constraint failed:
+  campfire_memberships.campfire_id` (idempotent in v0.32.0). Fixed at all
+  three sites — cf-mcp `handleJoin`, CLI `joinFilesystem`, CLI p2p join — by
+  skipping the re-admit when the membership is already recorded, mirroring the
+  auto-join guard. (An earlier attempt to fix this by making `AddMembership`
+  an `INSERT OR IGNORE` was withdrawn: four invite tests turned out to be
+  asserting this very crash rather than invite enforcement; they are repaired
+  in this release and now genuinely exercise the invite gate via a
+  cross-identity harness.)
+- **`campfire_join` registers convention tools on local/filesystem joins**
+  (`campfireagent-b991`, via `automataisland-2724`): the post-join declaration
+  scan reads the session store, but declarations live in messages on the
+  filesystem; nothing in cf-mcp's local join path synced them, so a
+  fresh-`CF_HOME` join (the jail/embodiment shape) succeeded yet registered
+  zero convention tools — the campfire's API surface stayed uncallable.
+  `handleJoin` now runs the verified fs→store message sync (`syncFSVerified`,
+  signature + provenance checked) before the scan, FS mode only, matching the
+  CLI join path which already synced. Note: only campfire-key-signed
+  declarations (`"signing": "campfire_key"`) carry authority and register;
+  member-key declarations resolve as untrusted by design.
+
 ## v0.33.1 — storage-root precedence: config outranks CF_HOME (2026-06-03)
 
 Patch. Corrects the `fs.DefaultBaseDir()` resolution order shipped in v0.33.0.
