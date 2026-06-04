@@ -1855,19 +1855,29 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 
 	if alreadyOnDisk {
 		now = existingJoinedAt
-		// Already on disk: skip WriteMember, record membership in store only.
-		if _, admitErr := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
-			Store: st,
-		}, admission.AdmissionRequest{
-			CampfireID:      campfireID,
-			MemberPubKeyHex: agentID.PublicKeyHex(),
-			Role:            serviceRole,
-			Encrypted:       state.Encrypted,
-			JoinProtocol:    state.JoinProtocol,
-			TransportDir:    transport.CampfireDir(campfireID),
-			TransportType:   "filesystem",
-		}); admitErr != nil {
-			return errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
+		// Idempotent re-join (campfireagent-b4b / dontguess-042): when the
+		// membership is already recorded in the store — from a prior join,
+		// campfire_create (which records the creator), or a rehydrating
+		// LocalStorage reconstructing it from the on-disk member set during
+		// this very check — there is nothing to admit. AdmitMember's
+		// AddMembership is a strict INSERT and would fail with a
+		// UNIQUE-constraint error. Only admit when the store has no record
+		// (e.g. a pre-admitted member on a non-rehydrating store).
+		if existing, _ := st.GetMembership(campfireID); existing == nil {
+			// Already on disk: skip WriteMember, record membership in store only.
+			if _, admitErr := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+				Store: st,
+			}, admission.AdmissionRequest{
+				CampfireID:      campfireID,
+				MemberPubKeyHex: agentID.PublicKeyHex(),
+				Role:            serviceRole,
+				Encrypted:       state.Encrypted,
+				JoinProtocol:    state.JoinProtocol,
+				TransportDir:    transport.CampfireDir(campfireID),
+				TransportType:   "filesystem",
+			}); admitErr != nil {
+				return errResponse(id, -32000, fmt.Sprintf("admitting member: %v", admitErr))
+			}
 		}
 	} else {
 		// Invite code enforcement (security model §5.a).

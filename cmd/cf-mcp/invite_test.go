@@ -265,24 +265,62 @@ func TestInvite_JoinWithValidCode(t *testing.T) {
 // Test 3: campfire_join without invite_code on campfire WITH codes fails
 // ---------------------------------------------------------------------------
 
-func TestInvite_JoinWithoutCodeFails(t *testing.T) {
-	srv, _ := newTestServerWithStore(t)
-	doInit(t, srv)
+// setupInviteJoinHarness builds the cross-identity invite-enforcement harness
+// (same shape as TestInvite_HostedModeBypassBlocked): srvA owns the campfire
+// and its invite records; srvB is a genuinely SEPARATE identity with its own
+// cfHome and store, the campfire state copied so it can read it, and the
+// shared transport router so the join's invite check resolves to srvA's store.
+//
+// HISTORY (campfireagent-b4b): these tests previously shared cfHome between
+// the two servers ("srvB.cfHome = srv.cfHome"). identityPath() lives under
+// cfHome, so srvB actually joined AS SRVA'S IDENTITY — an on-disk member,
+// which legitimately bypasses the invite gate. The "rejection" the tests
+// observed was the re-join UNIQUE-constraint crash (the b4b bug), not invite
+// enforcement: they were green for the wrong reason and never exercised the
+// invite gate. Fixed alongside the b4b idempotent re-join fix.
+func setupInviteJoinHarness(t *testing.T) (stA store.Store, srvB *server, campfireID, inviteCode string) {
+	t.Helper()
+	router := NewTransportRouter()
 
-	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
+	srvA, storeA := newTestServerWithStore(t)
+	doInit(t, srvA)
+	tA := cfhttp.New("", storeA)
+	t.Cleanup(tA.StopNoncePruner)
+	tA.StartNoncePruner()
+	srvA.httpTransport = tA
+	srvA.transportRouter = router
+
+	createResp := srvA.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
 	fields := extractCreateResult(t, createResp)
-	campfireID, _ := fields["campfire_id"].(string)
-
-	// A second agent with a fresh identity tries to join without providing an invite code.
-	srvB := newTestServer(t)
-	srvB.beaconDir = srv.beaconDir
-	respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
-	if respB.Error != nil {
-		t.Fatalf("init srvB: %v", respB.Error)
+	campfireID, _ = fields["campfire_id"].(string)
+	inviteCode, _ = fields["invite_code"].(string)
+	if campfireID == "" || inviteCode == "" {
+		t.Fatalf("missing campfire_id or invite_code in create response: %v", fields)
 	}
-	// Share the transport dir so srvB can read campfire state.
-	srvB.cfHome = srv.cfHome
 
+	srvB, stB := newTestServerWithStore(t)
+	if respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`)); respB.Error != nil {
+		t.Fatalf("init srvB: code=%d msg=%s", respB.Error.Code, respB.Error.Message)
+	}
+	// Copy campfire state (campfire.cbor, members/) so srvB can read the
+	// campfire WITHOUT sharing srvA's identity or store.
+	if err := copyDir(t,
+		filepath.Join(srvA.cfHome, campfireID),
+		filepath.Join(srvB.cfHome, campfireID),
+	); err != nil {
+		t.Fatalf("copying campfire state: %v", err)
+	}
+	srvB.st = stB
+	srvB.transportRouter = router
+	srvB.httpTransport = cfhttp.New("", stB)
+
+	return storeA, srvB, campfireID, inviteCode
+}
+
+func TestInvite_JoinWithoutCodeFails(t *testing.T) {
+	_, srvB, campfireID, _ := setupInviteJoinHarness(t)
+
+	// A genuinely separate identity tries to join without an invite code.
 	joinArgs, _ := json.Marshal(map[string]interface{}{
 		"campfire_id": campfireID,
 		// deliberately no invite_code
@@ -302,28 +340,14 @@ func TestInvite_JoinWithoutCodeFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInvite_JoinWithRevokedCodeFails(t *testing.T) {
-	srv, st := newTestServerWithStore(t)
-	doInit(t, srv)
+	stA, srvB, campfireID, inviteCode := setupInviteJoinHarness(t)
 
-	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
-	fields := extractCreateResult(t, createResp)
-	campfireID, _ := fields["campfire_id"].(string)
-	inviteCode, _ := fields["invite_code"].(string)
-
-	// Revoke the invite code via the store directly.
-	if err := st.RevokeInvite(campfireID, inviteCode); err != nil {
+	// Revoke the invite code in the OWNER's store (where invite records live).
+	if err := stA.RevokeInvite(campfireID, inviteCode); err != nil {
 		t.Fatalf("revoking invite: %v", err)
 	}
 
-	// Attempt join with the revoked code.
-	srvB := newTestServer(t)
-	srvB.beaconDir = srv.beaconDir
-	respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
-	if respB.Error != nil {
-		t.Fatalf("init srvB: %v", respB.Error)
-	}
-	srvB.cfHome = srv.cfHome
-
+	// Attempt join with the revoked code as a genuinely separate identity.
 	joinArgs, _ := json.Marshal(map[string]interface{}{
 		"campfire_id": campfireID,
 		"invite_code": inviteCode,
@@ -340,15 +364,12 @@ func TestInvite_JoinWithRevokedCodeFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInvite_JoinWithExhaustedCodeFails(t *testing.T) {
-	srv, st := newTestServerWithStore(t)
-	doInit(t, srv)
+	stA, srvB, campfireID, _ := setupInviteJoinHarness(t)
 
-	createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
-	fields := extractCreateResult(t, createResp)
-	campfireID, _ := fields["campfire_id"].(string)
-	// The auto-generated code has max_uses=0 (unlimited). Create an exhausted code.
+	// The auto-generated code has max_uses=0 (unlimited). Create an exhausted
+	// code in the OWNER's store (where the join's invite check resolves).
 	exhaustedCode := "exxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-	err := st.CreateInvite(store.InviteRecord{
+	err := stA.CreateInvite(store.InviteRecord{
 		CampfireID: campfireID,
 		InviteCode: exhaustedCode,
 		CreatedBy:  "test",
@@ -361,14 +382,6 @@ func TestInvite_JoinWithExhaustedCodeFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating exhausted invite: %v", err)
 	}
-
-	srvB := newTestServer(t)
-	srvB.beaconDir = srv.beaconDir
-	respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`))
-	if respB.Error != nil {
-		t.Fatalf("init srvB: %v", respB.Error)
-	}
-	srvB.cfHome = srv.cfHome
 
 	joinArgs, _ := json.Marshal(map[string]interface{}{
 		"campfire_id": campfireID,
@@ -862,24 +875,11 @@ func TestJoin_NeitherParam_ReturnsError(t *testing.T) {
 func TestInvite_RevocationMidJoinRaceWindowBlocked(t *testing.T) {
 	// --- Sub-test A: pre-revoked codes are still blocked ---
 	t.Run("pre-revoked", func(t *testing.T) {
-		srv, st := newTestServerWithStore(t)
-		doInit(t, srv)
+		stA, srvB, campfireID, inviteCode := setupInviteJoinHarness(t)
 
-		createResp := srv.dispatch(makeReq("tools/call", `{"name":"campfire_create","arguments":{}}`))
-		fields := extractCreateResult(t, createResp)
-		campfireID, _ := fields["campfire_id"].(string)
-		inviteCode, _ := fields["invite_code"].(string)
-
-		if err := st.RevokeInvite(campfireID, inviteCode); err != nil {
+		if err := stA.RevokeInvite(campfireID, inviteCode); err != nil {
 			t.Fatalf("revoking invite: %v", err)
 		}
-
-		srvB := newTestServer(t)
-		srvB.beaconDir = srv.beaconDir
-		if respB := srvB.dispatch(makeReq("tools/call", `{"name":"campfire_init","arguments":{}}`)); respB.Error != nil {
-			t.Fatalf("init srvB: %v", respB.Error)
-		}
-		srvB.cfHome = srv.cfHome
 
 		joinArgs, _ := json.Marshal(map[string]interface{}{
 			"campfire_id": campfireID,

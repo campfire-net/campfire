@@ -141,6 +141,104 @@ func TestJoinFilesystem_PreAdmittedMember_RehydratingStore(t *testing.T) {
 	}
 }
 
+// TestJoinFilesystem_ReJoinIsIdempotent is the regression test for
+// campfireagent-b4b / dontguess-042 (v0.33.0 re-join regression).
+//
+// Re-joining a campfire the identity already belongs to — membership on disk
+// AND already recorded in the store — must be idempotent (succeed), matching
+// the v0.32.0 behavior. The fd69 fix routed on-disk members past the
+// "already a member" guard into the re-admit path, where AdmitMember →
+// AddMembership attempted a duplicate INSERT:
+//
+//	admission: recording membership: adding membership: constraint failed:
+//	UNIQUE constraint failed: campfire_memberships.campfire_id (1555)
+//
+// Fix under test: joinFilesystem skips AdmitMember for an on-disk member whose
+// membership is already recorded (or just rehydrated) in the store.
+func TestJoinFilesystem_ReJoinIsIdempotent(t *testing.T) {
+	// ---- Setup: identical shape to the pre-admitted test ----
+	transportBaseDir := t.TempDir()
+	t.Setenv("CF_TRANSPORT_DIR", transportBaseDir)
+
+	cfID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating campfire identity: %v", err)
+	}
+	joinerID, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("generating joiner identity: %v", err)
+	}
+
+	campfireID := cfID.PublicKeyHex()
+	cfDir := filepath.Join(transportBaseDir, campfireID)
+	for _, sub := range []string{"members", "messages"} {
+		if err := os.MkdirAll(filepath.Join(cfDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+	state := &campfire.CampfireState{
+		PublicKey:             cfID.PublicKey,
+		PrivateKey:            cfID.PrivateKey,
+		JoinProtocol:          "open",
+		ReceptionRequirements: []string{},
+		CreatedAt:             time.Now().UnixNano(),
+		Threshold:             1,
+	}
+	stateData, err := cfencoding.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshalling campfire state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfDir, "campfire.cbor"), stateData, 0644); err != nil {
+		t.Fatalf("writing campfire state: %v", err)
+	}
+	tr := fs.New(transportBaseDir)
+	if err := tr.WriteMember(campfireID, campfire.MemberRecord{
+		PublicKey: joinerID.PublicKey,
+		JoinedAt:  time.Now().UnixNano(),
+		Role:      campfire.RoleWriter,
+	}); err != nil {
+		t.Fatalf("writing member record: %v", err)
+	}
+
+	rawStore, err := store.Open(filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer rawStore.Close()
+	wrappedStore := storage.NewLocalStorage(rawStore,
+		storage.WithSelfPubkeyHex(joinerID.PublicKeyHex()),
+		storage.WithTransportBaseDir(transportBaseDir),
+	)
+
+	// ---- Join #1: establishes the membership (on disk AND in store) ----
+	if err := joinFilesystem(campfireID, joinerID, wrappedStore); err != nil {
+		t.Fatalf("first joinFilesystem: %v", err)
+	}
+	m1, err := wrappedStore.GetMembership(campfireID)
+	if err != nil || m1 == nil {
+		t.Fatalf("membership not recorded after first join: m=%v err=%v", m1, err)
+	}
+
+	// ---- Join #2 (the b4b regression): must be idempotent, NOT a UNIQUE error ----
+	if err := joinFilesystem(campfireID, joinerID, wrappedStore); err != nil {
+		t.Fatalf("re-join must be idempotent (campfireagent-b4b), got: %v", err)
+	}
+
+	// ---- Join #3 for good measure (warm cache, stable) ----
+	if err := joinFilesystem(campfireID, joinerID, wrappedStore); err != nil {
+		t.Fatalf("third join must also be idempotent, got: %v", err)
+	}
+
+	// Role from the on-disk member record must survive re-joins.
+	m, err := wrappedStore.GetMembership(campfireID)
+	if err != nil || m == nil {
+		t.Fatalf("membership missing after re-joins: m=%v err=%v", m, err)
+	}
+	if m.Role != campfire.RoleWriter {
+		t.Errorf("Role after re-joins = %q, want %q", m.Role, campfire.RoleWriter)
+	}
+}
+
 // TestJoinFilesystem_NewMember_NotAffected verifies that a brand-new joiner
 // (not on disk, empty SQLite cache) still joins successfully — the fix must
 // not change behavior for the normal join path.

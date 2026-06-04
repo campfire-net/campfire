@@ -245,21 +245,36 @@ func joinFilesystem(campfireID string, agentID *identity.Identity, s store.Store
 	if !alreadyOnDisk {
 		fstr = tr
 	}
-	_, err = admission.AdmitMember(context.Background(), admission.AdmitterDeps{
-		FSTransport: fstr,
-		Store:       s,
-	}, admission.AdmissionRequest{
-		CampfireID:      campfireID,
-		MemberPubKeyHex: agentID.PublicKeyHex(),
-		Role:            effectiveRole,
-		Encrypted:       state.Encrypted,
-		JoinProtocol:    state.JoinProtocol,
-		TransportDir:    tr.CampfireDir(campfireID),
-		TransportType:   "filesystem",
-		Description:     description,
-	})
-	if err != nil {
-		return err
+	// Idempotent re-join (campfireagent-b4b / dontguess-042): an on-disk member
+	// whose membership is already recorded in the store — from a prior join,
+	// create, or this (rehydrating) store reconstructing it from the on-disk
+	// member set during this very check — must NOT be re-admitted: AdmitMember's
+	// AddMembership is a strict INSERT and fails with a UNIQUE-constraint error.
+	// On a rehydrating LocalStorage the GetMembership check itself warms the
+	// cache from members/<pk>.cbor (role included), which IS the record we want.
+	skipAdmit := false
+	if alreadyOnDisk {
+		if existing, _ := s.GetMembership(campfireID); existing != nil {
+			skipAdmit = true
+		}
+	}
+	if !skipAdmit {
+		_, err = admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+			FSTransport: fstr,
+			Store:       s,
+		}, admission.AdmissionRequest{
+			CampfireID:      campfireID,
+			MemberPubKeyHex: agentID.PublicKeyHex(),
+			Role:            effectiveRole,
+			Encrypted:       state.Encrypted,
+			JoinProtocol:    state.JoinProtocol,
+			TransportDir:    tr.CampfireDir(campfireID),
+			TransportType:   "filesystem",
+			Description:     description,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	// Write campfire:member-joined system message to transport (idempotent with sync).
@@ -367,19 +382,25 @@ func joinP2PHTTP(campfireID string, agentID *identity.Identity, s store.Store, v
 	p2pDescription := lookupBeaconDescription(campfireID)
 
 	// Record membership in local store via shared admission package.
-	if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
-		FSTransport: transport,
-		Store:       s,
-	}, admission.AdmissionRequest{
-		CampfireID:      campfireID,
-		MemberPubKeyHex: agentID.PublicKeyHex(),
-		Role:            campfire.RoleFull,
-		JoinProtocol:    result.JoinProtocol,
-		TransportDir:    transport.CampfireDir(campfireID),
-		TransportType:   "p2p-http",
-		Description:     p2pDescription,
-	}); err != nil {
-		return fmt.Errorf("recording membership: %w", err)
+	// Idempotent re-join (campfireagent-b4b): skip when the membership is
+	// already recorded — AdmitMember's AddMembership is a strict INSERT and a
+	// p2p re-join would otherwise fail with a UNIQUE-constraint error (same
+	// class as the filesystem path; pattern mirrors the auto-join guard).
+	if existing, _ := s.GetMembership(campfireID); existing == nil {
+		if _, err := admission.AdmitMember(context.Background(), admission.AdmitterDeps{
+			FSTransport: transport,
+			Store:       s,
+		}, admission.AdmissionRequest{
+			CampfireID:      campfireID,
+			MemberPubKeyHex: agentID.PublicKeyHex(),
+			Role:            campfire.RoleFull,
+			JoinProtocol:    result.JoinProtocol,
+			TransportDir:    transport.CampfireDir(campfireID),
+			TransportType:   "p2p-http",
+			Description:     p2pDescription,
+		}); err != nil {
+			return fmt.Errorf("recording membership: %w", err)
+		}
 	}
 
 	// Store peer endpoints received from admitting member (includes participant IDs).
