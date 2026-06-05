@@ -55,6 +55,7 @@ func assignCommandGroups() {
 		"filter":     groupAdvanced,
 		"sync":       groupAdvanced,
 		"gc":         groupAdvanced,
+		"lifecycle":  groupAdvanced,
 		"nat-poll":   groupAdvanced,
 		"completion": groupAdvanced,
 		"help":       groupAdvanced,

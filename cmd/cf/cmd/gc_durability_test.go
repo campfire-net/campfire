@@ -90,7 +90,7 @@ func makeIdleOnDiskCampfire(t *testing.T, s store.Store, transportBaseDir string
 func addLifecycleMessage(t *testing.T, s store.Store, campfireID, lifecycleTag, senderHex string, tsNano int64) {
 	t.Helper()
 	added, err := s.AddMessage(store.MessageRecord{
-		ID:         campfireID[:8] + "-" + lifecycleTag + "-msg",
+		ID:         campfireID + "-" + lifecycleTag + "-msg",
 		CampfireID: campfireID,
 		Sender:     senderHex,
 		Payload:    []byte(`{"declared_by":"test"}`),
@@ -107,13 +107,22 @@ func addLifecycleMessage(t *testing.T, s store.Store, campfireID, lifecycleTag, 
 	}
 }
 
-// runGC executes `cf gc --yes --older-than <cutoff>` through the real cobra
-// command path and returns the combined output.
+// runGC executes `cf gc <args>` through the real cobra command path and
+// returns the combined output. Output writers and value-carrying gc flags are
+// reset afterwards — cobra command state persists across Execute calls in one
+// process, so a --yes from one test must not leak into the next test's run.
 func runGC(t *testing.T, args ...string) string {
 	t.Helper()
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
+	defer func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		gcCmd.Flags().Set("yes", "false")        //nolint:errcheck
+		gcCmd.Flags().Set("json", "false")       //nolint:errcheck
+		gcCmd.Flags().Set("older-than", "24h")   //nolint:errcheck
+	}()
 	rootCmd.SetArgs(append([]string{"gc"}, args...))
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("cf gc %v: %v\noutput:\n%s", args, err, buf.String())

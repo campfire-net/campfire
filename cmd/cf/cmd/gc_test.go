@@ -159,7 +159,7 @@ func TestGCPurge_RemovesStoreRowsAndTransportDir(t *testing.T) {
 		t.Fatal("membership should exist before purge")
 	}
 
-	purged, failed := gcPurge([]gcCandidate{{CampfireID: id, TransportDir: transportDir, Reason: "idle"}}, s)
+	purged, failed := gcPurge([]gcCandidate{{CampfireID: id, TransportDir: transportDir, Reason: "idle-undeclared"}}, s)
 	if purged != 1 || failed != 0 {
 		t.Fatalf("gcPurge = (purged=%d, failed=%d), want (1, 0)", purged, failed)
 	}

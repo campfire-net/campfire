@@ -187,7 +187,7 @@ func gcSelectCandidates(memberships []store.Membership, homeID string, cutoffNan
 		if err != nil {
 			return nil, fmt.Errorf("reading max timestamp for %s: %w", m.CampfireID, err)
 		}
-		lc, err := resolveCampfireLifecycle(s, m.CampfireID)
+		lc, err := resolveCampfireLifecycle(s, m.CampfireID, nowNano)
 		if err != nil {
 			return nil, fmt.Errorf("resolving lifecycle for %s: %w", m.CampfireID, err)
 		}
@@ -300,7 +300,7 @@ func gcEmitJSON(candidates []gcCandidate, apply bool, s store.Store) error {
 }
 
 func init() {
-	gcCmd.Flags().Duration("older-than", 24*time.Hour, "keep recently-joined campfires, and (with --include-undeclared) campfires whose newest message is newer than this duration")
+	gcCmd.Flags().Duration("older-than", 24*time.Hour, "idle cutoff: campfires joined or last active within this window are kept; with --include-undeclared, undeclared campfires idle LONGER than this are purged")
 	gcCmd.Flags().Bool("include-undeclared", false, "ALSO purge idle campfires with no lifecycle declaration (overrides the convention's permanent-by-default rule)")
 	gcCmd.Flags().Bool("yes", false, "actually delete (default is a dry run that only reports candidates)")
 	gcCmd.Flags().Bool("json", false, "emit candidates (and purge results with --yes) as JSON")

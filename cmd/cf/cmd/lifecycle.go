@@ -32,6 +32,7 @@ import (
 
 	durability "github.com/campfire-net/campfire/cf-conventions/cf-durability"
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
+	cftransport "github.com/campfire-net/campfire/cf-protocol/transport"
 	"github.com/campfire-net/campfire/cf-protocol/message"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
@@ -49,13 +50,35 @@ type campfireLifecycle struct {
 	Declared bool   // false: no (authorized, valid) declaration — permanent-by-default
 }
 
-// resolveCampfireLifecycle returns the campfire's effective lifecycle from the
-// latest authorized durability:lifecycle:* message in the local store.
-// Messages are examined newest-first; the first valid AND authorized
-// declaration wins. Invalid values and unauthorized destructive declarations
-// are skipped (older declarations remain in effect). No declaration means
-// permanent-by-default per the convention.
-func resolveCampfireLifecycle(s store.Store, campfireID string) (campfireLifecycle, error) {
+// lifecycleTimestampSkew is how far into the future a declaration's
+// sender-asserted timestamp may sit and still be honored. Beyond it the
+// declaration is ignored until its time actually comes: timestamps are chosen
+// freely by the signer, so without this clamp a member could stamp a
+// declaration with a far-future time and permanently win newest-first
+// resolution against every later campfire-key declaration (campfireagent-a4b).
+const lifecycleTimestampSkew = 5 * time.Minute
+
+// resolveCampfireLifecycle returns the campfire's effective lifecycle from
+// the durability:lifecycle:* messages in the local store, as of nowNano.
+//
+// Resolution is AUTHORITY-TIERED, then newest-first within a tier:
+//
+//  1. Campfire-key-signed declarations (sender == campfire pubkey) carry
+//     operational authority and always outrank member declarations — a lone
+//     member must not be able to override the campfire's own continuity
+//     schedule, in either direction (campfireagent-c4f, campfireagent-dae).
+//  2. Member declarations are honored only for PERSISTENT (the protective
+//     direction), and only when the campfire key has not declared at all —
+//     any member may protect an otherwise-undeclared campfire, but cannot
+//     loosen or pin one the campfire has spoken for.
+//
+// Within each tier the newest non-future-stamped declaration wins (see
+// lifecycleTimestampSkew). Malformed values are skipped. No declaration
+// means permanent-by-default per the convention.
+//
+// Sender is trustworthy here: every message that enters the store through a
+// sync path is Ed25519-verified against its Sender key before insertion.
+func resolveCampfireLifecycle(s store.Store, campfireID string, nowNano int64) (campfireLifecycle, error) {
 	msgs, err := s.ListMessages(campfireID, 0, store.MessageFilter{
 		TagPrefixes: []string{lifecycleTagPrefix},
 		Reverse:     true, // newest first
@@ -63,31 +86,65 @@ func resolveCampfireLifecycle(s store.Store, campfireID string) (campfireLifecyc
 	if err != nil {
 		return campfireLifecycle{}, fmt.Errorf("listing lifecycle declarations: %w", err)
 	}
+	maxTimestamp := nowNano + lifecycleTimestampSkew.Nanoseconds()
+
+	// Tier 1: campfire-key declarations, newest first.
 	for _, m := range msgs {
-		for _, tag := range m.Tags {
-			if !strings.HasPrefix(tag, lifecycleTagPrefix) {
-				continue
-			}
-			lt, lv, parseErr := durability.ParseLifecycle(strings.TrimPrefix(tag, lifecycleTagPrefix))
-			if parseErr != nil {
-				continue // malformed declaration — ignore
-			}
-			// Destructive lifecycles must be campfire-key-signed: the sender
-			// is the campfire itself. (The campfire ID is its hex pubkey, and
-			// the store records the signer's pubkey hex as Sender.)
-			if lt != durability.LifecyclePersistent && m.Sender != campfireID {
-				continue // unauthorized destructive declaration — ignore
-			}
+		if m.Timestamp > maxTimestamp {
+			continue // future-stamped — not yet (campfireagent-a4b)
+		}
+		if m.Sender != campfireID {
+			continue
+		}
+		if lt, lv, ok := parseLifecycleTags(m.Tags); ok {
 			return campfireLifecycle{Type: lt, Value: lv, Declared: true}, nil
 		}
 	}
+
+	// Tier 2: member declarations — persistent only, newest first.
+	for _, m := range msgs {
+		if m.Timestamp > maxTimestamp {
+			continue
+		}
+		if m.Sender == campfireID {
+			continue // already considered in tier 1
+		}
+		if lt, lv, ok := parseLifecycleTags(m.Tags); ok && lt == durability.LifecyclePersistent {
+			return campfireLifecycle{Type: lt, Value: lv, Declared: true}, nil
+		}
+	}
+
 	return campfireLifecycle{}, nil
+}
+
+// parseLifecycleTags returns the first well-formed lifecycle declaration among
+// the message's durability:lifecycle:* tags, skipping malformed values.
+func parseLifecycleTags(tags []string) (durability.LifecycleType, string, bool) {
+	for _, tag := range tags {
+		if !strings.HasPrefix(tag, lifecycleTagPrefix) {
+			continue
+		}
+		lt, lv, err := durability.ParseLifecycle(strings.TrimPrefix(tag, lifecycleTagPrefix))
+		if err != nil {
+			continue // malformed declaration — ignore
+		}
+		return lt, lv, true
+	}
+	return "", "", false
 }
 
 // publishLifecycleDeclaration posts a campfire-key-signed lifecycle
 // declaration message to the campfire (transport + local store) and returns
 // the message ID. decl must already be validated with ParseLifecycle.
 func publishLifecycleDeclaration(s store.Store, tr *fs.Transport, campfireID, decl string) (string, error) {
+	// Encrypted campfires reject plaintext store inserts (downgrade
+	// prevention), which would leave the declaration on the transport but
+	// invisible to gc — a silent half-write (campfireagent-904). Refuse with
+	// a clear error instead.
+	if m, mErr := s.GetMembership(campfireID); mErr == nil && m != nil && m.Encrypted {
+		return "", fmt.Errorf("lifecycle declarations are not yet supported for encrypted campfires (the plaintext declaration payload would be rejected by downgrade prevention)")
+	}
+
 	state, err := tr.ReadState(campfireID)
 	if err != nil {
 		return "", fmt.Errorf("reading campfire state: %w", err)
@@ -144,8 +201,15 @@ eligible for 'cf gc' unless --include-undeclared is passed.
 With a declaration argument, posts a campfire-key-signed declaration message:
 
   persistent              never a gc candidate, no matter how idle
-  ephemeral:<duration>    gc candidate once idle longer than <duration> (e.g. 72h)
+  ephemeral:<duration>    gc candidate once idle longer than <duration> (e.g. 72h);
+                          the clock runs from the campfire's newest message —
+                          including the declaration itself, so (re)declaring
+                          restarts the timeout
   bounded:<iso8601>       gc candidate once the date passes (e.g. 2027-01-01T00:00:00Z)
+
+Authority: campfire-key-signed declarations always outrank member-posted ones.
+A member may post 'persistent' to protect an otherwise-undeclared campfire,
+but cannot override a campfire-key declaration in either direction.
 
 The declaration is part of the campfire's signed message history: it syncs to
 every member, so one declaration protects the campfire on all machines.
@@ -171,7 +235,7 @@ Examples:
 
 		// Inspect mode.
 		if len(args) == 1 {
-			lc, err := resolveCampfireLifecycle(s, campfireID)
+			lc, err := resolveCampfireLifecycle(s, campfireID, time.Now().UnixNano())
 			if err != nil {
 				return err
 			}
@@ -214,6 +278,13 @@ Examples:
 		}
 		if m == nil {
 			return fmt.Errorf("not a member of campfire %s", shortID12(campfireID))
+		}
+		// Declarations are filesystem-transport messages. On relay/p2p-http
+		// campfires a local fs write would never reach other members (their
+		// copies sync from the relay), silently failing the "one declaration
+		// protects everywhere" promise — refuse instead.
+		if cftransport.ResolveType(*m) != cftransport.TypeFilesystem {
+			return fmt.Errorf("cf lifecycle supports filesystem campfires; %s uses the %s transport", shortID12(campfireID), m.TransportType)
 		}
 		tr := fs.ForDir(m.TransportDir)
 
