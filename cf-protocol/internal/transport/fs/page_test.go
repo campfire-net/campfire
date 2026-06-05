@@ -94,6 +94,88 @@ func TestListMessagesPage_PagingAndMore(t *testing.T) {
 	}
 }
 
+// TestListMessagesPage_BucketPruningCorrectness writes messages across
+// several UTC day buckets, then verifies that paging from a mid-history
+// cursor returns exactly the same leaves as an unpruned full read filtered
+// in memory — i.e. the directory pruning (campfire-57c) never skips a
+// qualifying message, including ones in the cursor's own bucket.
+func TestListMessagesPage_BucketPruningCorrectness(t *testing.T) {
+	tr := newTestTransport(t)
+	cf := newTestCampfire(t)
+	if err := tr.Init(cf); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	cfID := cf.PublicKeyHex()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+
+	origNow := timeNow
+	defer func() { timeNow = origNow }()
+
+	// 3 messages per day across 4 days spanning a month boundary.
+	base := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	var all []string // leaf names in write order
+	for d := 0; d < 4; d++ {
+		for i := 0; i < 3; i++ {
+			ts := base.AddDate(0, 0, d).Add(time.Duration(i) * time.Second)
+			timeNow = func() time.Time { return ts }
+			msg, err := message.NewMessage(message.MustNewEd25519Signer(priv, pub), []byte("x"), nil, nil)
+			if err != nil {
+				t.Fatalf("NewMessage(): %v", err)
+			}
+			if err := tr.WriteMessage(cfID, msg); err != nil {
+				t.Fatalf("WriteMessage(): %v", err)
+			}
+		}
+	}
+	timeNow = origNow
+
+	full, err := tr.ListMessagesPage(cfID, "", 0)
+	if err != nil {
+		t.Fatalf("full read: %v", err)
+	}
+	if len(full.Messages) != 12 {
+		t.Fatalf("full read: %d messages, want 12", len(full.Messages))
+	}
+	for _, lm := range full.Messages {
+		all = append(all, lm.Leaf)
+	}
+
+	// Page from every possible cursor position (each leaf, plus "") and
+	// compare against the in-memory filter of the full read.
+	cursors := append([]string{""}, all...)
+	for _, cursor := range cursors {
+		var want []string
+		for _, leaf := range all {
+			if leaf > cursor {
+				want = append(want, leaf)
+			}
+		}
+		for _, limit := range []int{0, 1, 5, 100} {
+			page, err := tr.ListMessagesPage(cfID, cursor, limit)
+			if err != nil {
+				t.Fatalf("page(cursor=%q, limit=%d): %v", cursor, limit, err)
+			}
+			expected := want
+			if limit > 0 && len(expected) > limit {
+				expected = expected[:limit]
+			}
+			if len(page.Messages) != len(expected) {
+				t.Fatalf("page(cursor=%q, limit=%d): %d messages, want %d (pruning skipped a qualifying leaf?)",
+					cursor, limit, len(page.Messages), len(expected))
+			}
+			for i := range expected {
+				if page.Messages[i].Leaf != expected[i] {
+					t.Fatalf("page(cursor=%q, limit=%d)[%d]: leaf %q, want %q", cursor, limit, i, page.Messages[i].Leaf, expected[i])
+				}
+			}
+			wantMore := limit > 0 && len(want) > limit
+			if page.More != wantMore {
+				t.Fatalf("page(cursor=%q, limit=%d): More=%v, want %v", cursor, limit, page.More, wantMore)
+			}
+		}
+	}
+}
+
 // TestListMessagesPage_CorruptTrailingFile verifies the LastListed contract:
 // when files at the end of a page fail to decode, LastListed still reflects
 // the last directory entry examined, so a paging caller's cursor advances past

@@ -169,12 +169,32 @@ func TestJoin_LongHistory_BoundedForegroundSync(t *testing.T) {
 		t.Fatalf("pre-admitting srvB on disk: %v", err)
 	}
 
-	// ---- Join ----
+	// ---- Join, with the background worker GATED ----
+	// The bounded-foreground assertions below inspect the store immediately
+	// after the join returns; without the gate, a fast background worker could
+	// complete the remaining history before the assertions execute (a
+	// scheduling race — campfireagent-46a). The gate holds the background
+	// worker before its first chunk until the bounded state is verified.
+	fsSyncBgGate = make(chan struct{})
+	bgGateClosed := false
+	t.Cleanup(func() {
+		if !bgGateClosed {
+			close(fsSyncBgGate)
+		}
+		fsSyncBgGate = nil
+	})
+
 	joinArgs, _ := json.Marshal(map[string]interface{}{"campfire_id": campfireID})
 	joinResp := srvB.dispatch(makeReq("tools/call",
 		`{"name":"campfire_join","arguments":`+string(joinArgs)+`}`))
 	if joinResp.Error != nil {
 		t.Fatalf("campfire_join: %s", joinResp.Error.Message)
+	}
+
+	// The join must disclose the incomplete sync (campfireagent-2cb).
+	joinFields := extractCreateResult(t, joinResp)
+	if sc, ok := joinFields["sync_complete"].(bool); !ok || sc {
+		t.Fatalf("join result sync_complete = %v (present=%v), want false while history backfills", joinFields["sync_complete"], ok)
 	}
 
 	// ---- THE 6d3 ASSERTION: the foreground sync must be BOUNDED ----
@@ -210,8 +230,10 @@ func TestJoin_LongHistory_BoundedForegroundSync(t *testing.T) {
 		t.Fatalf("head-of-history convention tool 'query-self' not registered at join return (campfireagent-b991 regression)")
 	}
 
-	// ---- Eventual completeness: background sync finishes the history and
-	// registers the tail declaration ----
+	// ---- Release the background worker and verify eventual completeness:
+	// it finishes the history and registers the tail declaration ----
+	close(fsSyncBgGate)
+	bgGateClosed = true
 	deadline := time.Now().Add(90 * time.Second)
 	for {
 		msgs, msgsErr = storeB.ListMessages(campfireID, 0)

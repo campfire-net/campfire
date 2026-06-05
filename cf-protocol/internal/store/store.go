@@ -884,11 +884,16 @@ func (s *SQLiteStore) AddMessagesBatch(ms []MessageRecord) (int, error) {
 
 	// Pass 1 — normalize and validate outside the transaction, mirroring
 	// AddMessage's checks. Membership is fetched once per campfire, not per
-	// message. Compaction validation can reference payloads of messages
-	// earlier in the same batch (a first sync of a compacted campfire imports
-	// the superseded messages and their compaction event together).
+	// message. Compaction validation can reference payloads of any message in
+	// the same batch (a first sync of a compacted campfire imports the
+	// superseded messages and their compaction event together) — the payload
+	// map is prefilled from the whole batch, so validation is order-independent
+	// even if a compaction event sorts before the messages it supersedes.
 	memberships := make(map[string]*Membership)
 	inBatchPayloads := make(map[string][]byte, len(ms))
+	for i := range ms {
+		inBatchPayloads[ms[i].ID] = ms[i].Payload
+	}
 	accepted := ms[:0:0]
 	for _, m := range ms {
 		if m.Tags == nil {
@@ -941,7 +946,6 @@ func (s *SQLiteStore) AddMessagesBatch(ms []MessageRecord) (int, error) {
 			}
 		}
 
-		inBatchPayloads[m.ID] = m.Payload
 		accepted = append(accepted, m)
 	}
 	if len(accepted) == 0 {

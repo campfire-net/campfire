@@ -133,6 +133,22 @@ func (m *fsSyncManager) syncForeground(transportDir, campfireID string, onComple
 			return false, chunkErr
 		}
 		if done {
+			// The history is fully synced. If an earlier background worker died
+			// on a chunk error, callbacks registered with it are still pending
+			// (campfire-751) — without this drain they would be stranded
+			// forever, since no new worker starts once the history is complete.
+			// A LIVE worker keeps its callbacks: it will reach done itself and
+			// drain them (we cannot run them here while it may still be
+			// mid-history). Callbacks run while state.mu is held — they touch
+			// only their own store connection and the internally-locked
+			// conventionTools map, never manager locks.
+			if !state.bgLive {
+				callbacks := state.onComplete
+				state.onComplete = nil
+				for _, cb := range callbacks {
+					cb()
+				}
+			}
 			return true, nil
 		}
 		if time.Now().After(deadline) {

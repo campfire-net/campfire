@@ -420,7 +420,7 @@ var dayRE = regexp.MustCompile(`^\d{2}$`)
 // Returns (nil, nil) if the messages directory does not exist (e.g. during the
 // atomic swap window in migrate-store or for a brand-new campfire).
 func (t *Transport) ListMessages(campfireID string) ([]message.Message, error) {
-	leaves, err := t.collectLeaves(campfireID)
+	leaves, err := t.collectLeaves(campfireID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +489,7 @@ type ListPage struct {
 // first sync of a >260k-message campfire loaded 2GB into memory and could not
 // complete inside a join).
 func (t *Transport) ListMessagesPage(campfireID, afterLeaf string, limit int) (ListPage, error) {
-	leaves, err := t.collectLeaves(campfireID)
+	leaves, err := t.collectLeaves(campfireID, afterLeaf)
 	if err != nil {
 		return ListPage{}, err
 	}
@@ -510,6 +510,28 @@ func (t *Transport) ListMessagesPage(campfireID, afterLeaf string, limit int) (L
 	}
 	page.Messages = readLeaves(filtered)
 	return page, nil
+}
+
+// bucketCutoffFor maps a leaf cursor to the (yearMonth, day) bucket holding it,
+// for directory pruning in collectLeaves. WriteMessage derives both the bucket
+// path and the leaf's nanos prefix from the same UTC instant, so every leaf in
+// a bucket dated strictly before the cursor's bucket has a smaller nanos
+// prefix — i.e. sorts at or before the cursor and can be skipped without
+// listing it (campfire-57c: re-listing all 260k+ entries per chunk made
+// chunked sync O(total)/chunk instead of O(new)).
+//
+// Returns ok == false (no pruning) when the cursor is empty or unparseable —
+// the full walk is the safe fallback.
+func bucketCutoffFor(afterLeaf string) (yearMonth, day string, ok bool) {
+	if afterLeaf == "" {
+		return "", "", false
+	}
+	nanos, err := parseNanosPrefix(afterLeaf)
+	if err != nil {
+		return "", "", false
+	}
+	ym, dd := bucketFor(time.Unix(0, nanos))
+	return ym, dd, true
 }
 
 // LookbackCursor returns a synthetic leaf bound that is `lookback` earlier than
@@ -591,7 +613,17 @@ func readLeaves(leaves []leafEntry) []LeafMessage {
 // collectLeaves walks the bucketed + flat message layouts for a campfire and
 // returns all leaf entries sorted in chronological (lex) order. Directory
 // listings are cheap metadata reads; no message file is opened here.
-func (t *Transport) collectLeaves(campfireID string) ([]leafEntry, error) {
+//
+// afterLeaf, when non-empty and parseable, prunes the walk: bucket directories
+// dated strictly before the cursor's UTC bucket are skipped without listing
+// them (see bucketCutoffFor), so paged callers list O(days-at-or-after-cursor)
+// entries instead of the full history. Pass "" to walk everything. The
+// cursor's own bucket is always walked (it holds leaves on both sides of the
+// cursor), and the leaf-level "> afterLeaf" filter in the callers remains the
+// source of truth — pruning only removes directories that cannot contain a
+// qualifying leaf.
+func (t *Transport) collectLeaves(campfireID, afterLeaf string) ([]leafEntry, error) {
+	cutoffYM, cutoffDay, pruneOK := bucketCutoffFor(afterLeaf)
 	dir := filepath.Join(t.CampfireDir(campfireID), "messages")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -610,6 +642,9 @@ func (t *Transport) collectLeaves(campfireID string) ([]leafEntry, error) {
 
 		if e.IsDir() && yearMonthRE.MatchString(name) {
 			// Bucketed layout: YYYY-MM directory. Descend into DD subdirs.
+			if pruneOK && name < cutoffYM {
+				continue // Entire month precedes the cursor's bucket.
+			}
 			ymDir := filepath.Join(dir, name)
 			ddEntries, err := os.ReadDir(ymDir)
 			if err != nil {
@@ -627,6 +662,9 @@ func (t *Transport) collectLeaves(campfireID string) ([]leafEntry, error) {
 				if !ddE.IsDir() || !dayRE.MatchString(ddName) {
 					// Silently ignore non-matching entries (A7).
 					continue
+				}
+				if pruneOK && name == cutoffYM && ddName < cutoffDay {
+					continue // Entire day precedes the cursor's bucket.
 				}
 				ddDir := filepath.Join(ymDir, ddName)
 				cborEntries, err := os.ReadDir(ddDir)
