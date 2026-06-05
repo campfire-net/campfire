@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+	durability "github.com/campfire-net/campfire/cf-conventions/cf-durability"
 	"github.com/campfire-net/campfire/cf-protocol/admission"
 	"github.com/campfire-net/campfire/pkg/beacon"
 	"github.com/campfire-net/campfire/cf-protocol/campfire"
@@ -38,6 +39,17 @@ var createCmd = &cobra.Command{
 		createParticipants, _ := cmd.Flags().GetUint("participants")
 		createNoConfig, _ := cmd.Flags().GetBool("no-config")
 		createRelay, _ := cmd.Flags().GetString("relay")
+		createLifecycle, _ := cmd.Flags().GetString("lifecycle")
+
+		// Validate --lifecycle up front (Durability Convention vocabulary).
+		// Lifecycle declarations are campfire-key-signed filesystem messages;
+		// gc only operates on filesystem campfires, so other transports
+		// direct the operator to declare later once supported.
+		if createLifecycle != "" {
+			if _, _, lerr := durability.ParseLifecycle(createLifecycle); lerr != nil {
+				return fmt.Errorf("invalid --lifecycle: %w", lerr)
+			}
+		}
 
 		// Resolve relay URL: flag wins over config.
 		if createRelay == "" {
@@ -89,6 +101,9 @@ var createCmd = &cobra.Command{
 
 		// If --relay is set (or resolved from config), register on the relay.
 		if createRelay != "" {
+			if createLifecycle != "" {
+				return fmt.Errorf("--lifecycle is supported for filesystem campfires; declare after creation with 'cf lifecycle' once supported for relay campfires")
+			}
 			return createAndRegisterOnRelay(cf, agentID, s, createDescription, createRelay)
 		}
 
@@ -96,9 +111,22 @@ var createCmd = &cobra.Command{
 		case "github":
 			return fmt.Errorf("GitHub transport was removed in v0.30.0; use --transport filesystem or --transport p2p-http")
 		case "p2p-http":
+			if createLifecycle != "" {
+				return fmt.Errorf("--lifecycle is supported for filesystem campfires; declare after creation with 'cf lifecycle' once supported for p2p-http campfires")
+			}
 			return createP2PHTTP(cf, agentID, s, createDescription, createListen, createTLSCert, createTLSKey, createParticipants)
 		default:
-			return createFilesystemWithNoConfig(cf, agentID, s, createDescription, createNoConfig)
+			if err := createFilesystemWithNoConfig(cf, agentID, s, createDescription, createNoConfig); err != nil {
+				return err
+			}
+			if createLifecycle != "" {
+				tr := fs.New(fs.DefaultBaseDir())
+				if _, derr := publishLifecycleDeclaration(s, tr, cf.PublicKeyHex(), createLifecycle); derr != nil {
+					return fmt.Errorf("declaring lifecycle: %w", derr)
+				}
+				fmt.Fprintf(os.Stderr, "lifecycle: declared %s\n", createLifecycle)
+			}
+			return nil
 		}
 	},
 }
@@ -589,6 +617,7 @@ func init() {
 	createCmd.Flags().Uint("participants", 0, "total number of DKG participants for threshold>1 (default: equals threshold)")
 	createCmd.Flags().Bool("no-config", false, "skip writing beacon to .cf/config.toml in git root")
 	createCmd.Flags().String("relay", "", "register on relay: URL of HTTP relay (e.g. https://mcp.getcampfire.dev); overrides transport.relay config")
+	createCmd.Flags().String("lifecycle", "", "declare the campfire's continuity intention at creation: persistent, ephemeral:<duration>, or bounded:<iso8601> (see 'cf lifecycle')")
 	// Note: --github-repo, --github-token-env, --github-base-url were removed in v0.30.0
 	// when the GitHub transport was cut. Use --transport filesystem or --transport p2p-http.
 	rootCmd.AddCommand(createCmd)

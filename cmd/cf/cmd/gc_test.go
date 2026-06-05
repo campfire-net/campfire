@@ -78,7 +78,10 @@ func TestGCSelectCandidates(t *testing.T) {
 		t.Fatalf("ListMemberships: %v", err)
 	}
 
-	candidates, err := gcSelectCandidates(memberships, "home0", cutoff, now, s)
+	// Default run: permanent-by-default (campfireagent-246) — oldidle has
+	// messages and no lifecycle declaration, so only the EMPTY campfire is a
+	// candidate.
+	candidates, err := gcSelectCandidates(memberships, "home0", cutoff, now, s, false)
 	if err != nil {
 		t.Fatalf("gcSelectCandidates: %v", err)
 	}
@@ -87,7 +90,7 @@ func TestGCSelectCandidates(t *testing.T) {
 	for _, c := range candidates {
 		got[c.CampfireID] = c.Reason
 	}
-	want := map[string]string{"oldempty": "empty", "oldidle": "idle"}
+	want := map[string]string{"oldempty": "empty"}
 	if len(got) != len(want) {
 		t.Fatalf("candidates = %v, want %v", got, want)
 	}
@@ -96,10 +99,35 @@ func TestGCSelectCandidates(t *testing.T) {
 			t.Errorf("candidate %s reason = %q, want %q (all: %v)", id, got[id], reason, got)
 		}
 	}
-	// Explicit protections.
-	for _, protected := range []string{"home0", "recentempty", "oldactive", "p2pold"} {
+	// Explicit protections — oldidle is now protected by permanent-by-default.
+	for _, protected := range []string{"home0", "recentempty", "oldactive", "p2pold", "oldidle"} {
 		if _, bad := got[protected]; bad {
 			t.Errorf("%s should NOT be a candidate", protected)
+		}
+	}
+
+	// Opt-in run: --include-undeclared restores the idle purge for undeclared
+	// campfires (the pre-convention behavior, now explicit).
+	candidates, err = gcSelectCandidates(memberships, "home0", cutoff, now, s, true)
+	if err != nil {
+		t.Fatalf("gcSelectCandidates(includeUndeclared): %v", err)
+	}
+	got = map[string]string{}
+	for _, c := range candidates {
+		got[c.CampfireID] = c.Reason
+	}
+	want = map[string]string{"oldempty": "empty", "oldidle": "idle-undeclared"}
+	if len(got) != len(want) {
+		t.Fatalf("includeUndeclared candidates = %v, want %v", got, want)
+	}
+	for id, reason := range want {
+		if got[id] != reason {
+			t.Errorf("includeUndeclared candidate %s reason = %q, want %q (all: %v)", id, got[id], reason, got)
+		}
+	}
+	for _, protected := range []string{"home0", "recentempty", "oldactive", "p2pold"} {
+		if _, bad := got[protected]; bad {
+			t.Errorf("includeUndeclared: %s should NOT be a candidate", protected)
 		}
 	}
 }

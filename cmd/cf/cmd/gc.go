@@ -8,8 +8,16 @@ package cmd
 // bottleneck report observed 2,971 directories / 1.6 GB grown in 5 days
 // (report PART A / A1).
 //
-// `cf gc` reclaims that space by purging filesystem-transport campfires that are
-// dead: empty (no messages) OR idle (newest message older than --older-than).
+// `cf gc` reclaims that space by purging dead filesystem-transport campfires,
+// HONORING the Durability Convention (campfireagent-246 — a blanket idle purge
+// destroyed the dontguess exchange, an idle-but-priceless message ledger):
+//   - durability:lifecycle:persistent       → NEVER a candidate
+//   - durability:lifecycle:ephemeral:<dur>  → candidate once idle longer than <dur>
+//   - durability:lifecycle:bounded:<date>   → candidate once <date> passes
+//   - undeclared, EMPTY (no messages)       → candidate (nothing of value to lose)
+//   - undeclared, with messages             → permanent-by-default; idle purge
+//     requires the explicit --include-undeclared opt-in
+//
 // It is DRY-RUN by default — it prints what it would remove and changes nothing
 // unless --yes is given. It never touches:
 //   - the home (identity) campfire,
@@ -18,7 +26,7 @@ package cmd
 //
 // gc is a LOCAL maintenance operation: it does not disband the campfire for
 // other members or post any protocol event. It only deletes this machine's copy
-// (transport directory + store rows). Item: campfireagent-4b9.
+// (transport directory + store rows). Items: campfireagent-4b9, campfireagent-246.
 
 import (
 	"encoding/json"
@@ -26,6 +34,7 @@ import (
 	"os"
 	"time"
 
+	durability "github.com/campfire-net/campfire/cf-conventions/cf-durability"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/cf-protocol/transport"
 	"github.com/spf13/cobra"
@@ -35,20 +44,32 @@ import (
 type gcCandidate struct {
 	CampfireID   string `json:"campfire_id"`
 	TransportDir string `json:"transport_dir"`
-	Reason       string `json:"reason"`      // "empty" or "idle"
+	Reason       string `json:"reason"`      // "empty", "idle-undeclared", "ephemeral-elapsed", or "bounded-elapsed"
 	AgeSeconds   int64  `json:"age_seconds"` // since newest message; -1 when empty
+	Lifecycle    string `json:"lifecycle,omitempty"` // declared lifecycle driving eligibility, if any
 }
 
 var gcCmd = &cobra.Command{
 	Use:   "gc",
 	Short: "Reclaim local store space by purging dead (empty or idle) filesystem campfires",
-	Long: `Garbage-collect dead local campfires to bound store growth.
+	Long: `Garbage-collect dead local campfires to bound store growth, honoring the
+Durability Convention.
 
 A campfire is a purge candidate when ALL of:
   - it uses the filesystem transport (p2p-http and other transports are skipped),
   - it is NOT your home (identity) campfire,
   - it was joined longer ago than --older-than (recently-joined campfires are kept), AND
-  - it is empty (no messages) OR idle (newest message older than --older-than).
+  - its lifecycle declaration (see 'cf lifecycle') makes it eligible:
+      persistent              never eligible
+      ephemeral:<duration>    eligible once idle longer than <duration>
+      bounded:<iso8601>       eligible once the date passes
+      (undeclared)            empty campfires (no messages) are eligible;
+                              campfires WITH messages are permanent-by-default
+                              and require --include-undeclared to purge when
+                              idle past --older-than
+
+lifecycle:quota declarations govern message compaction, not campfire deletion,
+and are ignored by gc.
 
 DRY RUN BY DEFAULT: cf gc only reports candidates and changes nothing. Pass --yes
 to actually delete. Deletion removes this machine's copy only — the campfire's
@@ -57,14 +78,18 @@ key material, membership). It does NOT disband the campfire for other members or
 post any protocol event.
 
 Examples:
-  cf gc                         # dry run, default cutoff (24h)
-  cf gc --older-than 72h        # dry run, 3-day cutoff
-  cf gc --older-than 24h --yes  # actually purge campfires idle/empty >24h`,
+  cf gc                                      # dry run, default cutoff (24h)
+  cf gc --older-than 72h                     # dry run, 3-day cutoff
+  cf gc --yes                                # purge eligible campfires
+  cf gc --include-undeclared --yes           # ALSO purge idle undeclared campfires
+                                             # (pre-convention behavior — know what
+                                             # you are deleting)`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		olderThan, _ := cmd.Flags().GetDuration("older-than")
 		yes, _ := cmd.Flags().GetBool("yes")
 		jsonOut, _ := cmd.Flags().GetBool("json")
+		includeUndeclared, _ := cmd.Flags().GetBool("include-undeclared")
 
 		if olderThan < 0 {
 			return fmt.Errorf("--older-than must not be negative")
@@ -88,7 +113,7 @@ Examples:
 		nowNano := time.Now().UnixNano()
 		cutoffNano := nowNano - olderThan.Nanoseconds()
 
-		candidates, err := gcSelectCandidates(memberships, homeID, cutoffNano, nowNano, s)
+		candidates, err := gcSelectCandidates(memberships, homeID, cutoffNano, nowNano, s, includeUndeclared)
 		if err != nil {
 			return err
 		}
@@ -104,9 +129,9 @@ Examples:
 
 		fmt.Printf("cf gc: %d candidate(s) (cutoff %s):\n", len(candidates), olderThan)
 		for _, c := range candidates {
-			age := "empty"
-			if c.Reason == "idle" {
-				age = fmt.Sprintf("idle %s", (time.Duration(c.AgeSeconds) * time.Second))
+			age := c.Reason
+			if c.AgeSeconds >= 0 {
+				age = fmt.Sprintf("%s %s", c.Reason, (time.Duration(c.AgeSeconds) * time.Second))
 			}
 			fmt.Printf("  %s  [%s]  %s\n", c.CampfireID[:min(16, len(c.CampfireID))], age, c.TransportDir)
 		}
@@ -130,11 +155,23 @@ Examples:
 }
 
 // gcSelectCandidates returns the campfires eligible for purging given the cutoff
-// timestamp (nanoseconds). A campfire is a candidate when it is a filesystem
-// campfire, is not the home campfire, was joined before the cutoff, and is either
-// empty (no messages) or idle (newest message before the cutoff). Pure given the
-// store's MaxMessageTimestamp, so it is unit-testable without CF_HOME or cobra.
-func gcSelectCandidates(memberships []store.Membership, homeID string, cutoffNano, nowNano int64, s store.Store) ([]gcCandidate, error) {
+// timestamp (nanoseconds), honoring Durability Convention lifecycle
+// declarations (campfireagent-246):
+//
+//   - persistent: never a candidate.
+//   - ephemeral:<dur>: candidate when its newest activity (newest message, or
+//     JoinedAt when empty) is older than the DECLARED timeout — the
+//     declaration's own semantics, not --older-than.
+//   - bounded:<date>: candidate once the declared date passes.
+//   - undeclared + empty (no messages): candidate — nothing of value to lose.
+//   - undeclared + messages: permanent-by-default. Only a candidate when the
+//     caller opted in with --include-undeclared AND the campfire is idle past
+//     the cutoff.
+//
+// The home campfire, non-filesystem transports, and recently-joined campfires
+// are never candidates. Pure given the store, so it is unit-testable without
+// CF_HOME or cobra.
+func gcSelectCandidates(memberships []store.Membership, homeID string, cutoffNano, nowNano int64, s store.Store, includeUndeclared bool) ([]gcCandidate, error) {
 	var candidates []gcCandidate
 	for _, m := range memberships {
 		if m.CampfireID == homeID {
@@ -150,17 +187,63 @@ func gcSelectCandidates(memberships []store.Membership, homeID string, cutoffNan
 		if err != nil {
 			return nil, fmt.Errorf("reading max timestamp for %s: %w", m.CampfireID, err)
 		}
-		switch {
-		case maxTS == 0:
-			candidates = append(candidates, gcCandidate{
-				CampfireID: m.CampfireID, TransportDir: m.TransportDir,
-				Reason: "empty", AgeSeconds: -1,
-			})
-		case maxTS < cutoffNano:
-			candidates = append(candidates, gcCandidate{
-				CampfireID: m.CampfireID, TransportDir: m.TransportDir,
-				Reason: "idle", AgeSeconds: (nowNano - maxTS) / int64(time.Second),
-			})
+		lc, err := resolveCampfireLifecycle(s, m.CampfireID)
+		if err != nil {
+			return nil, fmt.Errorf("resolving lifecycle for %s: %w", m.CampfireID, err)
+		}
+
+		ageSeconds := int64(-1)
+		if maxTS > 0 {
+			ageSeconds = (nowNano - maxTS) / int64(time.Second)
+		}
+
+		if !lc.Declared {
+			switch {
+			case maxTS == 0:
+				// Empty: no messages, nothing of value to lose. This is the
+				// original gc use case (thousands of abandoned swarm dirs).
+				candidates = append(candidates, gcCandidate{
+					CampfireID: m.CampfireID, TransportDir: m.TransportDir,
+					Reason: "empty", AgeSeconds: -1,
+				})
+			case includeUndeclared && maxTS < cutoffNano:
+				// Permanent-by-default overridden by explicit operator opt-in.
+				candidates = append(candidates, gcCandidate{
+					CampfireID: m.CampfireID, TransportDir: m.TransportDir,
+					Reason: "idle-undeclared", AgeSeconds: ageSeconds,
+				})
+			}
+			continue
+		}
+
+		switch lc.Type {
+		case durability.LifecyclePersistent:
+			// Declared continuity: never a candidate.
+		case durability.LifecycleEphemeral:
+			ephemeralCutoff, ok := lifecycleEphemeralCutoff(lc.Value, nowNano)
+			if !ok {
+				continue // unreadable timeout — never delete on a value we cannot read
+			}
+			// Newest activity: newest message, or the join itself when empty.
+			activityTS := maxTS
+			if activityTS == 0 {
+				activityTS = m.JoinedAt
+			}
+			if activityTS < ephemeralCutoff {
+				candidates = append(candidates, gcCandidate{
+					CampfireID: m.CampfireID, TransportDir: m.TransportDir,
+					Reason: "ephemeral-elapsed", AgeSeconds: ageSeconds,
+					Lifecycle: string(durability.LifecycleEphemeral) + ":" + lc.Value,
+				})
+			}
+		case durability.LifecycleBounded:
+			if lifecycleBoundedElapsed(lc.Value, time.Unix(0, nowNano)) {
+				candidates = append(candidates, gcCandidate{
+					CampfireID: m.CampfireID, TransportDir: m.TransportDir,
+					Reason: "bounded-elapsed", AgeSeconds: ageSeconds,
+					Lifecycle: string(durability.LifecycleBounded) + ":" + lc.Value,
+				})
+			}
 		}
 	}
 	return candidates, nil
@@ -217,7 +300,8 @@ func gcEmitJSON(candidates []gcCandidate, apply bool, s store.Store) error {
 }
 
 func init() {
-	gcCmd.Flags().Duration("older-than", 24*time.Hour, "purge empty campfires and campfires whose newest message is older than this duration")
+	gcCmd.Flags().Duration("older-than", 24*time.Hour, "keep recently-joined campfires, and (with --include-undeclared) campfires whose newest message is newer than this duration")
+	gcCmd.Flags().Bool("include-undeclared", false, "ALSO purge idle campfires with no lifecycle declaration (overrides the convention's permanent-by-default rule)")
 	gcCmd.Flags().Bool("yes", false, "actually delete (default is a dry run that only reports candidates)")
 	gcCmd.Flags().Bool("json", false, "emit candidates (and purge results with --yes) as JSON")
 	rootCmd.AddCommand(gcCmd)

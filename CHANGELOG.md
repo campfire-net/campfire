@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.33.4 — cf gc honors the Durability Convention (2026-06-05)
+
+Patch. Closes the gap that destroyed the dontguess exchange (2026-06-03
+incident): `cf gc`'s only death test was "empty or idle", so a periodic
+`cf gc --yes --older-than 24h` purged an idle-but-priceless message ledger
+plus ~10 other quiet campfires. The Durability Convention's
+permanent-by-default rule now governs the deletion path.
+
+### Fixed
+
+- **`cf gc` consults lifecycle declarations before selecting candidates**
+  (`campfireagent-246`): `durability:lifecycle:persistent` campfires are NEVER
+  candidates; `ephemeral:<duration>` campfires become eligible per their OWN
+  declared timeout; `bounded:<iso8601>` campfires once the date passes.
+  Undeclared campfires WITH messages are permanent-by-default — purging them
+  requires the new explicit `--include-undeclared` opt-in. Empty undeclared
+  campfires (no messages — the abandoned-swarm-dir cruft gc was built for)
+  still purge by default. `lifecycle:quota` governs compaction, not deletion,
+  and is ignored by gc.
+
+### Added
+
+- **`cf lifecycle <campfire> [declaration]`** — declare or inspect a
+  campfire's continuity intention. Declarations are campfire-key-signed
+  in-campfire messages: they sync to every member, so one declaration
+  protects (or schedules) the campfire on all machines. Destructive
+  lifecycles (ephemeral/bounded) are honored only when campfire-key-signed;
+  `persistent` is honored from any member (the safe direction).
+- **`cf create --lifecycle <declaration>`** — declare at creation
+  (filesystem transport).
+
+### Operator note
+
+Periodic gc callers (e.g. legion's we-daemon) keep their command lines: after
+upgrading, a blanket `cf gc --yes` reclaims only empty and declared-elapsed
+campfires. To also reclaim idle undeclared campfires, opt in deliberately with
+`--include-undeclared` — and declare anything you care about first:
+`cf lifecycle <id> persistent`.
+
 ## v0.33.3 — bounded fs sync: join/read/view/await no longer scan full history (2026-06-05)
 
 Patch. One v0.33.2 regression plus the latent defects it exposed.
