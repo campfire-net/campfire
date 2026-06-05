@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.33.3 — bounded fs sync: join/read/view/await no longer scan full history (2026-06-05)
+
+Patch. One v0.33.2 regression plus the latent defects it exposed.
+
+### Fixed
+
+- **`campfire_join` no longer hangs on long-lived campfires**
+  (`campfireagent-6d3`, via `automataisland-2724`): the v0.33.2 post-join sync
+  (`syncFSVerified`) read the campfire's ENTIRE message history — every
+  `.cbor` loaded into memory at once (2GB RSS observed on real body cfs with
+  >260k messages) and every message inserted in its own fsync'd autocommit
+  transaction plus a per-message membership query. Hours per join; legion
+  workers were killed mid-call on every embodiment wake. The same unbounded
+  scan ran on **every view read and every 2-second await poll tick** (no
+  cursor — quadratic in history size), and the first read of a fresh
+  `CF_HOME` hit the equivalent unbounded path through `protocol.Client.Read`.
+- **Sync no longer silently drops messages through rate-limited session
+  stores**: `syncFSVerified` pushed synced messages through the session
+  store's free-tier rate limiter (default 100/min, 1000/month) and ignored
+  the errors; past the cap, messages on disk simply never appeared in
+  queries. Transport sync is not message ingestion — it now uses a plain
+  store connection and neither drops nor counts toward billing caps.
+
+### Changed
+
+- All FS-mode sync in cf-mcp now goes through a budgeted per-campfire sync
+  manager built on the canonical cursor-based sync: tool calls do a bounded
+  foreground sync (covers creation-time declarations — the head of history),
+  a background worker finishes large histories chunk by chunk, and convention
+  tools/views re-register when it completes. `campfire_join` returns
+  `sync_complete: false` plus a note while the backfill runs; reads may show
+  partial history for the first minutes after first contact with a very large
+  campfire.
+- `protocol.SyncFilesystem` now syncs in pages (bounded memory) and commits
+  each page in a single batch transaction (`AddMessagesBatch` on the SQLite
+  store): first full sync of a 260k-message campfire drops from tens of
+  minutes to roughly a minute. New primitives: `protocol.SyncFilesystemChunk`
+  and `fs.Transport.ListMessagesPage`.
+
 ## v0.33.2 — idempotent re-join + convention tools register on local join (2026-06-04)
 
 Patch. Two v0.33.0 regressions, both surfaced by consumers.

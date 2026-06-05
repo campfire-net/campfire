@@ -50,6 +50,7 @@ import (
 	"github.com/campfire-net/campfire/pkg/storage"
 	"github.com/campfire-net/campfire/cf-protocol/store"
 	"github.com/campfire-net/campfire/pkg/store/aztable"
+	cftransport "github.com/campfire-net/campfire/cf-protocol/transport"
 	"github.com/campfire-net/campfire/cf-protocol/transport/fs"
 	cfhttp "github.com/campfire-net/campfire/cf-protocol/transport/http"
 	"github.com/google/uuid"
@@ -140,6 +141,7 @@ type server struct {
 	st              store.Store       // non-nil in session mode; already-open store shared from Session
 	sess            *Session          // non-nil in session mode; back-reference used to persist auditWriter across requests
 	conventionTools *conventionToolMap // dynamic convention-declared tools per session
+	fsSync          *fsSyncManager     // budgeted FS-mode sync coordinator (campfireagent-6d3); lazily created, persisted via Session
 	joinMu          sync.Mutex              // guards joinLock map
 	joinLock        map[string]*joinEntry   // per-campfireID entry; evicted when refcount drops to zero
 	forgeEmitter         *forge.ForgeEmitter          // non-nil when relay metering is enabled; async, fail-open
@@ -221,48 +223,10 @@ func newProtocolClient(st store.Store, agentID *identity.Identity) *protocol.Cli
 	return protocol.New(st, agentID)
 }
 
-// syncFSVerified syncs messages from the filesystem transport into the store,
-// verifying signatures and provenance hops on every message before storing.
-// Messages with invalid signatures, empty provenance, or invalid hops are silently
-// skipped — they are not stored and will not appear in subsequent queries.
-//
-// This is the verified-sync primitive used by handleViewTool and the FS-polling
-// path of handleAwait to fix the bypass identified in campfire-agent-ltj: those
-// handlers previously called fs.Transport.ListMessages directly, bypassing the
-// signature and hop verification that protocol.Client.syncIfFilesystem performs.
-//
-// Callers in HTTP mode should skip this function entirely (messages arrive via
-// push and are already verified at ingestion). In FS mode, this must be called
-// before querying the store to ensure tampered or unsigned messages are rejected.
-func syncFSVerified(st store.Store, fsT *fs.Transport, campfireID string) {
-	fsMessages, err := fsT.ListMessages(campfireID)
-	if err != nil {
-		return
-	}
-	for _, fsMsg := range fsMessages {
-		// Reject messages with invalid Ed25519 signature.
-		if !fsMsg.VerifySignature() {
-			continue
-		}
-		// Reject messages with empty provenance — every legitimate message must
-		// have at least one hop establishing the originating sender.
-		if len(fsMsg.Provenance) == 0 {
-			continue
-		}
-		// Reject messages with any invalid provenance hop.
-		hopOK := true
-		for _, hop := range fsMsg.Provenance {
-			if !message.VerifyHop(fsMsg.ID, hop) {
-				hopOK = false
-				break
-			}
-		}
-		if !hopOK {
-			continue
-		}
-		st.AddMessage(store.MessageRecordFromMessage(campfireID, &fsMsg, store.NowNano())) //nolint:errcheck
-	}
-}
+// NOTE: the former syncFSVerified primitive (full-history fs→store sync) was
+// replaced by the budgeted, cursor-incremental fsSyncManager — see fssync.go
+// (campfireagent-6d3). The signature/provenance verification it performed
+// (campfire-agent-ltj) lives in the canonical protocol.SyncFilesystemChunk.
 
 // fsTransport returns a filesystem transport rooted at the correct base dir.
 // In hosted HTTP mode, campfire state (campfire.cbor, members/) lives under
@@ -2005,14 +1969,25 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 	// scan below finds zero declarations and registers zero tools even though
 	// the join succeeded (campfireagent-b991: a rehydrated-membership join
 	// surfaced none of the campfire's convention surface; the CLI join path
-	// already syncs post-join via syncCampfire). syncFSVerified checks the
-	// signature and provenance hops of every message before storing. HTTP mode
-	// skips: messages arrive via push and are verified at ingestion.
-	if s.httpTransport == nil {
-		syncFSVerified(st, transport, campfireID)
-	}
+	// already syncs post-join via syncCampfire).
+	//
+	// The sync is BUDGETED (campfireagent-6d3): an unbounded sync of a
+	// long-lived campfire (real body cfs: >260k messages, 2GB) hung the join
+	// indefinitely. The bounded foreground sync covers the head of history —
+	// where creation-time declarations live — and a background worker finishes
+	// the rest, re-running this registration when it completes so declarations
+	// published later in the history surface as tools shortly after the join.
+	// Every synced message is signature- and provenance-verified by the
+	// canonical chunked sync. HTTP mode skips: messages arrive via push and
+	// are verified at ingestion.
 	if s.conventionTools == nil {
 		s.conventionTools = newConventionToolMap()
+	}
+	syncComplete := true
+	if s.httpTransport == nil {
+		syncComplete = s.syncCampfireForTool(campfireID, "", func() {
+			s.refreshConventionSurface(campfireID)
+		})
 	}
 	var fsToolNames []string
 	decls, declErr := readDeclarations(st, campfireID, campfireID)
@@ -2033,6 +2008,10 @@ func (s *server) handleJoin(id interface{}, params map[string]interface{}) jsonR
 	joinResult := map[string]interface{}{
 		"campfire_id": campfireID,
 		"status":      "joined",
+	}
+	if !syncComplete {
+		joinResult["sync_complete"] = false
+		joinResult["sync_note"] = "Long message history: sync continuing in background. Reads may return partial history and additional convention tools may appear in tools/list for the next few minutes."
 	}
 	if len(fsToolNames) > 0 {
 		joinResult["convention_tools_registered"] = len(fsToolNames)
@@ -2614,10 +2593,31 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 	}
 
 	// Use protocol.Client for sync-before-query. For filesystem campfires, the
-	// client verifies message signatures during sync (fixes campfire-agent-bxh:
-	// missing sig verification). For HTTP campfires, sync is skipped automatically
+	// sync verifies message signatures (fixes campfire-agent-bxh: missing sig
+	// verification). For HTTP campfires, sync is skipped automatically
 	// (messages arrive via push and are already in SQLite).
+	//
+	// In FS mode the sync runs through the budgeted manager BEFORE the read
+	// (campfireagent-6d3: the client's internal sync is unbounded — the first
+	// read of a >260k-message campfire on a fresh CF_HOME hung for the same
+	// reason campfire_join did), and SkipSync tells client.Read not to repeat
+	// it. During an initial backfill the read returns the history synced so
+	// far; the background worker completes it.
 	client := newProtocolClient(st, nil) // nil identity: read-only
+
+	syncedViaManager := s.httpTransport == nil
+	if syncedViaManager {
+		for _, cfID := range campfireIDs {
+			m, mErr := st.GetMembership(cfID)
+			if mErr != nil || m == nil {
+				continue // no membership — nothing to sync (matches syncIfFilesystem)
+			}
+			if cftransport.ResolveType(*m) != cftransport.TypeFilesystem {
+				continue // p2p-http / github: not filesystem-synced (matches syncIfFilesystem)
+			}
+			s.syncCampfireForTool(cfID, m.TransportDir, nil)
+		}
+	}
 
 	// Collect messages per campfire.
 	var allMessages []protocol.Message
@@ -2631,6 +2631,7 @@ func (s *server) handleRead(id interface{}, params map[string]interface{}) jsonR
 			CampfireID:       cfID,
 			AfterTimestamp:   afterTS,
 			IncludeCompacted: readAll,
+			SkipSync:         syncedViaManager,
 		})
 		if readErr != nil {
 			return errResponse(id, -32000, fmt.Sprintf("listing messages: %v", readErr))
@@ -2777,16 +2778,17 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 	// campfires without a membership record in the store (e.g. project campfires
 	// or test setups) are still polled correctly.
 	//
-	// syncFSVerified is used instead of fsTransport.ListMessages to ensure that
-	// signature and provenance-hop verification happen on every synced message
-	// (campfire-agent-ltj: raw ListMessages bypassed verification).
-	fsTransport := fs.New(fs.DefaultBaseDir())
+	// The budgeted manager sync verifies signature and provenance hops on every
+	// synced message (campfire-agent-ltj) and is cursor-incremental
+	// (campfireagent-6d3: the previous implementation re-scanned the ENTIRE
+	// history on every 2-second poll tick — quadratic in history size). After
+	// the initial backfill each tick costs O(new messages).
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	// Initial sync and check.
-	syncFSVerified(st, fsTransport, campfireID)
+	s.syncCampfireForTool(campfireID, "", nil)
 	if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
 		result, _ := toolResultJSON(msg)
 		return okResponse(id, result)
@@ -2800,7 +2802,7 @@ func (s *server) handleAwait(id interface{}, params map[string]interface{}) json
 		case <-ticker.C:
 		}
 
-		syncFSVerified(st, fsTransport, campfireID)
+		s.syncCampfireForTool(campfireID, "", nil)
 		if msg := findMCPFulfillment(st, campfireID, targetMsgID); msg != nil {
 			result, _ := toolResultJSON(msg)
 			return okResponse(id, result)

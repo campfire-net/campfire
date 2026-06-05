@@ -458,9 +458,40 @@ type LeafMessage struct {
 // any file is opened. This is the difference between O(total messages) and
 // O(new messages) per sync.
 func (t *Transport) ListMessagesSince(campfireID, afterLeaf string) ([]LeafMessage, error) {
+	page, err := t.ListMessagesPage(campfireID, afterLeaf, 0)
+	return page.Messages, err
+}
+
+// ListPage is one chunk of a paged read over a campfire's message history.
+type ListPage struct {
+	// Messages are the successfully decoded messages in this page, oldest first.
+	Messages []LeafMessage
+	// LastListed is the leaf filename of the last directory entry examined for
+	// this page ("" if the page is empty). It can trail Messages when files at
+	// the end of the page were corrupt or disappeared mid-walk: a paging caller
+	// must advance its cursor to LastListed — not to the last decoded message —
+	// or a run of undecodable files at a page boundary would stall the cursor
+	// permanently.
+	LastListed string
+	// More reports whether directory entries beyond LastListed remained when
+	// the page was cut. False means this page reached the end of the history.
+	More bool
+}
+
+// ListMessagesPage reads at most limit messages whose leaf filenames sort
+// strictly after afterLeaf, in chronological order. limit <= 0 means no cap
+// (one page spanning the full remaining history, with More == false).
+//
+// The cap is applied at the directory-listing level, before any file is
+// opened, so a caller paging through a large history reads only page-sized
+// batches into memory — O(limit) per call instead of O(remaining). This is
+// the primitive behind bounded/chunked sync (campfireagent-6d3: an unbounded
+// first sync of a >260k-message campfire loaded 2GB into memory and could not
+// complete inside a join).
+func (t *Transport) ListMessagesPage(campfireID, afterLeaf string, limit int) (ListPage, error) {
 	leaves, err := t.collectLeaves(campfireID)
 	if err != nil {
-		return nil, err
+		return ListPage{}, err
 	}
 	// Drop leaves at or before the cursor before any file is read.
 	filtered := leaves[:0:0]
@@ -469,7 +500,16 @@ func (t *Transport) ListMessagesSince(campfireID, afterLeaf string) ([]LeafMessa
 			filtered = append(filtered, lf)
 		}
 	}
-	return readLeaves(filtered), nil
+	var page ListPage
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+		page.More = true
+	}
+	if len(filtered) > 0 {
+		page.LastListed = filtered[len(filtered)-1].name
+	}
+	page.Messages = readLeaves(filtered)
+	return page, nil
 }
 
 // LookbackCursor returns a synthetic leaf bound that is `lookback` earlier than

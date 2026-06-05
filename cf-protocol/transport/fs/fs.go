@@ -14,6 +14,7 @@ type (
 	Transport      = fs.Transport
 	PushSubscriber = fs.PushSubscriber
 	LeafMessage    = fs.LeafMessage
+	ListPage       = fs.ListPage
 
 	// Migration types.
 	MigrateStoreOptions               = fs.MigrateStoreOptions

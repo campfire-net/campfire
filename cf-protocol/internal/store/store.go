@@ -858,6 +858,147 @@ func (s *SQLiteStore) AddMessage(m MessageRecord) (bool, error) {
 	return rows > 0, nil
 }
 
+// AddMessagesBatch inserts a batch of message records in a single transaction.
+// Returns the number of records actually inserted (already-present IDs are
+// ignored, same as AddMessage's INSERT OR IGNORE).
+//
+// This is the bulk fast path for filesystem-transport sync (campfireagent-6d3):
+// AddMessage costs one autocommit transaction — an fsync — plus a membership
+// lookup PER MESSAGE, which makes the first sync of a >260k-message campfire
+// take tens of minutes. Batching amortizes both: one transaction per batch,
+// one membership lookup per campfire.
+//
+// AddMessagesBatch is deliberately NOT on the Store interface. It is an
+// optional capability discovered by type assertion (see protocol sync), so
+// store decorators (e.g. the rate-limit wrapper) that must observe every
+// individual AddMessage keep their per-message semantics via the fallback.
+//
+// Per-message validation failures (plaintext in an encrypted campfire,
+// inconsistent compaction bytes) SKIP that record rather than abort the batch
+// — matching sync semantics, where invalid messages are silently dropped. A
+// returned error means the transaction itself failed and nothing was inserted.
+func (s *SQLiteStore) AddMessagesBatch(ms []MessageRecord) (int, error) {
+	if len(ms) == 0 {
+		return 0, nil
+	}
+
+	// Pass 1 — normalize and validate outside the transaction, mirroring
+	// AddMessage's checks. Membership is fetched once per campfire, not per
+	// message. Compaction validation can reference payloads of messages
+	// earlier in the same batch (a first sync of a compacted campfire imports
+	// the superseded messages and their compaction event together).
+	memberships := make(map[string]*Membership)
+	inBatchPayloads := make(map[string][]byte, len(ms))
+	accepted := ms[:0:0]
+	for _, m := range ms {
+		if m.Tags == nil {
+			m.Tags = []string{}
+		}
+		if m.Antecedents == nil {
+			m.Antecedents = []string{}
+		}
+		if m.Provenance == nil {
+			m.Provenance = []message.ProvenanceHop{}
+		}
+
+		// Downgrade prevention: reject plaintext payloads for encrypted campfires.
+		if !isSystemMessage(m.Tags) {
+			mem, ok := memberships[m.CampfireID]
+			if !ok {
+				var err error
+				mem, err = s.GetMembership(m.CampfireID)
+				if err != nil {
+					return 0, fmt.Errorf("downgrade check: getting membership: %w", err)
+				}
+				memberships[m.CampfireID] = mem
+			}
+			if mem != nil && mem.Encrypted {
+				if _, err := crypto.UnmarshalEncryptedPayload(m.Payload); err != nil {
+					continue // skip: plaintext in encrypted campfire
+				}
+			}
+		}
+
+		// Validate compaction BytesSuperseded consistency before persisting.
+		if isCompactionEvent(m) {
+			var cp CompactionPayload
+			if err := unmarshalCompactionPayload(m.Payload, &cp); err == nil {
+				if err := ValidateCompactionBytes(cp.Supersedes, cp.BytesSuperseded, func(id string) ([]byte, error) {
+					if p, ok := inBatchPayloads[id]; ok {
+						return p, nil
+					}
+					msg, err := s.GetMessage(id)
+					if err != nil {
+						return nil, err
+					}
+					if msg == nil {
+						return nil, nil
+					}
+					return msg.Payload, nil
+				}); err != nil {
+					continue // skip: inconsistent compaction event
+				}
+			}
+		}
+
+		inBatchPayloads[m.ID] = m.Payload
+		accepted = append(accepted, m)
+	}
+	if len(accepted) == 0 {
+		return 0, nil
+	}
+
+	// Pass 2 — single transaction, one prepared INSERT OR IGNORE per record.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("beginning batch transaction: %w", err)
+	}
+	stmt, err := tx.Prepare(
+		`INSERT OR IGNORE INTO messages (id, campfire_id, sender, payload, tags, antecedents, timestamp, signature, provenance, received_at, instance, sender_campfire_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		tx.Rollback() //nolint:errcheck
+		return 0, fmt.Errorf("preparing batch insert: %w", err)
+	}
+	added := 0
+	compactionCampfires := make(map[string]bool)
+	for _, m := range accepted {
+		tagsJSON, _ := json.Marshal(m.Tags)
+		anteJSON, _ := json.Marshal(m.Antecedents)
+		provJSON, _ := json.Marshal(m.Provenance)
+		result, execErr := stmt.Exec(
+			m.ID, m.CampfireID, m.Sender, m.Payload, string(tagsJSON), string(anteJSON), m.Timestamp, m.Signature, string(provJSON), m.ReceivedAt, m.Instance, m.SenderCampfireID,
+		)
+		if execErr != nil {
+			stmt.Close()    //nolint:errcheck
+			tx.Rollback()   //nolint:errcheck
+			return 0, fmt.Errorf("adding message in batch: %w", execErr)
+		}
+		rows, _ := result.RowsAffected()
+		if rows > 0 {
+			added++
+			if isCompactionEvent(m) {
+				compactionCampfires[m.CampfireID] = true
+			}
+		}
+	}
+	stmt.Close() //nolint:errcheck
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("committing batch: %w", err)
+	}
+
+	// Pass 3 — invalidate the superseded-ID cache for campfires that received
+	// a compaction event, after the commit (same TOCTOU reasoning as AddMessage,
+	// workspace-zqdc).
+	for cfID := range compactionCampfires {
+		s.supersededMu.Lock()
+		delete(s.supersededCache, cfID)
+		s.supersededMu.Unlock()
+	}
+
+	return added, nil
+}
+
 // HasMessage checks if a message ID exists in the store.
 func (s *SQLiteStore) HasMessage(id string) (bool, error) {
 	var count int

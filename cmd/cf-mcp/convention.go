@@ -404,6 +404,21 @@ func (s *server) publishViews(st store.Store, campfireID string, entries []inter
 // readAndRegisterViews reads campfire:view messages from a campfire and registers
 // them as MCP tools. Called on join to discover views that were seeded at create time.
 func (s *server) readAndRegisterViews(st store.Store, campfireID string) (int, []string) {
+	if s.conventionTools == nil {
+		s.conventionTools = newConventionToolMap()
+	}
+	count, names := registerViewsFromStore(s.conventionTools, st, campfireID)
+	if count > 0 && s.sess != nil {
+		s.sess.conventionTools = s.conventionTools
+	}
+	return count, names
+}
+
+// registerViewsFromStore reads campfire:view messages from the store and
+// registers them as MCP view tools on the given (internally locked) tool map.
+// Free of *server field writes so it is safe to call from background
+// goroutines (the post-sync convention refresh in fssync.go).
+func registerViewsFromStore(tools *conventionToolMap, st store.Store, campfireID string) (int, []string) {
 	msgs, err := st.ListMessages(campfireID, 0, store.MessageFilter{Tags: []string{campfire.TagView}})
 	if err != nil {
 		log.Printf("convention: reading views for %s: %v", campfireID, err)
@@ -429,17 +444,10 @@ func (s *server) readAndRegisterViews(st store.Store, campfireID string) (int, [
 		return 0, nil
 	}
 
-	if s.conventionTools == nil {
-		s.conventionTools = newConventionToolMap()
-	}
-
 	var names []string
 	for _, v := range latest {
-		registerViewTool(s.conventionTools, campfireID, v.name, v.desc, v.pred)
+		registerViewTool(tools, campfireID, v.name, v.desc, v.pred)
 		names = append(names, v.name)
-	}
-	if s.sess != nil {
-		s.sess.conventionTools = s.conventionTools
 	}
 	return len(names), names
 }
@@ -495,11 +503,13 @@ func (s *server) handleViewTool(id interface{}, entry *viewToolEntry, args map[s
 
 	// Sync from filesystem transport (same as handleRead — in fs mode,
 	// messages live on disk and must be synced to SQLite before querying).
-	// syncFSVerified is used instead of fsT.ListMessages to ensure signature
-	// and provenance-hop verification happen on every synced message
-	// (campfire-agent-ltj: raw ListMessages bypassed verification).
+	// The budgeted manager sync verifies signature and provenance hops on
+	// every synced message (campfire-agent-ltj) and is cursor-incremental and
+	// bounded (campfireagent-6d3: the previous full-history rescan on EVERY
+	// view call hung on long-lived campfires). During an initial backfill the
+	// view may return partial history; the background worker completes it.
 	if s.httpTransport == nil {
-		syncFSVerified(st, s.fsTransport(), campfireID)
+		s.syncCampfireForTool(campfireID, "", nil)
 	}
 
 	pred, err := predicate.Parse(entry.predicate)

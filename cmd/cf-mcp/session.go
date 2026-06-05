@@ -428,6 +428,7 @@ type Session struct {
 	router        *TransportRouter  // non-nil in hosted HTTP mode; used by Close to unregister routes
 	auditWriter     *AuditWriter      // non-nil after first campfire_init; persisted across per-request server instances
 	conventionTools *conventionToolMap // persisted across per-request server instances
+	fsSync          *fsSyncManager     // budgeted FS-mode sync coordinator; persisted across per-request server instances (campfireagent-6d3)
 	lastActivity    time.Time
 	mu              sync.Mutex
 	// durable, when true, marks this session as long-lived. The idle reaper
@@ -457,6 +458,7 @@ func (s *Session) server(manager *SessionManager) *server {
 		sess:            s,
 		auditWriter:     s.auditWriter,
 		conventionTools: s.conventionTools,
+		fsSync:          s.fsSync,
 	}
 	if manager != nil {
 		srv.exposePrimitives = manager.exposePrimitives
