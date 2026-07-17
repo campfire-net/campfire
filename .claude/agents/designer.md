@@ -1,5 +1,6 @@
 ---
 model: opus
+effort: high
 ---
 
 # Designer

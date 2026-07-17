@@ -1,5 +1,6 @@
 ---
 model: sonnet
+effort: low
 ---
 
 # Implementer
